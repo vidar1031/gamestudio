@@ -4,6 +4,7 @@ import { cors } from 'hono/cors'
 import { mkdir, readFile, readdir, stat, writeFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import pluginStoryPixi from '@game-studio/plugin-story-pixi'
 import { genId, generateScriptDraft, generateScriptsFromPrompt, guessTitleFromPrompt, repairScriptDraft } from './ai/scripts.js'
@@ -14,6 +15,7 @@ import { generateBackgroundImage } from './ai/background.js'
 import { generateBackgroundPrompt } from './ai/imagePrompt.js'
 import { generateCharacterFingerprint } from './ai/characterPrompt.js'
 import { getDoubaoImagesConfigSnapshot } from './ai/doubao.js'
+import { diagnoseOllamaText } from './ai/ollama.js'
 import { compileBlueprintFromScripts } from './blueprint/compile.js'
 import { validateBlueprintDoc } from './blueprint/validate.js'
 import { loadEnv } from './env.js'
@@ -86,6 +88,25 @@ const DEMOS_DIR = path.join(ROOT, 'demos')
 const DEMO_LIBRARY_DIR = path.join(ROOT, 'demo_library')
 const TOOL_VERSION = '0.1.0'
 
+function normalizeSdwebuiBaseUrl(raw) {
+  let s = String(raw || '').trim()
+  if (!s) s = String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860')
+  s = s.replace(/\/+$/, '')
+  s = s.replace(/\/sdapi\/v1$/i, '')
+  return s || 'http://127.0.0.1:7860'
+}
+
+function normalizeComfyuiBaseUrl(raw) {
+  let s = String(raw || '').trim()
+  if (!s) s = String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188')
+  s = s.replace(/\/+$/, '')
+  return s || 'http://127.0.0.1:8188'
+}
+
+function normalizeComfyModelName(raw) {
+  return String(raw || '').trim().replace(/\s+\[[^\]]+\]\s*$/, '').trim()
+}
+
 app.get('/api/studio/settings', async (c) => {
   const { settings, effective } = await getEffectiveStudioConfig(ROOT)
   return c.json({ success: true, settings: settings || null, effective })
@@ -97,13 +118,125 @@ app.put('/api/studio/settings', async (c) => {
   return c.json({ success: true, settings: saved })
 })
 
+app.get('/api/studio/sdwebui/models', async (c) => {
+  const q = c.req.query()
+  const baseUrl = normalizeSdwebuiBaseUrl(q.baseUrl || process.env.SDWEBUI_BASE_URL)
+  const timeoutMs = clampInt(q.timeoutMs, 1_000, 30_000, 8_000)
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const [modelsResp, optionsResp] = await Promise.all([
+      fetch(`${baseUrl}/sdapi/v1/sd-models`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/sdapi/v1/options`, { method: 'GET', signal: controller.signal }).catch(() => null)
+    ])
+    const modelsUnsupported = !modelsResp || Number(modelsResp.status || 0) === 404
+    if (!modelsUnsupported && (!modelsResp || !modelsResp.ok)) {
+      return c.json({ success: false, error: 'sdwebui_models_failed', message: `HTTP_${modelsResp ? modelsResp.status : 0}`, baseUrl }, 502)
+    }
+    const modelsJson = modelsUnsupported ? [] : await modelsResp.json().catch(() => [])
+    const optionsJson = optionsResp && optionsResp.ok ? await optionsResp.json().catch(() => null) : null
+    const currentModel = optionsJson && typeof optionsJson === 'object' ? String(optionsJson.sd_model_checkpoint || '').trim() || null : null
+    const models = (Array.isArray(modelsJson) ? modelsJson : [])
+      .map((x) => {
+        if (!x || typeof x !== 'object') return ''
+        const title = String(x.title || '').trim()
+        const modelName = String(x.model_name || '').trim()
+        const name = String(x.name || '').trim()
+        return title || modelName || name || ''
+      })
+      .filter(Boolean)
+    return c.json({
+      success: true,
+      baseUrl,
+      currentModel,
+      models,
+      note: modelsUnsupported ? 'models_api_not_supported' : 'ok'
+    })
+  } catch (e) {
+    return c.json(
+      {
+        success: false,
+        error: 'sdwebui_connect_failed',
+        message: e && e.message ? String(e.message) : String(e),
+        baseUrl
+      },
+      502
+    )
+  } finally {
+    clearTimeout(t)
+  }
+})
+
+app.get('/api/studio/comfyui/models', async (c) => {
+  const q = c.req.query()
+  const baseUrl = normalizeComfyuiBaseUrl(q.baseUrl || process.env.COMFYUI_BASE_URL)
+  const timeoutMs = clampInt(q.timeoutMs, 1_000, 30_000, 8_000)
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const [ckptResp, loraRespA, loraRespB] = await Promise.all([
+      fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/object_info/LoraLoader`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/object_info/LoraLoaderModelOnly`, { method: 'GET', signal: controller.signal }).catch(() => null)
+    ])
+    if (!ckptResp || !ckptResp.ok) {
+      return c.json({ success: false, error: 'comfyui_models_failed', message: `HTTP_${ckptResp ? ckptResp.status : 0}`, baseUrl }, 502)
+    }
+    const ckptJson = await ckptResp.json().catch(() => null)
+    const ckpts = ckptJson && ckptJson.CheckpointLoaderSimple && ckptJson.CheckpointLoaderSimple.input && ckptJson.CheckpointLoaderSimple.input.required
+      ? ckptJson.CheckpointLoaderSimple.input.required.ckpt_name
+      : null
+    const models = Array.isArray(ckpts) ? ckpts.map((x) => String(x || '').trim()).filter(Boolean) : []
+    const loraJsonA = loraRespA && loraRespA.ok ? await loraRespA.json().catch(() => null) : null
+    const loraJsonB = loraRespB && loraRespB.ok ? await loraRespB.json().catch(() => null) : null
+    const loraA = loraJsonA && loraJsonA.LoraLoader && loraJsonA.LoraLoader.input && loraJsonA.LoraLoader.input.required
+      ? loraJsonA.LoraLoader.input.required.lora_name
+      : null
+    const loraB = loraJsonB && loraJsonB.LoraLoaderModelOnly && loraJsonB.LoraLoaderModelOnly.input && loraJsonB.LoraLoaderModelOnly.input.required
+      ? loraJsonB.LoraLoaderModelOnly.input.required.lora_name
+      : null
+    const loraSet = new Set()
+    for (const x of Array.isArray(loraA) ? loraA : []) {
+      const s = String(x || '').trim()
+      if (s) loraSet.add(s)
+    }
+    for (const x of Array.isArray(loraB) ? loraB : []) {
+      const s = String(x || '').trim()
+      if (s) loraSet.add(s)
+    }
+    const loras = Array.from(loraSet)
+    return c.json({
+      success: true,
+      baseUrl,
+      currentModel: null,
+      models,
+      loras,
+      note: 'ok'
+    })
+  } catch (e) {
+    return c.json(
+      {
+        success: false,
+        error: 'comfyui_connect_failed',
+        message: e && e.message ? String(e.message) : String(e),
+        baseUrl
+      },
+      502
+    )
+  } finally {
+    clearTimeout(t)
+  }
+})
+
 app.post('/api/studio/diagnose', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const deepText = Boolean(body && body.deepText)
   const deepImages = Boolean(body && body.deepImages)
+  const service = String((body && body.service) || 'all').trim().toLowerCase()
   const timeoutMs = clampInt(body?.timeoutMs, 3_000, 60_000, 12_000)
 
-  const { effective } = await getEffectiveStudioConfig(ROOT)
+  const settingsOverride = body && body.settings && typeof body.settings === 'object' ? body.settings : null
+  const { effective } = await getEffectiveStudioConfig(ROOT, { settingsOverride })
 
   const out = {
     ok: true,
@@ -130,16 +263,67 @@ app.post('/api/studio/diagnose', async (c) => {
     }
   }
 
-  async function diagnoseSdWebui(baseUrl) {
-    const url = String(baseUrl || '').replace(/\/+$/, '') || 'http://127.0.0.1:7860'
+  async function diagnoseSdWebui(baseUrl, model) {
+    const url = normalizeSdwebuiBaseUrl(baseUrl)
     const controller = new AbortController()
     const t = setTimeout(() => controller.abort(), timeoutMs)
     try {
       const resp = await fetch(`${url}/sdapi/v1/options`, { method: 'GET', signal: controller.signal })
-      if (!resp.ok) return { ok: false, provider: 'sdwebui', note: `HTTP_${resp.status}`, baseUrl: url }
-      return { ok: true, provider: 'sdwebui', note: 'ok', baseUrl: url }
+      if (!resp.ok) return { ok: false, provider: 'sdwebui', note: `HTTP_${resp.status}`, baseUrl: url, model: model || null }
+
+      const modelName = normalizeComfyModelName(model)
+      if (modelName) {
+        const mResp = await fetch(`${url}/sdapi/v1/sd-models`, { method: 'GET', signal: controller.signal })
+        if (!mResp.ok) {
+          if (Number(mResp.status || 0) === 404) {
+            return { ok: true, provider: 'sdwebui', note: 'model_check_skipped_models_api_not_supported', baseUrl: url, model: modelName }
+          }
+          return { ok: false, provider: 'sdwebui', note: `models_HTTP_${mResp.status}`, baseUrl: url, model: modelName }
+        }
+        const arr = await mResp.json().catch(() => null)
+        const list = Array.isArray(arr) ? arr : []
+        const names = list
+          .map((x) => (x && typeof x === 'object' ? String(x.model_name || x.title || x.name || '').trim() : ''))
+          .filter(Boolean)
+        const found = names.some((n) => n === modelName || n.includes(modelName) || modelName.includes(n))
+        if (!found) {
+          return { ok: false, provider: 'sdwebui', note: 'model_not_found', baseUrl: url, model: modelName }
+        }
+        return { ok: true, provider: 'sdwebui', note: 'configured_model_ok', baseUrl: url, model: modelName }
+      }
+
+      return { ok: true, provider: 'sdwebui', note: 'configured', baseUrl: url, model: null }
     } catch (e) {
-      return { ok: false, provider: 'sdwebui', note: e && e.message ? String(e.message) : String(e), baseUrl: url }
+      return { ok: false, provider: 'sdwebui', note: e && e.message ? String(e.message) : String(e), baseUrl: url, model: model || null }
+    } finally {
+      clearTimeout(t)
+    }
+  }
+
+  async function diagnoseComfyui(baseUrl, model) {
+    const url = normalizeComfyuiBaseUrl(baseUrl)
+    const controller = new AbortController()
+    const t = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const stats = await fetch(`${url}/system_stats`, { method: 'GET', signal: controller.signal })
+      if (!stats.ok) return { ok: false, provider: 'comfyui', note: `HTTP_${stats.status}`, baseUrl: url, model: model || null }
+
+      const modelName = String(model || '').trim()
+      if (modelName) {
+        const mResp = await fetch(`${url}/object_info/CheckpointLoaderSimple`, { method: 'GET', signal: controller.signal })
+        if (!mResp.ok) return { ok: false, provider: 'comfyui', note: `models_HTTP_${mResp.status}`, baseUrl: url, model: modelName }
+        const j = await mResp.json().catch(() => null)
+        const ckpts = j && j.CheckpointLoaderSimple && j.CheckpointLoaderSimple.input && j.CheckpointLoaderSimple.input.required
+          ? j.CheckpointLoaderSimple.input.required.ckpt_name
+          : null
+        const names = Array.isArray(ckpts) ? ckpts.map((x) => String(x || '').trim()).filter(Boolean) : []
+        const found = names.some((n) => n === modelName || n.includes(modelName) || modelName.includes(n))
+        if (!found) return { ok: false, provider: 'comfyui', note: 'model_not_found', baseUrl: url, model: modelName }
+        return { ok: true, provider: 'comfyui', note: 'configured_model_ok', baseUrl: url, model: modelName }
+      }
+      return { ok: true, provider: 'comfyui', note: 'configured', baseUrl: url, model: null }
+    } catch (e) {
+      return { ok: false, provider: 'comfyui', note: e && e.message ? String(e.message) : String(e), baseUrl: url, model: model || null }
     } finally {
       clearTimeout(t)
     }
@@ -173,6 +357,17 @@ app.post('/api/studio/diagnose', async (c) => {
     }
   }
 
+  async function diagnoseOllamaTextLocal(model) {
+    const cfgModel = String(model || '').trim() || null
+    const res = await diagnoseOllamaText({
+      model: cfgModel || undefined,
+      timeoutMs,
+      proxyUrl: effective.network.proxyUrl,
+      deepText
+    })
+    return res
+  }
+
   async function diagnoseDoubaoImages({ apiUrl, model }) {
     const keyPresent = Boolean(String(process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
     const authHeaderPresent = Boolean(String(process.env.DOUBAO_ARK_AUTH_HEADER || process.env.DOUBAO_AUTH_HEADER || '').trim())
@@ -197,37 +392,51 @@ app.post('/api/studio/diagnose', async (c) => {
     }
   }
 
-  // scripts
-  try {
-    if (!effective.enabled.scripts) out.services.scripts = { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: 'disabled' }
-    else if (effective.scripts.provider === 'openai') out.services.scripts = await diagnoseOpenAI({ timeoutMs })
-    else if (effective.scripts.provider === 'doubao') out.services.scripts = await diagnoseDoubaoText(effective.scripts.model)
-    else out.services.scripts = { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: 'local' }
-  } catch (e) {
-    out.services.scripts = { ok: false, provider: effective.scripts.provider, model: effective.scripts.model, note: e && e.message ? String(e.message) : String(e) }
+  const checkScripts = service === 'all' || service === 'scripts'
+  const checkPrompt = service === 'all' || service === 'prompt'
+  const checkImage = service === 'all' || service === 'image'
+
+  if (checkScripts) {
+    try {
+      if (!effective.enabled.scripts) out.services.scripts = { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: 'disabled' }
+      else if (effective.scripts.provider === 'openai') out.services.scripts = await diagnoseOpenAI({ timeoutMs })
+      else if (effective.scripts.provider === 'doubao') out.services.scripts = await diagnoseDoubaoText(effective.scripts.model)
+      else if (effective.scripts.provider === 'ollama') out.services.scripts = await diagnoseOllamaTextLocal(effective.scripts.model)
+      else out.services.scripts = { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: 'local' }
+    } catch (e) {
+      out.services.scripts = { ok: false, provider: effective.scripts.provider, model: effective.scripts.model, note: e && e.message ? String(e.message) : String(e) }
+    }
   }
 
-  // prompt
-  try {
-    if (!effective.enabled.prompt) out.services.prompt = { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: 'disabled' }
-    else if (effective.prompt.provider === 'openai') out.services.prompt = await diagnoseOpenAI({ timeoutMs })
-    else if (effective.prompt.provider === 'doubao') out.services.prompt = await diagnoseDoubaoText(effective.prompt.model)
-    else out.services.prompt = { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: 'local' }
-  } catch (e) {
-    out.services.prompt = { ok: false, provider: effective.prompt.provider, model: effective.prompt.model, note: e && e.message ? String(e.message) : String(e) }
+  if (checkPrompt) {
+    try {
+      if (!effective.enabled.prompt) out.services.prompt = { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: 'disabled' }
+      else if (effective.prompt.provider === 'openai') out.services.prompt = await diagnoseOpenAI({ timeoutMs })
+      else if (effective.prompt.provider === 'doubao') out.services.prompt = await diagnoseDoubaoText(effective.prompt.model)
+      else if (effective.prompt.provider === 'ollama') out.services.prompt = await diagnoseOllamaTextLocal(effective.prompt.model)
+      else out.services.prompt = { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: 'local' }
+    } catch (e) {
+      out.services.prompt = { ok: false, provider: effective.prompt.provider, model: effective.prompt.model, note: e && e.message ? String(e.message) : String(e) }
+    }
   }
 
-  // image
-  try {
-    if (!effective.enabled.image) out.services.image = { ok: true, provider: effective.image.provider, model: effective.image.model, note: 'disabled' }
-    else if (effective.image.provider === 'sdwebui') out.services.image = await diagnoseSdWebui(effective.image.sdwebuiBaseUrl)
-    else if (effective.image.provider === 'doubao') out.services.image = await diagnoseDoubaoImages({ apiUrl: effective.image.apiUrl, model: effective.image.model })
-    else out.services.image = { ok: false, provider: effective.image.provider, model: effective.image.model, note: 'unsupported_provider' }
-  } catch (e) {
-    out.services.image = { ok: false, provider: effective.image.provider, model: effective.image.model, note: e && e.message ? String(e.message) : String(e) }
+  if (checkImage) {
+    try {
+      if (!effective.enabled.image) out.services.image = { ok: true, provider: effective.image.provider, model: effective.image.model, note: 'disabled' }
+      else if (effective.image.provider === 'sdwebui') out.services.image = await diagnoseSdWebui(effective.image.sdwebuiBaseUrl, effective.image.model)
+      else if (effective.image.provider === 'comfyui') out.services.image = await diagnoseComfyui(effective.image.comfyuiBaseUrl, effective.image.model)
+      else if (effective.image.provider === 'doubao') out.services.image = await diagnoseDoubaoImages({ apiUrl: effective.image.apiUrl, model: effective.image.model })
+      else out.services.image = { ok: false, provider: effective.image.provider, model: effective.image.model, note: 'unsupported_provider' }
+    } catch (e) {
+      out.services.image = { ok: false, provider: effective.image.provider, model: effective.image.model, note: e && e.message ? String(e.message) : String(e) }
+    }
   }
 
-  out.ok = Object.values(out.services).every((x) => x && x.ok !== false)
+  const okTargets = ['server']
+  if (checkScripts) okTargets.push('scripts')
+  if (checkPrompt) okTargets.push('prompt')
+  if (checkImage) okTargets.push('image')
+  out.ok = okTargets.every((k) => out.services[k] && out.services[k].ok !== false)
   return c.json({ success: true, diagnostics: out })
 })
 
@@ -501,9 +710,9 @@ app.post('/api/projects/ai/create', async (c) => {
   const formula = { schemaVersion: '1.0', format: 'numeric', choicePoints, optionsPerChoice, endings }
   const id = crypto.randomUUID ? crypto.randomUUID() : `p_${Math.random().toString(36).slice(2, 10)}`
   const dir = projectDir(id)
-  await mkdir(path.join(dir, 'assets'), { recursive: true })
 
   const startedAt = Date.now()
+  const aiTimeoutMs = 90_000
   let gen = null
   let genMeta = null
   const requestedProvider = String(studio.effective.scripts.provider || 'local').toLowerCase()
@@ -522,7 +731,8 @@ app.post('/api/projects/ai/create', async (c) => {
       formula,
       provider: requestedProvider,
       model: requestedModel || undefined,
-      proxyUrl: studio.effective.network.proxyUrl
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs: aiTimeoutMs
     })
     if (gen && typeof gen === 'object' && gen.meta) genMeta = gen.meta
     if (gen && typeof gen === 'object' && gen.draft) gen = gen.draft
@@ -555,6 +765,29 @@ app.post('/api/projects/ai/create', async (c) => {
 
   const genTitle = gen && typeof gen.title === 'string' ? String(gen.title).trim() : ''
   const title = titleIn || genTitle || guessTitleFromPrompt(prompt)
+
+  // For remote providers, if AI call failed, do not create a broken project entry.
+  if (requestedProvider !== 'local' && (!gen || !Array.isArray(gen.cards))) {
+    const err = genMeta && genMeta.error ? genMeta.error : null
+    const msg = err && err.message ? String(err.message) : 'ai_generate_failed'
+    const status = err && Number.isFinite(Number(err.status)) ? Math.max(400, Math.min(599, Number(err.status))) : 502
+    return c.json({
+      success: false,
+      error: 'ai_generate_failed',
+      message: msg,
+      gen: {
+        requestedProvider,
+        provider: genMeta?.provider || requestedProvider,
+        model: genMeta?.model || null,
+        api: genMeta?.api || null,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        formula,
+        error: err
+      }
+    }, status)
+  }
+
+  await mkdir(path.join(dir, 'assets'), { recursive: true })
 
   const project = {
     schemaVersion: '2.0',
@@ -644,6 +877,7 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   const endings = clampInt(body?.endings, 2, 3, 2)
   const formula = { schemaVersion: '1.0', format: 'numeric', choicePoints, optionsPerChoice, endings }
   const startedAt = Date.now()
+  const aiTimeoutMs = 90_000
   let gen = null
   let genMeta = null
   const requestedProvider = String(studio.effective.scripts.provider || 'local').toLowerCase()
@@ -663,7 +897,8 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
       formula,
       provider: requestedProvider,
       model: requestedModel || undefined,
-      proxyUrl: studio.effective.network.proxyUrl
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs: aiTimeoutMs
     })
     if (gen && typeof gen === 'object' && gen.meta) genMeta = gen.meta
     if (gen && typeof gen === 'object' && gen.draft) gen = gen.draft
@@ -1744,6 +1979,83 @@ app.get('/api/projects/:id/assets/ai', async (c) => {
   return c.body(html)
 })
 
+function resolveAssetPathFromUri(projectId, uri) {
+  const id = String(projectId || '').trim()
+  const raw = String(uri || '').trim()
+  if (!id || !raw) return null
+  let s = raw
+  try {
+    if (/^https?:\/\//i.test(s)) {
+      const u = new URL(s)
+      s = String(u.pathname || '')
+    }
+  } catch (_) {}
+  s = s.replace(/\\/g, '/')
+  const marker = `/project-assets/${encodeURIComponent(String(id))}/`
+  if (s.startsWith(marker)) {
+    s = s.slice(marker.length)
+  } else if (/^\/project-assets\//.test(s)) {
+    const pfx = `/project-assets/${encodeURIComponent(String(id))}/`
+    if (!s.startsWith(pfx)) return null
+    s = s.slice(pfx.length)
+  } else if (s.startsWith('/')) {
+    s = s.replace(/^\/+/, '')
+  }
+  if (!s) return null
+  if (!/^assets\//.test(s)) {
+    if (/^(uploads|ai)\//.test(s)) s = `assets/${s}`
+    else if (!/^assets\//.test(s)) s = `assets/${s}`
+  }
+  const base = projectDir(id)
+  const abs = path.resolve(path.join(base, s))
+  const baseNorm = path.resolve(base) + path.sep
+  if (!(abs + path.sep).startsWith(baseNorm) && abs !== path.resolve(base)) return null
+  return abs
+}
+
+function openFolderOnHost(folder) {
+  const target = String(folder || '').trim()
+  if (!target) return Promise.reject(new Error('missing_folder'))
+  return new Promise((resolve, reject) => {
+    let cmd = ''
+    let args = []
+    if (process.platform === 'darwin') {
+      cmd = 'open'
+      args = [target]
+    } else if (process.platform === 'win32') {
+      cmd = 'explorer'
+      args = [target]
+    } else {
+      cmd = 'xdg-open'
+      args = [target]
+    }
+    const p = spawn(cmd, args, { stdio: 'ignore', detached: true })
+    p.on('error', (e) => reject(e))
+    p.unref()
+    resolve(true)
+  })
+}
+
+app.post('/api/projects/:id/assets/open-folder', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const uri = String(body?.uri || '').trim()
+  if (!uri) return c.json({ success: false, error: 'missing_uri' }, 400)
+  const abs = resolveAssetPathFromUri(id, uri)
+  if (!abs) return c.json({ success: false, error: 'invalid_uri', message: '无法从 URI 解析到项目资源路径' }, 400)
+  const folder = path.dirname(abs)
+  try {
+    await openFolderOnHost(folder)
+    return c.json({ success: true, folder })
+  } catch (e) {
+    return c.json({ success: false, error: 'open_folder_failed', message: e && e.message ? String(e.message) : String(e), folder }, 500)
+  }
+})
+
 // 上传本地资源（P0：仅图片，保存到 projects/<id>/assets/uploads）
 app.post('/api/projects/:id/assets/upload', async (c) => {
   await ensureDirs()
@@ -1815,12 +2127,17 @@ app.post('/api/projects/:id/ai/background', async (c) => {
     return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
   }
 	const bgProvider = String(studio.effective.image.provider || process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
+  const timeoutRaw = body?.timeoutMs
+  const bgTimeoutMs = (Number.isFinite(Number(timeoutRaw)) && Number(timeoutRaw) <= 0)
+    ? 0
+    : clampInt(timeoutRaw, 5_000, 300_000, clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000))
 	const startedAt = Date.now()
-	const effectivePrompt = [globalPrompt, scenePrompt].map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join('，')
+  const promptJoiner = (bgProvider === 'sdwebui' || bgProvider === 'comfyui') ? ', ' : '，'
+	const effectivePrompt = [globalPrompt, scenePrompt].map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(promptJoiner)
 	const effectiveNegative = [globalNegativePrompt, sceneNegative].map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(', ')
 	try {
 	  console.log(
-	    `[game_studio] bg.create:start project=${id} provider=${bgProvider} promptChars=${scenePrompt.length} globalChars=${globalPrompt.length} negChars=${sceneNegative.length} globalNegChars=${globalNegativePrompt.length} w=${Math.floor(width || 0)} h=${Math.floor(height || 0)} size=${String(body?.size || '')} format=${String(body?.responseFormat || '')} ar=${String(body?.aspectRatio || '')} style=${String(body?.style || '')}`
+	    `[game_studio] bg.create:start project=${id} provider=${bgProvider} promptChars=${scenePrompt.length} globalChars=${globalPrompt.length} negChars=${sceneNegative.length} globalNegChars=${globalNegativePrompt.length} w=${Math.floor(width || 0)} h=${Math.floor(height || 0)} size=${String(body?.size || '')} format=${String(body?.responseFormat || '')} ar=${String(body?.aspectRatio || '')} style=${String(body?.style || '')} sampler=${String(body?.sampler || 'DPM++ 2M')} scheduler=${String(body?.scheduler || 'Automatic')} timeoutMs=${bgTimeoutMs <= 0 ? 'none' : bgTimeoutMs}`
 	  )
 	} catch (_) {}
 
@@ -1840,11 +2157,14 @@ app.post('/api/projects/:id/ai/background', async (c) => {
       steps: body?.steps,
       cfgScale: body?.cfgScale,
       sampler: body?.sampler,
+      scheduler: body?.scheduler,
       provider: bgProvider,
       sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
+      comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
       apiUrl: studio.effective.image.apiUrl,
       model: studio.effective.image.model,
-      proxyUrl: studio.effective.network.proxyUrl
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs: bgTimeoutMs
 	    })
 	    const buf = gen.bytes
 	    const ext0 = String(gen.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
@@ -1887,6 +2207,12 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
 	const globalNegativePrompt = String(body?.globalNegativePrompt || '').trim()
 	const aspectRatio = String(body?.aspectRatio || '').trim()
 	const style = String(body?.style || '').trim()
+  const promptTimeoutMs = clampInt(
+    body?.timeoutMs,
+    5_000,
+    180_000,
+    clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 180_000, 90_000)
+  )
 	if (!userInput) return c.json({ success: false, error: 'missing_userInput' }, 400)
 
   const studio = await getEffectiveStudioConfig(ROOT)
@@ -1897,7 +2223,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
 	const startedAt = Date.now()
 	try {
 	  console.log(
-	    `[game_studio] bg.prompt:start project=${id} userChars=${userInput.length} globalChars=${globalPrompt.length} globalNegChars=${globalNegativePrompt.length} ar=${aspectRatio} style=${style}`
+	    `[game_studio] bg.prompt:start project=${id} userChars=${userInput.length} globalChars=${globalPrompt.length} globalNegChars=${globalNegativePrompt.length} ar=${aspectRatio} style=${style} timeoutMs=${promptTimeoutMs}`
 	  )
 	} catch (_) {}
 	try {
@@ -1907,6 +2233,8 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       globalNegativePrompt,
       aspectRatio,
       style,
+      timeoutMs: promptTimeoutMs,
+      targetImageProvider: studio.effective.image.provider,
       provider: studio.effective.prompt.provider,
       model: studio.effective.prompt.model,
       proxyUrl: studio.effective.network.proxyUrl
@@ -2071,6 +2399,7 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
       sequentialImageGeneration: body?.sequentialImageGeneration,
       provider: imgProvider,
       sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
+      comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
       apiUrl: studio.effective.image.apiUrl,
       model: studio.effective.image.model,
       proxyUrl: studio.effective.network.proxyUrl
@@ -2136,7 +2465,7 @@ if (isMainModule()) {
       const proxyOn = Boolean(proxy)
       if (provider === 'doubao') {
         const { apiUrl, model, authMode } = getDoubaoImagesConfigSnapshot()
-        const timeoutMs = Number(process.env.STUDIO_BG_TIMEOUT_MS || 60000) || 60000
+        const timeoutMs = Number(process.env.STUDIO_BG_TIMEOUT_MS || 180000) || 180000
         let dnsOk = null
         let host = ''
         try {
@@ -2149,9 +2478,15 @@ if (isMainModule()) {
         console.log(
           `[game_studio] bg.diag provider=doubao${providerFromEnv ? '' : '(default)'} api=${apiUrl} model=${model} auth=${authMode} timeoutMs=${timeoutMs} proxy=${proxyOn ? 'on' : 'off'} dns=${dnsOk === null ? '-' : dnsOk ? 'ok' : 'fail'}${host ? ` host=${host}` : ''}`
         )
+      } else if (provider === 'comfyui') {
+        const baseUrl = String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188').trim()
+        const timeoutMs = Number(process.env.STUDIO_BG_TIMEOUT_MS || 180000) || 180000
+        console.log(
+          `[game_studio] bg.diag provider=comfyui${providerFromEnv ? '' : '(default)'} baseUrl=${baseUrl} timeoutMs=${timeoutMs} proxy=${proxyOn ? 'on' : 'off'}`
+        )
       } else {
         const baseUrl = String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860').trim()
-        const timeoutMs = Number(process.env.STUDIO_BG_TIMEOUT_MS || 60000) || 60000
+        const timeoutMs = Number(process.env.STUDIO_BG_TIMEOUT_MS || 180000) || 180000
         const apiKeyPresent = Boolean(String(process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
         const authHeaderPresent = Boolean(String(process.env.DOUBAO_ARK_AUTH_HEADER || process.env.DOUBAO_AUTH_HEADER || '').trim())
         const hasDoubaoCreds = apiKeyPresent || authHeaderPresent

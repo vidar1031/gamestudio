@@ -19,6 +19,7 @@ export default function AiBackgroundModal(props: {
   onDownload?: () => void
 }) {
   const [ratioPreset, setRatioPreset] = React.useState<'custom' | '9:16' | '16:9' | '9:1'>('custom')
+  const [elapsedMs, setElapsedMs] = React.useState(0)
   const v = props.value
   const r = props.result || null
 
@@ -28,6 +29,19 @@ export default function AiBackgroundModal(props: {
     if (ar === '9:16' || ar === '16:9' || ar === '9:1') setRatioPreset(ar as any)
     else setRatioPreset('custom')
   }, [props.open, v.aspectRatio])
+
+  React.useEffect(() => {
+    if (!props.open || !props.busy) {
+      setElapsedMs(0)
+      return
+    }
+    const startedAt = Date.now()
+    setElapsedMs(0)
+    const t = window.setInterval(() => {
+      setElapsedMs(Date.now() - startedAt)
+    }, 100)
+    return () => window.clearInterval(t)
+  }, [props.open, props.busy])
 
   if (!props.open) return null
 
@@ -45,7 +59,7 @@ export default function AiBackgroundModal(props: {
         style={{ width: 'min(980px, calc(100vw - 24px))', maxHeight: 'calc(100vh - 24px)' }}
       >
         <div className="ai-modal-head">
-          <div className="ai-modal-title" style={{ marginBottom: 0 }}>AI 生成背景图</div>
+          <div className="ai-modal-title" style={{ marginBottom: 0 }}>AI 生成分镜图</div>
           <button
             type="button"
             className="icon-btn"
@@ -59,13 +73,14 @@ export default function AiBackgroundModal(props: {
         </div>
 
         <div className="ai-modal-row">
-          <label>全局设定（整个故事）</label>
+          <label>全局设定（世界观锚点）</label>
           <textarea
             rows={4}
             value={v.globalPrompt || ''}
             onChange={(e) => props.onChange({ ...v, globalPrompt: e.target.value })}
-            placeholder="例如：古代中国乡村，绘本插画风，柔和光线，低饱和色彩，传统建筑与服饰统一，镜头语言一致"
+            placeholder="例如：时代/地域、建筑与道具、角色外观锁定、色彩与光照、镜头语言（全故事统一）"
           />
+          <div className="hint" style={{ marginTop: 6 }}>当生图 Provider 为 `sdwebui/comfyui` 时，AI 解析会优先输出英文提示词，提升本地模型稳定性。</div>
         </div>
 
         <div className="ai-modal-row">
@@ -229,6 +244,12 @@ export default function AiBackgroundModal(props: {
 
         {props.error ? <div className="ai-modal-err">{props.error}</div> : null}
 
+        {props.busy ? (
+          <div className="hint" style={{ marginTop: 6, marginBottom: 2 }}>
+            生成计时：{(elapsedMs / 1000).toFixed(1)}s（等待服务端返回）
+          </div>
+        ) : null}
+
         <div className="ai-modal-actions">
           {props.onAutoRecognize ? (
             <button onClick={props.onAutoRecognize} disabled={props.busy || props.analyzing} title="从当前选中场景节点提取文本，并自动解析生成提示词">
@@ -239,7 +260,7 @@ export default function AiBackgroundModal(props: {
             {props.analyzing ? '解析中…' : 'AI 解析提示词'}
           </button>
           <button onClick={props.onSubmit} disabled={props.busy || props.analyzing || !String(v.prompt || '').trim()}>
-            {props.busy ? '生成中…' : '生成并应用'}
+            {props.busy ? '生成中…' : '生成并应用分镜图'}
           </button>
         </div>
       </div>

@@ -1,6 +1,18 @@
 import { spawn } from 'node:child_process'
 import { getProxyUrl } from '../net/proxy.js'
 
+/*
+  apps/server/src/ai/doubao.js
+
+  说明：与“豆包/Volcengine Ark”相关的封装与适配代码。
+  提供两类能力：
+  - 文生图（Images API）与图像下载支持（generateImageViaDoubaoArkImages）
+  - 文本/对话型 LLM 接口适配（generateStrictJsonViaDoubaoChat / generateScriptsViaDoubao / repairScriptsViaDoubao / generateBackgroundPromptViaDoubao）
+
+  该文件包含若干工具函数用于：字符串规范化、尺寸解析与调整、调用远端 API（通过本地 curl 子进程）
+  并对返回进行容错解析（提取 url / base64 / message content 等）。
+*/
+
 function clampInt(n, min, max, fallback) {
   const v = Number(n)
   if (!Number.isFinite(v)) return fallback
@@ -12,6 +24,8 @@ function clampFloat(n, min, max, fallback) {
   if (!Number.isFinite(v)) return fallback
   return Math.max(min, Math.min(max, v))
 }
+
+// clampInt/clampFloat: 用于限制输入数值的范围并提供回退值，常用于宽高、超时、步数等参数。
 
 function normalizeArkImagesUrl(raw) {
   return String(raw || 'https://ark.cn-beijing.volces.com/api/v3/images/generations')
@@ -26,6 +40,8 @@ function normalizeArkChatUrl(raw) {
     .replace(/\/+$/, '')
     .replace(/\/api\/v3\/predict$/i, '/api/v3/chat/completions')
 }
+
+// 规范化 Ark API 的 base URL，接受环境变量或用户传入的 url，并确保使用预期的 path。
 
 const ARK_MIN_SHORT_SIDE = 720
 const ARK_MIN_LONG_SIDE = 1280
@@ -90,7 +106,12 @@ export function getDoubaoTextConfigSnapshot() {
   return { apiUrl, model, authMode }
 }
 
+// getDoubaoImagesConfigSnapshot / getDoubaoTextConfigSnapshot:
+// 从环境变量读取当前的 API URL / model / 验证配置，用于上层展示或运行时决策。
+
 function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
+  // 使用本地 `curl` 发起 HTTP 请求并解析 JSON 响应。
+  // 行为与 `background.js` 中的 curlRequestJson 类似：输出带有状态码 marker，解析并在非 2xx 时抛出带 status 的 Error。
   const marker = '__CURL_STATUS__'
   const args = [
     '-sS',
@@ -239,6 +260,9 @@ function stripJsonCodeFence(s) {
   return fenced ? String(fenced[1] || '').trim() : raw
 }
 
+// 工具函数：从 API 返回中提取第一张图片的 URL / base64，或从 chat/completions 中提取 message 内容。
+// stripJsonCodeFence: 如果输出包含 ```json ``` 代码块，则剥离代码围栏，返回内部文本，便于 JSON.parse。
+
 function scriptDraftSchemaForValidation() {
   return {
     title: (v) => v == null || typeof v === 'string',
@@ -281,6 +305,9 @@ function validateBackgroundPrompt(obj) {
   }
   return { ok: true, reason: 'ok' }
 }
+
+// validateScriptDraft / validateBackgroundPrompt: 基于简单 schema 的轻量校验函数，
+// 在调用生成/修复接口前验证 AI 输出是否满足最小结构要求。
 
 async function doubaoChatCompletionsJson({ messages, model, temperature, timeoutMs, proxyUrl }) {
   const { apiUrl } = getDoubaoTextConfigSnapshot()
@@ -434,7 +461,16 @@ export async function generateStrictJsonViaDoubaoChat({
   throw e
 }
 
-export async function generateScriptsViaDoubao({ prompt, title, rules, formula, model, proxyUrl }) {
+// doubaoChatCompletionsJson: 直接调用 Ark Chat/completions 接口并返回解析的 JSON 与 meta 信息，
+// 包含日志记录与错误处理。
+//
+// generateStrictJsonViaDoubaoChat: 基于 chat 接口做“严格 JSON 输出”请求：
+// - 将 instructions 与 input 包装到 system/user 消息中
+// - 若 AI 输出无法被 JSON.parse 或不符合 validate，要进行多次重试并将上次输出反馈为上下文
+// - 最终返回 parsed object（已 parse）和原始文本 meta
+
+
+export async function generateScriptsViaDoubao({ prompt, title, rules, formula, model, proxyUrl, timeoutMs }) {
   const startedAt = Date.now()
 
   const rulesText = (() => {
@@ -507,7 +543,7 @@ export async function generateScriptsViaDoubao({ prompt, title, rules, formula, 
   const { parsed, meta } = await generateStrictJsonViaDoubaoChat({
     instructions,
     input: user,
-    timeoutMs: Number(process.env.STUDIO_AI_TIMEOUT_MS || 60000) || 60000,
+    timeoutMs: clampInt(timeoutMs, 5_000, 180_000, clampInt(process.env.STUDIO_AI_TIMEOUT_MS, 5_000, 180_000, 90_000)),
     model: String(model || process.env.DOUBAO_ARK_TEXT_MODEL || '').trim() || undefined,
     proxyUrl,
     maxRetries: 2,
@@ -666,7 +702,8 @@ export async function generateBackgroundPromptViaDoubao({
   aspectRatio,
   style,
   model,
-  proxyUrl
+  proxyUrl,
+  outputLanguage
 }) {
   function normalizeAspectRatio(v) {
     const s = String(v || '').trim()
@@ -680,24 +717,34 @@ export async function generateBackgroundPromptViaDoubao({
 
   const ar = String(aspectRatio || '').trim() || '9:16'
   const st = String(style || '').trim() || 'picture_book'
+  const lang = String(outputLanguage || '').trim().toLowerCase() === 'en' ? 'en' : 'zh'
+  const langLabel = lang === 'en' ? '英文（English）' : '中文'
+  const lineJoinHint = lang === 'en' ? '逗号分隔（英文）' : '逗号分隔（中文）'
+  const oneLineHint = lang === 'en' ? 'prompt/negativePrompt 必须是一行英文，不要换行。' : 'prompt/negativePrompt 必须是一行中文，不要换行。'
+  const worldAnchorHint =
+    lang === 'en'
+      ? `- globalPrompt 必须包含“WORLD_ANCHOR”段落：明确时代/地理/建筑、色彩与光照、镜头语言、角色外观锁定（服装/发型/配饰/色彩），并要求所有场景保持连续一致。\n`
+      : `- globalPrompt 必须包含“世界观锚点”段落：明确时代/地理/建筑、色彩与光照、镜头语言、角色外观锁定（服装/发型/配饰/色彩），并要求所有场景保持连续一致。\n`
 
   const instructions =
     `你是“交互故事制作工具”的美术提示词助手。\n` +
-    `任务：把用户的自然语言描述，改写成适用于「豆包/Seedream 文生图」的标准提示词。\n` +
+    `任务：把用户的自然语言描述，改写成适用于文生图模型的标准提示词。\n` +
     `输出为 JSON（必须严格符合 schema）：\n` +
     `{"globalPrompt":string|null,"globalNegativePrompt":string|null,"scenePrompt":string,"sceneNegativePrompt":string|null,"prompt":string,"negativePrompt":string|null,"aspectRatio":"9:16"|"16:9"|"1:1"|"9:1","style":"picture_book"|"cartoon"|"national_style"|"watercolor"}\n` +
     `要求（重要）：\n` +
+    `- 输出语言固定为：${langLabel}。\n` +
     `- 你需要维护“全局设定”（globalPrompt/globalNegativePrompt），用于锁定整个故事的时代/环境/美术风格/禁用元素，避免后续场景跑偏。\n` +
+    worldAnchorHint +
     `- 如果 globalPrompt 尚未包含明确的“角色设定”，且本场景出现人物/动物/关键物体：请在 globalPrompt 中补充一段简短“角色设定/外观指纹”（衣着、发型、面部特征、颜色、配饰等），供后续场景复用以保持一致。\n` +
     `- 当用户提到“锁定/同一人物/保持一致/沿用上一张/同一个角色/同一只动物”等一致性要求时：你必须在 globalPrompt 中新增“角色设定/一致性锁定”段落，明确列出主要角色与关键物体的固定外观（脸型/发型/服饰/颜色/配饰等），并要求后续所有场景保持同一角色与同一只动物（避免变脸/换装/变色/数量变化）。\n` +
     `- 如果场景中出现动物/道具（例如兔子），请明确数量（例如“仅一只兔子（唯一）”），避免模型画出多只。\n` +
     `- 如果用户已提供全局设定：不得改变其含义，只能做“补全/精炼/结构化”；不要把故事内容写成剧情，只写视觉设定。\n` +
     `- scenePrompt/sceneNegativePrompt 只描述“本场景的增量”，不要重复全局设定。\n` +
-    `- prompt/negativePrompt 是最终提交给生图服务的合并结果（全局 + 本场景），必须是一行中文，不要换行。\n` +
+    `- prompt/negativePrompt 是最终提交给生图服务的合并结果（全局 + 本场景），${oneLineHint}\n` +
     `- prompt 要包含：画面主体 + 场景/动作 + 氛围/光线/镜头 + 细节；并显式写出风格与比例。\n` +
     `- style 使用枚举值：picture_book/cartoon/national_style/watercolor。\n` +
     `- 比例使用枚举值：9:16/16:9/1:1/9:1。\n` +
-    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以逗号分隔的短词为主；默认补充：无文字、无水印、非真人、低质量、模糊、变形。\n` +
+    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：无文字、无水印、非真人、低质量、模糊、变形。\n` +
     `- 用户要求中出现“不要/避免/无…”的内容必须反映到 prompt 或 negativePrompt。\n` +
     `- 不要输出解释文字，只输出 JSON。`
 
@@ -862,3 +909,8 @@ export async function generateImageViaDoubaoArkImages(input) {
   e.body = json
   throw e
 }
+
+// generateScriptsViaDoubao: 请求 LLM 生成脚本草稿（用于第一层脚本），要求严格输出 JSON 草稿并返回 parsed 与 meta。
+// repairScriptsViaDoubao: 根据当前脚本、编译/校验反馈与规则，要求 LLM 修复脚本以满足结构公式与可达性要求。
+// generateBackgroundPromptViaDoubao: 将用户的自然语言美术描述转换为适配 Doubao 图像生成的标准提示词（JSON 格式）。
+// generateImageViaDoubaoArkImages: 调用 Ark Images API 生成图片，支持两种返回模式（url 或 base64），并处理最小尺寸约束、负面词合并等。

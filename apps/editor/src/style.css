@@ -673,6 +673,38 @@ code {
   border-color: rgba(59, 130, 246, 0.55);
 }
 
+/* Startup overlay */
+.startup-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b1220; /* opaque background, no transparency */
+  z-index: 60;
+}
+.startup-inner {
+  text-align: center;
+  color: #e5e7eb;
+  pointer-events: auto;
+}
+.startup-inner .ovo {
+  font-weight: 900;
+  font-size: 56px;
+  letter-spacing: 2px;
+  color: #e5e7eb;
+  animation: ovo-pulse 1500ms ease-in-out infinite;
+}
+@keyframes ovo-pulse {
+  0% { transform: scale(0.9); opacity: 0.8 }
+  50% { transform: scale(1.06); opacity: 1 }
+  100% { transform: scale(0.9); opacity: 0.8 }
+}
+.startup-err {
+  margin-top: 14px;
+  color: #fca5a5;
+}
+
 /* ===== Blueprint graph view ===== */
 
 .graph-wrap {

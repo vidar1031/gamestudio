@@ -213,10 +213,10 @@ function scriptDraftSchema() {
   }
 }
 
-export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, model }) {
+export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, model, timeoutMs }) {
   const cfg = getOpenAIConfig()
   const useModel = String(model || cfg.model).trim() || cfg.model
-  const timeoutMs = cfg.timeoutMs
+  const useTimeoutMs = Math.max(1_000, Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : cfg.timeoutMs)
   const startedAt = Date.now()
 
   const rulesText = formatRulesForInstructions(rules)
@@ -267,7 +267,7 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
   }
 
   try {
-    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs })
+    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs: useTimeoutMs })
     const text = extractResponseOutputText(resp)
     if (!text) throw new Error('empty_ai_output')
     return {
@@ -296,7 +296,7 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
         }
       }
     }
-    const resp2 = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs })
+    const resp2 = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs: useTimeoutMs })
     const content = resp2 && resp2.choices && resp2.choices[0] && resp2.choices[0].message && resp2.choices[0].message.content
     const text = typeof content === 'string' ? content.trim() : ''
     if (!text) throw new Error('empty_ai_output')

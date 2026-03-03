@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "updatedAt": "2026-02-14T01:52:59.533Z",
+  "updatedAt": "2026-03-03T02:59:12.971Z",
   "enabled": {
     "scripts": true,
     "prompt": true,
@@ -8,19 +8,20 @@
     "tts": false
   },
   "scripts": {
-    "provider": "doubao",
-    "model": null
+    "provider": "ollama",
+    "model": "qwen3:8b"
   },
   "prompt": {
-    "provider": "doubao",
-    "model": null
+    "provider": "ollama",
+    "model": "qwen3:8b"
   },
   "image": {
-    "provider": "doubao",
-    "model": null,
-    "apiUrl": null,
-    "size": null,
-    "sdwebuiBaseUrl": null
+    "provider": "comfyui",
+    "model": "dreamshaper_8.safetensors [879db523c3]",
+    "apiUrl": "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+    "size": "1024x1024",
+    "sdwebuiBaseUrl": "http://127.0.0.1:7860",
+    "comfyuiBaseUrl": "http://127.0.0.1:8188"
   },
   "tts": {
     "provider": "doubao",

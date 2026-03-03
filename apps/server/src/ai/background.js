@@ -25,6 +25,123 @@ function clampInt(n, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.floor(v)))
 }
 
+function normalizeSdwebuiBaseUrl(raw) {
+  let s = String(raw || '').trim()
+  if (!s) s = String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860')
+  s = s.replace(/\/+$/, '')
+  // Allow users to input either host root or /sdapi/v1 endpoint.
+  s = s.replace(/\/sdapi\/v1$/i, '')
+  return s || 'http://127.0.0.1:7860'
+}
+
+function normalizeComfyuiBaseUrl(raw) {
+  let s = String(raw || '').trim()
+  if (!s) s = String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188')
+  s = s.replace(/\/+$/, '')
+  return s || 'http://127.0.0.1:8188'
+}
+
+function normalizeComfyCheckpointName(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return ''
+  // SDWebUI 常见展示名：xxx.safetensors [hash]
+  // ComfyUI 的 CheckpointLoaderSimple 需要纯文件名：xxx.safetensors
+  return s.replace(/\s+\[[^\]]+\]\s*$/, '').trim()
+}
+
+function explainRemoteError(v) {
+  if (v == null) return ''
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  if (typeof v === 'object') {
+    const obj = v
+    const msg = obj.message || obj.type || obj.error || obj.detail || ''
+    if (typeof msg === 'string' && msg.trim()) return msg.trim()
+    try { return JSON.stringify(obj) } catch (_) { return String(obj) }
+  }
+  return String(v)
+}
+
+function splitCsvLike(s) {
+  return String(s || '')
+    .split(/[,\n，、]+/g)
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+function uniqPhrases(parts) {
+  const out = []
+  const seen = new Set()
+  for (const p of parts) {
+    const key = String(p || '').trim().toLowerCase()
+    if (!key) continue
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(String(p || '').trim())
+  }
+  return out
+}
+
+function cleanupAnchorNoise(s) {
+  const parts = splitCsvLike(String(s || ''))
+  // Keep one WORLD_ANCHOR / ROLE_DEFINITION block at most to reduce repeated injection.
+  let anchorKept = false
+  let roleKept = false
+  const cleaned = []
+  for (const p0 of parts) {
+    const p = String(p0 || '').trim()
+    if (!p) continue
+    if (/^WORLD_ANCHOR\s*:/i.test(p)) {
+      if (anchorKept) continue
+      anchorKept = true
+      cleaned.push(p)
+      continue
+    }
+    if (/^ROLE_DEFINITION\s*:/i.test(p)) {
+      if (roleKept) continue
+      roleKept = true
+      cleaned.push(p)
+      continue
+    }
+    cleaned.push(p)
+  }
+  return uniqPhrases(cleaned).join(', ')
+}
+
+function sdStyleProfile(style) {
+  const s = String(style || '').trim().toLowerCase()
+  if (s === 'cartoon') {
+    return {
+      pos: 'cartoon illustration, cel shading, bold clean outlines, simplified shapes, stylized character design, non-photorealistic',
+      neg: 'photorealistic, realistic skin texture, pores, DSLR photo, cinematic photo, 3d render'
+    }
+  }
+  if (s === 'national_style') {
+    return {
+      pos: 'Chinese guofeng illustration, ink-and-wash inspired, painterly stylization, elegant brush texture, non-photorealistic',
+      neg: 'photorealistic, modern photo look, realistic skin texture, DSLR photo, 3d render'
+    }
+  }
+  if (s === 'watercolor') {
+    return {
+      pos: 'watercolor illustration, soft brush strokes, paper texture, hand-painted feeling, non-photorealistic',
+      neg: 'photorealistic, hard-edged photo texture, realistic skin pores, DSLR photo, 3d render'
+    }
+  }
+  // picture_book default
+  return {
+    pos: "children's picture book illustration, hand-painted storybook style, soft edges, stylized forms, non-photorealistic",
+    neg: 'photorealistic, realistic face, skin texture pores, DSLR photo, cinematic photo, 3d render'
+  }
+}
+
+function buildSdwebuiPromptAndNegative({ prompt, negativePrompt, style }) {
+  const prof = sdStyleProfile(style)
+  const pos = uniqPhrases([...splitCsvLike(cleanupAnchorNoise(prompt)), ...splitCsvLike(prof.pos)]).join(', ')
+  const neg = uniqPhrases([...splitCsvLike(negativePrompt), ...splitCsvLike(prof.neg)]).join(', ')
+  return { prompt: pos, negativePrompt: neg }
+}
+
 // 选择默认图片提供者：优先使用环境变量 `STUDIO_BG_PROVIDER`，否则默认为 `sdwebui`。
 function pickProvider() {
   return String(process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
@@ -186,6 +303,7 @@ function extFromContentType(ct) {
 export async function generateBackgroundImage(input) {
   const provider = String(input && input.provider ? input.provider : pickProvider()).toLowerCase()
   if (provider === 'doubao') return generateBackgroundViaDoubao(input)
+  if (provider === 'comfyui') return generateBackgroundViaComfyui(input)
   if (provider === 'sdwebui') return generateBackgroundViaSdWebui(input)
   const e = new Error(`unsupported_provider:${provider}`)
   e.status = 501
@@ -197,10 +315,19 @@ export async function generateBackgroundImage(input) {
 // - 解析返回的 base64 图像数据并返回 Buffer
 // - 在任何网络或解析错误时抛出带 `.status = 502` 的 Error
 async function generateBackgroundViaSdWebui(input) {
-  const baseUrl = String(input && input.sdwebuiBaseUrl ? input.sdwebuiBaseUrl : (process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860')).replace(/\/+$/, '')
-  const payload = {
+  const baseUrl = normalizeSdwebuiBaseUrl(input && input.sdwebuiBaseUrl ? input.sdwebuiBaseUrl : process.env.SDWEBUI_BASE_URL)
+  const apiUrl = `${baseUrl}/sdapi/v1/txt2img`
+  const model = String(input && input.model ? input.model : '').trim()
+  const timeoutMs = clampInt(input && input.timeoutMs != null ? input.timeoutMs : process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000)
+  const style = String(input && input.style ? input.style : '').trim()
+  const cooked = buildSdwebuiPromptAndNegative({
     prompt: String(input.prompt || '').trim(),
-    negative_prompt: String(input.negativePrompt || '').trim() || undefined,
+    negativePrompt: String(input.negativePrompt || '').trim(),
+    style
+  })
+  const payload = {
+    prompt: String(cooked.prompt || '').trim(),
+    negative_prompt: String(cooked.negativePrompt || '').trim() || undefined,
     width: clampInt(input.width, 64, 2048, 768),
     height: clampInt(input.height, 64, 2048, 1024),
     steps: clampInt(input.steps, 5, 50, 20),
@@ -208,18 +335,35 @@ async function generateBackgroundViaSdWebui(input) {
       const n = Number(input.cfgScale)
       return Number.isFinite(n) ? Math.max(1, Math.min(15, n)) : 7
     })(),
-    sampler_name: String(input.sampler || 'Euler a')
+    sampler_name: String(input.sampler || 'DPM++ 2M'),
+    scheduler: String(input.scheduler || 'Automatic')
+  }
+  if (model) {
+    payload.override_settings = {
+      sd_model_checkpoint: model
+    }
+    payload.override_settings_restore_afterwards = true
   }
 
   let json = null
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const resp = await fetch(`${baseUrl}/sdapi/v1/txt2img`, {
+    const resp = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: controller.signal
     })
     json = await resp.json().catch(() => null)
     if (!resp.ok || !json || !Array.isArray(json.images) || !json.images[0]) {
+      if (!resp.ok && Number(resp.status || 0) === 404) {
+        const e = new Error(
+          `sdwebui_txt2img_not_found: ${apiUrl} (请确认 7860 是 A1111/Forge，并使用 --api 启动；若是 ComfyUI，请改用 ComfyUI 接口)`
+        )
+        e.status = 502
+        throw e
+      }
       const msg = json && (json.error || json.detail || json.message) ? String(json.error || json.detail || json.message) : `HTTP ${resp.status}`
       const e = new Error(msg)
       e.status = 502
@@ -229,10 +373,180 @@ async function generateBackgroundViaSdWebui(input) {
     const err = new Error(e && e.message ? e.message : String(e))
     err.status = 502
     throw err
+  } finally {
+    clearTimeout(t)
   }
 
   const b64 = String(json.images[0]).split(',').pop()
-  return { bytes: Buffer.from(b64, 'base64'), ext: 'png', meta: { provider: 'sdwebui' } }
+  return { bytes: Buffer.from(b64, 'base64'), ext: 'png', meta: { provider: 'sdwebui', model: model || null } }
+}
+
+function mapComfyScheduler(v) {
+  const s = String(v || '').trim().toLowerCase()
+  // ComfyUI doesn't have "Automatic"; map it to default scheduler.
+  if (!s || s === 'automatic') return 'normal'
+  const allowed = new Set(['normal', 'karras', 'exponential', 'sgm_uniform', 'simple', 'ddim_uniform', 'beta'])
+  return allowed.has(s) ? s : 'normal'
+}
+
+function mapComfySampler(v) {
+  const s = String(v || '').trim().toLowerCase()
+  if (!s || s === 'dpm++ 2m') return 'dpmpp_2m'
+  return s
+}
+
+function parseComfyTimeoutMs(raw) {
+  if (raw == null || raw === '') return clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000)
+  const n = Number(raw)
+  if (Number.isFinite(n) && n <= 0) return 0
+  return clampInt(n, 5_000, 300_000, clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000))
+}
+
+async function waitComfyImage({ baseUrl, promptId, timeoutMs }) {
+  const started = Date.now()
+  while (timeoutMs <= 0 || Date.now() - started < timeoutMs) {
+    const controller = new AbortController()
+    const t = setTimeout(() => controller.abort(), 4000)
+    try {
+      const r = await fetch(`${baseUrl}/history/${encodeURIComponent(String(promptId))}`, { method: 'GET', signal: controller.signal })
+      const j = await r.json().catch(() => null)
+      if (r.ok && j && typeof j === 'object') {
+        const item = j[String(promptId)]
+        const outputs = item && item.outputs && typeof item.outputs === 'object' ? item.outputs : null
+        if (outputs) {
+          for (const k of Object.keys(outputs)) {
+            const out = outputs[k]
+            const images = out && Array.isArray(out.images) ? out.images : []
+            if (images.length) {
+              const im = images[0]
+              const filename = String(im && im.filename ? im.filename : '').trim()
+              const subfolder = String(im && im.subfolder ? im.subfolder : '').trim()
+              const type = String(im && im.type ? im.type : 'output').trim() || 'output'
+              if (filename) return { filename, subfolder, type }
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // ignore transient poll errors
+    } finally {
+      clearTimeout(t)
+    }
+    await new Promise((r) => setTimeout(r, 800))
+  }
+  const e = new Error(`comfyui_timeout: prompt_id=${String(promptId)}`)
+  e.status = 502
+  throw e
+}
+
+async function generateBackgroundViaComfyui(input) {
+  const baseUrl = normalizeComfyuiBaseUrl(input && input.comfyuiBaseUrl ? input.comfyuiBaseUrl : process.env.COMFYUI_BASE_URL)
+  let model = normalizeComfyCheckpointName(input && input.model ? input.model : '')
+  const timeoutMs = parseComfyTimeoutMs(input && input.timeoutMs != null ? input.timeoutMs : process.env.STUDIO_BG_TIMEOUT_MS)
+  const style = String(input && input.style ? input.style : '').trim()
+  const cooked = buildSdwebuiPromptAndNegative({
+    prompt: String(input.prompt || '').trim(),
+    negativePrompt: String(input.negativePrompt || '').trim(),
+    style
+  })
+
+  const width = clampInt(input.width, 64, 2048, 768)
+  const height = clampInt(input.height, 64, 2048, 1024)
+  const steps = clampInt(input.steps, 5, 80, 20)
+  const cfg = (() => {
+    const n = Number(input.cfgScale)
+    return Number.isFinite(n) ? Math.max(1, Math.min(20, n)) : 7
+  })()
+  const samplerName = mapComfySampler(input.sampler || 'DPM++ 2M')
+  const scheduler = mapComfyScheduler(input.scheduler || 'Automatic')
+  const seed = Math.floor(Math.random() * 9_999_999_999)
+
+  if (!model) {
+    let t = null
+    try {
+      const controller = new AbortController()
+      t = setTimeout(() => controller.abort(), 5000)
+      const resp = await fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, { method: 'GET', signal: controller.signal })
+      const j = resp.ok ? await resp.json().catch(() => null) : null
+      const ckpts = j && j.CheckpointLoaderSimple && j.CheckpointLoaderSimple.input && j.CheckpointLoaderSimple.input.required
+        ? j.CheckpointLoaderSimple.input.required.ckpt_name
+        : null
+      const arr = Array.isArray(ckpts) ? ckpts.map((x) => String(x || '').trim()).filter(Boolean) : []
+      if (arr.length) model = arr[0]
+    } catch (_) {}
+    finally {
+      if (t) clearTimeout(t)
+    }
+  }
+  if (!model) {
+    const e = new Error('comfyui_missing_model: 请在设置中选择模型，或确保 ComfyUI 可返回 Checkpoint 列表')
+    e.status = 501
+    throw e
+  }
+
+  const workflow = {
+    '3': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: model } },
+    '4': { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } },
+    '5': { class_type: 'CLIPTextEncode', inputs: { text: String(cooked.prompt || '').trim(), clip: ['3', 1] } },
+    '6': { class_type: 'CLIPTextEncode', inputs: { text: String(cooked.negativePrompt || '').trim(), clip: ['3', 1] } },
+    '7': {
+      class_type: 'KSampler',
+      inputs: {
+        seed,
+        steps,
+        cfg,
+        sampler_name: samplerName,
+        scheduler,
+        denoise: 1,
+        model: ['3', 0],
+        positive: ['5', 0],
+        negative: ['6', 0],
+        latent_image: ['4', 0]
+      }
+    },
+    '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 2] } },
+    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'game_studio', images: ['8', 0] } }
+  }
+
+  let promptId = ''
+  const controller = new AbortController()
+  const submitAbortMs = timeoutMs <= 0 ? 30_000 : Math.min(timeoutMs, 30_000)
+  const t = setTimeout(() => controller.abort(), submitAbortMs)
+  try {
+    const resp = await fetch(`${baseUrl}/prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: workflow }),
+      signal: controller.signal
+    })
+    const json = await resp.json().catch(() => null)
+    if (!resp.ok || !json || !json.prompt_id) {
+      const msg = json && (json.error || json.message || json.detail)
+        ? explainRemoteError(json.error || json.message || json.detail)
+        : `HTTP ${resp.status}`
+      const e = new Error(`comfyui_prompt_failed: ${msg}`)
+      e.status = 502
+      throw e
+    }
+    promptId = String(json.prompt_id || '').trim()
+  } catch (e) {
+    const err = new Error(e && e.message ? e.message : String(e))
+    err.status = 502
+    throw err
+  } finally {
+    clearTimeout(t)
+  }
+
+  const img = await waitComfyImage({ baseUrl, promptId, timeoutMs })
+  const q = new URLSearchParams({ filename: img.filename, type: img.type || 'output' })
+  if (img.subfolder) q.set('subfolder', img.subfolder)
+  const viewUrl = `${baseUrl}/view?${q.toString()}`
+  const dl = await curlDownload({ url: viewUrl, timeoutMs: timeoutMs <= 0 ? 120_000 : timeoutMs, proxyUrl: '' })
+  return {
+    bytes: dl.bytes,
+    ext: extFromContentType(dl.contentType),
+    meta: { provider: 'comfyui', model: model || null, url: viewUrl }
+  }
 }
 
 async function generateBackgroundViaDoubao(input) {
@@ -241,7 +555,7 @@ async function generateBackgroundViaDoubao(input) {
   // - 如果返回 url，则使用 curlDownload 拉取二进制并根据 content-type 推断扩展名
   // - 对于网络/响应错误，抛出带 status=502 的 Error
   const proxyUrl = String(input && input.proxyUrl ? input.proxyUrl : '').trim() || getProxyUrl()
-  const timeoutMs = clampInt(input && input.timeoutMs != null ? input.timeoutMs : process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 120_000, 60_000)
+  const timeoutMs = clampInt(input && input.timeoutMs != null ? input.timeoutMs : process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000)
 
   const prompt = String(input.prompt || '').trim()
   const negativePrompt = String(input.negativePrompt || '').trim()

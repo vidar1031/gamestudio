@@ -13,6 +13,9 @@ P0 目标：
 文档：
 - 设计与协议：`game_studio/docs/DESIGN_P0.md`
 - 使用说明（工作流）：`game_studio/docs/使用说明_三层工作流.md`
+- P0 复盘（现状评估）：`game_studio/docs/P0_REVIEW_2026Q1.md`
+- P1 设计基线：`game_studio/docs/DESIGN_P1.md`
+- P1 注释与说明规范：`game_studio/docs/P1_COMMENTING_GUIDE.md`
 
 ## 快速开始（P0）
 
@@ -32,6 +35,11 @@ AI 生成脚本（服务端调用，避免 key 暴露给浏览器）：
 - 设置 `STUDIO_AI_PROVIDER=openai`
 - 设置 `OPENAI_API_KEY=...`
 - 可选：`STUDIO_AI_MODEL=gpt-4o-mini`、`STUDIO_AI_TIMEOUT_MS=20000`、`STUDIO_AI_BASE_URL=https://api.openai.com/v1`
+
+AI 生成脚本（本地 Ollama）：
+- 安装并启动 Ollama（默认地址 `http://127.0.0.1:11434`）
+- 设置 `STUDIO_AI_PROVIDER=ollama`
+- 可选：`STUDIO_OLLAMA_MODEL=qwen3:8b`、`STUDIO_OLLAMA_URL=http://127.0.0.1:11434`
 
 AI（Doubao/火山 Ark）提示：
 - **文本（写故事/提示词）** 与 **生图（Seedream）** 的模型要分开配置：Seedream 模型只能用于 `/api/v3/images/generations`，不能用于 `/api/v3/chat/completions`。

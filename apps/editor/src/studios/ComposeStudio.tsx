@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Application, Container, Sprite, Texture } from 'pixi.js'
 import AiBackgroundModal from '../AiBackgroundModal'
+import AiStoryboardBatchModal, { type StoryboardBatchItem } from '../AiStoryboardBatchModal'
 import AiCharacterSpriteModal, { type AiCharacterSpriteDraft } from '../AiCharacterSpriteModal'
 import { chromaKeyUrlToPng } from '../chromaKey'
 import {
@@ -13,7 +14,9 @@ import {
   getBlueprint,
   getScripts,
 	  getProject,
+  getStudioSettings,
 	  listProjects,
+	  openProjectAssetFolder,
 	  resolveUrl,
 	  saveProject,
 	  uploadProjectImage,
@@ -49,6 +52,46 @@ type Selection =
 
 type LeftTab = 'nodes' | 'characters' | 'assets'
 
+type StoryboardBatchState = {
+  globalPrompt: string
+  globalNegativePrompt: string
+  style: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+  aspectRatio: '9:16' | '16:9' | '1:1' | '9:1'
+  width: number
+  height: number
+  steps: number
+  cfgScale: number
+  sampler: string
+  scheduler: string
+}
+
+type StoryboardScenePromptStore = {
+  nodeId: string
+  nodeName: string
+  userInput: string
+  prompt: string
+  negativePrompt: string
+  updatedAt: string
+}
+
+type StoryboardPromptMeta = {
+  style: string
+  aspectRatio: string
+  updatedAt: string
+}
+
+type StoryboardBatchDraft = {
+  style: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+  aspectRatio: '9:16' | '16:9' | '1:1' | '9:1'
+  width: number
+  height: number
+  steps: number
+  cfgScale: number
+  sampler: string
+  scheduler: string
+  updatedAt: string
+}
+
 	type EditorDoc = {
 	  mode: 'project' | 'none'
 	  readonly: boolean
@@ -64,7 +107,7 @@ function uid(prefix = 'id') {
 }
 
 function nodeKindLabel(kind: NodeV1['kind']) {
-  return kind === 'ending' ? '结局' : '场景'
+  return '场景'
 }
 
 function scriptCardLabel(sc: any) {
@@ -805,6 +848,28 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     return { ...defaultAiReq, ...(saved || {}) }
   })
   const [aiLast, setAiLast] = useState<null | { url?: string; assetPath?: string; provider?: string; remoteUrl?: string }>(null)
+  const [sbOpen, setSbOpen] = useState(false)
+  const [sbBusyGenerate, setSbBusyGenerate] = useState(false)
+  const [sbBusyApply, setSbBusyApply] = useState(false)
+  const [sbError, setSbError] = useState('')
+  const [sbLogs, setSbLogs] = useState<string[]>([])
+  const [sbElapsedMs, setSbElapsedMs] = useState(0)
+  const [sbGeneratingNodeId, setSbGeneratingNodeId] = useState('')
+  const [sbGeneratingNodeStartedAt, setSbGeneratingNodeStartedAt] = useState(0)
+  const [sbGeneratingNodeElapsedMs, setSbGeneratingNodeElapsedMs] = useState(0)
+  const [sbItems, setSbItems] = useState<StoryboardBatchItem[]>([])
+  const [sbReq, setSbReq] = useState<StoryboardBatchState>({
+    globalPrompt: '',
+    globalNegativePrompt: '',
+    style: 'picture_book',
+    aspectRatio: '9:16',
+    width: 768,
+    height: 1344,
+    steps: 20,
+    cfgScale: 7,
+    sampler: 'DPM++ 2M',
+    scheduler: 'Automatic'
+  })
   const bgFileRef = useRef<HTMLInputElement | null>(null)
   const pendingBgAssetIdRef = useRef<string>('')
 
@@ -857,6 +922,26 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     saveAiBackgroundDraft(AI_BG_DRAFT_KEY, aiReq)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [AI_BG_DRAFT_KEY, aiReq])
+
+  useEffect(() => {
+    if (!(sbBusyGenerate || sbBusyApply)) {
+      setSbElapsedMs(0)
+      return
+    }
+    const startedAt = Date.now()
+    setSbElapsedMs(0)
+    const t = window.setInterval(() => setSbElapsedMs(Date.now() - startedAt), 100)
+    return () => window.clearInterval(t)
+  }, [sbBusyGenerate, sbBusyApply])
+
+  useEffect(() => {
+    if (!sbBusyGenerate || !sbGeneratingNodeId || sbGeneratingNodeStartedAt <= 0) {
+      setSbGeneratingNodeElapsedMs(0)
+      return
+    }
+    const t = window.setInterval(() => setSbGeneratingNodeElapsedMs(Date.now() - sbGeneratingNodeStartedAt), 100)
+    return () => window.clearInterval(t)
+  }, [sbBusyGenerate, sbGeneratingNodeId, sbGeneratingNodeStartedAt])
 
   const canvasHostRef = useRef<HTMLDivElement | null>(null)
   const appRef = useRef<Application | null>(null)
@@ -1646,7 +1731,535 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       if (fp) fps.push(fp)
     }
     if (!fps.length) return ''
-    return `角色设定（用于一致性锁定，非每个场景都出现）：${fps.join('；')}`.slice(0, 1200)
+    return `角色设定（用于一致性锁定，非每个场景都出现）：${fps.join('；')}`.slice(0, 500)
+  }
+
+  function nowHms() {
+    try {
+      return new Date().toLocaleTimeString()
+    } catch {
+      return String(Date.now())
+    }
+  }
+
+  function appendSbLog(msg: string) {
+    const line = `[${nowHms()}] ${String(msg || '').trim()}`
+    setSbLogs((prev) => [line, ...prev].slice(0, 300))
+  }
+
+  function buildSceneUserInputForBatch(node: NodeV1, projectTitle: string) {
+    const nn = ensureNode(node)
+    const title = String((nn as any).body?.title || nn.name || '').trim()
+    const textRaw = String((nn as any).body?.text || '').trim()
+    const main = buildNodeTextSummary(textRaw)
+    const core = [title, main].filter(Boolean).join('：').slice(0, 600)
+    if (!core) return ''
+    if (projectTitle && !/故事名[:：]\s*《/.test(core)) return `故事名：《${projectTitle}》\n${core}`
+    return core
+  }
+
+  function buildWholeStoryUserInputForGlobal(projectTitle: string) {
+    if (!doc.story) return ''
+    const scenes = (doc.story.nodes || []).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene')
+    const lines: string[] = []
+    if (projectTitle) lines.push(`故事名：《${projectTitle}》`)
+    lines.push('任务：基于以下全部场景摘要，提炼全故事统一世界观锚点（时代、地域、建筑、光线、色彩、镜头语言、角色一致性）。')
+    let total = lines.join('\n').length
+    for (let i = 0; i < scenes.length; i++) {
+      const n = scenes[i]
+      const title = String((n as any).body?.title || n.name || `场景${i + 1}`).trim()
+      const main = buildNodeTextSummary(String((n as any).body?.text || '').trim())
+      if (!title && !main) continue
+      const ln = `场景${i + 1} ${title}：${main}`
+      if (total + ln.length + 1 > 3200) break
+      lines.push(ln)
+      total += ln.length + 1
+    }
+    return lines.join('\n').trim()
+  }
+
+  function readStoryboardSceneMapFromProject(project: ProjectV1 | null | undefined) {
+    const st = project && (project as any).state && typeof (project as any).state === 'object' ? (project as any).state : {}
+    const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
+    const raw = aiBg && (aiBg as any).storyboardScenes && typeof (aiBg as any).storyboardScenes === 'object'
+      ? (aiBg as any).storyboardScenes
+      : {}
+    const out: Record<string, StoryboardScenePromptStore> = {}
+    for (const [k, v] of Object.entries(raw || {})) {
+      if (!v || typeof v !== 'object') continue
+      const id = String((v as any).nodeId || k || '').trim()
+      if (!id) continue
+      out[id] = {
+        nodeId: id,
+        nodeName: String((v as any).nodeName || id).trim() || id,
+        userInput: String((v as any).userInput || '').trim(),
+        prompt: String((v as any).prompt || '').trim(),
+        negativePrompt: String((v as any).negativePrompt || '').trim(),
+        updatedAt: String((v as any).updatedAt || '').trim() || new Date().toISOString()
+      }
+    }
+    return out
+  }
+
+  function readStoryboardPromptMetaFromProject(project: ProjectV1 | null | undefined): StoryboardPromptMeta | null {
+    const st = project && (project as any).state && typeof (project as any).state === 'object' ? (project as any).state : {}
+    const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
+    const meta = aiBg && (aiBg as any).storyboardPromptMeta && typeof (aiBg as any).storyboardPromptMeta === 'object'
+      ? (aiBg as any).storyboardPromptMeta
+      : null
+    if (!meta) return null
+    const style = String((meta as any).style || '').trim()
+    const aspectRatio = String((meta as any).aspectRatio || '').trim()
+    if (!style && !aspectRatio) return null
+    return {
+      style,
+      aspectRatio,
+      updatedAt: String((meta as any).updatedAt || '').trim() || ''
+    }
+  }
+
+  function readStoryboardBatchDraftFromProject(project: ProjectV1 | null | undefined): Partial<StoryboardBatchDraft> | null {
+    const st = project && (project as any).state && typeof (project as any).state === 'object' ? (project as any).state : {}
+    const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
+    const d = aiBg && (aiBg as any).storyboardBatchDraft && typeof (aiBg as any).storyboardBatchDraft === 'object'
+      ? (aiBg as any).storyboardBatchDraft
+      : null
+    if (!d) return null
+    const out: Partial<StoryboardBatchDraft> = {}
+    const style = String((d as any).style || '').trim()
+    const ar = String((d as any).aspectRatio || '').trim()
+    if (style === 'picture_book' || style === 'cartoon' || style === 'national_style' || style === 'watercolor') out.style = style
+    if (ar === '9:16' || ar === '16:9' || ar === '1:1' || ar === '9:1') out.aspectRatio = ar
+    if (Number.isFinite(Number((d as any).width))) out.width = Number((d as any).width)
+    if (Number.isFinite(Number((d as any).height))) out.height = Number((d as any).height)
+    if (Number.isFinite(Number((d as any).steps))) out.steps = Number((d as any).steps)
+    if (Number.isFinite(Number((d as any).cfgScale))) out.cfgScale = Number((d as any).cfgScale)
+    if (String((d as any).sampler || '').trim()) out.sampler = String((d as any).sampler || '').trim()
+    if (String((d as any).scheduler || '').trim()) out.scheduler = String((d as any).scheduler || '').trim()
+    return out
+  }
+
+  function upsertStoryboardBatchDraft(patch: Partial<StoryboardBatchState>) {
+    if (doc.mode !== 'project') return
+    setDocProject((p) => {
+      const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+      const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+      const prev = (aiBgIn as any).storyboardBatchDraft && typeof (aiBgIn as any).storyboardBatchDraft === 'object'
+        ? (aiBgIn as any).storyboardBatchDraft
+        : {}
+      const nextDraft = {
+        ...prev,
+        ...patch,
+        updatedAt: new Date().toISOString()
+      }
+      const nextState = { ...stateIn, aiBackground: { ...aiBgIn, storyboardBatchDraft: nextDraft } }
+      return { ...p, state: nextState }
+    })
+  }
+
+  function upsertStoryboardScenePrompt(nodeId: string, nodeName: string, patch: Partial<StoryboardScenePromptStore>) {
+    if (doc.mode !== 'project') return
+    const id = String(nodeId || '').trim()
+    if (!id) return
+    const name = String(nodeName || id).trim() || id
+    setDocProject((p) => {
+      const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+      const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+      const mapIn = (aiBgIn as any).storyboardScenes && typeof (aiBgIn as any).storyboardScenes === 'object' ? (aiBgIn as any).storyboardScenes : {}
+      const prev = mapIn[id] && typeof mapIn[id] === 'object' ? mapIn[id] : {}
+      const nextEntry: StoryboardScenePromptStore = {
+        nodeId: id,
+        nodeName: String((patch as any).nodeName || prev.nodeName || name || id).trim() || id,
+        userInput: patch.userInput != null ? String(patch.userInput || '').trim() : String(prev.userInput || '').trim(),
+        prompt: patch.prompt != null ? String(patch.prompt || '').trim() : String(prev.prompt || '').trim(),
+        negativePrompt: patch.negativePrompt != null ? String(patch.negativePrompt || '').trim() : String(prev.negativePrompt || '').trim(),
+        updatedAt: new Date().toISOString()
+      }
+      const nextScenes = { ...mapIn, [id]: nextEntry }
+      const nextState = { ...stateIn, aiBackground: { ...aiBgIn, storyboardScenes: nextScenes } }
+      return { ...p, state: nextState }
+    })
+  }
+
+  function openAiStoryboardForCurrentNode() {
+    if (doc.mode !== 'project' || !doc.project) return
+    const st = (doc.project as any).state && typeof (doc.project as any).state === 'object' ? (doc.project as any).state : {}
+    const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
+    const gpRaw = aiBg && typeof (aiBg as any).globalPrompt === 'string' ? String((aiBg as any).globalPrompt) : ''
+    const gneg = aiBg && typeof (aiBg as any).globalNegativePrompt === 'string' ? String((aiBg as any).globalNegativePrompt) : ''
+    const projectTitle = String((doc.project as any).title || '').trim()
+    const gp = gpRaw.trim() ? gpRaw : (projectTitle ? `故事名：《${projectTitle}》` : '')
+
+    let userInput = String(aiReq.userInput || '')
+    let prompt = String(aiReq.prompt || '')
+    let negativePrompt = String(aiReq.negativePrompt || '')
+
+    if (selection.type === 'node' && doc.story) {
+      const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
+      const node = node0 ? ensureNode(node0 as any) : null
+      if (node) {
+        const map = readStoryboardSceneMapFromProject(doc.project)
+        const saved = map[node.id] || null
+        const fallbackInput = buildSceneUserInputForBatch(node, projectTitle)
+        userInput = saved && saved.userInput ? saved.userInput : fallbackInput
+        prompt = saved && saved.prompt ? saved.prompt : ''
+        negativePrompt = saved && saved.negativePrompt ? saved.negativePrompt : ''
+      }
+    }
+
+    setAiReq((v) => ({
+      ...v,
+      globalPrompt: gp,
+      globalNegativePrompt: gneg,
+      userInput,
+      prompt,
+      negativePrompt
+    }))
+    setAiLast(null)
+    setAiError('')
+    setAiOpen(true)
+  }
+
+  function initStoryboardBatchFromDoc() {
+    if (!doc.project || !doc.story) return
+    const aiBg0 = (doc.project as any).state && (doc.project as any).state.aiBackground && typeof (doc.project as any).state.aiBackground === 'object'
+      ? (doc.project as any).state.aiBackground
+      : {}
+    const projectTitle = String((doc.project as any).title || '').trim()
+    const map = readStoryboardSceneMapFromProject(doc.project)
+    const sceneNodes = (doc.story.nodes || []).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene' || n.kind === 'ending')
+    const items: StoryboardBatchItem[] = sceneNodes.map((n) => ({
+      nodeId: n.id,
+      nodeName: String((n as any).body?.title || n.name || n.id).trim(),
+      userInput: (map[n.id] && map[n.id].userInput) ? map[n.id].userInput : buildSceneUserInputForBatch(n, projectTitle),
+      prompt: (map[n.id] && map[n.id].prompt) ? map[n.id].prompt : '',
+      negativePrompt: (map[n.id] && map[n.id].negativePrompt) ? map[n.id].negativePrompt : '',
+      status: 'idle',
+      note: ''
+    }))
+    setSbItems(items)
+    const draft0 = readStoryboardBatchDraftFromProject(doc.project)
+    setSbReq({
+      globalPrompt: String(aiBg0.globalPrompt || ''),
+      globalNegativePrompt: String(aiBg0.globalNegativePrompt || ''),
+      style: ((draft0 && draft0.style) || aiReq.style || 'picture_book') as any,
+      aspectRatio: ((draft0 && draft0.aspectRatio) || aiReq.aspectRatio || '9:16') as any,
+      width: Number((draft0 && draft0.width) || aiReq.width || 768),
+      height: Number((draft0 && draft0.height) || aiReq.height || 1344),
+      steps: Number((draft0 && draft0.steps) || aiReq.steps || 20),
+      cfgScale: Number((draft0 && draft0.cfgScale) || aiReq.cfgScale || 7),
+      sampler: String((draft0 && draft0.sampler) || 'DPM++ 2M'),
+      scheduler: String((draft0 && draft0.scheduler) || 'Automatic')
+    })
+    setSbError('')
+    setSbLogs([])
+  }
+
+  async function runStoryboardGenerateAllPrompts(mode: 'all' | 'pending' = 'all') {
+    if (doc.mode !== 'project' || !doc.story || !doc.project) return
+    if (!sbItems.length) {
+      setSbError('没有可处理的场景节点')
+      return
+    }
+    const onlyPending = mode === 'pending'
+    const targets = onlyPending
+      ? sbItems.filter((x) => x.status === 'error' || !String(x.prompt || '').trim())
+      : sbItems.slice()
+    if (!targets.length) {
+      setSbError('')
+      appendSbLog('没有需要重试的场景（全部已生成）')
+      return
+    }
+    setSbBusyGenerate(true)
+    setSbGeneratingNodeId('')
+    setSbGeneratingNodeStartedAt(0)
+    setSbGeneratingNodeElapsedMs(0)
+    setSbError('')
+    appendSbLog(
+      onlyPending
+        ? `开始重试失败/未完成场景提示词，共 ${targets.length} 个场景`
+        : `开始生成所有场景提示词，共 ${sbItems.length} 个场景`
+    )
+    const projectTitle = String((doc.project as any).title || '').trim()
+    const oldMeta = readStoryboardPromptMetaFromProject(doc.project)
+    const styleChanged = Boolean(
+      oldMeta && ((oldMeta.style && oldMeta.style !== String(sbReq.style || '')) || (oldMeta.aspectRatio && oldMeta.aspectRatio !== String(sbReq.aspectRatio || '')))
+    )
+    let currGlobalPrompt = String(sbReq.globalPrompt || '').trim()
+    let currGlobalNegativePrompt = String(sbReq.globalNegativePrompt || '').trim()
+    let globalLocked = onlyPending ? Boolean(currGlobalPrompt) : false
+    if (!onlyPending && styleChanged) {
+      appendSbLog('检测到风格/比例已变更：已重置全局正负提示词，并将重新生成全部场景提示词')
+      currGlobalPrompt = ''
+      currGlobalNegativePrompt = ''
+      globalLocked = false
+      setSbReq((prev) => ({ ...prev, globalPrompt: '', globalNegativePrompt: '' }))
+      setSbItems((prev) => prev.map((x) => ({ ...x, prompt: '', negativePrompt: '', status: 'idle', note: '' })))
+    }
+    if (!onlyPending) {
+      appendSbLog('全量生成会重建全局正向/负向：以首个成功场景返回为基准，再用于后续场景一致性')
+      setSbItems((prev) => prev.map((x) => ({ ...x, status: 'idle', note: '' })))
+      const wholeStoryInput = buildWholeStoryUserInputForGlobal(projectTitle)
+      if (wholeStoryInput) {
+        appendSbLog('开始基于“整个故事”生成全局正向/负向锚点')
+        try {
+          const globalRes = await analyzeBackgroundPromptAi(doc.id, {
+            userInput: wholeStoryInput,
+            globalPrompt: currGlobalPrompt,
+            globalNegativePrompt: currGlobalNegativePrompt,
+            aspectRatio: sbReq.aspectRatio,
+            style: sbReq.style,
+            timeoutMs: 90_000
+          })
+          const gp = String(globalRes.result?.globalPrompt || '').trim()
+          const gneg = String(globalRes.result?.globalNegativePrompt || '').trim()
+          currGlobalPrompt = gp || currGlobalPrompt
+          currGlobalNegativePrompt = gneg || currGlobalNegativePrompt
+          globalLocked = Boolean(currGlobalPrompt)
+          setSbReq((prev) => ({ ...prev, globalPrompt: currGlobalPrompt, globalNegativePrompt: currGlobalNegativePrompt }))
+          appendSbLog('全故事全局锚点生成完成')
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          appendSbLog(`全故事全局锚点生成失败：${msg}（回退为逐场景首成功锚点）`)
+        }
+      }
+    } else {
+      appendSbLog('续跑模式会复用当前全局正向/负向，仅补齐失败或未完成场景')
+    }
+    let okCount = 0
+    let failCount = 0
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const it = targets[i]
+        setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'generating', note: '' } : x)))
+        appendSbLog(`开始生成场景提示词：${it.nodeName}（${i + 1}/${targets.length}）`)
+        const sceneStartedAt = Date.now()
+        setSbGeneratingNodeId(it.nodeId)
+        setSbGeneratingNodeStartedAt(sceneStartedAt)
+        setSbGeneratingNodeElapsedMs(0)
+        const node0 = (doc.story.nodes || []).find((n) => n.id === it.nodeId) || null
+        const node = node0 ? ensureNode(node0 as any) : null
+        const userInput = it.userInput || (node ? buildSceneUserInputForBatch(node, projectTitle) : '')
+        if (!userInput) {
+          setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'error', note: '场景文本为空' } : x)))
+          appendSbLog(`场景 ${it.nodeName} 跳过：场景文本为空`)
+          failCount += 1
+          continue
+        }
+        try {
+          const sceneLocks = node ? buildSceneCharacterLocks(node as any) : ''
+          const gpForAi = [currGlobalPrompt, sceneLocks].filter(Boolean).join('，').slice(0, 900)
+          const res = await analyzeBackgroundPromptAi(doc.id, {
+            userInput,
+            globalPrompt: gpForAi,
+            globalNegativePrompt: currGlobalNegativePrompt,
+            aspectRatio: sbReq.aspectRatio,
+            style: sbReq.style,
+            timeoutMs: 90_000
+          })
+          const gp = String(res.result?.globalPrompt || '').trim()
+          const gneg = String(res.result?.globalNegativePrompt || '').trim()
+          const sp = String(res.result?.prompt || '').trim()
+          const sneg = String(res.result?.negativePrompt || '').trim()
+          if (!globalLocked) {
+            currGlobalPrompt = gp || currGlobalPrompt
+            currGlobalNegativePrompt = gneg || currGlobalNegativePrompt
+            globalLocked = Boolean(currGlobalPrompt)
+            if (globalLocked) appendSbLog('全局锚点已建立，后续场景将复用该锚点并仅生成场景增量')
+          }
+          setSbItems((prev) =>
+            prev.map((x) => (x.nodeId === it.nodeId ? { ...x, userInput, prompt: sp, negativePrompt: sneg, status: 'generated', note: 'ok' } : x))
+          )
+          upsertStoryboardScenePrompt(it.nodeId, it.nodeName, { userInput, prompt: sp, negativePrompt: sneg })
+          appendSbLog(`场景提示词已生成：${it.nodeName}（${Math.max(1, Date.now() - sceneStartedAt)}ms）`)
+          okCount += 1
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'error', note: msg } : x)))
+          appendSbLog(`场景生成失败：${it.nodeName} - ${msg}`)
+          failCount += 1
+        }
+      }
+      setSbReq((prev) => ({ ...prev, globalPrompt: currGlobalPrompt, globalNegativePrompt: currGlobalNegativePrompt }))
+      setDocProject((p) => {
+        const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+        const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+        const nextState = {
+          ...stateIn,
+          aiBackground: {
+            ...aiBgIn,
+            globalPrompt: currGlobalPrompt,
+            globalNegativePrompt: currGlobalNegativePrompt,
+            storyboardPromptMeta: {
+              style: String(sbReq.style || ''),
+              aspectRatio: String(sbReq.aspectRatio || ''),
+              updatedAt: new Date().toISOString()
+            }
+          }
+        }
+        return { ...p, state: nextState }
+      })
+      if (failCount > 0) {
+        const msg = `本轮完成：成功 ${okCount}，失败 ${failCount}（可点“重试失败/继续未完成”）`
+        setSbError(msg)
+        appendSbLog(msg)
+      } else {
+        setSbError('')
+        appendSbLog('所有场景提示词生成完成')
+        setToast('批量提示词已生成')
+      }
+    } finally {
+      setSbGeneratingNodeId('')
+      setSbGeneratingNodeStartedAt(0)
+      setSbGeneratingNodeElapsedMs(0)
+      setSbBusyGenerate(false)
+    }
+  }
+
+  async function runStoryboardValidateAndApply(mode: 'all' | 'pending' = 'all') {
+    if (doc.mode !== 'project' || !doc.project || !doc.story) return
+    if (!sbItems.length) {
+      setSbError('没有可处理的场景节点')
+      return
+    }
+    const onlyPending = mode === 'pending'
+    const targets = onlyPending ? sbItems.filter((x) => x.status === 'error' || x.status === 'generated') : sbItems.slice()
+    if (!targets.length) {
+      setSbError('')
+      appendSbLog('没有需要继续出图的场景')
+      return
+    }
+    const missing = targets.filter((x) => !String(x.prompt || '').trim())
+    if (missing.length) {
+      setSbError(`目标场景中有 ${missing.length} 个缺少提示词，请先补齐或重新生成提示词`)
+      return
+    }
+    const promptMeta = readStoryboardPromptMetaFromProject(doc.project)
+    if (promptMeta) {
+      const styleMismatch = promptMeta.style && promptMeta.style !== String(sbReq.style || '')
+      const arMismatch = promptMeta.aspectRatio && promptMeta.aspectRatio !== String(sbReq.aspectRatio || '')
+      if (styleMismatch || arMismatch) {
+        setSbError('当前风格/比例与上次“生成所有场景提示词”不一致，请先重新生成提示词后再校验并应用')
+        return
+      }
+    }
+
+    setSbBusyApply(true)
+    setSbGeneratingNodeId('')
+    setSbGeneratingNodeStartedAt(0)
+    setSbGeneratingNodeElapsedMs(0)
+    setSbError('')
+    appendSbLog(
+      onlyPending
+        ? `开始重试失败/未完成出图，共 ${targets.length} 个场景`
+        : '开始校验并应用：批量调用 ComfyUI 出图'
+    )
+    try {
+      const st = await getStudioSettings()
+      const provider = String(st.effective?.image?.provider || '').toLowerCase()
+      if (provider !== 'comfyui') throw new Error('当前出图 Provider 不是 comfyui，请先到设置中切换并保存应用')
+
+      let nextProject: ProjectV1 = { ...(doc.project as any), assets: [...((doc.project as any).assets || [])] }
+      let nextStory: StoryV1 = { ...(doc.story as any), nodes: [...((doc.story as any).nodes || [])] }
+      let okCount = 0
+      let failCount = 0
+
+      for (let i = 0; i < targets.length; i++) {
+        const it = targets[i]
+        setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'applying', note: '' } : x)))
+        const sceneStartedAt = Date.now()
+        setSbGeneratingNodeId(it.nodeId)
+        setSbGeneratingNodeStartedAt(sceneStartedAt)
+        setSbGeneratingNodeElapsedMs(0)
+        appendSbLog(`开始应用分镜图：${it.nodeName}（${i + 1}/${targets.length}）`)
+        const gp = String(sbReq.globalPrompt || '').trim()
+        const sp = String(it.prompt || '').trim()
+        const gneg = String(sbReq.globalNegativePrompt || '').trim()
+        const sneg = String(it.negativePrompt || '').trim()
+        const usedPrompt = [gp, sp].filter(Boolean).join('，')
+        try {
+          const payload: AiBackgroundRequest = {
+            userInput: String(it.userInput || ''),
+            globalPrompt: gp,
+            globalNegativePrompt: gneg,
+            prompt: sp,
+            negativePrompt: sneg,
+            style: sbReq.style,
+            aspectRatio: sbReq.aspectRatio,
+            width: sbReq.width,
+            height: sbReq.height,
+            steps: sbReq.steps,
+            cfgScale: sbReq.cfgScale,
+            sampler: sbReq.sampler,
+            scheduler: sbReq.scheduler,
+            timeoutMs: 0
+          }
+          const resp = await generateBackgroundAi(doc.id, payload)
+          const rawProvider = String((resp as any).provider || '').trim()
+          const bgProvider: AssetV1['source'] extends { provider?: infer P } ? P : any =
+            rawProvider === 'sdwebui' || rawProvider === 'comfyui' || rawProvider === 'doubao' ? rawProvider : undefined
+          const nextUri = resp.url ? resolveUrl(resp.url) : resp.assetPath
+
+          const nodeIdx = (nextStory.nodes || []).findIndex((n) => n.id === it.nodeId)
+          if (nodeIdx < 0) throw new Error(`未找到节点：${it.nodeName}`)
+          const nodeNow = ensureNode((nextStory.nodes || [])[nodeIdx] as any)
+          const bgId = String((nodeNow as any)?.visuals?.backgroundAssetId || '').trim()
+          const assetIdx = bgId ? (nextProject.assets || []).findIndex((a) => a.id === bgId) : -1
+          if (assetIdx >= 0) {
+            const old = (nextProject.assets || [])[assetIdx]
+            const patched = { ...old, uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt || sp, provider: bgProvider } }
+            nextProject = { ...nextProject, assets: (nextProject.assets || []).map((a, i) => (i === assetIdx ? patched : a)) }
+            nextStory = {
+              ...nextStory,
+              nodes: (nextStory.nodes || []).map((n) =>
+                n.id === it.nodeId ? { ...ensureNode(n as any), visuals: { ...ensureNode(n as any).visuals, backgroundAssetId: bgId } } : n
+              )
+            }
+          } else {
+            const assetId = uid('asset')
+            const asset: AssetV1 = {
+              id: assetId,
+              kind: 'image',
+              name: `AI 分镜 ${it.nodeName}`,
+              uri: nextUri,
+              source: { type: 'ai' as const, prompt: usedPrompt || sp, provider: bgProvider }
+            }
+            nextProject = { ...nextProject, assets: [...(nextProject.assets || []), asset] }
+            nextStory = {
+              ...nextStory,
+              nodes: (nextStory.nodes || []).map((n) =>
+                n.id === it.nodeId ? { ...ensureNode(n as any), visuals: { ...ensureNode(n as any).visuals, backgroundAssetId: assetId } } : n
+              )
+            }
+          }
+          okCount += 1
+          setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'applied', note: 'ok' } : x)))
+          appendSbLog(`已应用分镜图：${it.nodeName}（${Math.max(1, Date.now() - sceneStartedAt)}ms）`)
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          failCount += 1
+          setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'error', note: msg } : x)))
+          appendSbLog(`应用失败：${it.nodeName} - ${msg}`)
+        }
+      }
+
+      setDocProject((_p) => nextProject)
+      setDocStory((_s) => nextStory)
+      if (failCount > 0) {
+        const msg = `本轮出图完成：成功 ${okCount}，失败 ${failCount}（可点“重试失败/继续未完成出图”）`
+        setSbError(msg)
+        appendSbLog(msg)
+      } else {
+        setSbError('')
+        setToast(`批量分镜生成完成：${okCount}/${targets.length}`)
+        appendSbLog(`批量应用完成：${okCount}/${targets.length}`)
+      }
+    } finally {
+      setSbGeneratingNodeId('')
+      setSbGeneratingNodeStartedAt(0)
+      setSbGeneratingNodeElapsedMs(0)
+      setSbBusyApply(false)
+    }
   }
 
   async function runCharacterFingerprint(characterId: string) {
@@ -2295,25 +2908,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 		                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
 			                                  <button
 			                                    className="btn secondary"
-				                                    onClick={() => {
-				                                      const st = (doc && doc.mode === 'project' && doc.project && (doc.project as any).state && typeof (doc.project as any).state === 'object') ? (doc.project as any).state : {}
-				                                      const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
-				                                      const gpRaw = aiBg && typeof (aiBg as any).globalPrompt === 'string' ? String((aiBg as any).globalPrompt) : ''
-				                                      const gneg = aiBg && typeof (aiBg as any).globalNegativePrompt === 'string' ? String((aiBg as any).globalNegativePrompt) : ''
-				                                      const projectTitle = (doc && doc.mode === 'project' && doc.project) ? String((doc.project as any).title || '').trim() : ''
-				                                      const gp = gpRaw.trim() ? gpRaw : (projectTitle ? `故事名：《${projectTitle}》` : '')
-				                                      setAiReq((v) => ({
-				                                        ...v,
-				                                        globalPrompt: gp,
-				                                        globalNegativePrompt: gneg
-				                                      }))
-			                                      setAiLast(null)
-			                                      setAiError('')
-			                                      setAiOpen(true)
-			                                    }}
+				                                    onClick={() => openAiStoryboardForCurrentNode()}
 			                                    disabled={busy}
 			                                  >
-		                                    AI 生成背景…
+		                                    AI 生成分镜图…
 		                                  </button>
 
 		                                  <button
@@ -2796,20 +3394,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
 	                          <button
 	                            className="btn secondary"
-		                            onClick={() => {
-		                              const st = (doc && doc.mode === 'project' && doc.project && (doc.project as any).state && typeof (doc.project as any).state === 'object') ? (doc.project as any).state : {}
-		                              const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
-		                              const gpRaw = aiBg && typeof (aiBg as any).globalPrompt === 'string' ? String((aiBg as any).globalPrompt) : ''
-		                              const gneg = aiBg && typeof (aiBg as any).globalNegativePrompt === 'string' ? String((aiBg as any).globalNegativePrompt) : ''
-		                              const projectTitle = (doc && doc.mode === 'project' && doc.project) ? String((doc.project as any).title || '').trim() : ''
-		                              const gp = gpRaw.trim() ? gpRaw : (projectTitle ? `故事名：《${projectTitle}》` : '')
-		                              setAiReq((v) => ({ ...v, globalPrompt: gp, globalNegativePrompt: gneg }))
-		                              setAiError('')
-		                              setAiOpen(true)
-		                            }}
+		                            onClick={() => openAiStoryboardForCurrentNode()}
 	                            disabled={busy}
 	                          >
-	                            AI 生成背景…
+	                            AI 生成分镜图…
 	                          </button>
 
 	                          <button
@@ -4035,6 +4623,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     if (selection.type === 'asset') {
       const a = doc.project.assets.find((x) => x.id === selection.id) || null
       if (!a) return <div className="section"><div className="hint">资源不存在</div></div>
+      const assetUrl = String(a.uri || '').trim() ? resolveAsset(a.uri, doc.assetBase) : ''
 
       return (
         <div className="section">
@@ -4077,11 +4666,40 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
             <div className="hint">预览</div>
             {a.uri ? (
-              <img
-                alt={a.name}
-                src={resolveAsset(a.uri, doc.assetBase)}
-                style={{ maxWidth: '100%', borderRadius: 10, border: '1px solid rgba(148,163,184,0.18)' }}
-              />
+              <>
+                <img
+                  alt={a.name}
+                  src={assetUrl}
+                  style={{ maxWidth: '100%', borderRadius: 10, border: '1px solid rgba(148,163,184,0.18)' }}
+                />
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                  <button
+                    className="btn secondary"
+                    onClick={() => {
+                      if (!assetUrl) return
+                      window.open(assetUrl, '_blank', 'noopener,noreferrer')
+                    }}
+                    disabled={!assetUrl}
+                  >
+                    预览图片
+                  </button>
+                  <button
+                    className="btn secondary"
+                    onClick={async () => {
+                      if (doc.mode !== 'project') return
+                      try {
+                        const res = await openProjectAssetFolder(doc.id, String(a.uri || ''))
+                        setToast(res.folder ? `已打开文件夹：${res.folder}` : '已打开文件夹')
+                      } catch (e) {
+                        setToast(e instanceof Error ? e.message : String(e))
+                      }
+                    }}
+                    disabled={doc.mode !== 'project'}
+                  >
+                    打开所在文件夹
+                  </button>
+                </div>
+              </>
             ) : (
               <div className="hint">未设置 URI</div>
             )}
@@ -4596,6 +5214,18 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	              全局设置
 	            </button>
 	          ) : null}
+            {doc.mode === 'project' && doc.story ? (
+              <button
+                className="btn secondary"
+                onClick={() => {
+                  initStoryboardBatchFromDoc()
+                  setSbOpen(true)
+                }}
+                disabled={busy}
+              >
+                AI分镜批量
+              </button>
+            ) : null}
 	          {problems.length ? <div className="hint" style={{ color: '#fca5a5' }}>校验：{problems.length} 个问题</div> : <div className="hint">校验：通过</div>}
 	          <button className="btn secondary" onClick={() => restartRuntime()} disabled={!doc.story}>播放</button>
 	          <button className="btn" onClick={() => saveCurrent()} disabled={busy || doc.mode !== 'project' || !dirty}>保存</button>
@@ -5085,6 +5715,21 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
                 aspectRatio: (res.result?.aspectRatio as any) || prev.aspectRatio,
                 style: (res.result?.style as any) || prev.style
               }))
+              if (selection.type === 'node') {
+                const nodeName = String((node as any).body?.title || node.name || node.id).trim() || node.id
+                upsertStoryboardScenePrompt(selection.id, nodeName, {
+                  userInput,
+                  prompt: String(res.result?.prompt || '').trim(),
+                  negativePrompt: nextSceneNeg
+                })
+                setSbItems((prev) =>
+                  prev.map((x) =>
+                    x.nodeId === selection.id
+                      ? { ...x, nodeName, userInput, prompt: String(res.result?.prompt || '').trim(), negativePrompt: nextSceneNeg }
+                      : x
+                  )
+                )
+              }
               setDocProject((p) => {
                 const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
                 const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
@@ -5100,6 +5745,23 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           }}
 	        onChange={(next) => {
 	          setAiReq(next)
+          if (doc.mode === 'project' && doc.project && selection.type === 'node' && doc.story) {
+            const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
+            const node = node0 ? ensureNode(node0 as any) : null
+            const nodeName = node ? String((node as any).body?.title || node.name || node.id).trim() || node.id : selection.id
+            upsertStoryboardScenePrompt(selection.id, nodeName, {
+              userInput: String(next.userInput || ''),
+              prompt: String(next.prompt || ''),
+              negativePrompt: String(next.negativePrompt || '')
+            })
+            setSbItems((prev) =>
+              prev.map((x) =>
+                x.nodeId === selection.id
+                  ? { ...x, nodeName, userInput: String(next.userInput || ''), prompt: String(next.prompt || ''), negativePrompt: String(next.negativePrompt || '') }
+                  : x
+              )
+            )
+          }
 	          if (doc.mode === 'project' && doc.project) {
 	            const gp = String(next.globalPrompt || '')
 	            const gneg = String(next.globalNegativePrompt || '')
@@ -5162,6 +5824,23 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 		              aspectRatio: (res.result?.aspectRatio as any) || prev.aspectRatio,
 		              style: (res.result?.style as any) || prev.style
 		            }))
+                if (selection.type === 'node' && doc.story) {
+                  const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
+                  const node = node0 ? ensureNode(node0 as any) : null
+                  const nodeName = node ? String((node as any).body?.title || node.name || node.id).trim() || node.id : selection.id
+                  upsertStoryboardScenePrompt(selection.id, nodeName, {
+                    userInput,
+                    prompt: String(res.result?.prompt || '').trim(),
+                    negativePrompt: nextSceneNeg
+                  })
+                  setSbItems((prev) =>
+                    prev.map((x) =>
+                      x.nodeId === selection.id
+                        ? { ...x, nodeName, userInput, prompt: String(res.result?.prompt || '').trim(), negativePrompt: nextSceneNeg }
+                        : x
+                    )
+                  )
+                }
 		            setDocProject((p) => {
 		              const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
 		              const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
@@ -5201,6 +5880,16 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
                   payload.negativePrompt = [neg0, negAdd].filter(Boolean).join(', ')
                 }
                 payload.prompt = sp
+                if (selection.type === 'node' && doc.story) {
+                  const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
+                  const node = node0 ? ensureNode(node0 as any) : null
+                  const nodeName = node ? String((node as any).body?.title || node.name || node.id).trim() || node.id : selection.id
+                  upsertStoryboardScenePrompt(selection.id, nodeName, {
+                    userInput: String(payload.userInput || ''),
+                    prompt: String(payload.prompt || ''),
+                    negativePrompt: String(payload.negativePrompt || '')
+                  })
+                }
 		            const usedPrompt = [gp, sp].filter(Boolean).join('，')
 		            const resp = await generateBackgroundAi(doc.id, payload)
 		            const rawProvider = String((resp as any).provider || '').trim()
@@ -5297,6 +5986,106 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	          }
 	        }}
 	      />
+
+        <AiStoryboardBatchModal
+          open={sbOpen}
+          value={{
+            prompt: '',
+            globalPrompt: sbReq.globalPrompt,
+            globalNegativePrompt: sbReq.globalNegativePrompt,
+            style: sbReq.style,
+            aspectRatio: sbReq.aspectRatio,
+            width: sbReq.width,
+            height: sbReq.height,
+            steps: sbReq.steps,
+            cfgScale: sbReq.cfgScale,
+            sampler: sbReq.sampler,
+            scheduler: sbReq.scheduler
+          }}
+          items={sbItems}
+          busyGenerate={sbBusyGenerate}
+          busyApply={sbBusyApply}
+          elapsedMs={sbElapsedMs}
+          generatingNodeId={sbGeneratingNodeId}
+          generatingNodeElapsedMs={sbGeneratingNodeElapsedMs}
+          error={sbError}
+          logs={sbLogs}
+          onChange={(next) =>
+            setSbReq((prev) => {
+              const merged = {
+                ...prev,
+                globalPrompt: String(next.globalPrompt || ''),
+                globalNegativePrompt: String(next.globalNegativePrompt || ''),
+                style: (next.style || prev.style) as any,
+                aspectRatio: (next.aspectRatio || prev.aspectRatio) as any,
+                width: Number(next.width ?? prev.width),
+                height: Number(next.height ?? prev.height),
+                steps: Number(next.steps ?? prev.steps),
+                cfgScale: Number(next.cfgScale ?? prev.cfgScale),
+                sampler: String(next.sampler || prev.sampler || 'DPM++ 2M'),
+                scheduler: String(next.scheduler || prev.scheduler || 'Automatic')
+              }
+              upsertStoryboardBatchDraft({
+                style: merged.style,
+                aspectRatio: merged.aspectRatio,
+                width: merged.width,
+                height: merged.height,
+                steps: merged.steps,
+                cfgScale: merged.cfgScale,
+                sampler: merged.sampler,
+                scheduler: merged.scheduler
+              })
+              return merged
+            })
+          }
+          onChangeItem={(nodeId, patch) =>
+            setSbItems((prev) => {
+              const next = prev.map((x) => (x.nodeId === nodeId ? { ...x, ...patch } : x))
+              const changed = next.find((x) => x.nodeId === nodeId) || null
+              if (changed) {
+                upsertStoryboardScenePrompt(nodeId, changed.nodeName, {
+                  userInput: patch.userInput != null ? String(patch.userInput || '') : undefined,
+                  prompt: patch.prompt != null ? String(patch.prompt || '') : undefined,
+                  negativePrompt: patch.negativePrompt != null ? String(patch.negativePrompt || '') : undefined
+                })
+              }
+              return next
+            })
+          }
+          onClearGlobalPrompt={() => {
+            setSbReq((prev) => ({ ...prev, globalPrompt: '' }))
+            if (doc.mode === 'project') {
+              setDocProject((p) => {
+                const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+                const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+                const nextState = { ...stateIn, aiBackground: { ...aiBgIn, globalPrompt: '' } }
+                return { ...p, state: nextState }
+              })
+            }
+            appendSbLog('已清空全局正向提示词')
+          }}
+          onClearGlobalNegativePrompt={() => {
+            setSbReq((prev) => ({ ...prev, globalNegativePrompt: '' }))
+            if (doc.mode === 'project') {
+              setDocProject((p) => {
+                const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+                const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+                const nextState = { ...stateIn, aiBackground: { ...aiBgIn, globalNegativePrompt: '' } }
+                return { ...p, state: nextState }
+              })
+            }
+            appendSbLog('已清空全局负向提示词')
+          }}
+          onClose={() => {
+            if (sbBusyGenerate || sbBusyApply) return
+            setSbOpen(false)
+            setSbError('')
+          }}
+          onGenerateAll={() => void runStoryboardGenerateAllPrompts('all')}
+          onRetryPending={() => void runStoryboardGenerateAllPrompts('pending')}
+          onApplyAll={() => void runStoryboardValidateAndApply('all')}
+          onRetryApplyPending={() => void runStoryboardValidateAndApply('pending')}
+        />
 
         <AiCharacterSpriteModal
           open={chOpen}

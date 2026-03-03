@@ -1,5 +1,6 @@
 import { generateScriptsViaOpenAI, repairScriptsViaOpenAI } from './openai.js'
 import { generateScriptsViaDoubao, repairScriptsViaDoubao } from './doubao.js'
+import { generateScriptsViaOllama, repairScriptsViaOllama } from './ollama.js'
 
 export function guessTitleFromPrompt(prompt) {
   const s = String(prompt || '').trim()
@@ -55,11 +56,12 @@ export function generateScriptsFromPrompt(prompt) {
   return { schemaVersion: '1.0', cards, updatedAt: nowIso() }
 }
 
-export async function generateScriptDraft({ prompt, title, rules, formula, provider, model, proxyUrl }) {
+export async function generateScriptDraft({ prompt, title, rules, formula, provider, model, proxyUrl, timeoutMs }) {
   const p = String(provider || process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
-  if (p === 'doubao') return generateScriptsViaDoubao({ prompt, title, rules, formula, model, proxyUrl })
+  if (p === 'doubao') return generateScriptsViaDoubao({ prompt, title, rules, formula, model, proxyUrl, timeoutMs })
+  if (p === 'ollama') return generateScriptsViaOllama({ prompt, title, rules, formula, model, proxyUrl, timeoutMs })
   if (p !== 'openai') return null
-  return generateScriptsViaOpenAI({ prompt, title, rules, formula, model })
+  return generateScriptsViaOpenAI({ prompt, title, rules, formula, model, timeoutMs })
 }
 
 export async function repairScriptDraft({
@@ -76,6 +78,18 @@ export async function repairScriptDraft({
   const p = String(provider || process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
   if (p === 'doubao') {
     return repairScriptsViaDoubao({
+      projectTitle,
+      scripts,
+      rules,
+      formula,
+      report,
+      validation,
+      model,
+      proxyUrl
+    })
+  }
+  if (p === 'ollama') {
+    return repairScriptsViaOllama({
       projectTitle,
       scripts,
       rules,

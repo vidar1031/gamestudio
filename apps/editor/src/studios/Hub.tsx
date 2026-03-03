@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   analyzeProjectScripts,
   createProject,
@@ -19,14 +19,49 @@ const AI_CHOICE_POINTS_KEY = 'game_studio.ai.choicePoints'
 const AI_OPTIONS_PER_CHOICE_KEY = 'game_studio.ai.optionsPerChoice'
 const AI_ENDINGS_KEY = 'game_studio.ai.endings'
 
+function clampInt(n: any, min: number, max: number, fallback: number) {
+  const v = Number(n)
+  if (!Number.isFinite(v)) return fallback
+  return Math.max(min, Math.min(max, Math.floor(v)))
+}
+
+function normalizeAiFormula(input: { choicePoints: number; optionsPerChoice: number; endings: number }) {
+  const choicePoints = clampInt(input.choicePoints, 1, 3, 2)
+  const optionsPerChoice = Number(input.optionsPerChoice) === 3 ? 3 : 2
+  // Formula rule: endings must equal optionsPerChoice.
+  const endings = optionsPerChoice
+  return { choicePoints, optionsPerChoice, endings }
+}
+
+function validateAiFormula(input: { choicePoints: number; optionsPerChoice: number; endings: number }) {
+  const f = normalizeAiFormula(input)
+  const ok = f.endings === f.optionsPerChoice && (f.optionsPerChoice === 2 || f.optionsPerChoice === 3)
+  return {
+    ok,
+    message: ok ? '' : '结构公式不合法：当前仅支持每点2或3选，且结局数必须等于每点选项数。'
+  }
+}
+
+function randomAiFormula() {
+  const choicePoints = [1, 2, 3][Math.floor(Math.random() * 3)]
+  const optionsPerChoice = [2, 3][Math.floor(Math.random() * 2)]
+  const endings = optionsPerChoice
+  return { choicePoints, optionsPerChoice, endings }
+}
+
 function loadAiDraft(): { title: string; prompt: string; choicePoints: number; optionsPerChoice: number; endings: number } {
   try {
-    return {
-      title: localStorage.getItem(AI_TITLE_KEY) || '',
-      prompt: localStorage.getItem(AI_PROMPT_KEY) || '',
+    const f = normalizeAiFormula({
       choicePoints: Number(localStorage.getItem(AI_CHOICE_POINTS_KEY) || 2) || 2,
       optionsPerChoice: Number(localStorage.getItem(AI_OPTIONS_PER_CHOICE_KEY) || 2) || 2,
       endings: Number(localStorage.getItem(AI_ENDINGS_KEY) || 2) || 2
+    })
+    return {
+      title: localStorage.getItem(AI_TITLE_KEY) || '',
+      prompt: localStorage.getItem(AI_PROMPT_KEY) || '',
+      choicePoints: f.choicePoints,
+      optionsPerChoice: f.optionsPerChoice,
+      endings: f.endings
     }
   } catch {
     return { title: '', prompt: '', choicePoints: 2, optionsPerChoice: 2, endings: 2 }
@@ -75,6 +110,31 @@ export default function Hub(props: Props) {
   const [analysisBusy, setAnalysisBusy] = useState(false)
   const [rulesText, setRulesText] = useState('')
   const [rulesError, setRulesError] = useState('')
+  const [aiFormulaError, setAiFormulaError] = useState('')
+  const [aiElapsedMs, setAiElapsedMs] = useState<number>(0)
+  const aiTimerIdRef = useRef<number | null>(null)
+  const aiTimerStartedAtRef = useRef<number>(0)
+  const aiRequestLockRef = useRef(false)
+
+  function stopAiTimer() {
+    if (aiTimerIdRef.current != null) {
+      window.clearInterval(aiTimerIdRef.current)
+      aiTimerIdRef.current = null
+    }
+    aiTimerStartedAtRef.current = 0
+  }
+
+  function startAiTimer() {
+    stopAiTimer()
+    const started = Date.now()
+    aiTimerStartedAtRef.current = started
+    setAiElapsedMs(0)
+    aiTimerIdRef.current = window.setInterval(() => {
+      setAiElapsedMs(Math.max(0, Date.now() - aiTimerStartedAtRef.current))
+    }, 200)
+  }
+
+  useEffect(() => () => stopAiTimer(), [])
 
   const selected = useMemo(() => projects.find((p) => p.id === selectedId) || null, [projects, selectedId])
 
@@ -113,13 +173,24 @@ export default function Hub(props: Props) {
   }
 
   async function createNewWithAi() {
+    if (aiRequestLockRef.current) {
+      setError('已有生成请求进行中，请等待当前请求返回后再试。')
+      return
+    }
     const prompt = aiPrompt.trim()
     if (!prompt) {
       setError('请输入提示文本')
       return
     }
+    const formulaCheck = validateAiFormula({ choicePoints: aiChoicePoints, optionsPerChoice: aiOptionsPerChoice, endings: aiEndings })
+    if (!formulaCheck.ok) {
+      setAiFormulaError(formulaCheck.message)
+      return
+    }
 
+    aiRequestLockRef.current = true
     setBusy(true)
+    startAiTimer()
     setError('')
     try {
       const res = await createProjectWithAiDetailed(prompt, aiTitle.trim() || undefined, {
@@ -137,10 +208,16 @@ export default function Hub(props: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      stopAiTimer()
+      aiRequestLockRef.current = false
     }
   }
 
   async function regenerateAiOverwrite() {
+    if (aiRequestLockRef.current) {
+      setError('已有生成请求进行中，请等待当前请求返回后再试。')
+      return
+    }
     const prompt = aiPrompt.trim()
     const pid = aiResult?.project?.id
     if (!pid) return
@@ -148,10 +225,17 @@ export default function Hub(props: Props) {
       setError('请输入提示文本')
       return
     }
-    const ok = window.confirm('重新生成将覆盖当前草稿的脚本内容，确定继续？')
+    const formulaCheck = validateAiFormula({ choicePoints: aiChoicePoints, optionsPerChoice: aiOptionsPerChoice, endings: aiEndings })
+    if (!formulaCheck.ok) {
+      setAiFormulaError(formulaCheck.message)
+      return
+    }
+    const ok = window.confirm(`重新生成将覆盖当前草稿（故事ID：${pid}）的脚本内容，确定继续？`)
     if (!ok) return
 
+    aiRequestLockRef.current = true
     setBusy(true)
+    startAiTimer()
     setError('')
     try {
       const res = await regenerateProjectScriptsWithAiDetailed(pid, prompt, aiTitle.trim() || undefined, {
@@ -169,6 +253,8 @@ export default function Hub(props: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      stopAiTimer()
+      aiRequestLockRef.current = false
     }
   }
 
@@ -392,6 +478,7 @@ export default function Hub(props: Props) {
                         value={aiChoicePoints}
                         onChange={(e) => {
                           const v = Number(e.target.value) || 2
+                          setAiFormulaError('')
                           setAiChoicePoints(v)
                           persistAiDraft(aiTitle, aiPrompt, v, aiOptionsPerChoice, aiEndings)
                         }}
@@ -408,14 +495,17 @@ export default function Hub(props: Props) {
                         className="sel"
                         value={aiOptionsPerChoice}
                         onChange={(e) => {
-                          const v = Number(e.target.value) || 2
+                          const v = Number(e.target.value) === 3 ? 3 : 2
+                          setAiFormulaError('')
+                          // Keep formula valid by construction.
                           setAiOptionsPerChoice(v)
-                          persistAiDraft(aiTitle, aiPrompt, aiChoicePoints, v, aiEndings)
+                          setAiEndings(v)
+                          persistAiDraft(aiTitle, aiPrompt, aiChoicePoints, v, v)
                         }}
                         disabled={busy}
                         title="每个选择点的选项数"
                       >
-                        {[2, 3, 4, 5].map((n) => (
+                        {[2, 3].map((n) => (
                           <option key={n} value={n}>
                             每点 {n} 选
                           </option>
@@ -426,6 +516,11 @@ export default function Hub(props: Props) {
                         value={aiEndings}
                         onChange={(e) => {
                           const v = Number(e.target.value) || 2
+                          if (v !== aiOptionsPerChoice) {
+                            setAiFormulaError('不可设置：结局数量必须等于“每点选项数”。')
+                            return
+                          }
+                          setAiFormulaError('')
                           setAiEndings(v)
                           persistAiDraft(aiTitle, aiPrompt, aiChoicePoints, aiOptionsPerChoice, v)
                         }}
@@ -433,15 +528,32 @@ export default function Hub(props: Props) {
                         title="结局数量"
                       >
                         {[2, 3].map((n) => (
-                          <option key={n} value={n}>
+                          <option key={n} value={n} disabled={n !== aiOptionsPerChoice}>
                             结局 {n}
                           </option>
                         ))}
                       </select>
+                      <button
+                        className="btn secondary"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          const r = randomAiFormula()
+                          setAiFormulaError('')
+                          setAiChoicePoints(r.choicePoints)
+                          setAiOptionsPerChoice(r.optionsPerChoice)
+                          setAiEndings(r.endings)
+                          persistAiDraft(aiTitle, aiPrompt, r.choicePoints, r.optionsPerChoice, r.endings)
+                        }}
+                        title="随机一个合法结构公式"
+                      >
+                        随机公式
+                      </button>
                       <div className="hint" style={{ alignSelf: 'center' }}>
-                        输出格式：选项1..N + i后果k
+                        输出格式：选项1..N + i后果k（规则：结局数 = 每点选项数）
                       </div>
                     </div>
+                    {aiFormulaError ? <div style={{ marginTop: 8, color: '#fca5a5' }}>{aiFormulaError}</div> : null}
                   </div>
 
                   <div className="form-row">
@@ -469,7 +581,7 @@ export default function Hub(props: Props) {
                 </div>
                 {aiResult.gen?.requestedProvider && aiResult.gen.requestedProvider !== aiResult.gen.provider ? (
                   <div className="hint" style={{ marginBottom: 10, color: '#fde68a' }}>
-                    已请求：{aiResult.gen.requestedProvider}，但实际使用：{aiResult.gen.provider}（通常是未读到环境变量或 AI 调用失败后回退）。
+                    已请求：{aiResult.gen.requestedProvider}，但实际使用：{aiResult.gen.provider}（通常是设置尚未“保存并应用”、未读到环境变量，或 AI 调用失败后回退）。
                   </div>
                 ) : null}
                 {aiResult.gen?.error && aiResult.gen.error.message ? (
@@ -567,6 +679,12 @@ export default function Hub(props: Props) {
                 )}
               </>
             )}
+
+            {!aiResult && busy ? (
+              <div className="hint" style={{ marginBottom: 8 }}>
+                生成计时：{(aiElapsedMs / 1000).toFixed(1)}s（等待服务端返回）
+              </div>
+            ) : null}
 
             <div className="ai-modal-actions">
               <button

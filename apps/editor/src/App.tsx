@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import Hub from './studios/Hub'
+import StartupOverlay from './StartupOverlay'
 import ScriptStudio from './studios/ScriptStudio'
 import BlueprintStudio from './studios/BlueprintStudio'
 import ComposeStudio from './studios/ComposeStudio'
@@ -32,6 +33,7 @@ function persistStage(stage: Stage, projectId: string | null) {
 }
 
 export default function App() {
+  const [showStartup, setShowStartup] = useState(true)
   const persisted = loadPersistedStage()
   const [stage, setStageState] = useState<Stage>(persisted.stage)
   const [projectId, setProjectIdState] = useState<string | null>(persisted.projectId)
@@ -68,6 +70,7 @@ export default function App() {
 
   return (
     <div style={{ position: 'relative', height: '100%' }}>
+      {showStartup ? <StartupOverlay onFinish={() => setShowStartup(false)} /> : null}
       {content}
       <button className="settings-fab" type="button" onClick={() => setSettingsOpen(true)} aria-label="打开设置">
         设置

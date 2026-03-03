@@ -36,6 +36,22 @@ function sanitizeSize(v) {
   return null
 }
 
+function sanitizeStringList(v, maxLen = 120, maxItems = 64) {
+  const arr = Array.isArray(v) ? v : []
+  const out = []
+  const seen = new Set()
+  for (const x of arr) {
+    const s = String(x || '').trim()
+    if (!s) continue
+    const key = s.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(s.slice(0, maxLen))
+    if (out.length >= maxItems) break
+  }
+  return out
+}
+
 function sanitizeBool(v, fallback) {
   if (typeof v === 'boolean') return v
   if (v == null) return Boolean(fallback)
@@ -108,9 +124,11 @@ export async function writeStudioSettings(storageRoot, incoming) {
     image: {
       provider: has(inImage, 'provider') ? sanitizeProvider(inImage.provider) : sanitizeProvider(prev?.image?.provider),
       model: has(inImage, 'model') ? sanitizeModel(inImage.model) : sanitizeModel(prev?.image?.model),
+      loras: has(inImage, 'loras') ? sanitizeStringList(inImage.loras) : sanitizeStringList(prev?.image?.loras),
       apiUrl: has(inImage, 'apiUrl') ? sanitizeUrl(inImage.apiUrl) : sanitizeUrl(prev?.image?.apiUrl),
       size: has(inImage, 'size') ? sanitizeSize(inImage.size) : sanitizeSize(prev?.image?.size),
-      sdwebuiBaseUrl: has(inImage, 'sdwebuiBaseUrl') ? sanitizeUrl(inImage.sdwebuiBaseUrl) : sanitizeUrl(prev?.image?.sdwebuiBaseUrl)
+      sdwebuiBaseUrl: has(inImage, 'sdwebuiBaseUrl') ? sanitizeUrl(inImage.sdwebuiBaseUrl) : sanitizeUrl(prev?.image?.sdwebuiBaseUrl),
+      comfyuiBaseUrl: has(inImage, 'comfyuiBaseUrl') ? sanitizeUrl(inImage.comfyuiBaseUrl) : sanitizeUrl(prev?.image?.comfyuiBaseUrl)
     },
     tts: {
       provider: has(inTts, 'provider') ? sanitizeProvider(inTts.provider) : sanitizeProvider(prev?.tts?.provider),
@@ -142,19 +160,23 @@ function envFirst(...keys) {
   return ''
 }
 
-export async function getEffectiveStudioConfig(storageRoot) {
-  const settings = (await readStudioSettings(storageRoot)) || null
+export async function getEffectiveStudioConfig(storageRoot, options = null) {
+  const override = options && typeof options === 'object' ? options.settingsOverride : null
+  const settings = (override && typeof override === 'object' ? override : ((await readStudioSettings(storageRoot)) || null))
   const DEFAULT_DOUBAO_TEXT_MODEL = 'doubao-1-5-pro-32k-250115'
+  const DEFAULT_OLLAMA_TEXT_MODEL = 'qwen3:8b'
 
   const env = {
     aiProvider: String(process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase(),
     aiModel: String(process.env.STUDIO_AI_MODEL || '').trim(),
     bgProvider: String(process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase(),
     sdwebuiBaseUrl: String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860').trim(),
+    comfyuiBaseUrl: String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188').trim(),
     doubaoImagesUrl: envFirst('DOUBAO_ARK_IMAGES_URL', 'DOUBAO_ARK_API_URL'),
     doubaoImagesModel: String(process.env.DOUBAO_ARK_MODEL || '').trim(),
     doubaoTextModel: String(envFirst('DOUBAO_ARK_TEXT_MODEL', 'DOUBAO_ARK_LLM_MODEL', 'DOUBAO_LLM_MODEL') || '').trim(),
     doubaoImageSize: String(process.env.DOUBAO_IMAGE_SIZE || '').trim(),
+    ollamaTextModel: String(envFirst('STUDIO_OLLAMA_MODEL', 'OLLAMA_MODEL') || '').trim(),
     proxyUrl: envFirst('STUDIO_PROXY_URL', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY')
   }
 
@@ -170,7 +192,11 @@ export async function getEffectiveStudioConfig(storageRoot) {
     ? String(settings.scripts.model)
     : scriptsProvider === 'openai'
       ? env.aiModel
-      : (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
+      : scriptsProvider === 'ollama'
+        ? (env.ollamaTextModel || DEFAULT_OLLAMA_TEXT_MODEL)
+        : scriptsProvider === 'doubao'
+          ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
+          : null
 
   const promptProvider =
     (settings?.prompt?.provider ? String(settings.prompt.provider) : (env.bgProvider === 'doubao' ? 'doubao' : env.aiProvider)) || 'openai'
@@ -178,13 +204,19 @@ export async function getEffectiveStudioConfig(storageRoot) {
     ? String(settings.prompt.model)
     : promptProvider === 'openai'
       ? env.aiModel
-      : (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
+      : promptProvider === 'ollama'
+        ? (env.ollamaTextModel || DEFAULT_OLLAMA_TEXT_MODEL)
+        : promptProvider === 'doubao'
+          ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
+          : null
 
   const imageProvider = (settings?.image?.provider ? String(settings.image.provider) : env.bgProvider) || 'sdwebui'
   const imageModel = settings?.image?.model ? String(settings.image.model) : env.doubaoImagesModel
+  const imageLoras = Array.isArray(settings?.image?.loras) ? settings.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
   const imageApiUrl = settings?.image?.apiUrl ? String(settings.image.apiUrl) : env.doubaoImagesUrl
   const imageSize = settings?.image?.size ? String(settings.image.size) : env.doubaoImageSize
   const sdwebuiBaseUrl = settings?.image?.sdwebuiBaseUrl ? String(settings.image.sdwebuiBaseUrl) : env.sdwebuiBaseUrl
+  const comfyuiBaseUrl = settings?.image?.comfyuiBaseUrl ? String(settings.image.comfyuiBaseUrl) : env.comfyuiBaseUrl
 
   const proxyUrl = settings?.network?.proxyUrl ? String(settings.network.proxyUrl) : env.proxyUrl
 
@@ -192,7 +224,15 @@ export async function getEffectiveStudioConfig(storageRoot) {
     enabled,
     scripts: { provider: scriptsProvider, model: scriptsModel || null },
     prompt: { provider: promptProvider, model: promptModel || null },
-    image: { provider: imageProvider, model: imageModel || null, apiUrl: imageApiUrl || null, size: imageSize || null, sdwebuiBaseUrl: sdwebuiBaseUrl || null },
+    image: {
+      provider: imageProvider,
+      model: imageModel || null,
+      loras: imageLoras.length ? imageLoras : null,
+      apiUrl: imageApiUrl || null,
+      size: imageSize || null,
+      sdwebuiBaseUrl: sdwebuiBaseUrl || null,
+      comfyuiBaseUrl: comfyuiBaseUrl || null
+    },
     tts: {
       provider: settings?.tts?.provider ? String(settings.tts.provider) : 'none',
       model: settings?.tts?.model ? String(settings.tts.model) : null,
