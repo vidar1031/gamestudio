@@ -14,7 +14,11 @@ function backgroundPromptSchema() {
       prompt: { type: 'string', minLength: 1, maxLength: 600 },
       negativePrompt: { type: ['string', 'null'], maxLength: 300 },
       aspectRatio: { type: 'string', enum: ['9:16', '16:9', '1:1', '9:1'] },
-      style: { type: 'string', enum: ['picture_book', 'cartoon', 'national_style', 'watercolor'] }
+      style: { type: 'string', enum: ['picture_book', 'cartoon', 'national_style', 'watercolor'] },
+      steps: { type: ['number', 'null'] },
+      cfgScale: { type: ['number', 'null'] },
+      sampler: { type: ['string', 'null'] },
+      scheduler: { type: ['string', 'null'] }
     },
     required: [
       'globalPrompt',
@@ -37,6 +41,30 @@ function normalizeAspectRatio(v) {
 function normalizeStyle(v) {
   const s = String(v || '').trim()
   return s === 'picture_book' || s === 'cartoon' || s === 'national_style' || s === 'watercolor' ? s : null
+}
+
+function recommendRenderParams({ style, targetProvider }) {
+  const st = normalizeStyle(style) || 'picture_book'
+  const p = String(targetProvider || '').trim().toLowerCase()
+  let steps = 26
+  let cfgScale = 6.5
+  let scheduler = 'Automatic'
+  if (st === 'cartoon') {
+    steps = 24
+    cfgScale = 6
+  } else if (st === 'national_style') {
+    steps = 30
+    cfgScale = 7
+  } else if (st === 'watercolor') {
+    steps = 28
+    cfgScale = 5.5
+  }
+  if (p === 'doubao') {
+    steps = 30
+    cfgScale = 7.5
+    scheduler = 'Karras'
+  }
+  return { steps, cfgScale, sampler: 'DPM++ 2M', scheduler }
 }
 
 function clampInt(n, min, max, fallback) {
@@ -98,11 +126,13 @@ export async function generateBackgroundPromptViaOpenAI({
     `- 如果场景中出现动物/道具（例如兔子），请明确数量（例如“仅一只兔子（唯一）”），避免模型画出多只。\n` +
     `- 如果用户已提供全局设定：不得改变其含义，只能做“补全/精炼/结构化”；不要把故事内容写成剧情，只写视觉设定。\n` +
     `- scenePrompt/sceneNegativePrompt 只描述“本场景的增量”，不要重复全局设定。\n` +
+    `- 禁止输出“面临选择/关键节点/后果总结”等抽象叙事词，必须改写为可见画面动作与构图。\n` +
     `- prompt/negativePrompt 是最终提交给生图服务的合并结果（全局 + 本场景），${oneLineHint}\n` +
     `- prompt 要包含：画面主体 + 场景/动作 + 氛围/光线/镜头 + 细节；并显式写出风格与比例。\n` +
     `- style 使用枚举值：picture_book/cartoon/national_style/watercolor。\n` +
     `- 比例使用枚举值：9:16/16:9/1:1/9:1。\n` +
-    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：无文字、无水印、非真人、低质量、模糊、变形。\n` +
+    `- 额外返回推荐参数：steps/cfgScale/sampler/scheduler（如无把握可留空）。\n` +
+    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：text, watermark, logo, qr code, low quality, blurry, deformed, photorealistic.\n` +
     `- 用户要求中出现“不要/避免/无…”的内容必须反映到 prompt 或 negativePrompt。\n` +
     `- 不要输出解释文字，只输出 JSON。`
 
@@ -160,7 +190,11 @@ export async function generateBackgroundPromptViaOpenAI({
       finalPrompt: String(parsed.prompt || '').trim(),
       finalNegativePrompt: parsed.negativePrompt == null ? '' : String(parsed.negativePrompt || '').trim(),
       aspectRatio: normalizeAspectRatio(parsed.aspectRatio) || ar,
-      style: normalizeStyle(parsed.style) || st
+      style: normalizeStyle(parsed.style) || st,
+      steps: Number.isFinite(Number(parsed.steps)) ? Number(parsed.steps) : null,
+      cfgScale: Number.isFinite(Number(parsed.cfgScale)) ? Number(parsed.cfgScale) : null,
+      sampler: parsed.sampler == null ? null : String(parsed.sampler || '').trim(),
+      scheduler: parsed.scheduler == null ? null : String(parsed.scheduler || '').trim()
     },
     meta
   }
@@ -191,6 +225,10 @@ function validateBackgroundPrompt(obj) {
   if (!(obj.negativePrompt == null || typeof obj.negativePrompt === 'string')) return { ok: false, reason: 'invalid_negativePrompt' }
   if (!(typeof obj.aspectRatio === 'string' && arOk(obj.aspectRatio))) return { ok: false, reason: 'invalid_aspectRatio' }
   if (!(typeof obj.style === 'string' && stOk(obj.style))) return { ok: false, reason: 'invalid_style' }
+  if (!(obj.steps == null || Number.isFinite(Number(obj.steps)))) return { ok: false, reason: 'invalid_steps' }
+  if (!(obj.cfgScale == null || Number.isFinite(Number(obj.cfgScale)))) return { ok: false, reason: 'invalid_cfgScale' }
+  if (!(obj.sampler == null || typeof obj.sampler === 'string')) return { ok: false, reason: 'invalid_sampler' }
+  if (!(obj.scheduler == null || typeof obj.scheduler === 'string')) return { ok: false, reason: 'invalid_scheduler' }
   return { ok: true, reason: 'ok' }
 }
 
@@ -220,7 +258,7 @@ export async function generateBackgroundPromptViaOllama({
     `你是“交互故事制作工具”的美术提示词助手。\n` +
     `任务：把用户的自然语言描述，改写成适用于文生图模型的标准提示词。\n` +
     `输出为 JSON（必须严格符合 schema）：\n` +
-    `{"globalPrompt":string|null,"globalNegativePrompt":string|null,"scenePrompt":string,"sceneNegativePrompt":string|null,"prompt":string,"negativePrompt":string|null,"aspectRatio":"9:16"|"16:9"|"1:1"|"9:1","style":"picture_book"|"cartoon"|"national_style"|"watercolor"}\n` +
+    `{"globalPrompt":string|null,"globalNegativePrompt":string|null,"scenePrompt":string,"sceneNegativePrompt":string|null,"prompt":string,"negativePrompt":string|null,"aspectRatio":"9:16"|"16:9"|"1:1"|"9:1","style":"picture_book"|"cartoon"|"national_style"|"watercolor","steps":number|null,"cfgScale":number|null,"sampler":string|null,"scheduler":string|null}\n` +
     `要求（重要）：\n` +
     `- 输出语言固定为：${langLabel}。\n` +
     `- 你需要维护“全局设定”（globalPrompt/globalNegativePrompt），用于锁定整个故事的时代/环境/美术风格/禁用元素，避免后续场景跑偏。\n` +
@@ -229,11 +267,13 @@ export async function generateBackgroundPromptViaOllama({
     `- 当用户提到“锁定/同一人物/保持一致/沿用上一张/同一个角色/同一只动物”等一致性要求时：你必须在 globalPrompt 中新增“角色设定/一致性锁定”段落，明确列出主要角色与关键物体的固定外观（脸型/发型/服饰/颜色/配饰等），并要求后续所有场景保持同一角色与同一只动物（避免变脸/换装/变色/数量变化）。\n` +
     `- 如果用户已提供全局设定：不得改变其含义，只能做“补全/精炼/结构化”；不要把故事内容写成剧情，只写视觉设定。\n` +
     `- scenePrompt/sceneNegativePrompt 只描述“本场景的增量”，不要重复全局设定。\n` +
+    `- 禁止输出“面临选择/关键节点/后果总结”等抽象叙事词，必须改写为可见画面动作与构图。\n` +
     `- prompt/negativePrompt 是最终提交给生图服务的合并结果（全局 + 本场景），${oneLineHint}\n` +
     `- prompt 要包含：画面主体 + 场景/动作 + 氛围/光线/镜头 + 细节；并显式写出风格与比例。\n` +
     `- style 使用枚举值：picture_book/cartoon/national_style/watercolor。\n` +
     `- 比例使用枚举值：9:16/16:9/1:1/9:1。\n` +
-    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：无文字、无水印、非真人、低质量、模糊、变形。\n` +
+    `- 额外返回推荐参数：steps/cfgScale/sampler/scheduler（如无把握可留空）。\n` +
+    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：text, watermark, logo, qr code, low quality, blurry, deformed, photorealistic.\n` +
     `- 不要输出解释文字，只输出 JSON。`
 
   const user =
@@ -261,7 +301,11 @@ export async function generateBackgroundPromptViaOllama({
       finalPrompt: String(parsed.prompt || '').trim(),
       finalNegativePrompt: parsed.negativePrompt == null ? '' : String(parsed.negativePrompt || '').trim(),
       aspectRatio: normalizeAspectRatio(parsed.aspectRatio) || ar,
-      style: normalizeStyle(parsed.style) || st
+      style: normalizeStyle(parsed.style) || st,
+      steps: Number.isFinite(Number(parsed.steps)) ? Number(parsed.steps) : null,
+      cfgScale: Number.isFinite(Number(parsed.cfgScale)) ? Number(parsed.cfgScale) : null,
+      sampler: parsed.sampler == null ? null : String(parsed.sampler || '').trim(),
+      scheduler: parsed.scheduler == null ? null : String(parsed.scheduler || '').trim()
     },
     meta
   }
@@ -330,15 +374,34 @@ function splitNeg(s) {
     .filter(Boolean)
 }
 
+function normalizeNegToken(x) {
+  const raw = String(x || '').trim()
+  if (!raw) return ''
+  const low = raw.toLowerCase()
+  if (/(^|[\s_-])text($|[\s_-])|文字|字幕/.test(low)) return 'text'
+  if (/speech\s*bubble|dialogue|caption|对白|对话框|气泡/.test(low)) return 'speech bubble'
+  if (/watermark|水印|logo|标识/.test(low)) return 'watermark'
+  if (/qr|二维码/.test(low)) return 'qr code'
+  if (/low\s*quality|低质量|低清|劣质/.test(low)) return 'low quality'
+  if (/blurry|模糊/.test(low)) return 'blurry'
+  if (/deformed|畸形|变形/.test(low)) return 'deformed'
+  if (/gore|血腥/.test(low)) return 'gore'
+  if (/blood|血液|血/.test(low)) return 'blood'
+  if (/real[-\s]?person|真人|写实人脸|photorealistic|non[-\s]?human|非真人/.test(low)) return 'photorealistic'
+  return raw
+}
+
 function mergeNeg(a, b) {
   const arr = [...splitNeg(a), ...splitNeg(b)]
   const out = []
   const seen = new Set()
   for (const x of arr) {
-    const key = x.toLowerCase()
+    const n = normalizeNegToken(x)
+    if (!n) continue
+    const key = n.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
-    out.push(x)
+    out.push(n)
   }
   return out.join(', ')
 }
@@ -381,14 +444,31 @@ function stripAnchorFromScenePrompt(s) {
     .join(', ')
 }
 
+function stripAbstractNarrativeFromScenePrompt(s) {
+  let out = String(s || '').trim()
+  if (!out) return ''
+  out = out
+    .replace(/面临(?:着)?(?:三|二|两|\d+)?个?选择/g, '')
+    .replace(/有(?:三|二|两|\d+)?个?选择(?:摆在面前)?/g, '')
+    .replace(/关键节点/g, '')
+    .replace(/后果(?:是|为)?/g, '')
+    .replace(/faces?\s+(?:a|the|multiple|several|three|two)?\s*choices?/gi, '')
+    .replace(/at\s+a\s+critical\s+moment/gi, '')
+    .replace(/consequences?\s*(?:are|:)?/gi, '')
+    .replace(/[，,]{2,}/g, ', ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  return out
+}
+
 function normalizeBgPromptResult(res, input) {
   const r = res && typeof res === 'object' ? res : {}
   const ar = String(r.aspectRatio || '9:16').trim() || '9:16'
   const st = String(r.style || 'picture_book').trim() || 'picture_book'
   const lang = String(input && input.outputLanguage ? input.outputLanguage : '').trim().toLowerCase() === 'en' ? 'en' : 'zh'
 
-  const DEFAULT_GLOBAL_NEG = lang === 'en' ? 'text, watermark, photorealistic face, low quality, blurry, deformed' : '无文字,无水印,非真人,低质量,模糊,变形'
-  const DEFAULT_SCENE_NEG = lang === 'en' ? 'text, watermark, low quality, blurry, deformed' : '无文字,无水印,低质量,模糊,变形'
+  const DEFAULT_GLOBAL_NEG = 'text, watermark, logo, qr code, speech bubble, low quality, blurry, deformed, photorealistic'
+  const DEFAULT_SCENE_NEG = 'text, watermark, logo, qr code, speech bubble, low quality, blurry, deformed'
 
   const globalPromptIn = String(r.globalPrompt || '').trim()
   const inputGlobalPrompt = String(input && input.globalPrompt ? input.globalPrompt : '').trim()
@@ -416,7 +496,7 @@ function normalizeBgPromptResult(res, input) {
   globalPrompt = uniqPromptPhrases(splitPromptLike(globalPrompt)).join(lang === 'en' ? ', ' : '，')
   globalPrompt = truncatePromptLine(globalPrompt, 900, lang === 'en' ? ', ' : '，')
 
-  const scenePromptRaw = String(r.prompt || r.scenePrompt || '').trim()
+  const scenePromptRaw = stripAbstractNarrativeFromScenePrompt(String(r.prompt || r.scenePrompt || '').trim())
   let scenePrompt = uniqPromptPhrases(splitPromptLike(stripAnchorFromScenePrompt(scenePromptRaw))).join(', ')
   scenePrompt = truncatePromptLine(scenePrompt, 600, ', ')
 
@@ -425,6 +505,7 @@ function normalizeBgPromptResult(res, input) {
   const sceneNegativePrompt = truncatePromptLine(mergeNeg(String(r.negativePrompt || '').trim(), DEFAULT_SCENE_NEG), 300, ', ')
   const finalNegativePrompt =
     truncatePromptLine(String(r.finalNegativePrompt || '').trim(), 800, ', ') || mergeNeg(globalNegativePrompt, sceneNegativePrompt)
+  const rec = recommendRenderParams({ style: st, targetProvider: input && input.targetImageProvider })
 
   return {
     ...r,
@@ -433,14 +514,18 @@ function normalizeBgPromptResult(res, input) {
     prompt: scenePrompt || String(r.scenePrompt || r.prompt || '').trim(),
     scenePrompt: scenePrompt || String(r.scenePrompt || r.prompt || '').trim(),
     negativePrompt: sceneNegativePrompt,
-    finalNegativePrompt
+    finalNegativePrompt,
+    steps: Number.isFinite(Number(r.steps)) ? clampInt(r.steps, 8, 64, rec.steps) : rec.steps,
+    cfgScale: Number.isFinite(Number(r.cfgScale)) ? Math.max(1, Math.min(12, Number(r.cfgScale))) : rec.cfgScale,
+    sampler: String(r.sampler || '').trim() || rec.sampler,
+    scheduler: String(r.scheduler || '').trim() || rec.scheduler
   }
 }
 
 export async function generateBackgroundPrompt(input) {
   const provider = String((input && (input.provider || input.promptProvider)) || pickPromptProvider()).toLowerCase()
   const targetImageProvider = String(input && input.targetImageProvider ? input.targetImageProvider : '').trim().toLowerCase()
-  const outputLanguage = String(input && input.outputLanguage ? input.outputLanguage : '').trim().toLowerCase() || ((targetImageProvider === 'sdwebui' || targetImageProvider === 'comfyui') ? 'en' : 'zh')
+  const outputLanguage = String(input && input.outputLanguage ? input.outputLanguage : '').trim().toLowerCase() || 'en'
   const in2 = { ...(input || {}), outputLanguage }
   const out =
     provider === 'doubao'

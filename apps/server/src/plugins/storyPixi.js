@@ -31,11 +31,6 @@ function renderIndexHtml({ title }) {
       #app{position:fixed;inset:0}
       #overlay{position:fixed;inset:0;pointer-events:none;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:#e5e7eb}
       #stageUI{position:absolute;left:0;top:0;pointer-events:none;transform-origin:0 0}
-      #topbar{position:absolute;left:10px;right:10px;top:10px;z-index:9;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:12px;background:rgba(2,6,23,.62);border:1px solid rgba(148,163,184,.22);backdrop-filter:blur(10px)}
-      #topbar .left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-      #topbar .meta{font-size:12px;opacity:.85}
-      #topbar button{pointer-events:auto;padding:6px 10px;border-radius:10px;border:1px solid rgba(148,163,184,.22);background:rgba(148,163,184,.16);color:#fff;cursor:pointer}
-      #topbar button.primary{background:rgba(59,130,246,.9)}
 
       #dialogWrap{position:absolute;inset:0;padding:18px;box-sizing:border-box;display:flex;justify-content:center;align-items:flex-end}
       .card{pointer-events:auto;width:min(920px,calc(100% - 36px));border-radius:18px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.74);backdrop-filter:blur(10px);box-shadow:0 16px 50px rgba(0,0,0,.35);padding:14px}
@@ -61,14 +56,7 @@ function renderIndexHtml({ title }) {
   <body>
     <div id="app"></div>
     <div id="overlay">
-      <div id="topbar">
-      <div class="left">
-          <button id="restart" class="primary">重新开始</button>
-          <button id="backToHub">返回工作台</button>
-          <span class="meta" id="nodeMeta"></span>
-      </div>
-        <div class="meta">demo 由 game_studio 导出（P0）</div>
-    </div>
+      <div id="topbar" style="display:none"></div>
       <div id="stageUI">
         <div id="endingWrap">
           <div id="endingCard">
@@ -95,7 +83,7 @@ function renderIndexHtml({ title }) {
       </div>
     </div>
     <script type="module">
-      import { Application, Container, Graphics, Sprite, Text } from 'https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.mjs'
+      import { Application, Container, Sprite, Texture } from 'https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.mjs'
 
       const rootEl = document.getElementById('app')
       const metaEl = document.getElementById('nodeMeta')
@@ -120,16 +108,72 @@ function renderIndexHtml({ title }) {
       const app = new Application()
       await app.init({ resizeTo: rootEl, backgroundAlpha: 0 })
       rootEl.appendChild(app.canvas)
+      const textureCache = new Map()
+      let renderSeq = 0
 
       async function loadJson(p) {
         const r = await fetch(p, { cache: 'no-store' })
         return await r.json()
       }
 
+      async function loadTexture(url) {
+        const key = String(url || '').trim()
+        if (!key) return null
+        const cached = textureCache.get(key)
+        if (cached) {
+          try { return cached instanceof Promise ? await cached : cached } catch (_) { textureCache.delete(key) }
+        }
+        const p = new Promise((resolve, reject) => {
+          try {
+            const img = new Image()
+            img.crossOrigin = 'anonymous'
+            img.onload = () => {
+              try { resolve(Texture.from(img)) } catch (e) { reject(e) }
+            }
+            img.onerror = () => reject(new Error('image_load_failed: ' + key))
+            img.src = key
+          } catch (e) {
+            reject(e)
+          }
+        })
+        textureCache.set(key, p)
+        try {
+          const tex = await p
+          textureCache.set(key, tex)
+          return tex
+        } catch (_) {
+          textureCache.delete(key)
+          return null
+        }
+      }
+
       const project = await loadJson('./project.json')
       const story = await loadJson('./story.json')
       const storyNodes = Array.isArray(story && story.nodes) ? story.nodes : []
       const nodeByIdMap = new Map(storyNodes.filter(Boolean).map(n => [String(n.id), n]))
+      const projectId = String(project && project.id || '')
+
+      function resolveAssetUri(uri) {
+        const raw = String(uri || '').trim()
+        if (!raw) return ''
+        if (raw.startsWith('./') || raw.startsWith('../') || raw.startsWith('data:')) return raw
+        const marker = projectId ? ('/project-assets/' + encodeURIComponent(projectId) + '/') : ''
+        if (marker) {
+          const i = raw.indexOf(marker)
+          if (i >= 0) {
+            const tail = raw.slice(i + marker.length).replace(/^\\/+/, '')
+            return tail ? ('./' + tail) : raw
+          }
+        }
+        if (raw.startsWith('/project-assets/')) {
+          const parts = raw.split('/').filter(Boolean)
+          if (parts.length >= 4) {
+            const tail = parts.slice(3).join('/')
+            return tail ? ('./' + tail) : raw
+          }
+        }
+        return raw
+      }
 
       function normalizeStage(project) {
         try {
@@ -276,7 +320,7 @@ function renderIndexHtml({ title }) {
               steps: [
                 {
                   id: 'st_' + String(n.id || 'end') + '_1',
-                  actions: [{ type: 'ui.showEndingCard', card: { title: String(n.name || '结局'), bullets: [], moral: bodyText || '故事结束。', buttons: [{ type: 'restart', label: '重新开始' }, { type: 'backToHub', label: '返回工作台' }] } }],
+                  actions: [{ type: 'ui.showEndingCard', card: { title: '', bullets: [], moral: bodyText || '故事结束。', buttons: [{ type: 'restart', label: '重新开始' }] } }],
                   advance: { type: 'end' }
                 }
               ]
@@ -362,10 +406,10 @@ function renderIndexHtml({ title }) {
 
       function defaultEndingCard(node) {
         return {
-          title: String(node && (node.name || node.id) || '结局'),
+          title: '',
           bullets: [],
           moral: String(node && node.body && node.body.text || '故事结束。'),
-          buttons: [{ type: 'restart', label: '重新开始' }, { type: 'backToHub', label: '返回工作台' }]
+          buttons: [{ type: 'restart', label: '重新开始' }]
         }
       }
 
@@ -473,7 +517,8 @@ function renderIndexHtml({ title }) {
         return n ? ensureTimelineForNode(n) : null
       }
 
-      function renderStage(node) {
+      async function renderStage(node) {
+        const seq = ++renderSeq
         app.stage.removeChildren()
         const viewW = app.renderer.width
         const viewH = app.renderer.height
@@ -497,13 +542,17 @@ function renderIndexHtml({ title }) {
           let bgUri = ''
           if (bgId && project && Array.isArray(project.assets)) {
             const a = project.assets.find(x => x && x.id === bgId)
-            bgUri = a && a.uri ? String(a.uri) : ''
+            bgUri = a && a.uri ? resolveAssetUri(String(a.uri)) : ''
           }
           const bg = bgUri || ''
           if (bg && bg.trim()) {
-            const s = Sprite.from(bg.trim())
-            s.x = 0; s.y = 0; s.width = stageW; s.height = stageH
-            root.addChild(s)
+            const tex = await loadTexture(bg.trim())
+            if (seq !== renderSeq) return
+            if (tex) {
+              const s = new Sprite(tex)
+              s.x = 0; s.y = 0; s.width = stageW; s.height = stageH
+              root.addChild(s)
+            }
           }
         } catch (_) {}
 
@@ -517,9 +566,12 @@ function renderIndexHtml({ title }) {
             const imageAssetId = (p && p.imageAssetId) ? String(p.imageAssetId) : (ch && ch.imageAssetId) ? String(ch.imageAssetId) : ''
             if (!imageAssetId) continue
             const a = Array.isArray(project.assets) ? project.assets.find(x => x && x.id === imageAssetId) : null
-            const img = a && a.uri ? String(a.uri).trim() : ''
+            const img = a && a.uri ? resolveAssetUri(String(a.uri)) : ''
             if (!img) continue
-            const sp = Sprite.from(img)
+            const tex = await loadTexture(img)
+            if (seq !== renderSeq) return
+            if (!tex) continue
+            const sp = new Sprite(tex)
             sp.anchor.set(0.5, 1)
             const x = Number.isFinite(Number(p.transform?.x)) ? Number(p.transform.x) : 0.5
             const y = Number.isFinite(Number(p.transform?.y)) ? Number(p.transform.y) : 1
@@ -536,59 +588,39 @@ function renderIndexHtml({ title }) {
 
       function renderOverlay(node) {
         try { if (metaEl) metaEl.textContent = nodeId ? ('节点：' + nodeId) : '' } catch (_) {}
+        const showEnding = Boolean(endingCard) || wait.kind === 'end'
+        if (endingWrapEl) endingWrapEl.style.display = 'none'
+        try { if (dialogWrapEl) dialogWrapEl.style.display = 'flex' } catch (_) {}
+        try { applyDialogLayout(node) } catch (_) {}
         try {
           if (dialogNodeNameEl) {
-            const t = String(node && node.body && node.body.title || '').trim()
-            dialogNodeNameEl.textContent = t
-            dialogNodeNameEl.style.display = t ? 'inline' : 'none'
+            if (showEnding) {
+              dialogNodeNameEl.textContent = ''
+              dialogNodeNameEl.style.display = 'none'
+            } else {
+              const t = String(node && node.body && node.body.title || '').trim()
+              dialogNodeNameEl.textContent = t
+              dialogNodeNameEl.style.display = t ? 'inline' : 'none'
+            }
           }
         } catch (_) {}
 
-        const showEnding = Boolean(endingCard) || String(node && node.kind) === 'ending' || wait.kind === 'end'
-        if (showEnding) {
-          if (endingWrapEl) endingWrapEl.style.display = 'flex'
-          try { if (dialogWrapEl) dialogWrapEl.style.display = 'none' } catch (_) {}
-          const card = endingCard || defaultEndingCard(node)
-          if (endingTitleEl) endingTitleEl.textContent = String(card.title || '结局')
-          if (endingMoralEl) endingMoralEl.textContent = String(card.moral || '故事结束。')
-          if (endingBulletsEl) {
-            endingBulletsEl.innerHTML = ''
-            const bs = Array.isArray(card.bullets) ? card.bullets : []
-            for (const b of bs) {
-              const li = document.createElement('li')
-              li.textContent = String(b)
-              endingBulletsEl.appendChild(li)
-            }
-          }
-          if (endingActionsEl) {
-            endingActionsEl.innerHTML = ''
-            const btns = Array.isArray(card.buttons) ? card.buttons : []
-            for (const b of btns) {
-              const bt = String(b && b.type || '')
-              const label = String(b && b.label || '')
-              const el = document.createElement('button')
-              el.textContent = label || bt || '按钮'
-              el.className = bt === 'restart' ? 'choiceBtn' : 'choiceBtn'
-              el.addEventListener('click', () => {
-                if (bt === 'restart') restart()
-                else if (bt === 'backToHub') backToHub(b && b.url)
-                else toast(label || '未实现按钮')
-              })
-              endingActionsEl.appendChild(el)
-            }
-          }
-        } else {
-          if (endingWrapEl) endingWrapEl.style.display = 'none'
-          try { if (dialogWrapEl) dialogWrapEl.style.display = 'flex' } catch (_) {}
-        }
-
-        try { if (!showEnding) applyDialogLayout(node) } catch (_) {}
-
         try {
           const fallback = node && node.body && node.body.text ? String(node.body.text) : ''
-          const displayText = String(text || '').trim() ? String(text) : fallback
-          const hasText = String(displayText || '').trim().length > 0
-          if (dialogTextEl) dialogTextEl.textContent = hasText ? String(displayText) : ''
+          const card = showEnding ? (endingCard || defaultEndingCard(node)) : null
+          const endingText = card && card.moral ? String(card.moral) : ''
+          const displayText = showEnding
+            ? (String(endingText || '').trim() ? String(endingText) : fallback)
+            : (String(text || '').trim() ? String(text) : fallback)
+          const filtered = String(displayText)
+            .split(/\\r?\\n/)
+            .filter((original) => !/^\\s*(?:选项|option)\\s*(?:\\d{1,2}|[A-Z]|[一二三四五六七八九十])\\s*[:：]/i.test(original))
+            .map((ln) => ln.trim())
+            .filter(Boolean)
+            .join('\\n')
+          const finalText = filtered || displayText
+          const hasText = String(finalText || '').trim().length > 0
+          if (dialogTextEl) dialogTextEl.textContent = hasText ? String(finalText) : ''
           if (dialogTextEl) dialogTextEl.style.display = hasText ? 'block' : 'none'
         } catch (_) {}
         if (waitHintEl) {
@@ -601,7 +633,27 @@ function renderIndexHtml({ title }) {
         try { applyChoicesLayout(node) } catch (_) {}
 
         if (choicesEl) choicesEl.innerHTML = ''
-        if (wait.kind === 'choice' && choicesEl) {
+        if (showEnding && choicesEl) {
+          const { direction, align } = normalizeChoicesLayout(node)
+          const card = endingCard || defaultEndingCard(node)
+          const btns = Array.isArray(card && card.buttons) ? card.buttons : []
+          for (const b of btns) {
+            const bt = String(b && b.type || '')
+            if (bt === 'backToHub') continue
+            const label = String(b && b.label || '')
+            const el = document.createElement('button')
+            el.className = 'choiceBtn'
+            el.textContent = label || (bt === 'restart' ? '重新开始' : bt || '按钮')
+            if (direction === 'column' && align === 'stretch') {
+              try { el.style.width = '100%' } catch (_) {}
+            }
+            el.addEventListener('click', () => {
+              if (bt === 'restart') restart()
+              else toast(label || '未实现按钮')
+            })
+            choicesEl.appendChild(el)
+          }
+        } else if (wait.kind === 'choice' && choicesEl) {
           const { direction, align } = normalizeChoicesLayout(node)
           const cs = Array.isArray(node && node.choices) ? node.choices : []
           for (const c of cs) {
@@ -620,7 +672,7 @@ function renderIndexHtml({ title }) {
           }
         }
 
-        if (actionsEl) actionsEl.style.display = wait.kind === 'click' ? 'flex' : 'none'
+        if (actionsEl) actionsEl.style.display = (!showEnding && wait.kind === 'click') ? 'flex' : 'none'
       }
 
       function normalizeAdvance(a) {
@@ -648,7 +700,7 @@ function renderIndexHtml({ title }) {
           if (endingCard) { wait = { kind: 'end' }; return }
           const step = steps[stepIndex] || null
           if (!step) {
-            if (String(node && node.kind) === 'scene' && Array.isArray(node && node.choices) && node.choices.length) { wait = { kind:'choice' }; return }
+            if (Array.isArray(node && node.choices) && node.choices.length) { wait = { kind:'choice' }; return }
             if (String(node && node.kind) === 'ending') { wait = { kind:'end' }; if (!endingCard) endingCard = defaultEndingCard(node); return }
             wait = { kind:'end' }; return
           }
@@ -659,7 +711,7 @@ function renderIndexHtml({ title }) {
           if (type === 'auto') { stepIndex++; continue }
           if (type === 'click') {
             const cs = Array.isArray(node && node.choices) ? node.choices : []
-            if (String(node && node.kind) === 'scene' && cs.length) { wait = { kind:'choice' }; return }
+            if (cs.length) { wait = { kind:'choice' }; return }
             wait = { kind:'click' }
             return
           }
@@ -704,7 +756,7 @@ function renderIndexHtml({ title }) {
           if (n.type === 'restart') { restart(); return }
           if (n.type === 'backToHub') { backToHub(n.url); return }
         }
-        renderStage(node)
+        renderStage(node).catch(() => {})
         renderOverlay(node)
         if (wait.kind === 'timer') {
           timerId = setTimeout(() => { stepIndex++; wait = { kind:'auto' }; tick() }, Math.max(0, wait.ms || 0))
@@ -778,6 +830,37 @@ function escapeHtml(s) {
     .replaceAll("'", '&#39;')
 }
 
+function rewriteAssetUriForDist(projectId, uri) {
+  const raw = String(uri || '').trim()
+  if (!raw) return raw
+  const marker = `/project-assets/${encodeURIComponent(String(projectId || ''))}/`
+  const idx = raw.indexOf(marker)
+  if (idx >= 0) {
+    const tail = raw.slice(idx + marker.length)
+    return tail ? `./${tail.replace(/^\/+/, '')}` : raw
+  }
+  if (raw.startsWith('/project-assets/')) {
+    const parts = raw.split('/').filter(Boolean)
+    if (parts.length >= 3) {
+      const tail = parts.slice(3).join('/')
+      if (tail) return `./${tail}`
+    }
+  }
+  return raw
+}
+
+function rewriteProjectAssetUrisForDist(project, projectId) {
+  const p = project && typeof project === 'object' ? JSON.parse(JSON.stringify(project)) : {}
+  const assets = Array.isArray(p.assets) ? p.assets : []
+  p.assets = assets.map((a) => {
+    if (!a || typeof a !== 'object') return a
+    const next = { ...a }
+    if (typeof next.uri === 'string') next.uri = rewriteAssetUriForDist(projectId, next.uri)
+    return next
+  })
+  return p
+}
+
 export default {
   id: 'story-pixi',
   version: '0.1.0',
@@ -799,7 +882,9 @@ export default {
     await writeFile(path.join(outDir, 'story.json'), JSON.stringify(story, null, 2), 'utf-8')
 
     // 输出 project.json（包含 assets/characters 等对象信息）
-    await writeFile(path.join(outDir, 'project.json'), JSON.stringify(project, null, 2), 'utf-8')
+    // 导出包内统一改写为相对路径，避免依赖 /project-assets 动态路由。
+    const projectForDist = rewriteProjectAssetUrisForDist(project, projectId)
+    await writeFile(path.join(outDir, 'project.json'), JSON.stringify(projectForDist, null, 2), 'utf-8')
 
     // 输出 assets（若存在）
     const assetsSrc = path.join(projectDir, 'assets')

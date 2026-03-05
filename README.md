@@ -16,6 +16,7 @@ P0 目标：
 - P0 复盘（现状评估）：`game_studio/docs/P0_REVIEW_2026Q1.md`
 - P1 设计基线：`game_studio/docs/DESIGN_P1.md`
 - P1 注释与说明规范：`game_studio/docs/P1_COMMENTING_GUIDE.md`
+- P2 设计方向（发布优先）：`game_studio/docs/DESIGN_P2.md`
 
 ## 快速开始（P0）
 
@@ -23,8 +24,8 @@ P0 目标：
 
 在 `app_system/` 目录下：
 - 安装依赖（首次）：`npm --prefix ../game_studio install`
-- 启动 server：`npm --prefix ../game_studio run dev:server`（默认端口 `1999`）
-- 启动 editor：`npm --prefix ../game_studio run dev:editor`（默认端口 `8868`）
+- 启动 server：`npm run dev:server`（默认端口 `1999`）
+- 启动 editor：`npm run dev:editor`（默认端口 `8868`）
 
 可选：将运行数据/导出物写入仓库外（推荐在长期使用/多人协作时开启）：
 - 设置环境变量 `STUDIO_STORAGE_ROOT` 指向外部目录（例如 `~/game_studio_storage`）

@@ -45,6 +45,7 @@ function normalizeArkChatUrl(raw) {
 
 const ARK_MIN_SHORT_SIDE = 720
 const ARK_MIN_LONG_SIDE = 1280
+const ARK_MIN_PIXELS = 3_686_400
 
 function parseSizeWxH(size) {
   const s = String(size || '').trim().toLowerCase()
@@ -75,6 +76,25 @@ function ensureMinSides({ w, h }, { minShort, minLong }) {
   const w2 = roundTo(Math.ceil(ww * scale), 64) || ww
   const h2 = roundTo(Math.ceil(hh * scale), 64) || hh
   return { w: w2, h: h2, scaled: true, reason: `minLong=${minL} minShort=${minS}` }
+}
+
+function ensureMinImageConstraints({ w, h }, { minShort, minLong, minPixels }) {
+  const ww = Math.max(1, Math.floor(Number(w) || 1))
+  const hh = Math.max(1, Math.floor(Number(h) || 1))
+  const minPx = Math.max(1, Math.floor(Number(minPixels) || 1))
+  const base = ensureMinSides({ w: ww, h: hh }, { minShort, minLong })
+  let w2 = base.w
+  let h2 = base.h
+  let scaled = Boolean(base.scaled)
+  const area = w2 * h2
+  if (area < minPx) {
+    const scale = Math.sqrt(minPx / Math.max(1, area))
+    w2 = roundTo(Math.ceil(w2 * scale), 64) || w2
+    h2 = roundTo(Math.ceil(h2 * scale), 64) || h2
+    scaled = true
+    return { w: w2, h: h2, scaled, reason: `${base.reason || 'minSides'} minPixels=${minPx}`.trim() }
+  }
+  return { w: w2, h: h2, scaled, reason: base.reason || '' }
 }
 
 export function getDoubaoImagesConfigSnapshot() {
@@ -744,7 +764,7 @@ export async function generateBackgroundPromptViaDoubao({
     `- prompt 要包含：画面主体 + 场景/动作 + 氛围/光线/镜头 + 细节；并显式写出风格与比例。\n` +
     `- style 使用枚举值：picture_book/cartoon/national_style/watercolor。\n` +
     `- 比例使用枚举值：9:16/16:9/1:1/9:1。\n` +
-    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：无文字、无水印、非真人、低质量、模糊、变形。\n` +
+    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：text, watermark, logo, qr code, low quality, blurry, deformed, photorealistic。\n` +
     `- 用户要求中出现“不要/避免/无…”的内容必须反映到 prompt 或 negativePrompt。\n` +
     `- 不要输出解释文字，只输出 JSON。`
 
@@ -799,7 +819,10 @@ export async function generateImageViaDoubaoArkImages(input) {
   }
 
   const model = String((input && input.model ? input.model : process.env.DOUBAO_ARK_MODEL) || 'doubao-seedream-4-0-250828').trim()
-  const timeoutMs = clampInt(input.timeoutMs, 5_000, 120_000, 60_000)
+  const timeoutRaw = Number(input && input.timeoutMs)
+  const timeoutMs = (Number.isFinite(timeoutRaw) && timeoutRaw <= 0)
+    ? 300_000
+    : clampInt(input.timeoutMs, 5_000, 300_000, 60_000)
   const proxyUrl = String(input.proxyUrl || '').trim()
 
   const promptIn = String(input.prompt || '').trim()
@@ -809,7 +832,8 @@ export async function generateImageViaDoubaoArkImages(input) {
     throw e
   }
 
-  // Ark images API doesn't have negativePrompt; we append a short "avoid" hint.
+  // Ark images API doesn't have negativePrompt; convert negatives into natural constraints
+  // instead of raw keywords (e.g. "text/watermark"), which can otherwise be drawn literally.
   let prompt = promptIn
   try {
     const neg = String(input.negativePrompt || '').trim()
@@ -818,26 +842,52 @@ export async function generateImageViaDoubaoArkImages(input) {
         .split(/[,\n，、]+/g)
         .map((x) => x.trim())
         .filter(Boolean)
-      const req = []
-      const avoid = []
+      const reqSet = new Set()
+      const avoidSet = new Set()
       for (const t of tokens) {
         if (!t) continue
         const raw = String(t).trim()
         if (!raw) continue
-        // Heuristic: "无/非/禁止/不要" are requirements ("must be no/ must be non-..."),
-        // while other tokens are treated as "avoid".
-        if (/^(无|非|禁止|不要)/.test(raw)) req.push(raw)
-        else avoid.push(raw)
+        const low = raw.toLowerCase()
+        if (
+          /(text|watermark|logo|subtitle|caption|speech\s*bubble|dialogue|二维码)/i.test(low) ||
+          /(文字|水印|字幕|对白|对话框|气泡|标识|logo|二维码)/.test(raw)
+        ) {
+          reqSet.add('no text, no subtitle, no speech bubble, no watermark, no logo, no QR code')
+          continue
+        }
+        if (/(non[-\s]?human|non[-\s]?real|real[-\s]?person|photorealistic\s*face)/i.test(low) || /(非真人|真人|写实人脸)/.test(raw)) {
+          reqSet.add('illustration style only, avoid photorealistic face')
+          continue
+        }
+        if (/(gore|blood|violent|violence)/i.test(low) || /(血腥|暴力)/.test(raw)) {
+          avoidSet.add('gore and blood')
+          continue
+        }
+        if (/(low\s*quality|blurry|deformed|artifact|grid)/i.test(low) || /(低质量|模糊|变形|网格|格子)/.test(raw)) {
+          avoidSet.add('low quality, blurry, deformed, grid artifacts')
+          continue
+        }
+        if (/^(无|非|禁止|不要)/.test(raw)) {
+          // Skip unknown CN neg token to avoid injecting literal Chinese terms into image prompt.
+          continue
+        }
+        avoidSet.add(raw)
       }
-      if (req.length) prompt = `${prompt}；画面要求：${req.join('、')}`
-      if (avoid.length) prompt = `${prompt}；避免：${avoid.join('、')}`
+      const req = Array.from(reqSet)
+      const avoid = Array.from(avoidSet)
+      if (req.length) prompt = `${prompt}, requirements: ${req.join(', ')}`
+      if (avoid.length) prompt = `${prompt}, avoid: ${avoid.join(', ')}`
     }
   } catch (_) {}
 
-  // Prefer explicit size string when provided (e.g. "2K" or "1024x1024").
+  // Prefer explicit WxH from current request to preserve runtime aspect ratio.
+  const widthIn = Number(input.width)
+  const heightIn = Number(input.height)
+  const hasWH = Number.isFinite(widthIn) && Number.isFinite(heightIn) && widthIn > 0 && heightIn > 0
   let size =
+    (hasWH ? `${Math.floor(widthIn)}x${Math.floor(heightIn)}` : '') ||
     String(input.size || '').trim() ||
-    (input.width && input.height ? `${Math.floor(Number(input.width))}x${Math.floor(Number(input.height))}` : '') ||
     String(process.env.DOUBAO_IMAGE_SIZE || '').trim() ||
     '1024x1024'
 
@@ -846,7 +896,11 @@ export async function generateImageViaDoubaoArkImages(input) {
   try {
     const parsed = parseSizeWxH(size)
     if (parsed) {
-      const next = ensureMinSides(parsed, { minShort: ARK_MIN_SHORT_SIDE, minLong: ARK_MIN_LONG_SIDE })
+      const next = ensureMinImageConstraints(parsed, {
+        minShort: ARK_MIN_SHORT_SIDE,
+        minLong: ARK_MIN_LONG_SIDE,
+        minPixels: ARK_MIN_PIXELS
+      })
       if (next.scaled) {
         const nextSize = `${next.w}x${next.h}`
         console.log(`[game_studio] doubao.images:resize size=${size} -> ${nextSize} (${next.reason})`)

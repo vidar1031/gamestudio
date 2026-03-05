@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
-    "@game-studio/plugin-story-pixi": "0.1.0",
     "hono": "^4.5.0"
   }
 }

@@ -104,8 +104,67 @@ export type StateVarDefV1 = {
   default: any
 }
 
+// P1:state-migration
+// Why:
+// - aiBackground 已经承载了批量提示词/分镜参数，但历史版本字段分散在根层，容易出现状态丢失。
+// Contract:
+// - 统一 shape：global/storyboardScenes/storyboardBatchDraft/storyboardPromptMeta
+// - 保留 legacy 镜像字段（globalPrompt/globalNegativePrompt）兼容旧 UI
+export type AiBackgroundGlobalV1 = {
+  prompt: string
+  negativePrompt: string
+}
+
+export type AiStoryboardScenePromptV1 = {
+  nodeId?: string
+  sceneName?: string
+  prompt: string
+  negativePrompt: string
+  status?: 'idle' | 'generating' | 'ok' | 'error'
+  updatedAt?: string
+  error?: string
+  [k: string]: any
+}
+
+export type AiStoryboardBatchDraftV1 = {
+  style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+  aspectRatio?: '9:16' | '16:9' | '1:1' | '9:1'
+  width?: number
+  height?: number
+  steps?: number
+  cfgScale?: number
+  sampler?: string
+  scheduler?: string
+  model?: string
+  lora?: string
+  timeoutMs?: number
+  [k: string]: any
+}
+
+export type AiStoryboardPromptMetaV1 = {
+  provider?: string
+  model?: string
+  timeoutMs?: number
+  generatedAt?: string
+  sceneCount?: number
+  source?: string
+  [k: string]: any
+}
+
+export type AiBackgroundStateV1 = {
+  schemaVersion: '1.0'
+  global: AiBackgroundGlobalV1
+  storyboardScenes: Record<string, AiStoryboardScenePromptV1>
+  storyboardBatchDraft: AiStoryboardBatchDraftV1
+  storyboardPromptMeta: AiStoryboardPromptMetaV1
+  // Legacy mirrors for backward compatibility.
+  globalPrompt: string
+  globalNegativePrompt: string
+}
+
 export type ProjectStateDefV1 = {
   vars: StateVarDefV1[]
+  aiBackground?: AiBackgroundStateV1 | Record<string, any>
 }
 
 export type CharacterPlacementV1 = {
@@ -192,6 +251,118 @@ export type ProjectV1 = {
   events?: ProjectEventV1[]
   state?: ProjectStateDefV1
   stage?: StageConfigV1
+}
+
+function asObj(v: any): Record<string, any> {
+  return v && typeof v === 'object' ? (v as Record<string, any>) : {}
+}
+
+function asStr(v: any): string {
+  return typeof v === 'string' ? v : ''
+}
+
+function asFiniteNum(v: any): number | undefined {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : undefined
+}
+
+function asStyle(v: any): AiStoryboardBatchDraftV1['style'] | undefined {
+  const s = asStr(v).trim()
+  return s === 'picture_book' || s === 'cartoon' || s === 'national_style' || s === 'watercolor' ? s : undefined
+}
+
+function asAspectRatio(v: any): AiStoryboardBatchDraftV1['aspectRatio'] | undefined {
+  const s = asStr(v).trim()
+  return s === '9:16' || s === '16:9' || s === '1:1' || s === '9:1' ? s : undefined
+}
+
+export function normalizeAiBackgroundState(input: any): AiBackgroundStateV1 {
+  const raw = asObj(input)
+  const rawGlobal = asObj(raw.global)
+
+  const legacyPrompt = asStr(raw.globalPrompt).trim()
+  const legacyNegative = asStr(raw.globalNegativePrompt).trim()
+  const globalPrompt = asStr(rawGlobal.prompt).trim() || legacyPrompt
+  const globalNegativePrompt = asStr(rawGlobal.negativePrompt).trim() || legacyNegative
+
+  const scenesIn = asObj(raw.storyboardScenes)
+  const storyboardScenes: Record<string, AiStoryboardScenePromptV1> = {}
+  for (const [nodeId, value] of Object.entries(scenesIn)) {
+    const scene = asObj(value)
+    storyboardScenes[String(nodeId)] = {
+      ...scene,
+      nodeId: asStr(scene.nodeId).trim() || String(nodeId),
+      prompt: asStr(scene.prompt).trim(),
+      negativePrompt: asStr(scene.negativePrompt).trim(),
+      status:
+        scene.status === 'idle' || scene.status === 'generating' || scene.status === 'ok' || scene.status === 'error'
+          ? scene.status
+          : undefined,
+      updatedAt: asStr(scene.updatedAt).trim() || undefined,
+      error: asStr(scene.error).trim() || undefined
+    }
+  }
+
+  const draftIn = asObj(raw.storyboardBatchDraft)
+  const metaIn = asObj(raw.storyboardPromptMeta)
+
+  const out: AiBackgroundStateV1 = {
+    schemaVersion: '1.0',
+    global: { prompt: globalPrompt, negativePrompt: globalNegativePrompt },
+    storyboardScenes,
+    storyboardBatchDraft: {
+      ...draftIn,
+      style: asStyle(draftIn.style),
+      aspectRatio: asAspectRatio(draftIn.aspectRatio),
+      width: asFiniteNum(draftIn.width),
+      height: asFiniteNum(draftIn.height),
+      steps: asFiniteNum(draftIn.steps),
+      cfgScale: asFiniteNum(draftIn.cfgScale),
+      sampler: asStr(draftIn.sampler) || undefined,
+      scheduler: asStr(draftIn.scheduler) || undefined,
+      model: asStr(draftIn.model) || undefined,
+      lora: asStr(draftIn.lora) || undefined,
+      timeoutMs: asFiniteNum(draftIn.timeoutMs)
+    },
+    storyboardPromptMeta: {
+      ...metaIn,
+      provider: asStr(metaIn.provider) || undefined,
+      model: asStr(metaIn.model) || undefined,
+      timeoutMs: asFiniteNum(metaIn.timeoutMs),
+      generatedAt: asStr(metaIn.generatedAt) || undefined,
+      sceneCount: asFiniteNum(metaIn.sceneCount),
+      source: asStr(metaIn.source) || undefined
+    },
+    globalPrompt,
+    globalNegativePrompt
+  }
+  return out
+}
+
+export function normalizeProjectStateV1(input: any): ProjectStateDefV1 {
+  const state = asObj(input)
+  const varsIn = Array.isArray(state.vars) ? state.vars : []
+  const vars = varsIn
+    .map((v) => asObj(v))
+    .map((v) => ({
+      name: asStr(v.name).trim(),
+      type: (asStr(v.type).trim() || 'string') as StateVarTypeV1,
+      default: 'default' in v ? v.default : ''
+    }))
+    .filter((v) => Boolean(v.name))
+  return {
+    vars,
+    aiBackground: normalizeAiBackgroundState(state.aiBackground)
+  }
+}
+
+export function normalizeProjectV1(input: any): ProjectV1 {
+  const project = asObj(input) as ProjectV1
+  const state = normalizeProjectStateV1(project && typeof project === 'object' ? (project as any).state : null)
+  return {
+    ...(project as any),
+    state
+  } as ProjectV1
 }
 
 // ===== Workflow (scripts/blueprint) =====

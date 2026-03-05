@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "scripts": {
+    "predev:editor": "npm --workspace @game-studio/schema run build",
     "dev:editor": "npm --workspace @game-studio/editor run dev",
     "dev:server": "npm --workspace @game-studio/server run dev",
     "build:editor": "npm --workspace @game-studio/editor run build",

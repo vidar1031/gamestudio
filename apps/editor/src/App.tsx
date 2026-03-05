@@ -13,11 +13,10 @@ const PROJECT_KEY = 'game_studio.projectId'
 
 function loadPersistedStage(): { stage: Stage; projectId: string | null } {
   try {
-    const raw = localStorage.getItem(STAGE_KEY)
-    const allowed = new Set<Stage>(['hub', 'script', 'blueprint', 'compose'])
-    const stage = allowed.has(raw as Stage) ? (raw as Stage) : 'hub'
+    // Always enter Hub first to show startup entry card.
+    // Stage persistence is still kept for internal navigation after entering editor.
     const projectId = localStorage.getItem(PROJECT_KEY)
-    if (stage !== 'hub' && projectId) return { stage, projectId }
+    if (projectId) return { stage: 'hub', projectId: null }
     return { stage: 'hub', projectId: null }
   } catch {
     return { stage: 'hub', projectId: null }
@@ -55,9 +54,9 @@ export default function App() {
   const content =
     stage === 'hub' || !projectId ? (
       <Hub
-        onOpenProject={(id) => {
+        onOpenProject={(id, targetStage) => {
           setProjectId(id)
-          setStage('script')
+          setStage(targetStage || 'script')
         }}
       />
     ) : stage === 'script' ? (

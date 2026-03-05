@@ -9,6 +9,7 @@ import type {
   ScriptDocV1,
   StoryV1
 } from '@game-studio/schema'
+import { normalizeProjectV1 } from '@game-studio/schema'
 
 export type { AiBackgroundRequest, BlueprintDocV1, DemoItem, DemoMeta, ProjectV1, ScriptDocV1, StoryV1 } from '@game-studio/schema'
 export type * from '@game-studio/schema'
@@ -53,7 +54,7 @@ export function resolveUrl(pathname: string) {
  */
 export async function listProjects(): Promise<ProjectV1[]> {
   const json = await j(`${base()}/api/projects`, { method: 'GET' })
-  return Array.isArray(json.items) ? (json.items as ProjectV1[]) : []
+  return Array.isArray(json.items) ? (json.items as any[]).map((p) => normalizeProjectV1(p)) : []
 }
 
 /**
@@ -63,7 +64,7 @@ export async function listProjects(): Promise<ProjectV1[]> {
  */
 export async function createProject(title: string): Promise<ProjectV1> {
   const json = await j(`${base()}/api/projects`, { method: 'POST', body: JSON.stringify({ title }) })
-  return json.project as ProjectV1
+  return normalizeProjectV1(json.project)
 }
 
 /**
@@ -77,7 +78,7 @@ export async function createProjectWithAi(prompt: string, title?: string): Promi
     method: 'POST',
     body: JSON.stringify({ prompt, title })
   })
-  return json.project as ProjectV1
+  return normalizeProjectV1(json.project)
 }
 
 /**
@@ -117,7 +118,7 @@ export async function createProjectWithAiDetailed(
     body: JSON.stringify({ prompt, title, ...(opts || {}) })
   })
   return {
-    project: json.project as ProjectV1,
+    project: normalizeProjectV1(json.project),
     scripts: json.scripts as ScriptDocV1,
     gen: (json.gen as any) || { provider: 'unknown', requestedProvider: 'unknown' }
   }
@@ -142,7 +143,7 @@ export async function regenerateProjectScriptsWithAiDetailed(
     body: JSON.stringify({ prompt, title, ...(opts || {}) })
   })
   return {
-    project: json.project as ProjectV1,
+    project: normalizeProjectV1(json.project),
     scripts: json.scripts as ScriptDocV1,
     gen: (json.gen as any) || { provider: 'unknown', requestedProvider: 'unknown' }
   }
@@ -198,7 +199,7 @@ export async function saveGlobalAiRules(rules: any): Promise<any> {
  */
 export async function getProject(id: string): Promise<{ project: ProjectV1; story: StoryV1 }> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(id)}`, { method: 'GET' })
-  return { project: json.project as ProjectV1, story: json.story as StoryV1 }
+  return { project: normalizeProjectV1(json.project), story: json.story as StoryV1 }
 }
 
 /**
@@ -209,7 +210,7 @@ export async function getProject(id: string): Promise<{ project: ProjectV1; stor
  */
 export async function saveProject(id: string, payload: { project?: Partial<ProjectV1>; story?: StoryV1 }): Promise<ProjectV1> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) })
-  return json.project as ProjectV1
+  return normalizeProjectV1(json.project)
 }
 
 /**
@@ -228,6 +229,35 @@ export async function deleteProject(id: string): Promise<void> {
 export async function exportProject(id: string): Promise<{ buildId: string; distUrl: string }> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(id)}/export`, { method: 'POST' })
   return { buildId: String(json.buildId || ''), distUrl: String(json.distUrl || '') }
+}
+
+export async function exportPublishPackage(id: string): Promise<{ buildId: string; distUrl: string; packageUrl: string; packageName: string; packageBytes: number }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(id)}/export/publish`, { method: 'POST' })
+  return {
+    buildId: String(json.buildId || ''),
+    distUrl: String(json.distUrl || ''),
+    packageUrl: String(json.packageUrl || ''),
+    packageName: String(json.packageName || ''),
+    packageBytes: Number(json.packageBytes || 0)
+  }
+}
+
+export type ProjectExportItem = {
+  buildId: string
+  createdAt: string
+  distUrl: string
+  packageUrl: string
+  packageName: string
+}
+
+export async function listProjectExports(id: string): Promise<ProjectExportItem[]> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(id)}/exports`, { method: 'GET' })
+  return Array.isArray(json.items) ? (json.items as ProjectExportItem[]) : []
+}
+
+export async function deleteProjectExport(id: string, buildId: string): Promise<{ removed: boolean }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(id)}/exports/${encodeURIComponent(buildId)}`, { method: 'DELETE' })
+  return { removed: Boolean(json.removed) }
 }
 
 
@@ -450,7 +480,7 @@ export async function generateBackgroundAi(
  */
 export async function analyzeBackgroundPromptAi(
   projectId: string,
-  payload: Pick<AiBackgroundRequest, 'userInput' | 'globalPrompt' | 'globalNegativePrompt' | 'aspectRatio' | 'style' | 'timeoutMs'>
+  payload: Pick<AiBackgroundRequest, 'userInput' | 'globalPrompt' | 'globalNegativePrompt' | 'aspectRatio' | 'style' | 'timeoutMs'> & { outputLanguage?: 'en' | 'zh' }
 ): Promise<{
   result: {
     globalPrompt: string
@@ -459,6 +489,10 @@ export async function analyzeBackgroundPromptAi(
     negativePrompt: string
     finalPrompt?: string
     finalNegativePrompt?: string
+    steps?: number | null
+    cfgScale?: number | null
+    sampler?: string | null
+    scheduler?: string | null
     aspectRatio: string
     style: string
   }

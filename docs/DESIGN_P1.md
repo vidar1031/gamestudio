@@ -66,3 +66,18 @@
 3. 验证：
    - 最小自动化测试
    - 人工回归清单（Provider 组合矩阵）
+
+## 6. 当前落地进展（2026-03-03）
+
+已完成（M1）：
+- `project.state.aiBackground` 标准结构与 migration（global/storyboardScenes/storyboardBatchDraft/storyboardPromptMeta）。
+- 项目读写链路接入 migration（editor API + server 读写兜底）。
+- 提示词与出图关键链路引入统一 traceId + 结构化日志字段（stage/project/provider/model/durationMs/err）。
+- 统一错误分类（user/provider/system）并返回稳定错误码。
+- 新增最小回归脚本：
+  - `apps/server/scripts/test_p1_state_migration.mjs`
+  - `apps/server/scripts/test_p1_ai_error_classify.mjs`
+
+进行中（M2）：
+- 分镜批量任务执行器增加“暂停/继续/取消”门控（提示词与出图两阶段一致语义）。
+- 继续未完成/重试失败与门控可组合使用（先取消再点“继续未完成”恢复推进）。

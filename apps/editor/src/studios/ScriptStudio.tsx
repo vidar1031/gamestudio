@@ -238,7 +238,7 @@ export default function ScriptStudio(props: Props) {
     <div className="app">
       <div className="topbar">
         <div className="left">
-          <div className="title">第一层 · 方案脚本</div>
+          <div className="title">第一层 · 分镜</div>
           <button className="btn secondary" onClick={props.onBack} disabled={busy}>
             返回工作台
           </button>

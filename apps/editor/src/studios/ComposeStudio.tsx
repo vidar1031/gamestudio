@@ -9,6 +9,9 @@ import {
   analyzeCharacterFingerprintAi,
   createProject,
   exportProject,
+  exportPublishPackage,
+  listProjectExports,
+  deleteProjectExport,
   generateBackgroundAi,
   generateCharacterSpriteAi,
   getBlueprint,
@@ -53,6 +56,7 @@ type Selection =
 type LeftTab = 'nodes' | 'characters' | 'assets'
 
 type StoryboardBatchState = {
+  entitySpec: string
   globalPrompt: string
   globalNegativePrompt: string
   style: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
@@ -80,7 +84,9 @@ type StoryboardPromptMeta = {
   updatedAt: string
 }
 
-type StoryboardBatchDraft = {
+type LatestExportAction = 'overwrite' | 'delete' | 'cancel'
+
+ type StoryboardBatchDraft = {
   style: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
   aspectRatio: '9:16' | '16:9' | '1:1' | '9:1'
   width: number
@@ -91,6 +97,13 @@ type StoryboardBatchDraft = {
   scheduler: string
   updatedAt: string
 }
+
+const DOUBAO_STORYBOARD_DEFAULTS = {
+  steps: 30,
+  cfgScale: 7.5,
+  sampler: 'DPM++ 2M',
+  scheduler: 'Karras'
+} as const
 
 	type EditorDoc = {
 	  mode: 'project' | 'none'
@@ -339,13 +352,10 @@ function normalizeAdvance(a: TimelineAdvanceV1 | any): TimelineAdvanceV1 {
 
 function defaultEndingCardForNode(node: NodeV1): EndingCardV1 {
   return {
-    title: String(node.name || '结局'),
+    title: '',
     bullets: [],
     moral: String(node.body?.text || '故事结束。'),
-    buttons: [
-      { type: 'restart', label: '重新开始' },
-      { type: 'backToHub', label: '返回工作台' }
-    ]
+    buttons: [{ type: 'restart', label: '重新开始' }]
   }
 }
 
@@ -458,7 +468,7 @@ function normalizeChoicesDirection(v: any): ChoicesDirectionV1 {
 function normalizeChoicesAlign(v: any): ChoicesAlignV1 {
   const s = String(v || '').trim()
   const allowed: Record<string, true> = { start: true, center: true, end: true, stretch: true }
-  return (allowed[s] ? s : 'end') as ChoicesAlignV1
+  return (allowed[s] ? s : 'center') as ChoicesAlignV1
 }
 
 function normalizeStageV1(raw: any): StageConfigV1 {
@@ -553,13 +563,10 @@ function ensureTimelineForNode(n: NodeV1): NodeV1 {
               {
                 type: 'ui.showEndingCard',
                 card: {
-                  title: String(nn.name || '结局'),
+                  title: '',
                   bullets: [],
                   moral: bodyText || '故事结束。',
-                  buttons: [
-                    { type: 'restart', label: '重新开始' },
-                    { type: 'backToHub', label: '返回工作台' }
-                  ]
+                  buttons: [{ type: 'restart', label: '重新开始' }]
                 }
               }
             ],
@@ -733,6 +740,11 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [blueprintLoaded, setBlueprintLoaded] = useState(false)
   const [blueprintNodeIds, setBlueprintNodeIds] = useState<string[]>([])
   const [scriptsDoc, setScriptsDoc] = useState<ScriptDocV1 | null>(null)
+  const [latestExportModal, setLatestExportModal] = useState<{ open: boolean; mode: 'preview' | 'publish' }>({
+    open: false,
+    mode: 'preview'
+  })
+  const latestExportActionResolverRef = useRef<((action: LatestExportAction) => void) | null>(null)
 
 	  const [rightFold, setRightFold] = useState<{
 	    nodeProps: boolean
@@ -779,6 +791,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [aiBusy, setAiBusy] = useState(false)
   const [aiAnalyzing, setAiAnalyzing] = useState(false)
   const [aiError, setAiError] = useState('')
+  const HUB_TEMPLATE_FIELDS_KEY = 'game_studio.ai.templateFields'
   const AI_BG_DRAFT_KEY = `game_studio.ai.backgroundDraft.${String(props.projectId || 'global')}`
   const loadAiBackgroundDraft = (key: string): Partial<AiBackgroundRequest> | null => {
     try {
@@ -828,6 +841,71 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     } catch {}
   }
 
+  const readHubTemplateFields = (): {
+    theme: string
+    moral: string
+    world: string
+    protagonist: string
+    style: string
+    tone: string
+    constraints: string
+    extra: string
+  } | null => {
+    try {
+      const raw = localStorage.getItem(HUB_TEMPLATE_FIELDS_KEY)
+      if (!raw) return null
+      const json = JSON.parse(raw) as any
+      if (!json || typeof json !== 'object') return null
+      return {
+        theme: String(json.theme || '').trim(),
+        moral: String(json.moral || '').trim(),
+        world: String(json.world || '').trim(),
+        protagonist: String(json.protagonist || '').trim(),
+        style: String(json.style || '').trim(),
+        tone: String(json.tone || '').trim(),
+        constraints: String(json.constraints || '').trim(),
+        extra: String(json.extra || '').trim()
+      }
+    } catch {
+      return null
+    }
+  }
+
+  const mapTemplateStyleToStoryboardStyle = (
+    styleText: string
+  ): StoryboardBatchState['style'] => {
+    const s = String(styleText || '').toLowerCase()
+    if (s.includes('国风') || s.includes('national')) return 'national_style'
+    if (s.includes('卡通') || s.includes('cartoon') || s.includes('动漫')) return 'cartoon'
+    if (s.includes('水彩') || s.includes('watercolor')) return 'watercolor'
+    return 'picture_book'
+  }
+
+  const buildGlobalPromptFromTemplate = (
+    tpl: ReturnType<typeof readHubTemplateFields>,
+    projectTitle: string
+  ) => {
+    const lines: string[] = []
+    if (projectTitle) lines.push(`故事名：《${projectTitle}》`)
+    if (!tpl) return lines.join('\n').trim()
+    if (tpl.theme) lines.push(`故事主题：${tpl.theme}`)
+    if (tpl.moral) lines.push(`核心寓意：${tpl.moral}`)
+    if (tpl.world) lines.push(`世界观锚点：${tpl.world}`)
+    if (tpl.protagonist) lines.push(`主角设定：${tpl.protagonist}`)
+    if (tpl.style) lines.push(`视觉风格：${tpl.style}`)
+    if (tpl.tone) lines.push(`叙事语气：${tpl.tone}`)
+    if (tpl.extra) lines.push(`补充约束：${tpl.extra}`)
+    return lines.join('\n').trim()
+  }
+
+  const buildGlobalNegativeFromTemplate = (tpl: ReturnType<typeof readHubTemplateFields>) => {
+    const base = ['text', 'watermark', 'low quality', 'blurry', 'deformed']
+    const c = String(tpl?.constraints || '')
+    if (/暴力|血腥/.test(c)) base.push('gore', 'blood')
+    if (/恐怖/.test(c)) base.push('horror')
+    return Array.from(new Set(base)).join(', ')
+  }
+
   const defaultAiReq: AiBackgroundRequest = {
     userInput: '',
     globalPrompt: '',
@@ -851,6 +929,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbOpen, setSbOpen] = useState(false)
   const [sbBusyGenerate, setSbBusyGenerate] = useState(false)
   const [sbBusyApply, setSbBusyApply] = useState(false)
+  const [sbBusyEntity, setSbBusyEntity] = useState(false)
+  const [sbQueuePhase, setSbQueuePhase] = useState<'idle' | 'generate' | 'apply'>('idle')
+  const [sbQueuePaused, setSbQueuePaused] = useState(false)
   const [sbError, setSbError] = useState('')
   const [sbLogs, setSbLogs] = useState<string[]>([])
   const [sbElapsedMs, setSbElapsedMs] = useState(0)
@@ -859,6 +940,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbGeneratingNodeElapsedMs, setSbGeneratingNodeElapsedMs] = useState(0)
   const [sbItems, setSbItems] = useState<StoryboardBatchItem[]>([])
   const [sbReq, setSbReq] = useState<StoryboardBatchState>({
+    entitySpec: '',
     globalPrompt: '',
     globalNegativePrompt: '',
     style: 'picture_book',
@@ -872,6 +954,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   })
   const bgFileRef = useRef<HTMLInputElement | null>(null)
   const pendingBgAssetIdRef = useRef<string>('')
+  const sbQueueRef = useRef<{ paused: boolean; cancelRequested: boolean }>({ paused: false, cancelRequested: false })
 
   const [chFpBusy, setChFpBusy] = useState(false)
   const [chFpError, setChFpError] = useState('')
@@ -935,13 +1018,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   }, [sbBusyGenerate, sbBusyApply])
 
   useEffect(() => {
-    if (!sbBusyGenerate || !sbGeneratingNodeId || sbGeneratingNodeStartedAt <= 0) {
+    if (!(sbBusyGenerate || sbBusyApply) || !sbGeneratingNodeId || sbGeneratingNodeStartedAt <= 0) {
       setSbGeneratingNodeElapsedMs(0)
       return
     }
     const t = window.setInterval(() => setSbGeneratingNodeElapsedMs(Date.now() - sbGeneratingNodeStartedAt), 100)
     return () => window.clearInterval(t)
-  }, [sbBusyGenerate, sbGeneratingNodeId, sbGeneratingNodeStartedAt])
+  }, [sbBusyGenerate, sbBusyApply, sbGeneratingNodeId, sbGeneratingNodeStartedAt])
 
   const canvasHostRef = useRef<HTMLDivElement | null>(null)
   const appRef = useRef<Application | null>(null)
@@ -1341,6 +1424,48 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
+  async function persistCurrentForExport() {
+    if (doc.mode !== 'project' || !doc.project || !doc.story) return
+    const p = await saveProject(doc.id, { project: doc.project, story: doc.story })
+    setDoc((prev) => ({ ...prev, project: p, title: p.title }))
+    setDirty(false)
+  }
+
+  async function confirmLatestExportAction(): Promise<boolean> {
+    if (doc.mode !== 'project') return false
+    let items: Array<{ buildId: string }> = []
+    try {
+      items = await listProjectExports(doc.id)
+    } catch {
+      items = []
+    }
+    const hasLatest = items.some((x) => String(x.buildId || '') === 'latest')
+    if (!hasLatest) return true
+    const pick = await new Promise<LatestExportAction>((resolve) => {
+      latestExportActionResolverRef.current = resolve
+      setLatestExportModal((prev) => ({ ...prev, open: true }))
+    })
+    if (pick === 'overwrite') return true
+    if (pick === 'delete') {
+      try {
+        await deleteProjectExport(doc.id, 'latest')
+        setToast('已删除旧导出，将继续生成 latest')
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      }
+      return true
+    }
+    return false
+  }
+
+  function closeLatestExportModal(action: LatestExportAction) {
+    const resolver = latestExportActionResolverRef.current
+    latestExportActionResolverRef.current = null
+    setLatestExportModal((prev) => ({ ...prev, open: false }))
+    if (resolver) resolver(action)
+  }
+
   async function saveIfDirty(): Promise<boolean> {
     if (busy) return false
     if (doc.mode !== 'project' || !dirty) return true
@@ -1357,9 +1482,36 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     setBusy(true)
     setError('')
     try {
+      setLatestExportModal({ open: false, mode: 'preview' })
+      const allow = await confirmLatestExportAction()
+      if (!allow) return
+      if (dirty) await persistCurrentForExport()
       const { distUrl } = await exportProject(doc.id)
       window.open(resolveUrl(distUrl), '_blank', 'noopener,noreferrer')
       setToast('已导出并打开预览')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function exportPublishCurrent() {
+    if (doc.mode !== 'project' || !doc.project) return
+    setBusy(true)
+    setError('')
+    try {
+      setLatestExportModal({ open: false, mode: 'publish' })
+      const allow = await confirmLatestExportAction()
+      if (!allow) return
+      if (dirty) await persistCurrentForExport()
+      const res = await exportPublishPackage(doc.id)
+      if (res.packageUrl) {
+        window.open(resolveUrl(res.packageUrl), '_blank', 'noopener,noreferrer')
+      } else if (res.distUrl) {
+        window.open(resolveUrl(res.distUrl), '_blank', 'noopener,noreferrer')
+      }
+      setToast(`已导出发布包：${res.packageName || 'h5_story.zip'}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -1519,7 +1671,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
       const step = steps[state.stepIndex] || null
       if (!step) {
-        if (node.kind === 'scene' && Array.isArray(node.choices) && node.choices.length) return { ...state, wait: { kind: 'choice' } }
+        if (Array.isArray(node.choices) && node.choices.length) return { ...state, wait: { kind: 'choice' } }
         if (node.kind === 'ending') return { ...state, wait: { kind: 'end' }, endingCard: state.endingCard || defaultEndingCardForNode(node) }
         return { ...state, wait: { kind: 'end' } }
       }
@@ -1539,7 +1691,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         continue
       }
       if (type === 'click') {
-        const cs = node.kind === 'scene' && Array.isArray(node.choices) ? node.choices : []
+        const cs = Array.isArray(node.choices) ? node.choices : []
         if (cs.length) return { ...state, wait: { kind: 'choice' } }
         return { ...state, wait: { kind: 'click' } }
       }
@@ -1586,13 +1738,12 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     return { ...state, wait: { kind: 'end' }, toast: state.toast || '运行时：auto 步骤过多，已中止' }
   }
 
-  function ensureNode(n: NodeV1): NodeV1 {
-    const base = ensureTimelineForNode(n)
-    const visuals = base.visuals || {}
-    const placements = Array.isArray(visuals.placements) ? visuals.placements : []
-    const choices = base.kind === 'scene' ? (Array.isArray(base.choices) ? base.choices : []) : undefined
-    const normalizedChoices = choices
-      ? choices.map((c) => ({
+function ensureNode(n: NodeV1): NodeV1 {
+  const base = ensureTimelineForNode(n)
+  const visuals = base.visuals || {}
+  const placements = Array.isArray(visuals.placements) ? visuals.placements : []
+  const choices = Array.isArray((base as any).choices) ? (base as any).choices : []
+  const normalizedChoices = choices.map((c) => ({
           ...c,
           id: String((c as any).id || ''),
           text: String((c as any).text || ''),
@@ -1601,9 +1752,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           visibleWhen: (c as any).visibleWhen ?? null,
           enabledWhen: (c as any).enabledWhen ?? null
         }))
-      : undefined
-    return { ...base, choices: normalizedChoices, visuals: { ...visuals, placements } }
-  }
+  return { ...base, choices: normalizedChoices, visuals: { ...visuals, placements } }
+}
 
   function addNode(kind: NodeV1['kind']) {
     if (!doc.story || doc.readonly) return
@@ -1747,6 +1897,44 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     setSbLogs((prev) => [line, ...prev].slice(0, 300))
   }
 
+  function resetSbQueueControl() {
+    sbQueueRef.current = { paused: false, cancelRequested: false }
+    setSbQueuePaused(false)
+  }
+
+  function pauseSbQueue() {
+    if (!(sbBusyGenerate || sbBusyApply)) return
+    if (sbQueueRef.current.paused) return
+    sbQueueRef.current = { ...sbQueueRef.current, paused: true }
+    setSbQueuePaused(true)
+    appendSbLog('任务已暂停：当前场景结束后停止推进，点击“继续任务”可恢复')
+  }
+
+  function resumeSbQueue() {
+    if (!(sbBusyGenerate || sbBusyApply)) return
+    if (!sbQueueRef.current.paused) return
+    sbQueueRef.current = { ...sbQueueRef.current, paused: false }
+    setSbQueuePaused(false)
+    appendSbLog('任务已继续')
+  }
+
+  function cancelSbQueue() {
+    if (!(sbBusyGenerate || sbBusyApply)) return
+    if (sbQueueRef.current.cancelRequested) return
+    sbQueueRef.current = { ...sbQueueRef.current, cancelRequested: true, paused: false }
+    setSbQueuePaused(false)
+    appendSbLog('已请求取消：当前场景结束后停止，已完成项会保留，可稍后继续未完成任务')
+  }
+
+  async function waitForSbQueueGate() {
+    // P1:storyboard-prompt
+    // 任务门控：支持“暂停/取消”，并保证当前项完成后再安全切换状态。
+    while (sbQueueRef.current.paused && !sbQueueRef.current.cancelRequested) {
+      await new Promise((r) => window.setTimeout(r, 120))
+    }
+    return !sbQueueRef.current.cancelRequested
+  }
+
   function buildSceneUserInputForBatch(node: NodeV1, projectTitle: string) {
     const nn = ensureNode(node)
     const title = String((nn as any).body?.title || nn.name || '').trim()
@@ -1760,10 +1948,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
   function buildWholeStoryUserInputForGlobal(projectTitle: string) {
     if (!doc.story) return ''
-    const scenes = (doc.story.nodes || []).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene')
+    const scenes = (doc.story.nodes || []).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene' || n.kind === 'ending')
     const lines: string[] = []
     if (projectTitle) lines.push(`故事名：《${projectTitle}》`)
-    lines.push('任务：基于以下全部场景摘要，提炼全故事统一世界观锚点（时代、地域、建筑、光线、色彩、镜头语言、角色一致性）。')
+    lines.push('任务：基于以下全部场景/结局摘要，提炼全故事统一世界观锚点，并抽取角色、道具、地点、事件链与禁用替代项。')
     let total = lines.join('\n').length
     for (let i = 0; i < scenes.length; i++) {
       const n = scenes[i]
@@ -1776,6 +1964,21 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       total += ln.length + 1
     }
     return lines.join('\n').trim()
+  }
+
+  function enforceEntitySpecQuality(entitySpec: string) {
+    let out = String(entitySpec || '').trim()
+    if (!out) return ''
+    const ensureSection = (name: string, fallback: string) => {
+      const re = new RegExp(`(^|\\n)\\s*${name}\\s*:`, 'i')
+      if (!re.test(out)) out = `${out}\n${name}: ${fallback}`
+    }
+    ensureSection('WORLD_ANCHOR', 'same era, same architecture language, stable palette and lighting, consistent camera language across all scenes')
+    ensureSection('CHARACTER_LOCKS', 'for each core character: fixed age range, hairstyle, silhouette, fabric type, accessory, color palette')
+    ensureSection('PROP_LOCKS', 'for each key prop/object: canonical name, structure/components, material, shape, scale, how it is held/used')
+    ensureSection('EVENT_CHAIN', 'scene-by-scene visible actions and state changes; keep causality and continuity')
+    ensureSection('FORBIDDEN_SUBSTITUTES', 'list visually similar but incorrect objects that must never appear')
+    return out.trim()
   }
 
   function readStoryboardSceneMapFromProject(project: ProjectV1 | null | undefined) {
@@ -1888,7 +2091,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     const gpRaw = aiBg && typeof (aiBg as any).globalPrompt === 'string' ? String((aiBg as any).globalPrompt) : ''
     const gneg = aiBg && typeof (aiBg as any).globalNegativePrompt === 'string' ? String((aiBg as any).globalNegativePrompt) : ''
     const projectTitle = String((doc.project as any).title || '').trim()
-    const gp = gpRaw.trim() ? gpRaw : (projectTitle ? `故事名：《${projectTitle}》` : '')
+    const tpl = readHubTemplateFields()
+    const templateGp = buildGlobalPromptFromTemplate(tpl, projectTitle)
+    const templateGneg = buildGlobalNegativeFromTemplate(tpl)
+    const gp = gpRaw.trim() ? gpRaw : (templateGp || (projectTitle ? `故事名：《${projectTitle}》` : ''))
 
     let userInput = String(aiReq.userInput || '')
     let prompt = String(aiReq.prompt || '')
@@ -1910,7 +2116,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     setAiReq((v) => ({
       ...v,
       globalPrompt: gp,
-      globalNegativePrompt: gneg,
+      globalNegativePrompt: String(gneg || '').trim() || templateGneg,
       userInput,
       prompt,
       negativePrompt
@@ -1920,12 +2126,16 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     setAiOpen(true)
   }
 
-  function initStoryboardBatchFromDoc() {
+  async function initStoryboardBatchFromDoc() {
     if (!doc.project || !doc.story) return
     const aiBg0 = (doc.project as any).state && (doc.project as any).state.aiBackground && typeof (doc.project as any).state.aiBackground === 'object'
       ? (doc.project as any).state.aiBackground
       : {}
     const projectTitle = String((doc.project as any).title || '').trim()
+    const tpl = readHubTemplateFields()
+    const templateGp = buildGlobalPromptFromTemplate(tpl, projectTitle)
+    const templateGneg = buildGlobalNegativeFromTemplate(tpl)
+    const templateStyle = mapTemplateStyleToStoryboardStyle(String(tpl?.style || ''))
     const map = readStoryboardSceneMapFromProject(doc.project)
     const sceneNodes = (doc.story.nodes || []).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene' || n.kind === 'ending')
     const items: StoryboardBatchItem[] = sceneNodes.map((n) => ({
@@ -1940,9 +2150,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     setSbItems(items)
     const draft0 = readStoryboardBatchDraftFromProject(doc.project)
     setSbReq({
-      globalPrompt: String(aiBg0.globalPrompt || ''),
-      globalNegativePrompt: String(aiBg0.globalNegativePrompt || ''),
-      style: ((draft0 && draft0.style) || aiReq.style || 'picture_book') as any,
+      entitySpec: String(aiBg0.storyboardEntitySpec || '').trim(),
+      globalPrompt: String(aiBg0.globalPrompt || '').trim() || templateGp,
+      globalNegativePrompt: String(aiBg0.globalNegativePrompt || '').trim() || templateGneg,
+      style: ((draft0 && draft0.style) || templateStyle || aiReq.style || 'picture_book') as any,
       aspectRatio: ((draft0 && draft0.aspectRatio) || aiReq.aspectRatio || '9:16') as any,
       width: Number((draft0 && draft0.width) || aiReq.width || 768),
       height: Number((draft0 && draft0.height) || aiReq.height || 1344),
@@ -1951,12 +2162,82 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       sampler: String((draft0 && draft0.sampler) || 'DPM++ 2M'),
       scheduler: String((draft0 && draft0.scheduler) || 'Automatic')
     })
+    if (!draft0) {
+      try {
+        const st = await getStudioSettings()
+        const imageProvider = String(st?.effective?.image?.provider || '').toLowerCase()
+        if (imageProvider === 'doubao') {
+          setSbReq((prev) => ({
+            ...prev,
+            steps: DOUBAO_STORYBOARD_DEFAULTS.steps,
+            cfgScale: DOUBAO_STORYBOARD_DEFAULTS.cfgScale,
+            sampler: DOUBAO_STORYBOARD_DEFAULTS.sampler,
+            scheduler: DOUBAO_STORYBOARD_DEFAULTS.scheduler
+          }))
+          appendSbLog('检测到图像 Provider=doubao，已应用默认参数：steps=30 / cfg=7.5 / DPM++ 2M / Karras')
+        }
+      } catch (_) {}
+    }
     setSbError('')
     setSbLogs([])
+    if (!String(aiBg0.globalPrompt || '').trim() && templateGp) appendSbLog('已从“故事模板”注入全局正向提示词')
+    if (!String(aiBg0.globalNegativePrompt || '').trim() && templateGneg) appendSbLog('已从“故事模板”注入全局负向提示词')
+  }
+
+  async function runStoryboardGenerateEntitySpec() {
+    if (doc.mode !== 'project' || !doc.project || !doc.story) return
+    if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    const projectTitle = String((doc.project as any).title || '').trim()
+    const wholeStoryInput = buildWholeStoryUserInputForGlobal(projectTitle)
+    if (!wholeStoryInput) {
+      setSbError('无法生成事物设定：故事内容为空')
+      return
+    }
+    setSbBusyEntity(true)
+    setSbError('')
+    appendSbLog('开始生成“故事事物设定”')
+    try {
+      const res = await analyzeBackgroundPromptAi(doc.id, {
+        userInput:
+          `请先完整分析“整个故事”，提取并输出“可直接用于生图的结构化事物设定”（英文），必须使用并保留以下段落名：\n` +
+          `WORLD_ANCHOR:\nCHARACTER_LOCKS:\nPROP_LOCKS:\nEVENT_CHAIN:\nFORBIDDEN_SUBSTITUTES:\n` +
+          `要求：\n` +
+          `1) 必须覆盖全部场景（含结局），从故事文本中抽取角色、物品、地点、关键事件与状态变化。\n` +
+          `2) CHARACTER_LOCKS 逐角色给出外观指纹（年龄/发型/服装/配色/配饰），且全程一致。\n` +
+          `3) PROP_LOCKS 逐物品给出结构级描述（部件、材质、形状、尺寸感、拿法/用法），不是泛称。\n` +
+          `4) EVENT_CHAIN 按场景编号列出可见动作与状态变化，供后续场景提示词严格对齐。\n` +
+          `5) FORBIDDEN_SUBSTITUTES 明确列出易误画替代物（按每个关键物品给出）。\n` +
+          `6) 不要空泛叙事句，只写视觉可执行约束。\n\n` +
+          wholeStoryInput,
+        globalPrompt: String(sbReq.globalPrompt || '').trim(),
+        globalNegativePrompt: String(sbReq.globalNegativePrompt || '').trim(),
+        aspectRatio: sbReq.aspectRatio,
+        style: sbReq.style,
+        outputLanguage: 'en',
+        timeoutMs: 90_000
+      })
+      const entitySpec = enforceEntitySpecQuality(String(res.result?.globalPrompt || '').trim())
+      if (!entitySpec) throw new Error('empty_entity_spec')
+      setSbReq((prev) => ({ ...prev, entitySpec }))
+      setDocProject((p) => {
+        const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+        const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+        const nextState = { ...stateIn, aiBackground: { ...aiBgIn, storyboardEntitySpec: entitySpec } }
+        return { ...p, state: nextState }
+      })
+      appendSbLog('故事事物设定生成完成（可手动修改后再生成场景提示词）')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`事物设定生成失败：${msg}`)
+    } finally {
+      setSbBusyEntity(false)
+    }
   }
 
   async function runStoryboardGenerateAllPrompts(mode: 'all' | 'pending' = 'all') {
     if (doc.mode !== 'project' || !doc.story || !doc.project) return
+    if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
     if (!sbItems.length) {
       setSbError('没有可处理的场景节点')
       return
@@ -1971,6 +2252,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     setSbBusyGenerate(true)
+    setSbQueuePhase('generate')
+    resetSbQueueControl()
     setSbGeneratingNodeId('')
     setSbGeneratingNodeStartedAt(0)
     setSbGeneratingNodeElapsedMs(0)
@@ -1980,13 +2263,20 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         ? `开始重试失败/未完成场景提示词，共 ${targets.length} 个场景`
         : `开始生成所有场景提示词，共 ${sbItems.length} 个场景`
     )
+    if (!onlyPending) appendSbLog('说明：全量生成会覆盖当前场景提示词（prompt/negativePrompt）')
     const projectTitle = String((doc.project as any).title || '').trim()
     const oldMeta = readStoryboardPromptMetaFromProject(doc.project)
     const styleChanged = Boolean(
       oldMeta && ((oldMeta.style && oldMeta.style !== String(sbReq.style || '')) || (oldMeta.aspectRatio && oldMeta.aspectRatio !== String(sbReq.aspectRatio || '')))
     )
+    const entitySpec = String(sbReq.entitySpec || '').trim()
     let currGlobalPrompt = String(sbReq.globalPrompt || '').trim()
     let currGlobalNegativePrompt = String(sbReq.globalNegativePrompt || '').trim()
+    let recSteps = Number(sbReq.steps || 20)
+    let recCfg = Number(sbReq.cfgScale || 7)
+    let recSampler = String(sbReq.sampler || 'DPM++ 2M')
+    let recScheduler = String(sbReq.scheduler || 'Automatic')
+    let recParamLocked = false
     let globalLocked = onlyPending ? Boolean(currGlobalPrompt) : false
     if (!onlyPending && styleChanged) {
       appendSbLog('检测到风格/比例已变更：已重置全局正负提示词，并将重新生成全部场景提示词')
@@ -2005,10 +2295,11 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         try {
           const globalRes = await analyzeBackgroundPromptAi(doc.id, {
             userInput: wholeStoryInput,
-            globalPrompt: currGlobalPrompt,
+            globalPrompt: [entitySpec, currGlobalPrompt].filter(Boolean).join('，'),
             globalNegativePrompt: currGlobalNegativePrompt,
             aspectRatio: sbReq.aspectRatio,
             style: sbReq.style,
+            outputLanguage: 'en',
             timeoutMs: 90_000
           })
           const gp = String(globalRes.result?.globalPrompt || '').trim()
@@ -2030,6 +2321,11 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     let failCount = 0
     try {
       for (let i = 0; i < targets.length; i++) {
+        const canContinue = await waitForSbQueueGate()
+        if (!canContinue) {
+          appendSbLog('任务已取消：提示词批量生成提前结束')
+          break
+        }
         const it = targets[i]
         setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'generating', note: '' } : x)))
         appendSbLog(`开始生成场景提示词：${it.nodeName}（${i + 1}/${targets.length}）`)
@@ -2048,19 +2344,33 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         }
         try {
           const sceneLocks = node ? buildSceneCharacterLocks(node as any) : ''
-          const gpForAi = [currGlobalPrompt, sceneLocks].filter(Boolean).join('，').slice(0, 900)
+          const gpForAi = [entitySpec, currGlobalPrompt, sceneLocks].filter(Boolean).join('，').slice(0, 1200)
           const res = await analyzeBackgroundPromptAi(doc.id, {
             userInput,
             globalPrompt: gpForAi,
             globalNegativePrompt: currGlobalNegativePrompt,
             aspectRatio: sbReq.aspectRatio,
             style: sbReq.style,
+            outputLanguage: 'en',
             timeoutMs: 90_000
           })
           const gp = String(res.result?.globalPrompt || '').trim()
           const gneg = String(res.result?.globalNegativePrompt || '').trim()
-          const sp = String(res.result?.prompt || '').trim()
-          const sneg = String(res.result?.negativePrompt || '').trim()
+          const sp = String(res.result?.finalPrompt || res.result?.prompt || '').trim()
+          const sneg = String(res.result?.finalNegativePrompt || res.result?.negativePrompt || '').trim()
+          if (!sp) throw new Error('empty_scene_prompt')
+          if (!recParamLocked) {
+            const nSteps = Number((res.result as any)?.steps)
+            const nCfg = Number((res.result as any)?.cfgScale)
+            const sSampler = String((res.result as any)?.sampler || '').trim()
+            const sScheduler = String((res.result as any)?.scheduler || '').trim()
+            if (Number.isFinite(nSteps) && nSteps > 0) recSteps = Math.max(8, Math.min(64, Math.floor(nSteps)))
+            if (Number.isFinite(nCfg) && nCfg > 0) recCfg = Math.max(1, Math.min(12, nCfg))
+            if (sSampler) recSampler = sSampler
+            if (sScheduler) recScheduler = sScheduler
+            recParamLocked = true
+            appendSbLog(`已应用AI推荐参数：steps=${recSteps} cfg=${recCfg} sampler=${recSampler} scheduler=${recScheduler}`)
+          }
           if (!globalLocked) {
             currGlobalPrompt = gp || currGlobalPrompt
             currGlobalNegativePrompt = gneg || currGlobalNegativePrompt
@@ -2080,7 +2390,15 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           failCount += 1
         }
       }
-      setSbReq((prev) => ({ ...prev, globalPrompt: currGlobalPrompt, globalNegativePrompt: currGlobalNegativePrompt }))
+      setSbReq((prev) => ({
+        ...prev,
+        globalPrompt: currGlobalPrompt,
+        globalNegativePrompt: currGlobalNegativePrompt,
+        steps: recSteps,
+        cfgScale: recCfg,
+        sampler: recSampler,
+        scheduler: recScheduler
+      }))
       setDocProject((p) => {
         const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
         const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
@@ -2105,10 +2423,15 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         appendSbLog(msg)
       } else {
         setSbError('')
-        appendSbLog('所有场景提示词生成完成')
-        setToast('批量提示词已生成')
+        if (sbQueueRef.current.cancelRequested) appendSbLog('提示词任务已取消，已保留已完成结果')
+        else {
+          appendSbLog('所有场景提示词生成完成')
+          setToast('批量提示词已生成')
+        }
       }
     } finally {
+      resetSbQueueControl()
+      setSbQueuePhase('idle')
       setSbGeneratingNodeId('')
       setSbGeneratingNodeStartedAt(0)
       setSbGeneratingNodeElapsedMs(0)
@@ -2118,6 +2441,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
   async function runStoryboardValidateAndApply(mode: 'all' | 'pending' = 'all') {
     if (doc.mode !== 'project' || !doc.project || !doc.story) return
+    if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
     if (!sbItems.length) {
       setSbError('没有可处理的场景节点')
       return
@@ -2145,6 +2469,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
 
     setSbBusyApply(true)
+    setSbQueuePhase('apply')
+    resetSbQueueControl()
     setSbGeneratingNodeId('')
     setSbGeneratingNodeStartedAt(0)
     setSbGeneratingNodeElapsedMs(0)
@@ -2152,12 +2478,27 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     appendSbLog(
       onlyPending
         ? `开始重试失败/未完成出图，共 ${targets.length} 个场景`
-        : '开始校验并应用：批量调用 ComfyUI 出图'
+        : '开始校验并应用：批量调用当前出图 Provider'
     )
     try {
       const st = await getStudioSettings()
       const provider = String(st.effective?.image?.provider || '').toLowerCase()
-      if (provider !== 'comfyui') throw new Error('当前出图 Provider 不是 comfyui，请先到设置中切换并保存应用')
+      const model = String(st.effective?.image?.model || '').trim()
+      const providerLabel = provider || 'none'
+      appendSbLog(`当前出图 Provider：${providerLabel}`)
+      if (model) appendSbLog(`当前出图 Model：${model}`)
+      if (!['comfyui', 'sdwebui', 'doubao'].includes(provider)) {
+        throw new Error('当前出图 Provider 不可用，请在设置中将图像生成切换为 comfyui / sdwebui / doubao 并保存应用')
+      }
+
+      const isFatalImageConfigError = (msg: string) => {
+        const s = String(msg || '').toLowerCase()
+        if (!s) return false
+        if (s.includes('has not activated the model')) return true
+        if (s.includes('image size must be at least') || s.includes('parameter `size` specified in the request is not valid')) return true
+        if (s.includes('invalid api key') || s.includes('unauthorized') || s.includes('forbidden')) return true
+        return false
+      }
 
       let nextProject: ProjectV1 = { ...(doc.project as any), assets: [...((doc.project as any).assets || [])] }
       let nextStory: StoryV1 = { ...(doc.story as any), nodes: [...((doc.story as any).nodes || [])] }
@@ -2165,6 +2506,11 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       let failCount = 0
 
       for (let i = 0; i < targets.length; i++) {
+        const canContinue = await waitForSbQueueGate()
+        if (!canContinue) {
+          appendSbLog('任务已取消：批量出图提前结束')
+          break
+        }
         const it = targets[i]
         setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'applying', note: '' } : x)))
         const sceneStartedAt = Date.now()
@@ -2192,7 +2538,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
             cfgScale: sbReq.cfgScale,
             sampler: sbReq.sampler,
             scheduler: sbReq.scheduler,
-            timeoutMs: 0
+            timeoutMs: provider === 'doubao' ? 300_000 : 0
           }
           const resp = await generateBackgroundAi(doc.id, payload)
           const rawProvider = String((resp as any).provider || '').trim()
@@ -2206,6 +2552,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           const bgId = String((nodeNow as any)?.visuals?.backgroundAssetId || '').trim()
           const assetIdx = bgId ? (nextProject.assets || []).findIndex((a) => a.id === bgId) : -1
           if (assetIdx >= 0) {
+            appendSbLog(`覆盖已有场景图：${it.nodeName}`)
             const old = (nextProject.assets || [])[assetIdx]
             const patched = { ...old, uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt || sp, provider: bgProvider } }
             nextProject = { ...nextProject, assets: (nextProject.assets || []).map((a, i) => (i === assetIdx ? patched : a)) }
@@ -2240,6 +2587,11 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           failCount += 1
           setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'error', note: msg } : x)))
           appendSbLog(`应用失败：${it.nodeName} - ${msg}`)
+          if (isFatalImageConfigError(msg)) {
+            setSbError(`出图配置错误：${msg}`)
+            appendSbLog('检测到致命配置错误，已停止后续场景批量出图（请先修正设置后重试）')
+            break
+          }
         }
       }
 
@@ -2251,16 +2603,26 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         appendSbLog(msg)
       } else {
         setSbError('')
-        setToast(`批量分镜生成完成：${okCount}/${targets.length}`)
-        appendSbLog(`批量应用完成：${okCount}/${targets.length}`)
+        if (sbQueueRef.current.cancelRequested) appendSbLog(`任务已取消：当前进度 ${okCount}/${targets.length}`)
+        else {
+          setToast(`批量分镜生成完成：${okCount}/${targets.length}`)
+          appendSbLog(`批量应用完成：${okCount}/${targets.length}`)
+        }
       }
     } finally {
+      resetSbQueueControl()
+      setSbQueuePhase('idle')
       setSbGeneratingNodeId('')
       setSbGeneratingNodeStartedAt(0)
       setSbGeneratingNodeElapsedMs(0)
       setSbBusyApply(false)
     }
   }
+
+  const sbAllPromptsReady = useMemo(
+    () => sbItems.length > 0 && sbItems.every((x) => String(x.prompt || '').trim().length > 0),
+    [sbItems]
+  )
 
   async function runCharacterFingerprint(characterId: string) {
     if (!doc.project || !doc.story || doc.mode !== 'project') return
@@ -2669,14 +3031,14 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	                                disabled={structureBound}
 	                                onChange={(e) => {
 	                                  const kind = e.target.value === 'ending' ? 'ending' : 'scene'
-	                                  setNode((x) => ({
-	                                    ...x,
-	                                    kind,
-	                                    timeline: undefined,
-	                                    choices: kind === 'scene' ? (Array.isArray(x.choices) ? x.choices : []) : undefined
-	                                  }))
-	                                }}
-	                              >
+                                  setNode((x) => ({
+                                    ...x,
+                                    kind,
+                                    timeline: undefined,
+                                    choices: Array.isArray(x.choices) ? x.choices : []
+                                  }))
+                                }}
+                              >
 	                                <option value="scene">场景</option>
 	                                <option value="ending">结局</option>
 	                              </select>
@@ -3014,12 +3376,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	                        </div>
 	                      </div>
 
-	                      {rightFold.choices ? (
-	                        <div className="subfold-body">
-	                          {n.kind !== 'scene' ? <div className="hint">结局节点使用结局卡，不显示对话与选项。</div> : null}
-	                          {n.kind === 'scene' ? (
-	                            <div className="form" style={{ gap: 10 }}>
-	                              {(() => {
+                      {rightFold.choices ? (
+                        <div className="subfold-body">
+                          <div className="form" style={{ gap: 10 }}>
+                              {(() => {
 	                                const ui = ((n.visuals && (n.visuals as any).ui) || {}) as NodeUiV1
 	                                const dialog = (ui.dialog || {}) as DialogLayoutV1
 	                                const choicesUi = (ui.choices || {}) as ChoicesLayoutV1
@@ -3193,20 +3553,19 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	                                </div>
 	                              ))}
 
-	                              {!choicesLocked ? <button
-	                                className="btn secondary"
-	                                onClick={() => {
-	                                  const toNodeId = doc.story?.startNodeId || nodes[0]?.id || ''
-	                                  const next: ChoiceV1 = { id: uid('choice'), text: '继续', toNodeId }
-	                                  setNode((x) => ({ ...x, choices: [...(Array.isArray(x.choices) ? x.choices : []), next] }))
-	                                }}
-	                              >
-	                                + 添加选项
-	                              </button> : null}
-	                            </div>
-	                          ) : null}
-	                        </div>
-	                      ) : null}
+                              {!choicesLocked ? <button
+                                className="btn secondary"
+                                onClick={() => {
+                                  const toNodeId = doc.story?.startNodeId || nodes[0]?.id || ''
+                                  const next: ChoiceV1 = { id: uid('choice'), text: '继续', toNodeId }
+                                  setNode((x) => ({ ...x, choices: [...(Array.isArray(x.choices) ? x.choices : []), next] }))
+                                }}
+                              >
+                                + 添加选项
+                              </button> : null}
+                            </div>
+                        </div>
+                      ) : null}
 	                    </div>
 	                  </div>
 	                </div>
@@ -3546,12 +3905,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	                </div>
 	              </div>
 
-	              {rightFold.choices ? (
-	                <div className="fold-body">
-	                  {n.kind !== 'scene' ? <div className="hint">结局节点不包含对话与选项。</div> : null}
-	                  {n.kind === 'scene' ? (
-	                    <div className="form" style={{ gap: 10 }}>
-	                      {(() => {
+              {rightFold.choices ? (
+                <div className="fold-body">
+                  <div className="form" style={{ gap: 10 }}>
+                      {(() => {
 	                        const ui = ((n.visuals && (n.visuals as any).ui) || {}) as NodeUiV1
 	                        const dialog = (ui.dialog || {}) as DialogLayoutV1
 	                        const choicesUi = (ui.choices || {}) as ChoicesLayoutV1
@@ -3707,20 +4064,19 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	                        </div>
 	                      ))}
 
-	                      <button
-	                        className="btn secondary"
-	                        onClick={() => {
-	                          const toNodeId = doc.story?.startNodeId || nodes[0]?.id || ''
-	                          const next: ChoiceV1 = { id: uid('choice'), text: '继续', toNodeId }
-	                          setNode((x) => ({ ...x, choices: [...(Array.isArray(x.choices) ? x.choices : []), next] }))
-	                        }}
-	                      >
-	                        + 添加选项
-	                      </button>
-	                    </div>
-	                  ) : null}
-	                </div>
-	              ) : null}
+                      <button
+                        className="btn secondary"
+                        onClick={() => {
+                          const toNodeId = doc.story?.startNodeId || nodes[0]?.id || ''
+                          const next: ChoiceV1 = { id: uid('choice'), text: '继续', toNodeId }
+                          setNode((x) => ({ ...x, choices: [...(Array.isArray(x.choices) ? x.choices : []), next] }))
+                        }}
+                      >
+                        + 添加选项
+                      </button>
+                    </div>
+                </div>
+              ) : null}
 	            </div>
 
 	            */}
@@ -5230,6 +5586,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	          <button className="btn secondary" onClick={() => restartRuntime()} disabled={!doc.story}>播放</button>
 	          <button className="btn" onClick={() => saveCurrent()} disabled={busy || doc.mode !== 'project' || !dirty}>保存</button>
 	          <button className="btn secondary" onClick={() => exportCurrent()} disabled={busy || doc.mode !== 'project'}>导出预览</button>
+	          <button className="btn secondary" onClick={() => exportPublishCurrent()} disabled={busy || doc.mode !== 'project'}>导出发布包(H5)</button>
 	        </div>
 	      </div>
 
@@ -5329,7 +5686,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
               <div className="compose-overlay">
               {(() => {
                 const node = ensureNode(effectivePreviewNode)
-                const showEnding = Boolean(rt.endingCard) || node.kind === 'ending' || rt.wait.kind === 'end'
+                const showEnding = Boolean(rt.endingCard) || rt.wait.kind === 'end'
 
                 const eventList = Array.isArray(doc.project?.events) ? doc.project.events : []
 
@@ -5364,7 +5721,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
                   window.setTimeout(() => setSelection({ type: 'node', id: to }), 200)
                 }
 
-                const card = rt.endingCard || (node.kind === 'ending' ? defaultEndingCardForNode(node) : null)
+                const card = showEnding ? (rt.endingCard || (node.kind === 'ending' ? defaultEndingCardForNode(node) : null)) : null
 
                 const dialogPreset = normalizeDialogPreset((node as any)?.visuals?.ui?.dialog?.preset)
                 const dialogX = clamp01(numberOr((node as any)?.visuals?.ui?.dialog?.x, 0.5))
@@ -5418,9 +5775,14 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
                 const displayText = (() => {
                   const t = String(rt.text || '')
-                  if (t.trim()) return t
-                  const fallback = String((node as any)?.body?.text || '')
-                  return fallback
+                  const raw = t.trim() ? t : String((node as any)?.body?.text || '')
+                  // Runtime text should not repeat "选项1/选项2" lines; buttons already render choices.
+                  const lines = String(raw).split(/\r?\n/)
+                  return lines
+                    .filter((original) => !/^\s*(?:选项|option)\s*(?:\d{1,2}|[A-Z]|[一二三四五六七八九十])\s*[:：]/i.test(original))
+                    .map((ln) => ln.trim())
+                    .filter(Boolean)
+                    .join('\n')
                 })()
                 const hasText = String(displayText || '').trim().length > 0
 
@@ -5442,7 +5804,6 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
                 const startDragDialog = (e: React.PointerEvent) => {
                   if (!stageViewport) return
-                  if (node.kind !== 'scene') return
                   if (dialogPreset !== 'custom') return
                   const uiRect = stageUiRef.current?.getBoundingClientRect()
                   if (!uiRect || !uiRect.width || !uiRect.height) return
@@ -5505,57 +5866,47 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
                 }
 
                 return showEnding ? (
-                  <div className="ending-wrap" style={{ position: 'absolute', inset: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-                    <div className="ending-card" style={{ pointerEvents: 'auto' }}>
-                    <div className="ending-title">{card?.title || '结局'}</div>
-                    {card?.bullets?.length ? (
-                      <ul className="ending-bullets">
-                        {card.bullets.map((b, i) => (
-                          <li key={String(i)}>{b}</li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    <div className="ending-moral">{card?.moral || '故事结束。'}</div>
-                    <div className="ending-actions">
-                      {(card?.buttons || []).map((b, i) => {
-                        const bt = String((b as any).type || '')
-                        const label = String((b as any).label || '')
-                        const key = `${bt}_${i}`
-                        if (bt === 'restart') {
-                          return (
-                            <button key={key} className="btn" onClick={() => restartRuntime()}>
-                              {label || '重新开始'}
-                            </button>
-                          )
-                        }
-                        if (bt === 'backToHub') {
-                          return (
-                            <button
-                              key={key}
-                              className="btn secondary"
-                              onClick={() => {
-                                try {
-                                  if (props.onBackToHub) {
-                                    props.onBackToHub()
-                                  } else {
-                                    window.location.reload()
-                                  }
-                                } catch {
-                                  window.location.reload()
-                                }
-                              }}
-                            >
-                              {label || '返回工作台'}
-                            </button>
-                          )
-                        }
-                        return (
-                          <button key={key} className="btn secondary" onClick={() => setToast(label || '未实现按钮')}>
-                            {label || '按钮'}
-                          </button>
-                        )
-                      })}
-                    </div>
+                  <div style={dialogWrapStyle}>
+                    <div className="dialog-card" style={dialogCardStyle}>
+                      {card?.bullets?.length ? (
+                        <ul className="ending-bullets">
+                          {card.bullets.map((b, i) => (
+                            <li key={String(i)}>{b}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      <div className="dialog-text">{card?.moral || '故事结束。'}</div>
+                      <div className={`dialog-choices ${choicesDir === 'column' ? 'vertical' : ''}`} style={choicesStyle}>
+                        {(card?.buttons || [])
+                          .filter((b) => String((b as any).type || '') !== 'backToHub')
+                          .map((b, i) => {
+                            const bt = String((b as any).type || '')
+                            const label = String((b as any).label || '')
+                            const key = `${bt}_${i}`
+                            if (bt === 'restart') {
+                              return (
+                                <button
+                                  key={key}
+                                  className="choice-btn"
+                                  onClick={() => restartRuntime()}
+                                  style={choicesDir === 'column' && choicesAlign === 'stretch' ? { width: '100%' } : undefined}
+                                >
+                                  {label || '重新开始'}
+                                </button>
+                              )
+                            }
+                            return (
+                              <button
+                                key={key}
+                                className="choice-btn"
+                                onClick={() => setToast(label || '未实现按钮')}
+                                style={choicesDir === 'column' && choicesAlign === 'stretch' ? { width: '100%' } : undefined}
+                              >
+                                {label || '按钮'}
+                              </button>
+                            )
+                          })}
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -5640,6 +5991,59 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         </div>
       ) : null}
 
+      {latestExportModal.open ? (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 80,
+            display: 'grid',
+            placeItems: 'center',
+            background: 'rgba(2,6,23,0.82)'
+          }}
+        >
+          <div
+            style={{
+              width: 'min(560px, calc(100vw - 32px))',
+              background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
+              border: '1px solid rgba(96,165,250,0.35)',
+              borderRadius: 16,
+              boxShadow: '0 24px 60px rgba(0,0,0,0.45)',
+              padding: 18
+            }}
+          >
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#e5e7eb', marginBottom: 8 }}>导出确认</div>
+            <div style={{ fontSize: 14, color: '#cbd5e1', lineHeight: 1.6 }}>
+              已存在 `latest` 导出，当前操作将覆盖之前的预览内容。请选择接下来的动作。
+            </div>
+            <div
+              style={{
+                marginTop: 14,
+                padding: '10px 12px',
+                borderRadius: 10,
+                border: '1px solid rgba(148,163,184,0.25)',
+                background: 'rgba(15,23,42,0.75)',
+                color: '#bfdbfe',
+                fontSize: 13
+              }}
+            >
+              当前任务：{latestExportModal.mode === 'publish' ? '导出发布包(H5)' : '导出预览'}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <button className="btn secondary" onClick={() => closeLatestExportModal('cancel')}>
+                取消
+              </button>
+              <button className="btn secondary" onClick={() => closeLatestExportModal('delete')}>
+                删除旧导出后继续
+              </button>
+              <button className="btn" onClick={() => closeLatestExportModal('overwrite')}>
+                直接覆盖并继续
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
 	      <AiBackgroundModal
 	        open={aiOpen}
 	        value={aiReq}
@@ -5698,19 +6102,21 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	                globalPrompt: globalPromptForAi,
 	                globalNegativePrompt: aiReq.globalNegativePrompt,
 	                aspectRatio: aiReq.aspectRatio,
-	                style: aiReq.style
+	                style: aiReq.style,
+                  outputLanguage: 'en'
 	              })
               const nextGlobalPrompt = String(res.result?.globalPrompt || '').trim()
               const nextGlobalNegativePrompt = String(res.result?.globalNegativePrompt || '').trim()
               const bgOnlyNeg = '无人物,无动物,无角色'
-              const nextSceneNeg0 = String(res.result?.negativePrompt || '').trim()
+              const nextSceneNeg0 = String(res.result?.finalNegativePrompt || res.result?.negativePrompt || '').trim()
+              const nextScenePrompt = String(res.result?.finalPrompt || res.result?.prompt || '').trim()
               const nextSceneNeg = aiReq.backgroundOnly ? [nextSceneNeg0, bgOnlyNeg].filter(Boolean).join(', ') : nextSceneNeg0
               setAiReq((prev) => ({
                 ...prev,
                 userInput,
                 globalPrompt: nextGlobalPrompt,
                 globalNegativePrompt: nextGlobalNegativePrompt,
-                prompt: String(res.result?.prompt || '').trim(),
+                prompt: nextScenePrompt,
                 negativePrompt: nextSceneNeg,
                 aspectRatio: (res.result?.aspectRatio as any) || prev.aspectRatio,
                 style: (res.result?.style as any) || prev.style
@@ -5719,13 +6125,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
                 const nodeName = String((node as any).body?.title || node.name || node.id).trim() || node.id
                 upsertStoryboardScenePrompt(selection.id, nodeName, {
                   userInput,
-                  prompt: String(res.result?.prompt || '').trim(),
+                  prompt: nextScenePrompt,
                   negativePrompt: nextSceneNeg
                 })
                 setSbItems((prev) =>
                   prev.map((x) =>
                     x.nodeId === selection.id
-                      ? { ...x, nodeName, userInput, prompt: String(res.result?.prompt || '').trim(), negativePrompt: nextSceneNeg }
+                      ? { ...x, nodeName, userInput, prompt: nextScenePrompt, negativePrompt: nextSceneNeg }
                       : x
                   )
                 )
@@ -5808,18 +6214,20 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 			              globalPrompt: globalPromptForAi,
 			              globalNegativePrompt: aiReq.globalNegativePrompt,
 			              aspectRatio: aiReq.aspectRatio,
-			              style: aiReq.style
+			              style: aiReq.style,
+                      outputLanguage: 'en'
 			            })
 		            const nextGlobalPrompt = String(res.result?.globalPrompt || '').trim()
 		            const nextGlobalNegativePrompt = String(res.result?.globalNegativePrompt || '').trim()
                 const bgOnlyNeg = '无人物,无动物,无角色'
-                const nextSceneNeg0 = String(res.result?.negativePrompt || '').trim()
+                const nextSceneNeg0 = String(res.result?.finalNegativePrompt || res.result?.negativePrompt || '').trim()
+                const nextScenePrompt = String(res.result?.finalPrompt || res.result?.prompt || '').trim()
                 const nextSceneNeg = aiReq.backgroundOnly ? [nextSceneNeg0, bgOnlyNeg].filter(Boolean).join(', ') : nextSceneNeg0
 		            setAiReq((prev) => ({
 		              ...prev,
 		              globalPrompt: nextGlobalPrompt,
 		              globalNegativePrompt: nextGlobalNegativePrompt,
-		              prompt: String(res.result?.prompt || '').trim(),
+		              prompt: nextScenePrompt,
 		              negativePrompt: nextSceneNeg,
 		              aspectRatio: (res.result?.aspectRatio as any) || prev.aspectRatio,
 		              style: (res.result?.style as any) || prev.style
@@ -5830,13 +6238,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
                   const nodeName = node ? String((node as any).body?.title || node.name || node.id).trim() || node.id : selection.id
                   upsertStoryboardScenePrompt(selection.id, nodeName, {
                     userInput,
-                    prompt: String(res.result?.prompt || '').trim(),
+                    prompt: nextScenePrompt,
                     negativePrompt: nextSceneNeg
                   })
                   setSbItems((prev) =>
                     prev.map((x) =>
                       x.nodeId === selection.id
-                        ? { ...x, nodeName, userInput, prompt: String(res.result?.prompt || '').trim(), negativePrompt: nextSceneNeg }
+                        ? { ...x, nodeName, userInput, prompt: nextScenePrompt, negativePrompt: nextSceneNeg }
                         : x
                     )
                   )
@@ -5991,6 +6399,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           open={sbOpen}
           value={{
             prompt: '',
+            entitySpec: sbReq.entitySpec,
             globalPrompt: sbReq.globalPrompt,
             globalNegativePrompt: sbReq.globalNegativePrompt,
             style: sbReq.style,
@@ -6005,15 +6414,18 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           items={sbItems}
           busyGenerate={sbBusyGenerate}
           busyApply={sbBusyApply}
+          busyEntity={sbBusyEntity}
           elapsedMs={sbElapsedMs}
           generatingNodeId={sbGeneratingNodeId}
           generatingNodeElapsedMs={sbGeneratingNodeElapsedMs}
           error={sbError}
           logs={sbLogs}
-          onChange={(next) =>
+          onGenerateEntity={runStoryboardGenerateEntitySpec}
+          onChange={(next) => {
             setSbReq((prev) => {
               const merged = {
                 ...prev,
+                entitySpec: String((next as any).entitySpec || ''),
                 globalPrompt: String(next.globalPrompt || ''),
                 globalNegativePrompt: String(next.globalNegativePrompt || ''),
                 style: (next.style || prev.style) as any,
@@ -6037,7 +6449,23 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
               })
               return merged
             })
-          }
+            if (doc.mode === 'project') {
+              setDocProject((p) => {
+                const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+                const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+                const nextState = {
+                  ...stateIn,
+                  aiBackground: {
+                    ...aiBgIn,
+                    storyboardEntitySpec: String((next as any).entitySpec || ''),
+                    globalPrompt: String(next.globalPrompt || ''),
+                    globalNegativePrompt: String(next.globalNegativePrompt || '')
+                  }
+                }
+                return { ...p, state: nextState }
+              })
+            }
+          }}
           onChangeItem={(nodeId, patch) =>
             setSbItems((prev) => {
               const next = prev.map((x) => (x.nodeId === nodeId ? { ...x, ...patch } : x))
@@ -6077,14 +6505,20 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
             appendSbLog('已清空全局负向提示词')
           }}
           onClose={() => {
-            if (sbBusyGenerate || sbBusyApply) return
+            if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
             setSbOpen(false)
             setSbError('')
           }}
           onGenerateAll={() => void runStoryboardGenerateAllPrompts('all')}
           onRetryPending={() => void runStoryboardGenerateAllPrompts('pending')}
           onApplyAll={() => void runStoryboardValidateAndApply('all')}
+          canApplyAll={sbAllPromptsReady}
           onRetryApplyPending={() => void runStoryboardValidateAndApply('pending')}
+          queuePhase={sbQueuePhase}
+          queuePaused={sbQueuePaused}
+          onPauseQueue={pauseSbQueue}
+          onResumeQueue={resumeSbQueue}
+          onCancelQueue={cancelSbQueue}
         />
 
         <AiCharacterSpriteModal

@@ -6,7 +6,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import pluginStoryPixi from '@game-studio/plugin-story-pixi'
+import pluginStoryPixi from './plugins/storyPixi.js'
 import { genId, generateScriptDraft, generateScriptsFromPrompt, guessTitleFromPrompt, repairScriptDraft } from './ai/scripts.js'
 import { getAiStatusSnapshot, runAiDiagnostics } from './ai/diagnostics.js'
 import { analyzeScriptsForBlueprint } from './ai/analyze.js'
@@ -16,6 +16,7 @@ import { generateBackgroundPrompt } from './ai/imagePrompt.js'
 import { generateCharacterFingerprint } from './ai/characterPrompt.js'
 import { getDoubaoImagesConfigSnapshot } from './ai/doubao.js'
 import { diagnoseOllamaText } from './ai/ollama.js'
+import { classifyAiError, createTraceId, logStage } from './ai/runtime.js'
 import { compileBlueprintFromScripts } from './blueprint/compile.js'
 import { validateBlueprintDoc } from './blueprint/validate.js'
 import { loadEnv } from './env.js'
@@ -23,6 +24,7 @@ import { diagnoseOpenAI, reviewBlueprintViaOpenAI } from './ai/openai.js'
 import { reviewBlueprintLocally } from './ai/blueprintReviewLocal.js'
 import dns from 'node:dns/promises'
 import { getEffectiveStudioConfig, writeStudioSettings } from './studio/settings.js'
+import { normalizeProjectDoc } from './studio/projectState.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -37,7 +39,7 @@ try {
   const hasKey = Boolean(String(process.env.OPENAI_API_KEY || '').trim())
   const model = String(process.env.STUDIO_AI_MODEL || '')
   console.log(
-    `[game_studio] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} openaiKey=${hasKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''}`
+    `[game_studio] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} openaiKey=${hasKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''} aiInit=manual_only`
   )
 } catch (_) {}
 
@@ -45,6 +47,7 @@ try {
 app.use('*', cors({ origin: '*', allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }))
 
 app.get('/api/health', (c) => c.json({ ok: true, service: 'game_studio_server' }))
+app.get('/favicon.ico', (c) => c.body(null, 204))
 app.get('/api/ai/status', async (c) => {
   // Non-sensitive snapshot for debugging effective config + last diagnostics.
   const snap = getAiStatusSnapshot()
@@ -84,9 +87,96 @@ const ROOT = ENV_ROOT
   ? (path.isAbsolute(ENV_ROOT) ? ENV_ROOT : path.resolve(process.cwd(), ENV_ROOT))
   : DEFAULT_ROOT
 const PROJECTS_DIR = path.join(ROOT, 'projects')
-const DEMOS_DIR = path.join(ROOT, 'demos')
 const DEMO_LIBRARY_DIR = path.join(ROOT, 'demo_library')
 const TOOL_VERSION = '0.1.0'
+
+function runCommand(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...(opts || {}) })
+    const out = []
+    const err = []
+    p.stdout.on('data', (d) => out.push(d))
+    p.stderr.on('data', (d) => err.push(d))
+    p.on('error', (e) => reject(e))
+    p.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout: Buffer.concat(out).toString('utf-8'), stderr: Buffer.concat(err).toString('utf-8') })
+        return
+      }
+      const msg = Buffer.concat(err).toString('utf-8') || `command_failed: ${cmd} exit=${code}`
+      reject(new Error(msg))
+    })
+  })
+}
+
+async function packageDistAsZip(outDir, zipName) {
+  const attempts = [
+    async () => runCommand('zip', ['-qr', zipName, 'dist'], { cwd: outDir }),
+    async () => runCommand('7z', ['a', '-tzip', zipName, 'dist'], { cwd: outDir }),
+    async () => runCommand('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', 'dist', zipName], { cwd: outDir }),
+    async () =>
+      runCommand(
+        'powershell',
+        ['-NoProfile', '-Command', `Compress-Archive -Path "dist\\*" -DestinationPath "${zipName}" -Force`],
+        { cwd: outDir }
+      )
+  ]
+  let lastErr = null
+  for (const fn of attempts) {
+    try {
+      await fn()
+      return
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  throw lastErr || new Error('zip_failed')
+}
+
+async function sanitizeExportIndexHtml(indexPath) {
+  try {
+    let html = await readFile(indexPath, 'utf-8')
+    let next = html
+    // Fix broken regex emitted by older template versions.
+    next = next.replaceAll("replace(/^/+/, '')", "replace(/^\\\\/+/, '')")
+    // Remove export-only topbar.
+    next = next.replace(
+      /<div id="topbar">[\s\S]*?<\/div>\s*<div id="stageUI">/m,
+      '<div id="stageUI">'
+    )
+    // Ensure runtime text removes duplicated choice lines (e.g. "选项1: xxx", "Option 1: xxx").
+    next = next.replace(
+      /const displayText = showEnding[\s\S]*?if \(dialogTextEl\) dialogTextEl\.textContent = hasText \? String\(displayText\) : ''/m,
+      `const displayText = showEnding
+            ? (String(endingText || '').trim() ? String(endingText) : fallback)
+            : (String(text || '').trim() ? String(text) : fallback)
+          const filtered = String(displayText)
+            .split(/\\r?\\n/)
+            .filter((original) => !/^\\s*(?:选项|option)\\s*(?:\\d{1,2}|[A-Z]|[一二三四五六七八九十])\\s*[:：]/i.test(original))
+            .map((ln) => ln.trim())
+            .filter(Boolean)
+            .join('\\n')
+          const finalText = filtered || displayText
+          const hasText = String(finalText || '').trim().length > 0
+          if (dialogTextEl) dialogTextEl.textContent = hasText ? String(finalText) : ''`
+    )
+    if (next !== html) await writeFile(indexPath, next, 'utf-8')
+  } catch (_) {}
+}
+
+async function buildProjectDistForExport(id, dir) {
+  const buildId = 'latest'
+  const out = projectBuildDir(id, buildId)
+  try {
+    await rm(out, { recursive: true, force: true })
+  } catch (_) {}
+  const dist = path.join(out, 'dist')
+  await mkdir(dist, { recursive: true })
+  const logger = { info: () => {}, warn: () => {}, error: () => {} }
+  await pluginStoryPixi.build({ projectId: id, projectDir: dir, outDir: dist, toolVersion: TOOL_VERSION, logger })
+  await sanitizeExportIndexHtml(path.join(dist, 'index.html'))
+  return { buildId, out, dist }
+}
 
 function normalizeSdwebuiBaseUrl(raw) {
   let s = String(raw || '').trim()
@@ -105,6 +195,37 @@ function normalizeComfyuiBaseUrl(raw) {
 
 function normalizeComfyModelName(raw) {
   return String(raw || '').trim().replace(/\s+\[[^\]]+\]\s*$/, '').trim()
+}
+
+function extractComfyChoiceList(raw) {
+  // ComfyUI object_info enum field shape is usually:
+  // - ["a.safetensors", ...]
+  // - [["a.safetensors", ...], {"tooltip":"..."}]
+  // This helper normalizes both.
+  if (Array.isArray(raw) && raw.length >= 1 && Array.isArray(raw[0])) {
+    return raw[0].map((x) => String(x || '').trim()).filter(Boolean)
+  }
+  if (Array.isArray(raw)) {
+    return raw.map((x) => String(x || '').trim()).filter(Boolean)
+  }
+  return []
+}
+
+function extractStringListFromUnknown(raw) {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((x) => {
+        if (x == null) return ''
+        if (typeof x === 'string') return x.trim()
+        if (typeof x === 'object') {
+          const o = x
+          return String(o.name || o.filename || o.file || o.model_name || '').trim()
+        }
+        return String(x).trim()
+      })
+      .filter(Boolean)
+  }
+  return []
 }
 
 app.get('/api/studio/settings', async (c) => {
@@ -174,10 +295,13 @@ app.get('/api/studio/comfyui/models', async (c) => {
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const [ckptResp, loraRespA, loraRespB] = await Promise.all([
+    const [ckptResp, loraRespA, loraRespB, modelsResp, ckptListResp, loraListResp] = await Promise.all([
       fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, { method: 'GET', signal: controller.signal }).catch(() => null),
       fetch(`${baseUrl}/object_info/LoraLoader`, { method: 'GET', signal: controller.signal }).catch(() => null),
-      fetch(`${baseUrl}/object_info/LoraLoaderModelOnly`, { method: 'GET', signal: controller.signal }).catch(() => null)
+      fetch(`${baseUrl}/object_info/LoraLoaderModelOnly`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/models`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/models/checkpoints`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/models/loras`, { method: 'GET', signal: controller.signal }).catch(() => null)
     ])
     if (!ckptResp || !ckptResp.ok) {
       return c.json({ success: false, error: 'comfyui_models_failed', message: `HTTP_${ckptResp ? ckptResp.status : 0}`, baseUrl }, 502)
@@ -186,7 +310,14 @@ app.get('/api/studio/comfyui/models', async (c) => {
     const ckpts = ckptJson && ckptJson.CheckpointLoaderSimple && ckptJson.CheckpointLoaderSimple.input && ckptJson.CheckpointLoaderSimple.input.required
       ? ckptJson.CheckpointLoaderSimple.input.required.ckpt_name
       : null
-    const models = Array.isArray(ckpts) ? ckpts.map((x) => String(x || '').trim()).filter(Boolean) : []
+    const modelSet = new Set(extractComfyChoiceList(ckpts))
+    const modelsJson = modelsResp && modelsResp.ok ? await modelsResp.json().catch(() => null) : null
+    const ckptListJson = ckptListResp && ckptListResp.ok ? await ckptListResp.json().catch(() => null) : null
+    for (const x of extractStringListFromUnknown(ckptListJson)) modelSet.add(String(x || '').trim())
+    if (modelsJson && typeof modelsJson === 'object') {
+      for (const x of extractStringListFromUnknown(modelsJson.checkpoints)) modelSet.add(String(x || '').trim())
+    }
+    const models = Array.from(modelSet).filter(Boolean)
     const loraJsonA = loraRespA && loraRespA.ok ? await loraRespA.json().catch(() => null) : null
     const loraJsonB = loraRespB && loraRespB.ok ? await loraRespB.json().catch(() => null) : null
     const loraA = loraJsonA && loraJsonA.LoraLoader && loraJsonA.LoraLoader.input && loraJsonA.LoraLoader.input.required
@@ -196,13 +327,18 @@ app.get('/api/studio/comfyui/models', async (c) => {
       ? loraJsonB.LoraLoaderModelOnly.input.required.lora_name
       : null
     const loraSet = new Set()
-    for (const x of Array.isArray(loraA) ? loraA : []) {
+    for (const x of extractComfyChoiceList(loraA)) {
       const s = String(x || '').trim()
       if (s) loraSet.add(s)
     }
-    for (const x of Array.isArray(loraB) ? loraB : []) {
+    for (const x of extractComfyChoiceList(loraB)) {
       const s = String(x || '').trim()
       if (s) loraSet.add(s)
+    }
+    const loraListJson = loraListResp && loraListResp.ok ? await loraListResp.json().catch(() => null) : null
+    for (const x of extractStringListFromUnknown(loraListJson)) loraSet.add(String(x || '').trim())
+    if (modelsJson && typeof modelsJson === 'object') {
+      for (const x of extractStringListFromUnknown(modelsJson.loras)) loraSet.add(String(x || '').trim())
     }
     const loras = Array.from(loraSet)
     return c.json({
@@ -454,7 +590,6 @@ app.put('/api/ai/rules', async (c) => {
 
 async function ensureDirs() {
   await mkdir(PROJECTS_DIR, { recursive: true })
-  await mkdir(DEMOS_DIR, { recursive: true })
   await mkdir(DEMO_LIBRARY_DIR, { recursive: true })
 }
 
@@ -462,12 +597,16 @@ function projectDir(id) {
   return path.join(PROJECTS_DIR, String(id))
 }
 
-function demoLibDir(demoId) {
-  return path.join(DEMO_LIBRARY_DIR, String(demoId))
+function projectBuildsDir(id) {
+  return path.join(projectDir(id), 'builds')
 }
 
-function demoDir(projectId, buildId) {
-  return path.join(DEMOS_DIR, String(projectId), String(buildId))
+function projectBuildDir(projectId, buildId) {
+  return path.join(projectBuildsDir(projectId), String(buildId))
+}
+
+function demoLibDir(demoId) {
+  return path.join(DEMO_LIBRARY_DIR, String(demoId))
 }
 
 async function readJson(p) {
@@ -641,6 +780,18 @@ function defaultBlueprint() {
   }
 }
 
+function normalizeProjectAndDetectChanges(project) {
+  const before = project && typeof project === 'object' ? project : {}
+  const after = normalizeProjectDoc(before)
+  let changed = false
+  try {
+    changed = JSON.stringify(before?.state || null) !== JSON.stringify(after?.state || null)
+  } catch (_) {
+    changed = true
+  }
+  return { project: after, changed }
+}
+
 async function touchProjectUpdatedAt(dir) {
   try {
     const curr = await readJson(path.join(dir, 'project.json'))
@@ -664,8 +815,10 @@ app.get('/api/projects', async (c) => {
     const dir = projectDir(id)
     if (!(await existsDir(dir))) continue
     try {
-      const p = await readJson(path.join(dir, 'project.json'))
+      const p0 = await readJson(path.join(dir, 'project.json'))
+      const { project: p, changed } = normalizeProjectAndDetectChanges(p0)
       items.push(p)
+      if (changed) await writeJson(path.join(dir, 'project.json'), p)
     } catch (_) {}
   }
   items.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
@@ -679,7 +832,19 @@ app.post('/api/projects', async (c) => {
   const id = crypto.randomUUID ? crypto.randomUUID() : `p_${Math.random().toString(36).slice(2, 10)}`
   const dir = projectDir(id)
   await mkdir(path.join(dir, 'assets'), { recursive: true })
-  const project = { schemaVersion: '2.0', id, title, pluginId: 'story-pixi', pluginVersion: '0.1.0', createdAt: nowIso(), updatedAt: nowIso(), characters: [], assets: [], events: [], state: { vars: [] } }
+  const project = normalizeProjectDoc({
+    schemaVersion: '2.0',
+    id,
+    title,
+    pluginId: 'story-pixi',
+    pluginVersion: '0.1.0',
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    characters: [],
+    assets: [],
+    events: [],
+    state: { vars: [] }
+  })
   await writeJson(path.join(dir, 'project.json'), project)
   await writeJson(path.join(dir, 'story.json'), defaultStory())
 
@@ -717,6 +882,9 @@ app.post('/api/projects/ai/create', async (c) => {
   let genMeta = null
   const requestedProvider = String(studio.effective.scripts.provider || 'local').toLowerCase()
   const requestedModel = studio.effective.scripts.model || null
+  if (!requestedProvider || requestedProvider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“写故事脚本”并选择 Provider/Model' }, 400)
+  }
   const globalRules = await readGlobalRules(ROOT)
   try {
     console.log(
@@ -789,7 +957,7 @@ app.post('/api/projects/ai/create', async (c) => {
 
   await mkdir(path.join(dir, 'assets'), { recursive: true })
 
-  const project = {
+  const project = normalizeProjectDoc({
     schemaVersion: '2.0',
     id,
     title,
@@ -801,7 +969,7 @@ app.post('/api/projects/ai/create', async (c) => {
     assets: [],
     events: [],
     state: { vars: [] }
-  }
+  })
 
   await writeJson(path.join(dir, 'project.json'), project)
   await writeJson(path.join(dir, 'story.json'), defaultStory())
@@ -882,6 +1050,9 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   let genMeta = null
   const requestedProvider = String(studio.effective.scripts.provider || 'local').toLowerCase()
   const requestedModel = studio.effective.scripts.model || null
+  if (!requestedProvider || requestedProvider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“写故事脚本”并选择 Provider/Model' }, 400)
+  }
   const globalRules = await readGlobalRules(ROOT)
   try {
     console.log(
@@ -927,7 +1098,7 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
     } catch (_) {}
   }
 
-  const currProject = await readJson(path.join(dir, 'project.json'))
+  const currProject = normalizeProjectDoc(await readJson(path.join(dir, 'project.json')))
   const genTitle = gen && typeof gen.title === 'string' ? String(gen.title).trim() : ''
   const nextTitle = titleIn || String(currProject?.title || '').trim() || genTitle || guessTitleFromPrompt(prompt)
 
@@ -953,7 +1124,7 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   await writeJson(path.join(dir, 'scripts.json'), scriptsOut)
 
   // keep titles + timestamps in sync
-  const nextProject = { ...(currProject || {}), id, title: nextTitle, updatedAt: nowIso() }
+  const nextProject = normalizeProjectDoc({ ...(currProject || {}), id, title: nextTitle, updatedAt: nowIso() })
   await writeJson(path.join(dir, 'project.json'), nextProject)
   try {
     const metaPath = path.join(dir, 'meta.json')
@@ -1233,7 +1404,9 @@ app.get('/api/projects/:id', async (c) => {
   const id = c.req.param('id')
   const dir = projectDir(id)
   if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
-  const project = await readJson(path.join(dir, 'project.json'))
+  const p0 = await readJson(path.join(dir, 'project.json'))
+  const { project, changed } = normalizeProjectAndDetectChanges(p0)
+  if (changed) await writeJson(path.join(dir, 'project.json'), project)
   const story = await readJson(path.join(dir, 'story.json'))
   return c.json({ success: true, project, story })
 })
@@ -1247,8 +1420,10 @@ app.put('/api/projects/:id', async (c) => {
   const project = body?.project && typeof body.project === 'object' ? body.project : null
   const story = body?.story && typeof body.story === 'object' ? body.story : null
 
-  const curr = await readJson(path.join(dir, 'project.json'))
-  const next = project ? { ...curr, ...project, id, updatedAt: nowIso() } : { ...curr, updatedAt: nowIso() }
+  const curr0 = await readJson(path.join(dir, 'project.json'))
+  const { project: curr } = normalizeProjectAndDetectChanges(curr0)
+  const next0 = project ? { ...curr, ...project, id, updatedAt: nowIso() } : { ...curr, updatedAt: nowIso() }
+  const next = normalizeProjectDoc(next0)
   await writeJson(path.join(dir, 'project.json'), next)
   if (story) await writeJson(path.join(dir, 'story.json'), story)
 
@@ -1279,9 +1454,9 @@ app.delete('/api/projects/:id', async (c) => {
     return c.json({ success: false, error: 'delete_failed', message: e && e.message ? e.message : String(e) }, 500)
   }
 
-  // best-effort: remove demos for project
+  // best-effort: remove exported builds for project
   try {
-    await rm(path.join(DEMOS_DIR, String(id)), { recursive: true, force: true })
+    await rm(projectBuildsDir(id), { recursive: true, force: true })
   } catch (_) {}
 
   return c.json({ success: true })
@@ -1655,7 +1830,7 @@ app.post('/api/projects/:id/compile/compose', async (c) => {
 
   const story = { schemaVersion: '2.0', startNodeId, nodes: storyNodes }
 
-  const nextProject = {
+  const nextProject = normalizeProjectDoc({
     schemaVersion: '2.0',
     id: String(id),
     title: String(currProject && currProject.title || ''),
@@ -1676,7 +1851,7 @@ app.post('/api/projects/:id/compile/compose', async (c) => {
     events: Array.isArray(currProject && currProject.events) ? currProject.events : [],
     state: (currProject && typeof currProject.state === 'object' && currProject.state) ? currProject.state : { vars: [] },
     stage: (currProject && typeof currProject.stage === 'object' && currProject.stage) ? currProject.stage : undefined
-  }
+  })
 
   await writeJson(path.join(dir, 'project.json'), nextProject)
   await writeJson(path.join(dir, 'story.json'), story)
@@ -1736,25 +1911,82 @@ app.post('/api/projects/:id/export', async (c) => {
   const dir = projectDir(id)
   if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
 
-  const buildId = String(Date.now())
-  const out = demoDir(id, buildId)
-  const dist = path.join(out, 'dist')
-  await mkdir(dist, { recursive: true })
-
-  const logger = {
-    info: () => {},
-    warn: () => {},
-    error: () => {}
-  }
-
-  // P0：固定 story-pixi 插件
-  await pluginStoryPixi.build({ projectId: id, projectDir: dir, outDir: dist, toolVersion: TOOL_VERSION, logger })
+  const { buildId } = await buildProjectDistForExport(id, dir)
 
   return c.json({
     success: true,
     buildId,
     distUrl: `/demos/${encodeURIComponent(id)}/${encodeURIComponent(buildId)}/dist/index.html`
   })
+})
+
+app.post('/api/projects/:id/export/publish', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const { buildId, out } = await buildProjectDistForExport(id, dir)
+  const zipName = `h5_story_${String(id)}_${String(buildId)}.zip`
+  const zipAbs = path.join(out, zipName)
+  try {
+    await packageDistAsZip(out, zipName)
+  } catch (e) {
+    return c.json({
+      success: false,
+      error: 'zip_failed',
+      message: e && e.message ? String(e.message) : String(e),
+      buildId,
+      distUrl: `/demos/${encodeURIComponent(id)}/${encodeURIComponent(buildId)}/dist/index.html`
+    }, 500)
+  }
+  return c.json({
+    success: true,
+    buildId,
+    distUrl: `/demos/${encodeURIComponent(id)}/${encodeURIComponent(buildId)}/dist/index.html`,
+    packageUrl: `/demos/${encodeURIComponent(id)}/${encodeURIComponent(buildId)}/${encodeURIComponent(zipName)}`,
+    packageName: zipName,
+    packageBytes: Number((await stat(zipAbs)).size || 0)
+  })
+})
+
+app.get('/api/projects/:id/exports', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectBuildsDir(id)
+  const items = []
+  const buildId = 'latest'
+  const buildDir = path.join(dir, buildId)
+  if (await existsDir(buildDir)) {
+    const distIndex = path.join(buildDir, 'dist', 'index.html')
+    const hasDist = await existsFile(distIndex)
+    const files = await readdir(buildDir).catch(() => [])
+    const zip = files.find((f) => /^h5_story_.*\.zip$/i.test(String(f || '')))
+    const st = await stat(buildDir).catch(() => null)
+    items.push({
+      buildId,
+      createdAt: st && st.mtime ? st.mtime.toISOString() : '',
+      distUrl: hasDist ? `/demos/${encodeURIComponent(id)}/${encodeURIComponent(buildId)}/dist/index.html` : '',
+      packageUrl: zip ? `/demos/${encodeURIComponent(id)}/${encodeURIComponent(buildId)}/${encodeURIComponent(zip)}` : '',
+      packageName: zip || ''
+    })
+  }
+  return c.json({ success: true, items })
+})
+
+app.delete('/api/projects/:id/exports/:buildId', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const buildId = String(c.req.param('buildId') || '').trim()
+  if (!buildId) return c.json({ success: false, error: 'missing_buildId' }, 400)
+  const dir = projectBuildDir(id, buildId)
+  if (!(await existsDir(dir))) return c.json({ success: true, removed: false })
+  try {
+    await rm(dir, { recursive: true, force: true })
+    return c.json({ success: true, removed: true })
+  } catch (e) {
+    return c.json({ success: false, error: 'delete_failed', message: e && e.message ? String(e.message) : String(e) }, 500)
+  }
 })
 
 // 静态服务 demo 产物（P0：仅 demos）
@@ -1797,7 +2029,8 @@ app.get('/demos/:projectId/:buildId/:rest{.*}', async (c) => {
   } catch (_) {}
   rest = rest.replace(/\\/g, '/').replace(/^\/+/, '')
   if (!rest || rest.split('/').some((seg) => seg === '..')) return c.text('Not Found', 404)
-  const filePath = path.join(demoDir(projectId, buildId), rest)
+  const baseDir = projectBuildDir(projectId, buildId)
+  const filePath = path.join(baseDir, rest)
   try {
     const buf = await readFile(filePath)
     // 简单 content-type
@@ -1807,7 +2040,12 @@ app.get('/demos/:projectId/:buildId/:rest{.*}', async (c) => {
       ext === '.json' ? 'application/json; charset=utf-8' :
       ext === '.js' ? 'application/javascript; charset=utf-8' :
       ext === '.css' ? 'text/css; charset=utf-8' :
+      ext === '.zip' ? 'application/zip' :
       'application/octet-stream'
+    if (ext === '.zip') c.header('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`)
+    c.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+    c.header('Pragma', 'no-cache')
+    c.header('Expires', '0')
     c.header('Content-Type', ct)
     return c.body(buf)
   } catch (_) {
@@ -2127,19 +2365,27 @@ app.post('/api/projects/:id/ai/background', async (c) => {
     return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
   }
 	const bgProvider = String(studio.effective.image.provider || process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
+  if (!bgProvider || bgProvider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“出图（背景图）”并选择 Provider/Model' }, 400)
+  }
   const timeoutRaw = body?.timeoutMs
   const bgTimeoutMs = (Number.isFinite(Number(timeoutRaw)) && Number(timeoutRaw) <= 0)
     ? 0
     : clampInt(timeoutRaw, 5_000, 300_000, clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000))
 	const startedAt = Date.now()
+  const traceId = createTraceId()
   const promptJoiner = (bgProvider === 'sdwebui' || bgProvider === 'comfyui') ? ', ' : '，'
 	const effectivePrompt = [globalPrompt, scenePrompt].map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(promptJoiner)
 	const effectiveNegative = [globalNegativePrompt, sceneNegative].map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(', ')
-	try {
-	  console.log(
-	    `[game_studio] bg.create:start project=${id} provider=${bgProvider} promptChars=${scenePrompt.length} globalChars=${globalPrompt.length} negChars=${sceneNegative.length} globalNegChars=${globalNegativePrompt.length} w=${Math.floor(width || 0)} h=${Math.floor(height || 0)} size=${String(body?.size || '')} format=${String(body?.responseFormat || '')} ar=${String(body?.aspectRatio || '')} style=${String(body?.style || '')} sampler=${String(body?.sampler || 'DPM++ 2M')} scheduler=${String(body?.scheduler || 'Automatic')} timeoutMs=${bgTimeoutMs <= 0 ? 'none' : bgTimeoutMs}`
-	  )
-	} catch (_) {}
+  logStage({
+    stage: 'bg.create',
+    event: 'start',
+    traceId,
+    project: id,
+    provider: bgProvider,
+    model: studio.effective.image.model || '-',
+    item: `w${Math.floor(width || 0)}h${Math.floor(height || 0)}`
+  })
 
 	try {
 	  const gen = await generateBackgroundImage({
@@ -2179,18 +2425,34 @@ app.post('/api/projects/:id/ai/background', async (c) => {
 		    const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
 		    const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : String(process.env.STUDIO_BG_PROVIDER || 'sdwebui')
 		    const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
-		    try {
-		      console.log(`[game_studio] bg.create:ok project=${id} provider=${provider} bytes=${buf.length} ext=${ext} ms=${Math.max(0, Date.now() - startedAt)}`)
-		    } catch (_) {}
-		    return c.json({ success: true, provider, assetPath, url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`, remoteUrl })
+        logStage({
+          stage: 'bg.create',
+          event: 'ok',
+          traceId,
+          project: id,
+          provider,
+          model: studio.effective.image.model || '-',
+          ok: true,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          item: `${ext}:${buf.length}`
+        })
+		    return c.json({ success: true, provider, assetPath, url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`, remoteUrl, traceId })
 		  } catch (e) {
 		    const msg = e && e.message ? String(e.message) : String(e)
-		    const status = e && typeof e.status === 'number' ? e.status : null
-		    try {
-	      console.log(`[game_studio] bg.create:fail project=${id} provider=${bgProvider} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
-	    } catch (_) {}
-	    if (status === 501) return c.json({ success: false, error: 'provider_not_configured', message: msg }, 501)
-	    return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
+        const mapped = classifyAiError(e)
+        logStage({
+          stage: 'bg.create',
+          event: 'fail',
+          traceId,
+          project: id,
+          provider: bgProvider,
+          model: studio.effective.image.model || '-',
+          status: mapped.httpStatus,
+          ok: false,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          err: msg
+        })
+        return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
 	  }
 })
 
@@ -2207,6 +2469,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
 	const globalNegativePrompt = String(body?.globalNegativePrompt || '').trim()
 	const aspectRatio = String(body?.aspectRatio || '').trim()
 	const style = String(body?.style || '').trim()
+  const outputLanguage = String(body?.outputLanguage || '').trim().toLowerCase() || 'en'
   const promptTimeoutMs = clampInt(
     body?.timeoutMs,
     5_000,
@@ -2219,13 +2482,21 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
   if (!studio.effective.enabled.prompt) {
     return c.json({ success: false, error: 'disabled', message: '“提示词生成”已在设置中关闭' }, 503)
   }
+  if (!studio.effective.prompt.provider || studio.effective.prompt.provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“提示词生成”并选择 Provider/Model' }, 400)
+  }
 
 	const startedAt = Date.now()
-	try {
-	  console.log(
-	    `[game_studio] bg.prompt:start project=${id} userChars=${userInput.length} globalChars=${globalPrompt.length} globalNegChars=${globalNegativePrompt.length} ar=${aspectRatio} style=${style} timeoutMs=${promptTimeoutMs}`
-	  )
-	} catch (_) {}
+  const traceId = createTraceId()
+  logStage({
+    stage: 'bg.prompt',
+    event: 'start',
+    traceId,
+    project: id,
+    provider: studio.effective.prompt.provider || 'openai',
+    model: studio.effective.prompt.model || '-',
+    item: `chars:${userInput.length}`
+  })
 	try {
 	  const { result, meta } = await generateBackgroundPrompt({
       userInput,
@@ -2233,21 +2504,40 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       globalNegativePrompt,
       aspectRatio,
       style,
+      outputLanguage,
       timeoutMs: promptTimeoutMs,
       targetImageProvider: studio.effective.image.provider,
       provider: studio.effective.prompt.provider,
       model: studio.effective.prompt.model,
       proxyUrl: studio.effective.network.proxyUrl
     })
-	  try {
-	    console.log(`[game_studio] bg.prompt:ok project=${id} provider=${meta && meta.provider ? meta.provider : 'openai'} model=${meta && meta.model ? meta.model : '-'} ms=${Math.max(0, Date.now() - startedAt)}`)
-	  } catch (_) {}
-	  return c.json({ success: true, result, meta })
+    logStage({
+      stage: 'bg.prompt',
+      event: 'ok',
+      traceId,
+      project: id,
+      provider: meta && meta.provider ? meta.provider : studio.effective.prompt.provider || 'openai',
+      model: meta && meta.model ? meta.model : studio.effective.prompt.model || '-',
+      ok: true,
+      durationMs: Math.max(0, Date.now() - startedAt)
+    })
+	  return c.json({ success: true, result, meta, traceId })
   } catch (e) {
-    try {
-      console.log(`[game_studio] bg.prompt:fail project=${id} ms=${Math.max(0, Date.now() - startedAt)} err=${e && e.message ? String(e.message) : String(e)}`)
-    } catch (_) {}
-    return c.json({ success: false, error: 'ai_failed', message: e && e.message ? String(e.message) : String(e) }, 502)
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    logStage({
+      stage: 'bg.prompt',
+      event: 'fail',
+      traceId,
+      project: id,
+      provider: studio.effective.prompt.provider || 'openai',
+      model: studio.effective.prompt.model || '-',
+      status: mapped.httpStatus,
+      ok: false,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      err: msg
+    })
+    return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
   }
 })
 
@@ -2454,74 +2744,4 @@ if (isMainModule()) {
   serve({ fetch: app.fetch, port })
   // eslint-disable-next-line no-console
   console.log(`[game_studio] server on :${port}`)
-
-  // Auto diagnostics (non-blocking): background image provider config + connectivity hints.
-  void (async () => {
-    try {
-      const providerRaw = String(process.env.STUDIO_BG_PROVIDER || '').trim()
-      const provider = (providerRaw || 'sdwebui').toLowerCase()
-      const providerFromEnv = Boolean(providerRaw)
-      const proxy = String(process.env.STUDIO_PROXY_URL || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY || '').trim()
-      const proxyOn = Boolean(proxy)
-      if (provider === 'doubao') {
-        const { apiUrl, model, authMode } = getDoubaoImagesConfigSnapshot()
-        const timeoutMs = Number(process.env.STUDIO_BG_TIMEOUT_MS || 180000) || 180000
-        let dnsOk = null
-        let host = ''
-        try {
-          host = new URL(apiUrl).hostname
-          const addrs = await dns.lookup(host, { all: true }).catch(() => [])
-          dnsOk = Array.isArray(addrs) && addrs.length > 0
-        } catch (_) {
-          dnsOk = false
-        }
-        console.log(
-          `[game_studio] bg.diag provider=doubao${providerFromEnv ? '' : '(default)'} api=${apiUrl} model=${model} auth=${authMode} timeoutMs=${timeoutMs} proxy=${proxyOn ? 'on' : 'off'} dns=${dnsOk === null ? '-' : dnsOk ? 'ok' : 'fail'}${host ? ` host=${host}` : ''}`
-        )
-      } else if (provider === 'comfyui') {
-        const baseUrl = String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188').trim()
-        const timeoutMs = Number(process.env.STUDIO_BG_TIMEOUT_MS || 180000) || 180000
-        console.log(
-          `[game_studio] bg.diag provider=comfyui${providerFromEnv ? '' : '(default)'} baseUrl=${baseUrl} timeoutMs=${timeoutMs} proxy=${proxyOn ? 'on' : 'off'}`
-        )
-      } else {
-        const baseUrl = String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860').trim()
-        const timeoutMs = Number(process.env.STUDIO_BG_TIMEOUT_MS || 180000) || 180000
-        const apiKeyPresent = Boolean(String(process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
-        const authHeaderPresent = Boolean(String(process.env.DOUBAO_ARK_AUTH_HEADER || process.env.DOUBAO_AUTH_HEADER || '').trim())
-        const hasDoubaoCreds = apiKeyPresent || authHeaderPresent
-        console.log(
-          `[game_studio] bg.diag provider=sdwebui${providerFromEnv ? '' : '(default)'} baseUrl=${baseUrl} timeoutMs=${timeoutMs} proxy=${proxyOn ? 'on' : 'off'}`
-        )
-        if (!providerFromEnv && hasDoubaoCreds) {
-          console.log('[game_studio] bg.diag:hint 检测到豆包（Ark）鉴权已配置，但未设置 STUDIO_BG_PROVIDER=doubao，当前仍会走 sdwebui。')
-        }
-      }
-    } catch (_) {}
-  })()
-
-  // Auto diagnostics (non-blocking): validate OpenAI connectivity and list models.
-  // Useful for quickly spotting proxy/DNS/firewall issues and invalid model names.
-  void (async () => {
-    try {
-      const snap = getAiStatusSnapshot()
-      if (snap.provider !== 'openai') return
-      console.log('[game_studio] ai.diag:start')
-      const res = await runAiDiagnostics({ force: true })
-      if (res && res.ok) {
-        const hasModel = res.models && typeof res.models.hasModel === 'boolean' ? res.models.hasModel : null
-        console.log(
-          `[game_studio] ai.diag:ok baseUrl=${res.baseUrl} model=${res.model} models=${res.models ? res.models.count : 0}${hasModel === false ? ' (model_not_in_list)' : ''} ms=${res.durationMs}`
-        )
-      } else {
-        const errMsg = res && res.error && res.error.message ? String(res.error.message) : 'unknown_error'
-        const dnsOk = res && res.dns && typeof res.dns.ok === 'boolean' ? res.dns.ok : null
-        console.log(`[game_studio] ai.diag:failed baseUrl=${res && res.baseUrl ? res.baseUrl : '-'} model=${res && res.model ? res.model : '-'} dnsOk=${dnsOk} error=${errMsg} ms=${res && res.durationMs ? res.durationMs : 0}`)
-      }
-    } catch (e) {
-      try {
-        console.log('[game_studio] ai.diag:crash', e && e.message ? e.message : String(e))
-      } catch (_) {}
-    }
-  })()
 }

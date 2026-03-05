@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   diagnoseStudio,
-  getAiStatus,
   getComfyuiModels,
   getSdwebuiModels,
   getStudioSettings,
@@ -23,15 +22,15 @@ function normalizeDraft(settings: StudioSettings | null): StudioSettings {
   const s = settings && typeof settings === 'object' ? settings : {}
   return {
     enabled: {
-      scripts: safeBool(s.enabled?.scripts, true),
-      prompt: safeBool(s.enabled?.prompt, true),
-      image: safeBool(s.enabled?.image, true),
+      scripts: safeBool(s.enabled?.scripts, false),
+      prompt: safeBool(s.enabled?.prompt, false),
+      image: safeBool(s.enabled?.image, false),
       tts: safeBool(s.enabled?.tts, false)
     },
-    scripts: { provider: s.scripts?.provider || '', model: s.scripts?.model || '' },
-    prompt: { provider: s.prompt?.provider || '', model: s.prompt?.model || '' },
+    scripts: { provider: s.scripts?.provider || 'none', model: s.scripts?.model || '' },
+    prompt: { provider: s.prompt?.provider || 'none', model: s.prompt?.model || '' },
     image: {
-      provider: s.image?.provider || '',
+      provider: s.image?.provider || 'none',
       model: s.image?.model || '',
       loras: Array.isArray(s.image?.loras) ? s.image?.loras.map((x: any) => String(x || '')).filter(Boolean) : [],
       apiUrl: s.image?.apiUrl || '',
@@ -48,7 +47,6 @@ const MODEL_MEMORY_KEY = 'studio.model.memory.v1'
 type ModelSection = 'scripts' | 'prompt' | 'image'
 type ModelMemory = Record<ModelSection, Record<string, string>>
 const OLLAMA_MODEL_PRESETS = ['qwen3:8b', 'qwen3-vl:8b', 'qwen3.5:27b']
-const SDWEBUI_SIZE_PRESETS = ['768x1024', '1024x1024', '1024x1536', '1216x832', '832x1216', '1344x768', '768x1344']
 const SDWEBUI_MODEL_PRESETS = [
   'dreamshaper_8.safetensors [879db523c3]',
   'hellocartoonfilm_V30p.safetensors [a606a40b56]',
@@ -87,6 +85,25 @@ const COMFYUI_LORA_PRESETS = [
 
 function normalizeComfyModelName(v: string | null | undefined) {
   return String(v || '').trim().replace(/\s+\[[^\]]+\]\s*$/, '').trim()
+}
+
+function normalizeModelOption(v: any, provider: string) {
+  const p = String(provider || '').toLowerCase()
+  const s0 = String(v || '').trim()
+  if (!s0) return ''
+  const s = p === 'comfyui' ? normalizeComfyModelName(s0) : s0
+  if (!s) return ''
+  // Filter out broken enum metadata values:
+  // - comma-joined huge list
+  // - [object Object]
+  // - JSON/object-like strings
+  if (s.includes(',')) return ''
+  if (/^\[object\s+object\]$/i.test(s)) return ''
+  if (/^\{.*\}$/.test(s)) return ''
+  if (p === 'comfyui') {
+    if (!/\.(safetensors|ckpt|pt|pth)$/i.test(s)) return ''
+  }
+  return s
 }
 
 function emptyModelMemory(): ModelMemory {
@@ -145,7 +162,6 @@ function isOllamaPresetModel(v: string | null | undefined) {
 }
 
 export default function StudioSettingsModal(props: Props) {
-  const [tab, setTab] = useState<'config' | 'diagnose'>('config')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [savedAt, setSavedAt] = useState('')
@@ -157,7 +173,6 @@ export default function StudioSettingsModal(props: Props) {
   const [diagDeepText, setDiagDeepText] = useState(false)
   const [diagDeepImages, setDiagDeepImages] = useState(false)
   const [diagnostics, setDiagnostics] = useState<any>(null)
-  const [aiStatus, setAiStatus] = useState<any>(null)
   const [testingService, setTestingService] = useState<'' | 'scripts' | 'prompt' | 'image'>('')
   const [modelMemory, setModelMemory] = useState<ModelMemory>(() => loadModelMemory())
   const [runLogs, setRunLogs] = useState<string[]>([])
@@ -166,6 +181,12 @@ export default function StudioSettingsModal(props: Props) {
   const [sdModelsNote, setSdModelsNote] = useState('')
   const [sdModelList, setSdModelList] = useState<string[]>([])
   const [comfyLoraList, setComfyLoraList] = useState<string[]>([])
+  const [foldOpen, setFoldOpen] = useState<{ scripts: boolean; prompt: boolean; image: boolean; tts: boolean }>({
+    scripts: true,
+    prompt: true,
+    image: true,
+    tts: false
+  })
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -243,7 +264,7 @@ export default function StudioSettingsModal(props: Props) {
     setSdModelsNote('')
     try {
       const res = p === 'comfyui' ? await getComfyuiModels(baseUrl) : await getSdwebuiModels(baseUrl)
-      const models = (res.models || []).map((x) => (p === 'comfyui' ? normalizeComfyModelName(x) : String(x || '').trim())).filter(Boolean)
+      const models = (res.models || []).map((x) => normalizeModelOption(x, p)).filter(Boolean)
       setSdModelList(models)
       setComfyLoraList(p === 'comfyui' && Array.isArray((res as any).loras) ? (res as any).loras.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
       setSdModelsNote(String(res.note || ''))
@@ -275,13 +296,12 @@ export default function StudioSettingsModal(props: Props) {
     setBusy(true)
     setErr('')
     try {
-      const [s, st] = await Promise.all([getStudioSettings(), getAiStatus().catch(() => null)])
+      const s = await getStudioSettings()
       const nextDraft = normalizeDraft(s.settings)
       nextDraft.image = withImageDefaults(nextDraft.image)
       setDraft(nextDraft)
       rememberCurrentDraftModels(nextDraft)
       setEffective(s.effective)
-      setAiStatus(st)
       setSavedAt('')
       const imgProvider = String(nextDraft.image?.provider || '').toLowerCase()
       if (imgProvider === 'sdwebui') {
@@ -308,12 +328,14 @@ export default function StudioSettingsModal(props: Props) {
   const effectiveSummary = useMemo(() => {
     if (!effective) return ''
     const lines: string[] = []
-    lines.push(`写故事：${effective.enabled.scripts ? '启用' : '关闭'} / ${effective.scripts.provider}${effective.scripts.model ? ` / ${effective.scripts.model}` : ''}`)
-    lines.push(`提示词：${effective.enabled.prompt ? '启用' : '关闭'} / ${effective.prompt.provider}${effective.prompt.model ? ` / ${effective.prompt.model}` : ''}`)
-    lines.push(`出图：${effective.enabled.image ? '启用' : '关闭'} / ${effective.image.provider}${effective.image.model ? ` / ${effective.image.model}` : ''}`)
+    const scriptsProvider = effective.enabled.scripts ? effective.scripts.provider : 'none'
+    const promptProvider = effective.enabled.prompt ? effective.prompt.provider : 'none'
+    const imageProvider = effective.enabled.image ? effective.image.provider : 'none'
+    lines.push(`故事分镜：${scriptsProvider}${effective.enabled.scripts && effective.scripts.model ? ` / ${effective.scripts.model}` : ''}`)
+    lines.push(`图像提示词：${promptProvider}${effective.enabled.prompt && effective.prompt.model ? ` / ${effective.prompt.model}` : ''}`)
+    lines.push(`图像生成：${imageProvider}${effective.enabled.image && effective.image.model ? ` / ${effective.image.model}` : ''}`)
     if (effective.image.provider === 'doubao') {
       if (effective.image.apiUrl) lines.push(`  imagesUrl：${effective.image.apiUrl}`)
-      if (effective.image.size) lines.push(`  size：${effective.image.size}`)
     }
     if (effective.image.provider === 'sdwebui' && effective.image.sdwebuiBaseUrl) lines.push(`  sdwebui：${effective.image.sdwebuiBaseUrl}`)
     if (effective.image.provider === 'comfyui' && effective.image.comfyuiBaseUrl) lines.push(`  comfyui：${effective.image.comfyuiBaseUrl}`)
@@ -324,11 +346,17 @@ export default function StudioSettingsModal(props: Props) {
   const sdModelOptions = useMemo(() => {
     const p = String(draft.image?.provider || '').toLowerCase()
     const set = new Set<string>()
-    const current = p === 'comfyui' ? normalizeComfyModelName(draft.image?.model) : String(draft.image?.model || '').trim()
+    const current = normalizeModelOption(draft.image?.model, p)
     if (current) set.add(current)
-    for (const m of sdModelList || []) set.add(String(m || '').trim())
+    for (const m of sdModelList || []) {
+      const x = normalizeModelOption(m, p)
+      if (x) set.add(x)
+    }
     const presets = p === 'comfyui' ? COMFYUI_MODEL_PRESETS : SDWEBUI_MODEL_PRESETS
-    for (const m of presets) set.add(String(m || '').trim())
+    for (const m of presets) {
+      const x = normalizeModelOption(m, p)
+      if (x) set.add(x)
+    }
     return Array.from(set).filter(Boolean)
   }, [sdModelList, draft.image?.model, draft.image?.provider])
 
@@ -345,7 +373,16 @@ export default function StudioSettingsModal(props: Props) {
     setErr('')
     appendLog('开始保存并应用配置')
     try {
-      const next = await saveStudioSettings(draft)
+      const settingsOut: StudioSettings = {
+        ...draft,
+        enabled: {
+          scripts: String(draft.scripts?.provider || '').toLowerCase() !== 'none',
+          prompt: String(draft.prompt?.provider || '').toLowerCase() !== 'none',
+          image: String(draft.image?.provider || '').toLowerCase() !== 'none',
+          tts: String(draft.tts?.provider || '').toLowerCase() !== 'none'
+        }
+      }
+      const next = await saveStudioSettings(settingsOut)
       const nextDraft = normalizeDraft(next)
       nextDraft.image = withImageDefaults(nextDraft.image)
       setDraft(nextDraft)
@@ -353,6 +390,13 @@ export default function StudioSettingsModal(props: Props) {
       const s = await getStudioSettings()
       setEffective(s.effective)
       setSavedAt(new Date().toLocaleString())
+      try {
+        window.dispatchEvent(
+          new CustomEvent('studio-settings-updated', {
+            detail: { effective: s.effective, updatedAt: new Date().toISOString() }
+          })
+        )
+      } catch (_) {}
       appendLog('保存并应用成功')
     } catch (e) {
       appendLog(`保存失败：${e instanceof Error ? e.message : String(e)}`)
@@ -370,7 +414,6 @@ export default function StudioSettingsModal(props: Props) {
       const res = await diagnoseStudio({ deepText: diagDeepText, deepImages: diagDeepImages, timeoutMs: 12000 })
       setDiagnostics(res)
       if (res && res.effective) setEffective(res.effective)
-      setTab('diagnose')
       appendLog(`检测完成：all ok=${res && res.ok ? 'true' : 'false'}`)
     } catch (e) {
       appendLog(`检测失败：all ${e instanceof Error ? e.message : String(e)}`)
@@ -407,29 +450,20 @@ export default function StudioSettingsModal(props: Props) {
     }
   }
 
-  function onOverlayClick(e: MouseEvent) {
-    if (e.target === e.currentTarget) props.onClose()
+  function toggleFold(key: 'scripts' | 'prompt' | 'image' | 'tts') {
+    setFoldOpen((prev) => ({ ...prev, [key]: !prev[key] }))
   }
 
   if (!props.open) return null
 
   return (
-    <div className="ai-modal" role="dialog" aria-modal="true" aria-label="工具设置" onClick={onOverlayClick}>
+    <div className="ai-modal" role="dialog" aria-modal="true" aria-label="工具设置" style={{ background: '#040b1a' }}>
       <div className="ai-modal-card" style={{ width: 920, maxHeight: 'calc(100vh - 24px)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <div className="ai-modal-title" style={{ marginBottom: 0 }}>设置</div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn secondary" onClick={() => refresh()} disabled={busy || diagBusy || Boolean(testingService)}>
-              重新加载
-            </button>
             <button className="btn" onClick={() => save()} disabled={busy || diagBusy || Boolean(testingService)}>
               保存并应用
-            </button>
-            <button className={`btn secondary ${tab === 'config' ? 'active' : ''}`} onClick={() => setTab('config')} disabled={busy}>
-              参数
-            </button>
-            <button className={`btn secondary ${tab === 'diagnose' ? 'active' : ''}`} onClick={() => setTab('diagnose')} disabled={busy}>
-              检测
             </button>
             <button className="btn secondary" onClick={props.onClose} disabled={busy}>
               关闭
@@ -439,8 +473,7 @@ export default function StudioSettingsModal(props: Props) {
 
         <div className="hr" />
 
-        {tab === 'config' ? (
-          <>
+        <>
             <div className="ai-modal-row">
               <div>快速检测</div>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -473,29 +506,13 @@ export default function StudioSettingsModal(props: Props) {
               </div>
             </div>
 
-            <div className="ai-modal-row">
-              <div>代理</div>
-              <input
-                value={String(draft.network?.proxyUrl || '')}
-                placeholder="http://127.0.0.1:7890（可选）"
-                onChange={(e) => setDraft((d) => ({ ...d, network: { ...(d.network || {}), proxyUrl: e.target.value } }))}
-              />
-            </div>
-
             <div style={{ display: 'grid', gap: 12 }}>
               <div className="subfold">
-                <div className="subfold-head">
-                  <div className="subfold-title">写故事脚本</div>
+                <div className="subfold-head" onClick={() => toggleFold('scripts')}>
+                  <div className="subfold-title">故事分镜</div>
+                  <div className="hint">{foldOpen.scripts ? '收起' : '展开'}</div>
                 </div>
-                <div className="subfold-body">
-                  <label className="hint" style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-                    <input
-                      type="checkbox"
-                      checked={safeBool(draft.enabled?.scripts, true)}
-                      onChange={(e) => setDraft((d) => ({ ...d, enabled: { ...(d.enabled || {}), scripts: e.target.checked } }))}
-                    />
-                    启用
-                  </label>
+                {foldOpen.scripts ? <div className="subfold-body">
                   <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
                     <div>Provider</div>
                     <select
@@ -509,8 +526,7 @@ export default function StudioSettingsModal(props: Props) {
                         setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), provider: nextProvider, model: nextModel } }))
                       }}
                     >
-                      <option value="">跟随环境变量</option>
-                      <option value="local">local</option>
+                      <option value="none">none</option>
                       <option value="openai">openai</option>
                       <option value="doubao">doubao</option>
                       <option value="ollama">ollama</option>
@@ -548,23 +564,15 @@ export default function StudioSettingsModal(props: Props) {
                       {testingService === 'scripts' ? '检测中…' : '测试连接'}
                     </button>
                   </div>
-                </div>
+                </div> : null}
               </div>
 
               <div className="subfold">
-                <div className="subfold-head">
-                  <div className="subfold-title">生成图片与图片提示词</div>
+                <div className="subfold-head" onClick={() => toggleFold('prompt')}>
+                  <div className="subfold-title">图像提示词</div>
+                  <div className="hint">{foldOpen.prompt ? '收起' : '展开'}</div>
                 </div>
-                <div className="subfold-body">
-                  <div style={{ fontWeight: 700, marginBottom: 8 }}>提示词（Seedream）</div>
-                  <label className="hint" style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-                    <input
-                      type="checkbox"
-                      checked={safeBool(draft.enabled?.prompt, true)}
-                      onChange={(e) => setDraft((d) => ({ ...d, enabled: { ...(d.enabled || {}), prompt: e.target.checked } }))}
-                    />
-                    启用
-                  </label>
+                {foldOpen.prompt ? <div className="subfold-body">
                   <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
                     <div>Provider</div>
                     <select
@@ -578,7 +586,7 @@ export default function StudioSettingsModal(props: Props) {
                         setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), provider: nextProvider, model: nextModel } }))
                       }}
                     >
-                      <option value="">自动</option>
+                      <option value="none">none</option>
                       <option value="openai">openai</option>
                       <option value="doubao">doubao</option>
                       <option value="ollama">ollama</option>
@@ -616,17 +624,15 @@ export default function StudioSettingsModal(props: Props) {
                       {testingService === 'prompt' ? '检测中…' : '测试连接'}
                     </button>
                   </div>
+                </div> : null}
+              </div>
 
-                  <div className="hr" style={{ margin: '10px 0' }} />
-                  <div style={{ fontWeight: 700, marginBottom: 8 }}>出图（背景图）</div>
-                  <label className="hint" style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-                    <input
-                      type="checkbox"
-                      checked={safeBool(draft.enabled?.image, true)}
-                      onChange={(e) => setDraft((d) => ({ ...d, enabled: { ...(d.enabled || {}), image: e.target.checked } }))}
-                    />
-                    启用
-                  </label>
+              <div className="subfold">
+                <div className="subfold-head" onClick={() => toggleFold('image')}>
+                  <div className="subfold-title">图像生成</div>
+                  <div className="hint">{foldOpen.image ? '收起' : '展开'}</div>
+                </div>
+                {foldOpen.image ? <div className="subfold-body">
                   <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
                     <div>Provider</div>
                     <select
@@ -643,7 +649,7 @@ export default function StudioSettingsModal(props: Props) {
                         if (String(nextProvider).toLowerCase() === 'comfyui') void loadImageModels('comfyui', String(nextImage.comfyuiBaseUrl || ''))
                       }}
                     >
-                      <option value="">跟随环境变量</option>
+                      <option value="none">none</option>
                       <option value="sdwebui">sdwebui</option>
                       <option value="comfyui">comfyui</option>
                       <option value="doubao">doubao</option>
@@ -740,20 +746,6 @@ export default function StudioSettingsModal(props: Props) {
                       {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? 'ComfyUI' : 'SDWebUI'} 出图会自动注入风格化提示（卡通/国风/绘本）与反写实负面词；建议先点“AI 解析提示词”，优先使用英文提示词。
                     </div>
                   ) : null}
-                  <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
-                    <div>Size</div>
-                    <select
-                      className="sel"
-                      value={String(draft.image?.size || '1024x1024')}
-                      onChange={(e) => setDraft((d) => ({ ...d, image: { ...(d.image || {}), size: e.target.value } }))}
-                    >
-                      {SDWEBUI_SIZE_PRESETS.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
                   {String(draft.image?.provider || '').toLowerCase() === 'doubao' ? (
                     <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
                       <div>Ark URL</div>
@@ -794,23 +786,16 @@ export default function StudioSettingsModal(props: Props) {
                       />
                     </div>
                   ) : null}
-                </div>
+                </div> : null}
               </div>
 
               <div className="subfold">
-                <div className="subfold-head">
-                  <div className="subfold-title">语音（TTS）</div>
+                <div className="subfold-head" onClick={() => toggleFold('tts')}>
+                  <div className="subfold-title">语音 TTS</div>
+                  <div className="hint">{foldOpen.tts ? '收起' : '展开'}</div>
                 </div>
-                <div className="subfold-body">
+                {foldOpen.tts ? <div className="subfold-body">
                   <div className="hint" style={{ marginBottom: 8 }}>当前项目尚未实现语音生成接口，这里先预留配置。</div>
-                  <label className="hint" style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-                    <input
-                      type="checkbox"
-                      checked={safeBool(draft.enabled?.tts, false)}
-                      onChange={(e) => setDraft((d) => ({ ...d, enabled: { ...(d.enabled || {}), tts: e.target.checked } }))}
-                    />
-                    启用
-                  </label>
                   <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
                     <div>Provider</div>
                     <select
@@ -839,45 +824,14 @@ export default function StudioSettingsModal(props: Props) {
                       onChange={(e) => setDraft((d) => ({ ...d, tts: { ...(d.tts || {}), apiUrl: e.target.value } }))}
                     />
                   </div>
-                </div>
+                </div> : null}
               </div>
             </div>
 
             {err ? <div className="ai-modal-err">{err}</div> : null}
             {savedAt ? <div className="ai-modal-ok" style={{ marginTop: 10, opacity: 0.95 }}>已保存：{savedAt}</div> : null}
 
-            {aiStatus ? (
-              <div className="ai-modal-hint">
-                服务器 AI 状态（环境变量快照）：{String(aiStatus?.provider || '')}
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <div className="hint" style={{ marginBottom: 10 }}>
-              “深度验证出图”会触发一次真实的 Doubao 生图请求（仅取 URL，不下载），可能消耗额度。
-            </div>
-            <div className="ai-modal-row">
-              <div>操作</div>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                <label className="hint" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input type="checkbox" checked={diagDeepText} onChange={(e) => setDiagDeepText(e.target.checked)} /> 深度验证文本
-                </label>
-                <label className="hint" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input type="checkbox" checked={diagDeepImages} onChange={(e) => setDiagDeepImages(e.target.checked)} /> 深度验证出图
-                </label>
-                <button className="btn secondary" onClick={() => runDiagnose()} disabled={busy || diagBusy}>
-                  {diagBusy ? '检测中…' : '重新检测'}
-                </button>
-              </div>
-            </div>
-            <div className="ai-modal-row">
-              <div>结果</div>
-              <textarea value={diagnostics ? JSON.stringify(diagnostics, null, 2) : '(未检测)'} readOnly style={{ minHeight: 320 }} />
-            </div>
-            {err ? <div className="ai-modal-err">{err}</div> : null}
-          </>
-        )}
+        </>
       </div>
     </div>
   )

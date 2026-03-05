@@ -108,9 +108,9 @@ export async function writeStudioSettings(storageRoot, incoming) {
     schemaVersion: '1.0',
     updatedAt: nowIso(),
     enabled: {
-      scripts: sanitizeBool(has(inEnabled, 'scripts') ? inEnabled.scripts : prev?.enabled?.scripts, prev?.enabled?.scripts ?? true),
-      prompt: sanitizeBool(has(inEnabled, 'prompt') ? inEnabled.prompt : prev?.enabled?.prompt, prev?.enabled?.prompt ?? true),
-      image: sanitizeBool(has(inEnabled, 'image') ? inEnabled.image : prev?.enabled?.image, prev?.enabled?.image ?? true),
+      scripts: sanitizeBool(has(inEnabled, 'scripts') ? inEnabled.scripts : prev?.enabled?.scripts, prev?.enabled?.scripts ?? false),
+      prompt: sanitizeBool(has(inEnabled, 'prompt') ? inEnabled.prompt : prev?.enabled?.prompt, prev?.enabled?.prompt ?? false),
+      image: sanitizeBool(has(inEnabled, 'image') ? inEnabled.image : prev?.enabled?.image, prev?.enabled?.image ?? false),
       tts: sanitizeBool(has(inEnabled, 'tts') ? inEnabled.tts : prev?.enabled?.tts, prev?.enabled?.tts ?? false)
     },
     scripts: {
@@ -181,13 +181,13 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
   }
 
   const enabled = {
-    scripts: settings?.enabled?.scripts !== false,
-    prompt: settings?.enabled?.prompt !== false,
-    image: settings?.enabled?.image !== false,
+    scripts: settings ? settings?.enabled?.scripts !== false : false,
+    prompt: settings ? settings?.enabled?.prompt !== false : false,
+    image: settings ? settings?.enabled?.image !== false : false,
     tts: settings?.enabled?.tts === true
   }
 
-  const scriptsProvider = (settings?.scripts?.provider ? String(settings.scripts.provider) : env.aiProvider) || 'local'
+  const scriptsProvider = (settings?.scripts?.provider ? String(settings.scripts.provider) : 'none') || 'none'
   const scriptsModel = settings?.scripts?.model
     ? String(settings.scripts.model)
     : scriptsProvider === 'openai'
@@ -198,8 +198,7 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
           ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
           : null
 
-  const promptProvider =
-    (settings?.prompt?.provider ? String(settings.prompt.provider) : (env.bgProvider === 'doubao' ? 'doubao' : env.aiProvider)) || 'openai'
+  const promptProvider = (settings?.prompt?.provider ? String(settings.prompt.provider) : 'none') || 'none'
   const promptModel = settings?.prompt?.model
     ? String(settings.prompt.model)
     : promptProvider === 'openai'
@@ -210,7 +209,7 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
           ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
           : null
 
-  const imageProvider = (settings?.image?.provider ? String(settings.image.provider) : env.bgProvider) || 'sdwebui'
+  const imageProvider = (settings?.image?.provider ? String(settings.image.provider) : 'none') || 'none'
   const imageModel = settings?.image?.model ? String(settings.image.model) : env.doubaoImagesModel
   const imageLoras = Array.isArray(settings?.image?.loras) ? settings.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
   const imageApiUrl = settings?.image?.apiUrl ? String(settings.image.apiUrl) : env.doubaoImagesUrl
