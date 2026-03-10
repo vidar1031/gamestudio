@@ -402,6 +402,37 @@ function parseComfyTimeoutMs(raw) {
   return clampInt(n, 5_000, 300_000, clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000))
 }
 
+function clampFloat(n, min, max, fallback) {
+  const v = Number(n)
+  if (!Number.isFinite(v)) return fallback
+  return Math.max(min, Math.min(max, v))
+}
+
+function parseComfyLoras(raw) {
+  const arr = Array.isArray(raw) ? raw : (raw ? [raw] : [])
+  const out = []
+  const seen = new Set()
+  for (const item0 of arr) {
+    const item = String(item0 || '').trim()
+    if (!item) continue
+    // Format:
+    // - "lora_name.safetensors"
+    // - "lora_name:0.8" (model+clip)
+    // - "lora_name:0.8:0.6" (model, clip)
+    const parts = item.split(':').map((x) => String(x || '').trim()).filter(Boolean)
+    const name = String(parts[0] || '').trim()
+    if (!name) continue
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const strengthModel = clampFloat(parts.length >= 2 ? parts[1] : 0.8, 0, 2, 0.8)
+    const strengthClip = clampFloat(parts.length >= 3 ? parts[2] : strengthModel, 0, 2, strengthModel)
+    out.push({ name, strengthModel, strengthClip })
+    if (out.length >= 8) break
+  }
+  return out
+}
+
 async function waitComfyImage({ baseUrl, promptId, timeoutMs }) {
   const started = Date.now()
   while (timeoutMs <= 0 || Date.now() - started < timeoutMs) {
@@ -444,6 +475,7 @@ async function generateBackgroundViaComfyui(input) {
   let model = normalizeComfyCheckpointName(input && input.model ? input.model : '')
   const timeoutMs = parseComfyTimeoutMs(input && input.timeoutMs != null ? input.timeoutMs : process.env.STUDIO_BG_TIMEOUT_MS)
   const style = String(input && input.style ? input.style : '').trim()
+  const loras = parseComfyLoras(input && input.loras ? input.loras : null)
   const cooked = buildSdwebuiPromptAndNegative({
     prompt: String(input.prompt || '').trim(),
     negativePrompt: String(input.negativePrompt || '').trim(),
@@ -484,29 +516,50 @@ async function generateBackgroundViaComfyui(input) {
     throw e
   }
 
+  // Apply LoRAs in a chain: (model, clip) -> LoraLoader -> (model, clip) -> ...
+  // This keeps the workflow simple while enabling consistent style/characters.
+  let comfyModelRef = ['3', 0]
+  let comfyClipRef = ['3', 1]
   const workflow = {
     '3': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: model } },
-    '4': { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } },
-    '5': { class_type: 'CLIPTextEncode', inputs: { text: String(cooked.prompt || '').trim(), clip: ['3', 1] } },
-    '6': { class_type: 'CLIPTextEncode', inputs: { text: String(cooked.negativePrompt || '').trim(), clip: ['3', 1] } },
-    '7': {
-      class_type: 'KSampler',
-      inputs: {
-        seed,
-        steps,
-        cfg,
-        sampler_name: samplerName,
-        scheduler,
-        denoise: 1,
-        model: ['3', 0],
-        positive: ['5', 0],
-        negative: ['6', 0],
-        latent_image: ['4', 0]
-      }
-    },
-    '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 2] } },
-    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'game_studio', images: ['8', 0] } }
+    '4': { class_type: 'EmptyLatentImage', inputs: { width, height, batch_size: 1 } }
   }
+  let nextId = 10
+  for (const l of loras) {
+    const id = String(nextId++)
+    workflow[id] = {
+      class_type: 'LoraLoader',
+      inputs: {
+        model: comfyModelRef,
+        clip: comfyClipRef,
+        lora_name: String(l.name),
+        strength_model: l.strengthModel,
+        strength_clip: l.strengthClip
+      }
+    }
+    comfyModelRef = [id, 0]
+    comfyClipRef = [id, 1]
+  }
+
+  workflow['5'] = { class_type: 'CLIPTextEncode', inputs: { text: String(cooked.prompt || '').trim(), clip: comfyClipRef } }
+  workflow['6'] = { class_type: 'CLIPTextEncode', inputs: { text: String(cooked.negativePrompt || '').trim(), clip: comfyClipRef } }
+  workflow['7'] = {
+    class_type: 'KSampler',
+    inputs: {
+      seed,
+      steps,
+      cfg,
+      sampler_name: samplerName,
+      scheduler,
+      denoise: 1,
+      model: comfyModelRef,
+      positive: ['5', 0],
+      negative: ['6', 0],
+      latent_image: ['4', 0]
+    }
+  }
+  workflow['8'] = { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 2] } }
+  workflow['9'] = { class_type: 'SaveImage', inputs: { filename_prefix: 'game_studio', images: ['8', 0] } }
 
   let promptId = ''
   const controller = new AbortController()
@@ -545,7 +598,7 @@ async function generateBackgroundViaComfyui(input) {
   return {
     bytes: dl.bytes,
     ext: extFromContentType(dl.contentType),
-    meta: { provider: 'comfyui', model: model || null, url: viewUrl }
+    meta: { provider: 'comfyui', model: model || null, loras: loras.length ? loras.map((x) => x.name) : null, url: viewUrl }
   }
 }
 

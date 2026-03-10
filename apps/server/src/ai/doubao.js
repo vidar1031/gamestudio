@@ -430,6 +430,30 @@ export async function generateStrictJsonViaDoubaoChat({
 
   let lastText = ''
   let lastMeta = null
+
+  function tryParseJsonLoose(rawText) {
+    const content = stripJsonCodeFence(String(rawText || ''))
+    if (!content) return null
+    // 1) Try direct parse first.
+    try {
+      return JSON.parse(content)
+    } catch (_) {}
+
+    // 2) Try extracting the first JSON object by braces.
+    const s = String(content)
+    const a = s.indexOf('{')
+    const b = s.lastIndexOf('}')
+    if (a >= 0 && b > a) {
+      let mid = s.slice(a, b + 1)
+      // Remove trailing commas (common LLM mistake).
+      mid = mid.replace(/,(\s*[}\]])/g, '$1')
+      try {
+        return JSON.parse(mid)
+      } catch (_) {}
+    }
+    return null
+  }
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     const messages = [
       {
@@ -463,12 +487,7 @@ export async function generateStrictJsonViaDoubaoChat({
     lastText = content
 
     const cleaned = stripJsonCodeFence(content)
-    let parsed = null
-    try {
-      parsed = cleaned ? JSON.parse(cleaned) : null
-    } catch (_) {
-      parsed = null
-    }
+    const parsed = tryParseJsonLoose(cleaned)
 
     const ok = validate ? Boolean(validate(parsed)) : Boolean(parsed && typeof parsed === 'object')
     if (ok) return { parsed, text: cleaned, meta }

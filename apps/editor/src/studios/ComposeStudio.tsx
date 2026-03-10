@@ -6,6 +6,7 @@ import AiCharacterSpriteModal, { type AiCharacterSpriteDraft } from '../AiCharac
 import { chromaKeyUrlToPng } from '../chromaKey'
 import {
   analyzeBackgroundPromptAi,
+  generateStoryBibleAi,
   analyzeCharacterFingerprintAi,
   createProject,
   exportProject,
@@ -14,6 +15,7 @@ import {
   deleteProjectExport,
   generateBackgroundAi,
   generateCharacterSpriteAi,
+  generateCharacterReferenceAi,
   getBlueprint,
   getScripts,
 	  getProject,
@@ -22,6 +24,8 @@ import {
 	  openProjectAssetFolder,
 	  resolveUrl,
 	  saveProject,
+  preflightStudioImage,
+  testStudioImage,
 	  uploadProjectImage,
   type AiBackgroundRequest,
   type AssetV1,
@@ -57,6 +61,12 @@ type LeftTab = 'nodes' | 'characters' | 'assets'
 
 type StoryboardBatchState = {
   entitySpec: string
+  storyBibleJson: string
+  continuity: {
+    ipadapterEnabled: boolean
+    requireCharacterRefs: boolean
+    controlnetEnabled: boolean
+  }
   globalPrompt: string
   globalNegativePrompt: string
   style: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
@@ -101,6 +111,13 @@ type LatestExportAction = 'overwrite' | 'delete' | 'cancel'
 const DOUBAO_STORYBOARD_DEFAULTS = {
   steps: 30,
   cfgScale: 7.5,
+  sampler: 'DPM++ 2M',
+  scheduler: 'Karras'
+} as const
+
+const COMFYUI_STORYBOARD_DEFAULTS = {
+  steps: 24,
+  cfgScale: 6.0,
   sampler: 'DPM++ 2M',
   scheduler: 'Karras'
 } as const
@@ -939,8 +956,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbGeneratingNodeStartedAt, setSbGeneratingNodeStartedAt] = useState(0)
   const [sbGeneratingNodeElapsedMs, setSbGeneratingNodeElapsedMs] = useState(0)
   const [sbItems, setSbItems] = useState<StoryboardBatchItem[]>([])
+  const [sbContinuityBusy, setSbContinuityBusy] = useState(false)
+  const [sbContinuityReady, setSbContinuityReady] = useState(false)
+  const [sbContinuitySummary, setSbContinuitySummary] = useState('')
   const [sbReq, setSbReq] = useState<StoryboardBatchState>({
     entitySpec: '',
+    storyBibleJson: '',
+    continuity: { ipadapterEnabled: true, requireCharacterRefs: true, controlnetEnabled: false },
     globalPrompt: '',
     globalNegativePrompt: '',
     style: 'picture_book',
@@ -1981,6 +2003,251 @@ function ensureNode(n: NodeV1): NodeV1 {
     return out.trim()
   }
 
+  function normalizeStoryBibleText(raw: any) {
+    const s = String(raw || '').trim()
+    if (!s) return ''
+    // Users may paste with markdown fences.
+    return s.replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim()
+  }
+
+  function tryParseStoryBibleJson(raw: any) {
+    const text = normalizeStoryBibleText(raw)
+    if (!text) return null
+    try {
+      const obj = JSON.parse(text)
+      if (!obj || typeof obj !== 'object') return null
+      return obj
+    } catch {
+      return null
+    }
+  }
+
+  function buildEntitySpecFromStoryBible(storyBibleObj: any) {
+    const b = storyBibleObj && typeof storyBibleObj === 'object' ? storyBibleObj : {}
+    const world = String(b.worldAnchor || '').trim()
+    const chars = Array.isArray(b.characters) ? b.characters : []
+    const props = Array.isArray(b.props) ? b.props : []
+    const ev = Array.isArray(b.eventChain) ? b.eventChain : []
+    const forb = Array.isArray(b.forbiddenSubstitutes) ? b.forbiddenSubstitutes : []
+
+    const chLines: string[] = []
+    for (const c of chars) {
+      if (!c || typeof c !== 'object') continue
+      if (c.locked === false) continue
+      const name = String((c as any).name || (c as any).id || '').trim()
+      const anchor = String((c as any).anchorPrompt || '').trim()
+      if (!name || !anchor) continue
+      chLines.push(`${name}: ${anchor}`)
+      if (chLines.length >= 30) break
+    }
+
+    const propLines: string[] = []
+    for (const p of props) {
+      if (!p || typeof p !== 'object') continue
+      if (p.locked === false) continue
+      const name = String((p as any).name || (p as any).id || '').trim()
+      const anchor = String((p as any).anchorPrompt || '').trim()
+      if (!name || !anchor) continue
+      const subs = Array.isArray((p as any).forbiddenSubstitutes) ? (p as any).forbiddenSubstitutes : []
+      const subsLine = subs.length ? ` (forbidden: ${subs.map((x: any) => String(x || '').trim()).filter(Boolean).slice(0, 6).join(', ')})` : ''
+      propLines.push(`${name}: ${anchor}${subsLine}`)
+      if (propLines.length >= 40) break
+    }
+
+    const eventLines: string[] = []
+    for (const x of ev) {
+      const s = String(x || '').trim()
+      if (!s) continue
+      eventLines.push(s)
+      if (eventLines.length >= 30) break
+    }
+
+    const forbLine = forb.map((x: any) => String(x || '').trim()).filter(Boolean).slice(0, 50).join(', ')
+
+    const out =
+      `WORLD_ANCHOR: ${world || 'same story world, same era and geography, stable art direction'}\n` +
+      `CHARACTER_LOCKS: ${chLines.length ? chLines.join('; ') : 'for each core character: fixed age range, hairstyle, silhouette, fabric type, accessory, color palette'}\n` +
+      `PROP_LOCKS: ${propLines.length ? propLines.join('; ') : 'for each key prop/object: canonical name, structure/components, material, shape, scale, how it is held/used'}\n` +
+      `EVENT_CHAIN: ${eventLines.length ? eventLines.join(' | ') : 'scene-by-scene visible actions and state changes; keep causality and continuity'}\n` +
+      `FORBIDDEN_SUBSTITUTES: ${forbLine || 'list visually similar but incorrect objects that must never appear'}`
+
+    return enforceEntitySpecQuality(out)
+  }
+
+  function collectStoryboardUsedCharacters(): CharacterV1[] {
+    if (!doc.project || !doc.story) return []
+    const byId = new Map((doc.project.characters || []).map((c) => [String(c.id || ''), c]))
+    const used = new Set<string>()
+    for (const n0 of doc.story.nodes || []) {
+      const n = ensureNode(n0 as any)
+      if (!(n.kind === 'scene' || n.kind === 'ending')) continue
+      const placements = Array.isArray((n as any).visuals?.placements) ? ((n as any).visuals.placements as any[]) : []
+      for (const p of placements) {
+        const id = String(p && p.characterId ? p.characterId : '').trim()
+        if (id) used.add(id)
+      }
+    }
+    const out: CharacterV1[] = []
+    for (const id of Array.from(used)) {
+      const ch = byId.get(id) || null
+      if (ch) out.push(ch)
+    }
+    return out
+  }
+
+  async function runStoryboardContinuityTest() {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbContinuityBusy || sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    setSbContinuityBusy(true)
+    setSbContinuityReady(false)
+    setSbContinuitySummary('')
+    appendSbLog('开始运行连续分镜锁定测试...')
+    try {
+      const storyBibleObj = tryParseStoryBibleJson(sbReq.storyBibleJson)
+      if (!storyBibleObj) throw new Error('Story Bible 为空或不是合法 JSON')
+
+      // 1) Provider preflight (ComfyUI storyboard extras).
+      const pf = await preflightStudioImage({ timeoutMs: 12_000, mode: 'storyboard' })
+      if (!pf.ok) throw new Error(`ComfyUI 体检失败：${String(pf.checks?.reason || 'preflight_failed')}`)
+
+      // 2) Character reference binding check.
+      const cfg = sbReq.continuity || { ipadapterEnabled: false, requireCharacterRefs: true, controlnetEnabled: false }
+      if (cfg.ipadapterEnabled && cfg.requireCharacterRefs) {
+        const usedChars = collectStoryboardUsedCharacters()
+        const assetsById = new Map((doc.project.assets || []).map((a) => [String(a.id || ''), a]))
+        const missing: string[] = []
+        for (const ch of usedChars) {
+          const refId = String(ch.ai?.referenceAssetId || '').trim()
+          if (!refId) {
+            missing.push(String(ch.name || ch.id))
+            continue
+          }
+          const asset = assetsById.get(refId) || null
+          if (!asset || !String(asset.uri || '').trim()) missing.push(String(ch.name || ch.id))
+        }
+        if (missing.length) throw new Error(`缺少角色参考图：${missing.slice(0, 8).join(', ')}`)
+      }
+
+      // 3) Basic image test (ensures current provider can actually render).
+      const test = await testStudioImage({
+        prompt: "children's picture book illustration, a simple test scene, clean outlines, warm palette",
+        negativePrompt: 'text, watermark, logo, photorealistic',
+        style: 'picture_book',
+        width: 512,
+        height: 512,
+        steps: Math.max(10, Math.min(30, Number(sbReq.steps || 20))),
+        cfgScale: Number(sbReq.cfgScale || 6.5),
+        sampler: String(sbReq.sampler || 'DPM++ 2M'),
+        scheduler: String(sbReq.scheduler || 'Karras'),
+        timeoutMs: 120_000
+      })
+      if (!test || !String(test.dataUrl || '').startsWith('data:image/')) throw new Error('测试出图失败：无 dataUrl')
+
+      setSbContinuityReady(true)
+      setSbContinuitySummary('通过（ComfyUI 依赖就绪 + 参考绑定满足 + 测试出图成功）')
+      appendSbLog('连续分镜锁定测试通过')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbContinuityReady(false)
+      setSbContinuitySummary(msg)
+      appendSbLog(`连续分镜锁定测试失败：${msg}`)
+    } finally {
+      setSbContinuityBusy(false)
+    }
+  }
+
+  async function generateStoryboardCharacterReference(characterId: string) {
+    if (doc.mode !== 'project' || !doc.project) return
+    const ch = (doc.project.characters || []).find((x) => x.id === characterId) || null
+    if (!ch) return
+    const fp = String(ch.ai?.fingerprintPrompt || '').trim()
+    if (!fp) {
+      setToast('缺少 fingerprintPrompt：请先生成角色指纹')
+      return
+    }
+    appendSbLog(`开始生成角色参考图：${String(ch.name || ch.id)}`)
+    const dims = { w: 768, h: 768 }
+    try {
+      const res = await generateCharacterReferenceAi(String(doc.project.id), {
+        characterName: String(ch.name || ch.id),
+        globalPrompt: String(sbReq.globalPrompt || '').trim(),
+        fingerprintPrompt: fp,
+        negativePrompt: String(ch.ai?.negativePrompt || '').trim(),
+        style: sbReq.style,
+        width: dims.w,
+        height: dims.h,
+        steps: Math.max(12, Math.min(32, Number(sbReq.steps || 24))),
+        cfgScale: Number(sbReq.cfgScale || 6.0)
+      })
+      const nextUri = res.url ? resolveUrl(res.url) : res.assetPath
+      const provider = String(res.provider || '') as any
+      const usedPrompt = [String(sbReq.globalPrompt || '').trim(), fp, 'reference portrait'].filter(Boolean).join('，').slice(0, 1800)
+
+      setDocProject((p) => {
+        const assets = [...(p.assets || [])]
+        const currCh = (p.characters || []).find((x) => x.id === characterId) || null
+        const refId = String(currCh?.ai?.referenceAssetId || '').trim()
+        const idx = refId ? assets.findIndex((a) => a.id === refId) : -1
+        let assetId = refId
+        if (idx >= 0) {
+          const old = assets[idx]
+          assets[idx] = { ...old, uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt, provider } }
+        } else {
+          assetId = uid('asset')
+          assets.push({ id: assetId, kind: 'image', name: `AI 参考 ${String(currCh?.name || currCh?.id || '')}`.trim() || 'AI 参考', uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt, provider } })
+        }
+        const nextChars = (p.characters || []).map((x) => {
+          if (x.id !== characterId) return x
+          const ai = (x.ai && typeof x.ai === 'object') ? x.ai : {}
+          return { ...x, ai: { ...ai, referenceAssetId: assetId } }
+        })
+        return { ...p, assets, characters: nextChars }
+      })
+      appendSbLog(`角色参考图已生成并绑定：${String(ch.name || ch.id)}`)
+      setToast('已生成并绑定角色参考图')
+      setSbContinuityReady(false)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      appendSbLog(`角色参考图生成失败：${String(ch.name || ch.id)} - ${msg}`)
+      setToast(msg)
+    }
+  }
+
+  function bindStoryboardCharacterRefFromSprite(characterId: string) {
+    if (doc.mode !== 'project' || !doc.project) return
+    const ch = (doc.project.characters || []).find((x) => x.id === characterId) || null
+    const spriteId = String(ch?.imageAssetId || '').trim()
+    if (!ch || !spriteId) return
+    setDocProject((p) => ({
+      ...p,
+      characters: (p.characters || []).map((x) => {
+        if (x.id !== characterId) return x
+        const ai = (x.ai && typeof x.ai === 'object') ? x.ai : {}
+        return { ...x, ai: { ...ai, referenceAssetId: spriteId } }
+      })
+    }))
+    appendSbLog(`已绑定角色图为参考：${String(ch.name || ch.id)}`)
+    setSbContinuityReady(false)
+  }
+
+  function clearStoryboardCharacterRef(characterId: string) {
+    if (doc.mode !== 'project' || !doc.project) return
+    const ch = (doc.project.characters || []).find((x) => x.id === characterId) || null
+    if (!ch) return
+    setDocProject((p) => ({
+      ...p,
+      characters: (p.characters || []).map((x) => {
+        if (x.id !== characterId) return x
+        const ai = (x.ai && typeof x.ai === 'object') ? x.ai : {}
+        const nextAi: any = { ...ai }
+        delete nextAi.referenceAssetId
+        return { ...x, ai: nextAi }
+      })
+    }))
+    appendSbLog(`已清除角色参考绑定：${String(ch.name || ch.id)}`)
+    setSbContinuityReady(false)
+  }
+
   function readStoryboardSceneMapFromProject(project: ProjectV1 | null | undefined) {
     const st = project && (project as any).state && typeof (project as any).state === 'object' ? (project as any).state : {}
     const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
@@ -2151,6 +2418,16 @@ function ensureNode(n: NodeV1): NodeV1 {
     const draft0 = readStoryboardBatchDraftFromProject(doc.project)
     setSbReq({
       entitySpec: String(aiBg0.storyboardEntitySpec || '').trim(),
+      storyBibleJson: aiBg0.storyBible && typeof aiBg0.storyBible === 'object'
+        ? JSON.stringify(aiBg0.storyBible, null, 2)
+        : String(aiBg0.storyBibleJson || '').trim(),
+      continuity: aiBg0.storyboardContinuity && typeof aiBg0.storyboardContinuity === 'object'
+        ? {
+            ipadapterEnabled: Boolean((aiBg0.storyboardContinuity as any).ipadapterEnabled),
+            requireCharacterRefs: (aiBg0.storyboardContinuity as any).requireCharacterRefs !== false,
+            controlnetEnabled: Boolean((aiBg0.storyboardContinuity as any).controlnetEnabled)
+          }
+        : { ipadapterEnabled: true, requireCharacterRefs: true, controlnetEnabled: false },
       globalPrompt: String(aiBg0.globalPrompt || '').trim() || templateGp,
       globalNegativePrompt: String(aiBg0.globalNegativePrompt || '').trim() || templateGneg,
       style: ((draft0 && draft0.style) || templateStyle || aiReq.style || 'picture_book') as any,
@@ -2175,6 +2452,16 @@ function ensureNode(n: NodeV1): NodeV1 {
             scheduler: DOUBAO_STORYBOARD_DEFAULTS.scheduler
           }))
           appendSbLog('检测到图像 Provider=doubao，已应用默认参数：steps=30 / cfg=7.5 / DPM++ 2M / Karras')
+        } else if (imageProvider === 'comfyui') {
+          setSbReq((prev) => ({
+            ...prev,
+            style: 'picture_book',
+            steps: COMFYUI_STORYBOARD_DEFAULTS.steps,
+            cfgScale: COMFYUI_STORYBOARD_DEFAULTS.cfgScale,
+            sampler: COMFYUI_STORYBOARD_DEFAULTS.sampler,
+            scheduler: COMFYUI_STORYBOARD_DEFAULTS.scheduler
+          }))
+          appendSbLog('检测到图像 Provider=comfyui，已应用连续场景默认参数：style=picture_book / steps=24 / cfg=6.0 / DPM++ 2M / Karras')
         }
       } catch (_) {}
     }
@@ -2190,46 +2477,77 @@ function ensureNode(n: NodeV1): NodeV1 {
     const projectTitle = String((doc.project as any).title || '').trim()
     const wholeStoryInput = buildWholeStoryUserInputForGlobal(projectTitle)
     if (!wholeStoryInput) {
-      setSbError('无法生成事物设定：故事内容为空')
+      setSbError('无法生成 Story Bible：故事内容为空')
       return
     }
     setSbBusyEntity(true)
     setSbError('')
-    appendSbLog('开始生成“故事事物设定”')
+    appendSbLog('开始生成 Story Bible（角色/道具/地点锁定）')
     try {
-      const res = await analyzeBackgroundPromptAi(doc.id, {
-        userInput:
-          `请先完整分析“整个故事”，提取并输出“可直接用于生图的结构化事物设定”（英文），必须使用并保留以下段落名：\n` +
-          `WORLD_ANCHOR:\nCHARACTER_LOCKS:\nPROP_LOCKS:\nEVENT_CHAIN:\nFORBIDDEN_SUBSTITUTES:\n` +
-          `要求：\n` +
-          `1) 必须覆盖全部场景（含结局），从故事文本中抽取角色、物品、地点、关键事件与状态变化。\n` +
-          `2) CHARACTER_LOCKS 逐角色给出外观指纹（年龄/发型/服装/配色/配饰），且全程一致。\n` +
-          `3) PROP_LOCKS 逐物品给出结构级描述（部件、材质、形状、尺寸感、拿法/用法），不是泛称。\n` +
-          `4) EVENT_CHAIN 按场景编号列出可见动作与状态变化，供后续场景提示词严格对齐。\n` +
-          `5) FORBIDDEN_SUBSTITUTES 明确列出易误画替代物（按每个关键物品给出）。\n` +
-          `6) 不要空泛叙事句，只写视觉可执行约束。\n\n` +
-          wholeStoryInput,
-        globalPrompt: String(sbReq.globalPrompt || '').trim(),
-        globalNegativePrompt: String(sbReq.globalNegativePrompt || '').trim(),
-        aspectRatio: sbReq.aspectRatio,
-        style: sbReq.style,
-        outputLanguage: 'en',
-        timeoutMs: 90_000
+      // Build structured input for Story Bible generation.
+      const sceneNodes = (doc.story.nodes || []).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene' || n.kind === 'ending')
+      const scenes = sceneNodes.slice(0, 60).map((n, idx) => {
+        const placements = Array.isArray((n as any).visuals?.placements) ? ((n as any).visuals.placements as any[]) : []
+        const charIds = Array.from(new Set(placements.map((p) => String((p && p.characterId) || '').trim()).filter(Boolean)))
+        const characters = charIds
+          .map((id) => (doc.project!.characters || []).find((c) => c.id === id) || null)
+          .filter(Boolean)
+          .map((c: any) => ({
+            id: String(c.id || '').trim(),
+            name: String(c.name || '').trim(),
+            fingerprintPrompt: String(c.ai && c.ai.fingerprintPrompt ? c.ai.fingerprintPrompt : '').trim()
+          }))
+        return {
+          index: idx + 1,
+          nodeId: n.id,
+          nodeName: String((n as any).body?.title || n.name || n.id).trim(),
+          summary: buildNodeTextSummary(String((n as any).body?.text || '').trim()),
+          characters
+        }
       })
-      const entitySpec = enforceEntitySpecQuality(String(res.result?.globalPrompt || '').trim())
-      if (!entitySpec) throw new Error('empty_entity_spec')
-      setSbReq((prev) => ({ ...prev, entitySpec }))
+      const input = {
+        storyTitle: projectTitle || null,
+        style: sbReq.style,
+        aspectRatio: sbReq.aspectRatio,
+        globalPrompt: String(sbReq.globalPrompt || '').trim() || null,
+        globalNegativePrompt: String(sbReq.globalNegativePrompt || '').trim() || null,
+        storySummary: wholeStoryInput,
+        scenes
+      }
+
+      const { result } = await generateStoryBibleAi(doc.id, { input, timeoutMs: 120_000 })
+      if (!result) throw new Error('empty_story_bible')
+      const storyBibleJson = JSON.stringify(result, null, 2)
+      const entitySpec = buildEntitySpecFromStoryBible(result)
+      if (!entitySpec) throw new Error('empty_entity_spec_from_bible')
+
+      setSbReq((prev) => ({ ...prev, storyBibleJson, entitySpec }))
+      setSbContinuityReady(false)
       setDocProject((p) => {
         const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
         const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
-        const nextState = { ...stateIn, aiBackground: { ...aiBgIn, storyboardEntitySpec: entitySpec } }
+        const nextState = {
+          ...stateIn,
+          aiBackground: {
+            ...aiBgIn,
+            storyboardEntitySpec: entitySpec,
+            storyBible: result,
+            storyBibleJson,
+            storyboardContinuity: sbReq.continuity
+          }
+        }
         return { ...p, state: nextState }
       })
-      appendSbLog('故事事物设定生成完成（可手动修改后再生成场景提示词）')
+      appendSbLog('Story Bible 生成完成（可手动编辑 JSON，随后生成场景提示词/批量出图）')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
+      const debugOutput = e && typeof e === 'object' && (e as any).debugOutput ? String((e as any).debugOutput || '').trim() : ''
       setSbError(msg)
-      appendSbLog(`事物设定生成失败：${msg}`)
+      appendSbLog(`Story Bible 生成失败：${msg}`)
+      if (debugOutput) {
+        appendSbLog('AI 原始输出（截断，便于排查/手工修正）：')
+        appendSbLog(debugOutput.slice(0, 1200))
+      }
     } finally {
       setSbBusyEntity(false)
     }
@@ -2238,6 +2556,11 @@ function ensureNode(n: NodeV1): NodeV1 {
   async function runStoryboardGenerateAllPrompts(mode: 'all' | 'pending' = 'all') {
     if (doc.mode !== 'project' || !doc.story || !doc.project) return
     if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    if (!sbContinuityReady) {
+      setSbError('请先运行“连续分镜锁定测试”，通过后才能生成场景提示词')
+      appendSbLog('阻止执行：连续分镜锁定测试未通过')
+      return
+    }
     if (!sbItems.length) {
       setSbError('没有可处理的场景节点')
       return
@@ -2269,7 +2592,8 @@ function ensureNode(n: NodeV1): NodeV1 {
     const styleChanged = Boolean(
       oldMeta && ((oldMeta.style && oldMeta.style !== String(sbReq.style || '')) || (oldMeta.aspectRatio && oldMeta.aspectRatio !== String(sbReq.aspectRatio || '')))
     )
-    const entitySpec = String(sbReq.entitySpec || '').trim()
+    const storyBibleObj = tryParseStoryBibleJson(sbReq.storyBibleJson)
+    const entitySpec = storyBibleObj ? buildEntitySpecFromStoryBible(storyBibleObj) : String(sbReq.entitySpec || '').trim()
     let currGlobalPrompt = String(sbReq.globalPrompt || '').trim()
     let currGlobalNegativePrompt = String(sbReq.globalNegativePrompt || '').trim()
     let recSteps = Number(sbReq.steps || 20)
@@ -2399,6 +2723,7 @@ function ensureNode(n: NodeV1): NodeV1 {
         sampler: recSampler,
         scheduler: recScheduler
       }))
+      setSbContinuityReady(false)
       setDocProject((p) => {
         const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
         const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
@@ -2408,6 +2733,7 @@ function ensureNode(n: NodeV1): NodeV1 {
             ...aiBgIn,
             globalPrompt: currGlobalPrompt,
             globalNegativePrompt: currGlobalNegativePrompt,
+            storyboardContinuity: sbReq.continuity,
             storyboardPromptMeta: {
               style: String(sbReq.style || ''),
               aspectRatio: String(sbReq.aspectRatio || ''),
@@ -2442,6 +2768,11 @@ function ensureNode(n: NodeV1): NodeV1 {
   async function runStoryboardValidateAndApply(mode: 'all' | 'pending' = 'all') {
     if (doc.mode !== 'project' || !doc.project || !doc.story) return
     if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    if (!sbContinuityReady) {
+      setSbError('请先运行“连续分镜锁定测试”，通过后才能批量出图')
+      appendSbLog('阻止执行：连续分镜锁定测试未通过')
+      return
+    }
     if (!sbItems.length) {
       setSbError('没有可处理的场景节点')
       return
@@ -2505,6 +2836,42 @@ function ensureNode(n: NodeV1): NodeV1 {
       let okCount = 0
       let failCount = 0
 
+      const storyNodesById = new Map((nextStory.nodes || []).filter(Boolean).map((n) => [String((n as any).id || ''), n as any]))
+      const projectCharactersById = new Map((nextProject.characters || []).filter(Boolean).map((ch) => [String((ch as any).id || ''), ch as any]))
+
+      const buildContinuityAnchor = () => {
+        return [
+          'WORLD_ANCHOR: same story world, same era and geography, stable art direction',
+          'CONTINUITY_RULES: keep character identity, outfit palette and key props consistent across scenes; no random replacements'
+        ].join(', ')
+      }
+
+      const buildRoleDefinitionForNode = (nodeId: string) => {
+        try {
+          const node = storyNodesById.get(String(nodeId || '')) as any
+          if (!node) return ''
+          const placements = (node.visuals && Array.isArray(node.visuals.placements)) ? node.visuals.placements : []
+          const ids = Array.from(new Set(placements.map((p: any) => String(p && p.characterId ? p.characterId : '')).filter(Boolean)))
+          if (!ids.length) return ''
+          const lines: string[] = []
+          for (const id of ids) {
+            const ch = projectCharactersById.get(String(id)) as any
+            if (!ch) continue
+            const name = String(ch.name || ch.id || '').trim()
+            if (!name) continue
+            const fp = String(ch.ai && ch.ai.fingerprintPrompt ? ch.ai.fingerprintPrompt : '').trim()
+            const neg = String(ch.ai && ch.ai.negativePrompt ? ch.ai.negativePrompt : '').trim()
+            const core = fp ? `${name}=${fp}` : name
+            lines.push(neg ? `${core} (avoid: ${neg})` : core)
+            if (lines.length >= 6) break
+          }
+          if (!lines.length) return ''
+          return `ROLE_DEFINITION: ${lines.join('; ')}`
+        } catch (_) {
+          return ''
+        }
+      }
+
       for (let i = 0; i < targets.length; i++) {
         const canContinue = await waitForSbQueueGate()
         if (!canContinue) {
@@ -2522,11 +2889,14 @@ function ensureNode(n: NodeV1): NodeV1 {
         const sp = String(it.prompt || '').trim()
         const gneg = String(sbReq.globalNegativePrompt || '').trim()
         const sneg = String(it.negativePrompt || '').trim()
-        const usedPrompt = [gp, sp].filter(Boolean).join('，')
+        const continuityAnchor = provider === 'comfyui' ? buildContinuityAnchor() : ''
+        const usedPrompt = [gp, continuityAnchor, sp].filter(Boolean).join('，')
         try {
+          const roleDef = buildRoleDefinitionForNode(it.nodeId)
+          const gpWithRoles = [gp, continuityAnchor, roleDef].filter(Boolean).join('，')
           const payload: AiBackgroundRequest = {
             userInput: String(it.userInput || ''),
-            globalPrompt: gp,
+            globalPrompt: gpWithRoles,
             globalNegativePrompt: gneg,
             prompt: sp,
             negativePrompt: sneg,
@@ -6400,6 +6770,7 @@ function ensureNode(n: NodeV1): NodeV1 {
           value={{
             prompt: '',
             entitySpec: sbReq.entitySpec,
+            storyBibleJson: sbReq.storyBibleJson,
             globalPrompt: sbReq.globalPrompt,
             globalNegativePrompt: sbReq.globalNegativePrompt,
             style: sbReq.style,
@@ -6415,16 +6786,62 @@ function ensureNode(n: NodeV1): NodeV1 {
           busyGenerate={sbBusyGenerate}
           busyApply={sbBusyApply}
           busyEntity={sbBusyEntity}
+          continuityReady={sbContinuityReady}
+          continuitySummary={sbContinuitySummary}
+          continuityBusy={sbContinuityBusy}
+          continuityConfig={sbReq.continuity}
+          characters={collectStoryboardUsedCharacters().map((ch) => ({
+            id: String(ch.id || ''),
+            name: String(ch.name || ch.id || ''),
+            fingerprintPrompt: String(ch.ai?.fingerprintPrompt || '').trim(),
+            referenceAssetId: String(ch.ai?.referenceAssetId || '').trim(),
+            hasSprite: Boolean(String(ch.imageAssetId || '').trim())
+          }))}
           elapsedMs={sbElapsedMs}
           generatingNodeId={sbGeneratingNodeId}
           generatingNodeElapsedMs={sbGeneratingNodeElapsedMs}
           error={sbError}
           logs={sbLogs}
           onGenerateEntity={runStoryboardGenerateEntitySpec}
+          onClearStoryBible={() => {
+            setSbReq((prev) => ({ ...prev, storyBibleJson: '' }))
+            setSbContinuityReady(false)
+            if (doc.mode === 'project') {
+              setDocProject((p) => {
+                const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+                const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+                const nextAiBg = { ...aiBgIn }
+                delete (nextAiBg as any).storyBible
+                delete (nextAiBg as any).storyBibleJson
+                const nextState = { ...stateIn, aiBackground: nextAiBg }
+                return { ...p, state: nextState }
+              })
+            }
+          }}
+          onRunContinuityTest={() => void runStoryboardContinuityTest()}
+          onChangeContinuityConfig={(patch) => {
+            setSbReq((prev) => ({ ...prev, continuity: { ...(prev.continuity || {}), ...(patch || {}) } }))
+            setSbContinuityReady(false)
+            if (doc.mode === 'project') {
+              setDocProject((p) => {
+                const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+                const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+                const nextState = {
+                  ...stateIn,
+                  aiBackground: { ...aiBgIn, storyboardContinuity: { ...(aiBgIn as any).storyboardContinuity, ...(patch || {}) } }
+                }
+                return { ...p, state: nextState }
+              })
+            }
+          }}
+          onGenerateCharacterRef={(characterId) => void generateStoryboardCharacterReference(characterId)}
+          onBindCharacterRefFromSprite={(characterId) => bindStoryboardCharacterRefFromSprite(characterId)}
+          onClearCharacterRef={(characterId) => clearStoryboardCharacterRef(characterId)}
           onChange={(next) => {
             setSbReq((prev) => {
               const merged = {
                 ...prev,
+                storyBibleJson: String((next as any).storyBibleJson || ''),
                 entitySpec: String((next as any).entitySpec || ''),
                 globalPrompt: String(next.globalPrompt || ''),
                 globalNegativePrompt: String(next.globalNegativePrompt || ''),
@@ -6437,6 +6854,10 @@ function ensureNode(n: NodeV1): NodeV1 {
                 sampler: String(next.sampler || prev.sampler || 'DPM++ 2M'),
                 scheduler: String(next.scheduler || prev.scheduler || 'Automatic')
               }
+              // When Story Bible JSON is present and valid, keep entitySpec derived (read-only downstream).
+              const storyBibleObj = tryParseStoryBibleJson(merged.storyBibleJson)
+              if (storyBibleObj) merged.entitySpec = buildEntitySpecFromStoryBible(storyBibleObj)
+              setSbContinuityReady(false)
               upsertStoryboardBatchDraft({
                 style: merged.style,
                 aspectRatio: merged.aspectRatio,
@@ -6453,11 +6874,15 @@ function ensureNode(n: NodeV1): NodeV1 {
               setDocProject((p) => {
                 const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
                 const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+                const storyBibleObj = tryParseStoryBibleJson((next as any).storyBibleJson)
+                const entitySpecDerived = storyBibleObj ? buildEntitySpecFromStoryBible(storyBibleObj) : String((next as any).entitySpec || '')
                 const nextState = {
                   ...stateIn,
                   aiBackground: {
                     ...aiBgIn,
-                    storyboardEntitySpec: String((next as any).entitySpec || ''),
+                    storyboardEntitySpec: String(entitySpecDerived || '').trim(),
+                    storyBible: storyBibleObj || undefined,
+                    storyBibleJson: String((next as any).storyBibleJson || ''),
                     globalPrompt: String(next.globalPrompt || ''),
                     globalNegativePrompt: String(next.globalNegativePrompt || '')
                   }
@@ -6482,6 +6907,7 @@ function ensureNode(n: NodeV1): NodeV1 {
           }
           onClearGlobalPrompt={() => {
             setSbReq((prev) => ({ ...prev, globalPrompt: '' }))
+            setSbContinuityReady(false)
             if (doc.mode === 'project') {
               setDocProject((p) => {
                 const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
@@ -6494,6 +6920,7 @@ function ensureNode(n: NodeV1): NodeV1 {
           }}
           onClearGlobalNegativePrompt={() => {
             setSbReq((prev) => ({ ...prev, globalNegativePrompt: '' }))
+            setSbContinuityReady(false)
             if (doc.mode === 'project') {
               setDocProject((p) => {
                 const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}

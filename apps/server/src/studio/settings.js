@@ -28,6 +28,14 @@ function sanitizeUrl(v) {
   }
 }
 
+function sanitizeFsPath(v) {
+  const s = String(v || '').trim()
+  if (!s) return null
+  // Keep it strict: absolute path only (server-side file hints / optional disk checks).
+  if (!path.isAbsolute(s)) return null
+  return s
+}
+
 function sanitizeSize(v) {
   const s = String(v || '').trim()
   if (!s) return null
@@ -128,7 +136,8 @@ export async function writeStudioSettings(storageRoot, incoming) {
       apiUrl: has(inImage, 'apiUrl') ? sanitizeUrl(inImage.apiUrl) : sanitizeUrl(prev?.image?.apiUrl),
       size: has(inImage, 'size') ? sanitizeSize(inImage.size) : sanitizeSize(prev?.image?.size),
       sdwebuiBaseUrl: has(inImage, 'sdwebuiBaseUrl') ? sanitizeUrl(inImage.sdwebuiBaseUrl) : sanitizeUrl(prev?.image?.sdwebuiBaseUrl),
-      comfyuiBaseUrl: has(inImage, 'comfyuiBaseUrl') ? sanitizeUrl(inImage.comfyuiBaseUrl) : sanitizeUrl(prev?.image?.comfyuiBaseUrl)
+      comfyuiBaseUrl: has(inImage, 'comfyuiBaseUrl') ? sanitizeUrl(inImage.comfyuiBaseUrl) : sanitizeUrl(prev?.image?.comfyuiBaseUrl),
+      comfyuiModelsRoot: has(inImage, 'comfyuiModelsRoot') ? sanitizeFsPath(inImage.comfyuiModelsRoot) : sanitizeFsPath(prev?.image?.comfyuiModelsRoot)
     },
     tts: {
       provider: has(inTts, 'provider') ? sanitizeProvider(inTts.provider) : sanitizeProvider(prev?.tts?.provider),
@@ -172,6 +181,7 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
     bgProvider: String(process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase(),
     sdwebuiBaseUrl: String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860').trim(),
     comfyuiBaseUrl: String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188').trim(),
+    comfyuiModelsRoot: String(process.env.STUDIO_COMFYUI_MODELS_ROOT || process.env.COMFYUI_MODELS_ROOT || '').trim(),
     doubaoImagesUrl: envFirst('DOUBAO_ARK_IMAGES_URL', 'DOUBAO_ARK_API_URL'),
     doubaoImagesModel: String(process.env.DOUBAO_ARK_MODEL || '').trim(),
     doubaoTextModel: String(envFirst('DOUBAO_ARK_TEXT_MODEL', 'DOUBAO_ARK_LLM_MODEL', 'DOUBAO_LLM_MODEL') || '').trim(),
@@ -216,6 +226,7 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
   const imageSize = settings?.image?.size ? String(settings.image.size) : env.doubaoImageSize
   const sdwebuiBaseUrl = settings?.image?.sdwebuiBaseUrl ? String(settings.image.sdwebuiBaseUrl) : env.sdwebuiBaseUrl
   const comfyuiBaseUrl = settings?.image?.comfyuiBaseUrl ? String(settings.image.comfyuiBaseUrl) : env.comfyuiBaseUrl
+  const comfyuiModelsRoot = settings?.image?.comfyuiModelsRoot ? String(settings.image.comfyuiModelsRoot) : env.comfyuiModelsRoot
 
   const proxyUrl = settings?.network?.proxyUrl ? String(settings.network.proxyUrl) : env.proxyUrl
 
@@ -230,7 +241,8 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
       apiUrl: imageApiUrl || null,
       size: imageSize || null,
       sdwebuiBaseUrl: sdwebuiBaseUrl || null,
-      comfyuiBaseUrl: comfyuiBaseUrl || null
+      comfyuiBaseUrl: comfyuiBaseUrl || null,
+      comfyuiModelsRoot: (comfyuiModelsRoot && path.isAbsolute(comfyuiModelsRoot)) ? comfyuiModelsRoot : null
     },
     tts: {
       provider: settings?.tts?.provider ? String(settings.tts.provider) : 'none',

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "updatedAt": "2026-03-03T08:58:07.016Z",
+  "updatedAt": "2026-03-06T03:01:18.785Z",
   "enabled": {
     "scripts": true,
     "prompt": true,
@@ -8,21 +8,22 @@
     "tts": true
   },
   "scripts": {
-    "provider": "doubao",
-    "model": "doubao-1-5-pro-32k-250115"
+    "provider": "ollama",
+    "model": "gemma3:12b"
   },
   "prompt": {
-    "provider": "doubao",
-    "model": "doubao-1-5-pro-32k-250115"
+    "provider": "ollama",
+    "model": "gemma3:12b"
   },
   "image": {
-    "provider": "doubao",
-    "model": "doubao-seedream-4-5-251128",
+    "provider": "comfyui",
+    "model": "dreamshaper_8.safetensors",
     "loras": [],
     "apiUrl": "https://ark.cn-beijing.volces.com/api/v3/images/generations",
     "size": "1024x1024",
     "sdwebuiBaseUrl": "http://127.0.0.1:7860",
-    "comfyuiBaseUrl": "http://127.0.0.1:8188"
+    "comfyuiBaseUrl": "http://127.0.0.1:8188",
+    "comfyuiModelsRoot": "/Users/vidar/works/stable-diffusion-webui/models"
   },
   "tts": {
     "provider": "doubao",

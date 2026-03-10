@@ -14,6 +14,7 @@ import { readGlobalRules, writeGlobalRules } from './ai/globalRules.js'
 import { generateBackgroundImage } from './ai/background.js'
 import { generateBackgroundPrompt } from './ai/imagePrompt.js'
 import { generateCharacterFingerprint } from './ai/characterPrompt.js'
+import { generateStoryBible } from './ai/storyBible.js'
 import { getDoubaoImagesConfigSnapshot } from './ai/doubao.js'
 import { diagnoseOllamaText } from './ai/ollama.js'
 import { classifyAiError, createTraceId, logStage } from './ai/runtime.js'
@@ -42,6 +43,25 @@ try {
     `[game_studio] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} openaiKey=${hasKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''} aiInit=manual_only`
   )
 } catch (_) {}
+
+// Basic request logging (opt-out with STUDIO_SERVER_LOG_REQUESTS=0).
+app.use('*', async (c, next) => {
+  const enabled = String(process.env.STUDIO_SERVER_LOG_REQUESTS || '1').trim() !== '0'
+  if (!enabled) return next()
+  const start = Date.now()
+  const url = c.req.url
+  try {
+    await next()
+  } finally {
+    const ms = Date.now() - start
+    let pathname = url
+    try {
+      pathname = new URL(url).pathname
+    } catch (_) {}
+    const status = c.res && typeof c.res.status === 'number' ? c.res.status : 0
+    console.log(`[${new Date().toISOString()}] ${c.req.method} ${pathname} -> ${status} (${ms}ms)`)
+  }
+})
 
 // P0：允许本地 editor（8868）跨域调用 server（1999）
 app.use('*', cors({ origin: '*', allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }))
@@ -364,6 +384,621 @@ app.get('/api/studio/comfyui/models', async (c) => {
   }
 })
 
+function normalizeConfiguredLoraNames(raw) {
+  const arr = Array.isArray(raw) ? raw : []
+  const out = []
+  const seen = new Set()
+  for (const item0 of arr) {
+    const item = String(item0 || '').trim()
+    if (!item) continue
+    const name = String(item.split(':')[0] || '').trim()
+    if (!name) continue
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(name)
+  }
+  return out
+}
+
+function normalizeComfyLoraKey(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return ''
+  const base = s.replace(/^.*[\\/]/, '')
+  return base
+    .replace(/\s+\[[^\]]+\]\s*$/, '')
+    .replace(/\.(safetensors|ckpt|pt|pth)$/i, '')
+    .trim()
+    .toLowerCase()
+}
+
+async function collectComfyCapabilities(baseUrl, timeoutMs, requiredNodes = null) {
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const nodes = Array.isArray(requiredNodes) && requiredNodes.length
+      ? requiredNodes.map((x) => String(x || '').trim()).filter(Boolean)
+      : ['CheckpointLoaderSimple', 'CLIPTextEncode', 'KSampler', 'VAEDecode', 'SaveImage']
+    const checks = await Promise.all(nodes.map(async (node) => {
+      const resp = await fetch(`${baseUrl}/object_info/${encodeURIComponent(node)}`, { method: 'GET', signal: controller.signal }).catch(() => null)
+      return { node, ok: Boolean(resp && resp.ok) }
+    }))
+    const missingNodes = checks.filter((x) => !x.ok).map((x) => x.node)
+
+    const [ckptInfoResp, ckptListResp, modelsResp, loraListResp, loraInfoResp] = await Promise.all([
+      fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/models/checkpoints`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/models`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/models/loras`, { method: 'GET', signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/object_info/LoraLoader`, { method: 'GET', signal: controller.signal }).catch(() => null)
+    ])
+
+    const modelSet = new Set()
+    const loraSet = new Set()
+
+    const ckptInfoJson = ckptInfoResp && ckptInfoResp.ok ? await ckptInfoResp.json().catch(() => null) : null
+    const ckpts = ckptInfoJson && ckptInfoJson.CheckpointLoaderSimple && ckptInfoJson.CheckpointLoaderSimple.input && ckptInfoJson.CheckpointLoaderSimple.input.required
+      ? ckptInfoJson.CheckpointLoaderSimple.input.required.ckpt_name
+      : null
+    for (const x of extractComfyChoiceList(ckpts)) modelSet.add(String(x || '').trim())
+
+    const ckptListJson = ckptListResp && ckptListResp.ok ? await ckptListResp.json().catch(() => null) : null
+    for (const x of extractStringListFromUnknown(ckptListJson)) modelSet.add(String(x || '').trim())
+
+    const modelsJson = modelsResp && modelsResp.ok ? await modelsResp.json().catch(() => null) : null
+    if (modelsJson && typeof modelsJson === 'object') {
+      for (const x of extractStringListFromUnknown(modelsJson.checkpoints)) modelSet.add(String(x || '').trim())
+      for (const x of extractStringListFromUnknown(modelsJson.loras)) loraSet.add(String(x || '').trim())
+    }
+
+    const loraListJson = loraListResp && loraListResp.ok ? await loraListResp.json().catch(() => null) : null
+    for (const x of extractStringListFromUnknown(loraListJson)) loraSet.add(String(x || '').trim())
+
+    const loraInfoJson = loraInfoResp && loraInfoResp.ok ? await loraInfoResp.json().catch(() => null) : null
+    const loraNames = loraInfoJson && loraInfoJson.LoraLoader && loraInfoJson.LoraLoader.input && loraInfoJson.LoraLoader.input.required
+      ? loraInfoJson.LoraLoader.input.required.lora_name
+      : null
+    for (const x of extractComfyChoiceList(loraNames)) loraSet.add(String(x || '').trim())
+
+    return {
+      ok: true,
+      missingNodes,
+      models: Array.from(modelSet).filter(Boolean),
+      loras: Array.from(loraSet).filter(Boolean)
+    }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+async function fetchComfyModelList(baseUrl, path, signal) {
+  try {
+    const resp = await fetch(`${baseUrl}${path}`, { method: 'GET', signal }).catch(() => null)
+    if (!resp) return { ok: false, status: 0, supported: false, list: [] }
+    if (Number(resp.status || 0) === 404) return { ok: false, status: 404, supported: false, list: [] }
+    const json = resp.ok ? await resp.json().catch(() => null) : null
+    const list = Array.isArray(json) ? json.map((x) => String(x || '').trim()).filter(Boolean) : []
+    return { ok: Boolean(resp.ok), status: Number(resp.status || 0), supported: true, list }
+  } catch (_) {
+    return { ok: false, status: 0, supported: false, list: [] }
+  }
+}
+
+async function probeComfyAnyNode(baseUrl, names, signal) {
+  const tried = []
+  for (const n0 of names) {
+    const n = String(n0 || '').trim()
+    if (!n) continue
+    tried.push(n)
+    const resp = await fetch(`${baseUrl}/object_info/${encodeURIComponent(n)}`, { method: 'GET', signal }).catch(() => null)
+    if (resp && resp.ok) return { ok: true, found: n, tried }
+  }
+  return { ok: false, found: '', tried }
+}
+
+async function isDir(p) {
+  try {
+    const st = await stat(String(p))
+    return Boolean(st && st.isDirectory())
+  } catch (_) {
+    return false
+  }
+}
+
+async function pickExistingDir(root, candidates) {
+  const base = String(root || '').trim()
+  if (!base) return ''
+  for (const c0 of candidates) {
+    const c = String(c0 || '').trim()
+    if (!c) continue
+    const p = path.join(base, c)
+    if (await isDir(p)) return p
+  }
+  return ''
+}
+
+async function hasAnyModelInDirs(dirs) {
+  const list = Array.isArray(dirs) ? dirs.map((x) => String(x || '').trim()).filter(Boolean) : []
+  let total = 0
+  for (const d of list) {
+    const r = await hasAnyModelFile(d)
+    if (r.ok && r.count) {
+      total += r.count
+      break
+    }
+  }
+  return { ok: true, count: total }
+}
+
+async function hasAnyModelFile(dirPath) {
+  try {
+    const dir = String(dirPath || '').trim()
+    if (!dir) return { ok: false, count: 0 }
+    if (!(await isDir(dir))) return { ok: true, count: 0 }
+    const items = await readdir(dir).catch(() => [])
+    let count = 0
+    for (const name of items) {
+      const s = String(name || '')
+      if (!s) continue
+      if (!/\.(safetensors|ckpt|pt|pth|bin)$/i.test(s)) continue
+      count += 1
+      if (count >= 1) break
+    }
+    return { ok: true, count }
+  } catch (_) {
+    return { ok: false, count: 0 }
+  }
+}
+
+app.post('/api/studio/image/preflight', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const timeoutMs = clampInt(body?.timeoutMs, 2_000, 60_000, 10_000)
+  const mode = String(body?.mode || 'basic').trim().toLowerCase() === 'storyboard' ? 'storyboard' : 'basic'
+  const settingsOverride = body && body.settings && typeof body.settings === 'object' ? body.settings : null
+  const { effective } = await getEffectiveStudioConfig(ROOT, { settingsOverride })
+
+  const provider = String(effective.image.provider || '').toLowerCase()
+  if (!effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', checks: { provider, ok: false, reason: 'image_disabled' } }, 503)
+  }
+  if (!provider || provider === 'none') {
+    return c.json({ success: false, error: 'provider_not_configured', checks: { provider, ok: false, reason: 'provider_none' } }, 400)
+  }
+
+  if (provider !== 'comfyui') {
+    return c.json({ success: true, checks: { provider, ok: true, note: 'preflight_skipped_non_comfyui' } })
+  }
+
+  const baseUrl = normalizeComfyuiBaseUrl(effective.image.comfyuiBaseUrl)
+  const modelsRoot = normalizeLocalPath(effective.image.comfyuiModelsRoot)
+  const lorasConfigured = normalizeConfiguredLoraNames(effective.image.loras)
+  const requiredNodes = [
+    'CheckpointLoaderSimple',
+    'CLIPTextEncode',
+    'KSampler',
+    'VAEDecode',
+    'SaveImage',
+    ...(lorasConfigured.length ? ['LoraLoader'] : [])
+  ]
+  const check = {
+    provider,
+    baseUrl,
+    mode,
+    ok: false,
+    requiredNodes,
+    missingNodes: [],
+    modelConfigured: String(effective.image.model || '').trim(),
+    modelExists: false,
+    lorasConfigured,
+    missingLoras: [],
+    extras: {
+      // For storyboard continuity we expect ControlNet + IP-Adapter to be available.
+      // Note: `extCount` is for SD-WebUI ControlNet extension models, which are not
+      // automatically visible to ComfyUI unless the user links/copies/configures paths.
+      controlnet: { ok: false, missingNodes: [], modelsOk: false, modelsSupported: false, modelsCount: 0, diskCount: 0, extCount: 0 },
+      ipadapter: { ok: false, missingNodes: [], modelsOk: false, modelsSupported: false, modelsCount: 0, diskCount: 0 }
+    },
+    hints: {
+      comfyuiModelsRoot: modelsRoot || null,
+      comfyuiModelDir: 'ComfyUI/models/checkpoints',
+      comfyuiLoraDir: 'ComfyUI/models/loras',
+      comfyuiControlnetDir: 'ComfyUI/models/controlnet',
+      comfyuiIpadapterDir: 'ComfyUI/models/ipadapter',
+      restartHint: 'if you add/remove models, restart ComfyUI to refresh cache',
+      managerHint: 'recommended: install ComfyUI-Manager to manage custom nodes'
+    },
+    disk: {
+      modelsRoot: modelsRoot || null,
+      checkpointsDir: null,
+      lorasDir: null,
+      controlnetDir: null,
+      controlnetExtDir: null,
+      ipadapterDir: null,
+      modelFileFound: null,
+      missingLorasFound: [],
+      missingLorasNotFound: []
+    },
+    reason: ''
+  }
+
+  try {
+    const statsResp = await fetch(`${baseUrl}/system_stats`, { method: 'GET' }).catch(() => null)
+    if (!statsResp || !statsResp.ok) {
+      check.reason = `comfyui_unreachable_${statsResp ? statsResp.status : 0}`
+      return c.json({ success: false, error: 'preflight_failed', checks: check }, 502)
+    }
+
+    const cap = await collectComfyCapabilities(baseUrl, timeoutMs, requiredNodes)
+    check.missingNodes = Array.isArray(cap.missingNodes) ? cap.missingNodes : []
+    if (check.missingNodes.length) {
+      check.reason = 'missing_required_nodes'
+      return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
+    }
+
+    const models = Array.isArray(cap.models) ? cap.models.map((x) => String(x || '').trim()).filter(Boolean) : []
+    if (!check.modelConfigured) {
+      check.reason = 'missing_model_config'
+      return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
+    }
+    check.modelExists = models.some((x) => String(x).toLowerCase() === String(check.modelConfigured).toLowerCase())
+    if (!check.modelExists) {
+      if (modelsRoot) {
+        const base = await resolveSdWebuiModelsBase(modelsRoot)
+        const ckptDir = await pickCheckpointDir(base)
+        check.disk.checkpointsDir = ckptDir || null
+        if (ckptDir) {
+          const candidateA = path.join(ckptDir, check.modelConfigured)
+          const candidateB = path.join(ckptDir, `${check.modelConfigured}.safetensors`)
+          check.disk.modelFileFound = (await existsFile(candidateA)) || (await existsFile(candidateB))
+        }
+      }
+      check.reason = 'configured_model_not_found'
+      return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
+    }
+    // If Models Root is configured, treat missing file as not-found even if ComfyUI list is stale.
+    if (modelsRoot) {
+      const base = await resolveSdWebuiModelsBase(modelsRoot)
+      const ckptDir = check.disk.checkpointsDir || (await pickCheckpointDir(base))
+      if (ckptDir) {
+        check.disk.checkpointsDir = ckptDir || null
+        const candidateA = path.join(ckptDir, check.modelConfigured)
+        const candidateB = path.join(ckptDir, `${check.modelConfigured}.safetensors`)
+        const found = (await existsFile(candidateA)) || (await existsFile(candidateB))
+        check.disk.modelFileFound = Boolean(found)
+        if (!found) {
+          check.modelExists = false
+          check.reason = 'configured_model_missing_on_disk'
+          return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
+        }
+      }
+    }
+
+    const loras = Array.isArray(cap.loras) ? cap.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
+    const loraKeySet = new Set(loras.map((x) => normalizeComfyLoraKey(x)).filter(Boolean))
+    check.missingLoras = check.lorasConfigured.filter((name) => !loraKeySet.has(normalizeComfyLoraKey(name)))
+    if (check.missingLoras.length) {
+      if (modelsRoot) {
+        const base = await resolveSdWebuiModelsBase(modelsRoot)
+        const loraDir = await pickLoraDir(base)
+        check.disk.lorasDir = loraDir || null
+        if (loraDir) {
+          for (const miss of check.missingLoras) {
+            const a = path.join(loraDir, miss)
+            const b = path.join(loraDir, `${miss}.safetensors`)
+            const ok = (await existsFile(a)) || (await existsFile(b))
+            if (ok) check.disk.missingLorasFound.push(miss)
+            else check.disk.missingLorasNotFound.push(miss)
+          }
+        }
+      }
+      check.reason = 'configured_loras_not_found'
+      return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
+    }
+
+    // Update hint dirs if modelsRoot is configured.
+    if (modelsRoot) {
+      const base = await resolveSdWebuiModelsBase(modelsRoot)
+      const ckptDir = await pickCheckpointDir(base)
+      const loraDir = await pickLoraDir(base)
+      const cnDir = await pickExistingDir(base, ['ControlNet', 'controlnet'])
+      const ipaDir = await pickExistingDir(base, ['ipadapter', 'IPAdapter'])
+      // SD-WebUI ControlNet extension models (common when sharing SD-WebUI folder):
+      // <webuiRoot>/extensions/sd-webui-controlnet/models
+      const webuiRoot = path.dirname(base || modelsRoot)
+      const cnExtDir = await pickExistingDir(webuiRoot, ['extensions/sd-webui-controlnet/models'])
+      if (ckptDir) check.hints.comfyuiModelDir = ckptDir
+      if (loraDir) check.hints.comfyuiLoraDir = loraDir
+      if (cnDir) check.hints.comfyuiControlnetDir = cnDir
+      if (ipaDir) check.hints.comfyuiIpadapterDir = ipaDir
+      check.disk.checkpointsDir = ckptDir || check.disk.checkpointsDir
+      check.disk.lorasDir = loraDir || check.disk.lorasDir
+      check.disk.controlnetDir = cnDir || null
+      check.disk.ipadapterDir = ipaDir || null
+      if (cnExtDir) check.disk.controlnetExtDir = cnExtDir
+    }
+
+    // Optional but required for "continuous storyboard" mode.
+    if (mode === 'storyboard') {
+      const controller = new AbortController()
+      const t2 = setTimeout(() => controller.abort(), Math.min(timeoutMs, 15000))
+      try {
+        const sig = controller.signal
+        // ControlNet nodes: allow variants.
+        const cnLoader = await probeComfyAnyNode(baseUrl, ['ControlNetLoader', 'ControlNetLoaderAdvanced'], sig)
+        const cnApply = await probeComfyAnyNode(baseUrl, ['ControlNetApply', 'ControlNetApplyAdvanced'], sig)
+        const cnMissing = []
+        if (!cnLoader.ok) cnMissing.push('ControlNetLoader')
+        if (!cnApply.ok) cnMissing.push('ControlNetApply')
+        check.extras.controlnet.missingNodes = cnMissing
+        // ControlNet models list (best-effort)
+        const cnModels = await fetchComfyModelList(baseUrl, '/models/controlnet', sig)
+        check.extras.controlnet.modelsSupported = Boolean(cnModels.supported)
+        check.extras.controlnet.modelsCount = Array.isArray(cnModels.list) ? cnModels.list.length : 0
+        if (check.extras.controlnet.modelsSupported) {
+          check.extras.controlnet.modelsOk = check.extras.controlnet.modelsCount > 0
+        } else if (modelsRoot) {
+          // Disk check should focus on ComfyUI-visible ControlNet dir. SD-WebUI extension models
+          // are reported separately as a "can be linked" hint.
+          const cnDir = String(check.hints.comfyuiControlnetDir || '').trim()
+          if (cnDir) {
+            const disk = await hasAnyModelFile(cnDir)
+            check.extras.controlnet.diskCount = disk.ok ? disk.count : 0
+            check.extras.controlnet.modelsOk = disk.ok && disk.count > 0
+          } else {
+            check.extras.controlnet.diskCount = 0
+            check.extras.controlnet.modelsOk = false
+          }
+          const extDir = String(check.disk.controlnetExtDir || '').trim()
+          if (extDir) {
+            const ext = await hasAnyModelFile(extDir)
+            check.extras.controlnet.extCount = ext.ok ? ext.count : 0
+          }
+        } else {
+          check.extras.controlnet.modelsOk = false
+        }
+        check.extras.controlnet.ok = cnMissing.length === 0 && check.extras.controlnet.modelsOk
+
+        // IP-Adapter nodes (ComfyUI_IPAdapter_plus and variants)
+        const ipaLoader = await probeComfyAnyNode(baseUrl, ['IPAdapterModelLoader', 'IPAdapterLoader', 'IPAdapterUnifiedLoader'], sig)
+        const ipaApply = await probeComfyAnyNode(baseUrl, ['IPAdapterApply', 'IPAdapterApplyAdvanced', 'IPAdapterAdvanced'], sig)
+        const ipaMissing = []
+        if (!ipaLoader.ok) ipaMissing.push('IPAdapterModelLoader')
+        if (!ipaApply.ok) ipaMissing.push('IPAdapterApply')
+        check.extras.ipadapter.missingNodes = ipaMissing
+        const ipaModels = await fetchComfyModelList(baseUrl, '/models/ipadapter', sig)
+        check.extras.ipadapter.modelsSupported = Boolean(ipaModels.supported)
+        check.extras.ipadapter.modelsCount = Array.isArray(ipaModels.list) ? ipaModels.list.length : 0
+        if (check.extras.ipadapter.modelsSupported) {
+          check.extras.ipadapter.modelsOk = check.extras.ipadapter.modelsCount > 0
+        } else if (modelsRoot && check.hints.comfyuiIpadapterDir) {
+          const disk = await hasAnyModelFile(check.hints.comfyuiIpadapterDir)
+          check.extras.ipadapter.diskCount = disk.ok ? disk.count : 0
+          check.extras.ipadapter.modelsOk = disk.ok && disk.count > 0
+        } else {
+          check.extras.ipadapter.modelsOk = false
+        }
+        check.extras.ipadapter.ok = ipaMissing.length === 0 && check.extras.ipadapter.modelsOk
+      } finally {
+        clearTimeout(t2)
+      }
+
+      if (!check.extras.controlnet.ok || !check.extras.ipadapter.ok) {
+        check.reason = 'missing_storyboard_extras'
+        return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
+      }
+    }
+
+    check.ok = true
+    check.reason = 'ok'
+    return c.json({ success: true, checks: check })
+  } catch (e) {
+    check.reason = e && e.message ? String(e.message) : String(e)
+    return c.json({ success: false, error: 'preflight_failed', checks: check }, 502)
+  }
+})
+
+app.post('/api/studio/image/models', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const settingsOverride = body && body.settings && typeof body.settings === 'object' ? body.settings : null
+  const { effective } = await getEffectiveStudioConfig(ROOT, { settingsOverride })
+
+  if (!effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', message: 'image_disabled' }, 503)
+  }
+
+  const provider = String(effective.image.provider || '').toLowerCase()
+  if (!provider || provider === 'none') {
+    return c.json({ success: false, error: 'provider_not_configured', message: 'provider_none' }, 400)
+  }
+
+  const baseUrl =
+    provider === 'comfyui'
+      ? normalizeComfyuiBaseUrl(effective.image.comfyuiBaseUrl)
+      : provider === 'sdwebui'
+        ? normalizeSdwebuiBaseUrl(effective.image.sdwebuiBaseUrl)
+        : ''
+
+  // Prefer disk scan when a shared Models Root is configured for ComfyUI.
+  if (provider === 'comfyui') {
+    const modelsRoot = normalizeLocalPath(effective.image.comfyuiModelsRoot)
+    if (modelsRoot) {
+      const base = await resolveSdWebuiModelsBase(modelsRoot)
+      const ckptDir = await pickCheckpointDir(base)
+      const loraDir = await pickLoraDir(base)
+      const models = ckptDir ? await scanModelFiles(ckptDir, { exts: ['.safetensors', '.ckpt'], maxDepth: 4 }) : []
+      const loras = loraDir ? await scanModelFiles(loraDir, { exts: ['.safetensors'], maxDepth: 4 }) : []
+      return c.json({
+        success: true,
+        source: 'disk',
+        provider,
+        baseUrl,
+        modelsRoot: base || modelsRoot,
+        dirs: { checkpointsDir: ckptDir || null, lorasDir: loraDir || null },
+        models,
+        loras,
+        note: 'disk_scan'
+      })
+    }
+  }
+
+  // Fallback: query provider API (may include cached names).
+  try {
+    if (provider === 'comfyui') {
+      const cap = await collectComfyCapabilities(baseUrl, 12_000, [])
+      return c.json({
+        success: true,
+        source: 'comfyui',
+        provider,
+        baseUrl,
+        models: Array.isArray(cap.models) ? cap.models : [],
+        loras: Array.isArray(cap.loras) ? cap.loras : [],
+        note: 'comfyui_api'
+      })
+    }
+    if (provider === 'sdwebui') {
+      const res = await fetch(`${baseUrl}/sdapi/v1/sd-models`, { method: 'GET' }).catch(() => null)
+      if (!res || !res.ok) return c.json({ success: false, error: 'models_failed', message: `sdwebui_models_http_${res ? res.status : 0}` }, 502)
+      const arr = await res.json().catch(() => [])
+      const list = Array.isArray(arr) ? arr : []
+      const models = list.map((x) => (x && typeof x === 'object' ? String(x.model_name || x.title || x.name || '').trim() : '')).filter(Boolean)
+      return c.json({ success: true, source: 'sdwebui', provider, baseUrl, models, loras: [], note: 'sdwebui_api' })
+    }
+    return c.json({ success: true, source: 'none', provider, baseUrl, models: [], loras: [], note: 'not_supported' })
+  } catch (e) {
+    return c.json({ success: false, error: 'models_failed', message: e && e.message ? String(e.message) : String(e) }, 502)
+  }
+})
+
+app.post('/api/studio/image/test', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const timeoutMs = clampInt(body?.timeoutMs, 5_000, 300_000, 60_000)
+  const settingsOverride = body && body.settings && typeof body.settings === 'object' ? body.settings : null
+  const { effective } = await getEffectiveStudioConfig(ROOT, { settingsOverride })
+
+  if (!effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
+  }
+  const provider = String(effective.image.provider || '').toLowerCase()
+  if (!provider || provider === 'none') {
+    return c.json({ success: false, error: 'provider_not_configured', message: '请先在设置中选择 Provider/Model' }, 400)
+  }
+
+  if (provider === 'comfyui') {
+    const pre = await (async () => {
+      const baseUrl = normalizeComfyuiBaseUrl(effective.image.comfyuiBaseUrl)
+      const lorasConfigured = normalizeConfiguredLoraNames(effective.image.loras)
+      const requiredNodes = [
+        'CheckpointLoaderSimple',
+        'CLIPTextEncode',
+        'KSampler',
+        'VAEDecode',
+        'SaveImage',
+        ...(lorasConfigured.length ? ['LoraLoader'] : [])
+      ]
+      const check = {
+        provider: 'comfyui',
+        baseUrl,
+        ok: false,
+        requiredNodes,
+        missingNodes: [],
+        modelConfigured: String(effective.image.model || '').trim(),
+        modelExists: false,
+        lorasConfigured,
+        missingLoras: [],
+        hints: {
+          comfyuiModelDir: 'ComfyUI/models/checkpoints',
+          comfyuiLoraDir: 'ComfyUI/models/loras',
+          restartHint: 'if you add/remove models, restart ComfyUI to refresh cache',
+          managerHint: 'recommended: install ComfyUI-Manager to manage custom nodes'
+        },
+        reason: ''
+      }
+      try {
+        const statsResp = await fetch(`${baseUrl}/system_stats`, { method: 'GET' }).catch(() => null)
+        if (!statsResp || !statsResp.ok) {
+          check.reason = `comfyui_unreachable_${statsResp ? statsResp.status : 0}`
+          return { ok: false, check }
+        }
+        const cap = await collectComfyCapabilities(baseUrl, Math.min(timeoutMs, 15_000), requiredNodes)
+        check.missingNodes = Array.isArray(cap.missingNodes) ? cap.missingNodes : []
+        if (check.missingNodes.length) {
+          check.reason = 'missing_required_nodes'
+          return { ok: false, check }
+        }
+        const models = Array.isArray(cap.models) ? cap.models.map((x) => String(x || '').trim()).filter(Boolean) : []
+        if (!check.modelConfigured) {
+          check.reason = 'missing_model_config'
+          return { ok: false, check }
+        }
+        check.modelExists = models.some((x) => String(x).toLowerCase() === String(check.modelConfigured).toLowerCase())
+        if (!check.modelExists) {
+          check.reason = 'configured_model_not_found'
+          return { ok: false, check }
+        }
+        const loras = Array.isArray(cap.loras) ? cap.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
+        const loraKeySet = new Set(loras.map((x) => normalizeComfyLoraKey(x)).filter(Boolean))
+        check.missingLoras = check.lorasConfigured.filter((name) => !loraKeySet.has(normalizeComfyLoraKey(name)))
+        if (check.missingLoras.length) {
+          check.reason = 'configured_loras_not_found'
+          return { ok: false, check }
+        }
+        check.ok = true
+        check.reason = 'ok'
+        return { ok: true, check }
+      } catch (e) {
+        check.reason = e && e.message ? String(e.message) : String(e)
+        return { ok: false, check }
+      }
+    })()
+    if (!pre.ok) {
+      return c.json({ success: false, error: 'preflight_failed', message: `preflight_failed: ${pre.check.reason}`, checks: pre.check }, 400)
+    }
+  }
+
+  const width = clampInt(body?.width, 256, 1024, 512)
+  const height = clampInt(body?.height, 256, 1024, 512)
+  const style = normalizeStyleEnum(body?.style || 'picture_book')
+  const prompt = String(body?.prompt || '').trim() || 'a warm children picture book illustration, a cute rabbit reading a book in a cozy forest, soft light, clean outlines'
+  const negativePrompt = String(body?.negativePrompt || '').trim()
+
+  try {
+    const gen = await generateBackgroundImage({
+      prompt,
+      negativePrompt,
+      style,
+      width,
+      height,
+      steps: body?.steps,
+      cfgScale: body?.cfgScale,
+      sampler: body?.sampler,
+      scheduler: body?.scheduler,
+      provider,
+      model: effective.image.model,
+      loras: effective.image.loras,
+      sdwebuiBaseUrl: effective.image.sdwebuiBaseUrl,
+      comfyuiBaseUrl: effective.image.comfyuiBaseUrl,
+      apiUrl: effective.image.apiUrl,
+      proxyUrl: effective.network.proxyUrl,
+      timeoutMs
+    })
+    const buf = gen.bytes
+    const ext0 = String(gen.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
+    const sniff = sniffImageMetaFromBytes(buf)
+    const ext = (sniff && sniff.ext ? sniff.ext : ext0) || 'png'
+    const b64 = buf.toString('base64')
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png'
+    return c.json({
+      success: true,
+      result: { ext, bytesBase64: b64, dataUrl: `data:${mime};base64,${b64}` },
+      meta: gen.meta || null
+    })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const status = e && typeof e.status === 'number' ? e.status : null
+    return c.json({ success: false, error: 'test_failed', message: msg, status: status == null ? undefined : status }, 502)
+  }
+})
+
 app.post('/api/studio/diagnose', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const deepText = Boolean(body && body.deepText)
@@ -634,6 +1269,101 @@ async function existsFile(p) {
   } catch (_) {
     return false
   }
+}
+
+function normalizeLocalPath(raw) {
+  let s = String(raw || '').trim()
+  if (!s) return ''
+  // Strip surrounding quotes copied from shell/GUI.
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim()
+  }
+  // Drop trailing slashes to reduce join surprises.
+  s = s.replace(/[\\/]+$/, '')
+  return s
+}
+
+async function resolveSdWebuiModelsBase(root) {
+  const raw = normalizeLocalPath(root)
+  if (!raw) return ''
+  if (await isDir(raw)) {
+    // If user passed the webui root (contains "models/"), normalize to "<root>/models".
+    const maybeModels = path.join(raw, 'models')
+    if (await isDir(maybeModels)) return maybeModels
+    return raw
+  }
+  return raw
+}
+
+async function pickCheckpointDir(modelsBase) {
+  const base = normalizeLocalPath(modelsBase)
+  if (!base) return ''
+  if (await isDir(base)) {
+    // Some users point Models Root directly at the checkpoint folder.
+    const items = await readdir(base).catch(() => [])
+    if (items.some((x) => /\.(safetensors|ckpt)$/i.test(String(x || '')))) return base
+  }
+  return await pickExistingDir(base, ['Stable-diffusion', 'checkpoints', 'Checkpoint', 'Checkpoints'])
+}
+
+async function pickLoraDir(modelsBase) {
+  const base = normalizeLocalPath(modelsBase)
+  if (!base) return ''
+  if (await isDir(base)) {
+    // Some users point Models Root directly at the LoRA folder.
+    const items = await readdir(base).catch(() => [])
+    if (items.some((x) => /\.safetensors$/i.test(String(x || '')))) return base
+  }
+  return await pickExistingDir(base, ['Lora', 'loras', 'LoRA', 'lora'])
+}
+
+async function scanModelFiles(rootDir, { exts, maxDepth = 4 }) {
+  const out = []
+  const want = new Set((exts || []).map((x) => String(x || '').toLowerCase()).filter(Boolean))
+  if (!rootDir) return out
+
+  async function walk(dir, depth) {
+    if (depth > maxDepth) return
+    let ents = []
+    try {
+      ents = await readdir(dir, { withFileTypes: true })
+    } catch (_) {
+      return
+    }
+    for (const ent of ents) {
+      const name = String(ent && ent.name ? ent.name : '')
+      if (!name || name.startsWith('.')) continue
+      const full = path.join(dir, name)
+      if (ent.isDirectory()) {
+        await walk(full, depth + 1)
+        continue
+      }
+      if (!ent.isFile()) continue
+      const lower = name.toLowerCase()
+      // Ignore common sidecar files.
+      if (
+        lower.endsWith('.civitai.info') ||
+        lower.endsWith('.preview.png') ||
+        lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.txt') ||
+        lower.endsWith('.yaml') ||
+        lower.endsWith('.yml')
+      ) {
+        continue
+      }
+      const ext = path.extname(lower)
+      if (!want.has(ext)) continue
+      const rel = path.relative(rootDir, full).split(path.sep).join('/')
+      out.push(rel)
+    }
+  }
+
+  await walk(rootDir, 0)
+  out.sort((a, b) => a.localeCompare(b))
+  return out
 }
 
 function sniffImageMetaFromBytes(buf) {
@@ -2409,6 +3139,7 @@ app.post('/api/projects/:id/ai/background', async (c) => {
       comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
       apiUrl: studio.effective.image.apiUrl,
       model: studio.effective.image.model,
+      loras: studio.effective.image.loras,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs: bgTimeoutMs
 	    })
@@ -2538,6 +3269,93 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       err: msg
     })
     return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
+  }
+})
+
+// AI：生成 Story Bible（角色/道具/地点锁定，用于连续分镜）
+app.post('/api/projects/:id/ai/story/bible', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const input = body && typeof body === 'object' ? body.input : null
+  if (!input || typeof input !== 'object') return c.json({ success: false, error: 'missing_input' }, 400)
+
+  const timeoutMs = clampInt(
+    body?.timeoutMs,
+    5_000,
+    180_000,
+    clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 180_000, 90_000)
+  )
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.prompt) {
+    return c.json({ success: false, error: 'disabled', message: '“提示词生成”已在设置中关闭' }, 503)
+  }
+  if (!studio.effective.prompt.provider || studio.effective.prompt.provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“提示词生成”并选择 Provider/Model' }, 400)
+  }
+
+  const startedAt = Date.now()
+  const traceId = createTraceId()
+  logStage({
+    stage: 'story.bible',
+    event: 'start',
+    traceId,
+    project: id,
+    provider: studio.effective.prompt.provider || 'openai',
+    model: studio.effective.prompt.model || '-'
+  })
+  try {
+    const { result, meta } = await generateStoryBible({
+      provider: studio.effective.prompt.provider,
+      model: studio.effective.prompt.model,
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs,
+      input
+    })
+    logStage({
+      stage: 'story.bible',
+      event: 'ok',
+      traceId,
+      project: id,
+      provider: meta && meta.provider ? meta.provider : studio.effective.prompt.provider || 'openai',
+      model: meta && meta.model ? meta.model : studio.effective.prompt.model || '-',
+      ok: true,
+      durationMs: Math.max(0, Date.now() - startedAt)
+    })
+    return c.json({ success: true, result, meta, traceId })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    const debugOutput =
+      process.env.NODE_ENV !== 'production' && e && typeof e === 'object' && 'output' in e
+        ? String(e.output || '').slice(0, 8000)
+        : ''
+    logStage({
+      stage: 'story.bible',
+      event: 'fail',
+      traceId,
+      project: id,
+      provider: studio.effective.prompt.provider || 'openai',
+      model: studio.effective.prompt.model || '-',
+      status: mapped.httpStatus,
+      ok: false,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      err: msg
+    })
+    return c.json(
+      {
+        success: false,
+        error: mapped.code,
+        message: msg,
+        traceId,
+        ...(debugOutput ? { debugOutput } : {})
+      },
+      mapped.httpStatus
+    )
   }
 })
 
@@ -2692,6 +3510,7 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
       comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
       apiUrl: studio.effective.image.apiUrl,
       model: studio.effective.image.model,
+      loras: studio.effective.image.loras,
       proxyUrl: studio.effective.network.proxyUrl
     })
 
@@ -2719,6 +3538,124 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
     const status = e && typeof e.status === 'number' ? e.status : null
     try {
       console.log(`[game_studio] ch.sprite:fail project=${id} provider=${imgProvider} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
+    } catch (_) {}
+    if (status === 501) return c.json({ success: false, error: 'provider_not_configured', message: msg }, 501)
+    return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
+  }
+})
+
+// AI：生成角色参考图（用于 IP-Adapter 锁定角色一致性；不做绿幕/抠图）
+app.post('/api/projects/:id/ai/character/reference', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const characterName = String(body?.characterName || '').trim()
+  if (!characterName) return c.json({ success: false, error: 'missing_characterName', message: 'characterName 不能为空' }, 400)
+  const globalPrompt = String(body?.globalPrompt || '').trim()
+  const fingerprintPrompt = String(body?.fingerprintPrompt || '').trim()
+  const negativePromptIn = String(body?.negativePrompt || '').trim()
+  const style = normalizeStyleEnum(body?.style)
+  const width = clampInt(body?.width, 256, 1536, 768)
+  const height = clampInt(body?.height, 256, 1536, 768)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
+  }
+  const imgProvider = String(studio.effective.image.provider || process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
+
+  const refHint =
+    `Reference portrait for a single character,` +
+    ` clean simple background (light neutral),` +
+    ` chest-up or half-body,` +
+    ` looking at camera,` +
+    ` consistent outfit and face,` +
+    ` no extra characters, no props unless described,` +
+    ` no scene environment`
+
+  const prompt = [
+    globalPrompt,
+    `风格：${styleNameZh(style)}（${style}）`,
+    `角色名：${characterName}`,
+    fingerprintPrompt,
+    refHint
+  ]
+    .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('，')
+
+  const negBase = [
+    'text',
+    'watermark',
+    'logo',
+    'qr code',
+    'low quality',
+    'blurry',
+    'deformed',
+    'photorealistic',
+    'realistic skin texture',
+    'multiple characters',
+    'crowd',
+    'complex background',
+    'busy environment'
+  ].join(', ')
+
+  const negativePrompt = [negativePromptIn, negBase].map((s) => String(s || '').trim()).filter(Boolean).join(', ')
+
+  const startedAt = Date.now()
+  try {
+    console.log(
+      `[game_studio] ch.ref:start project=${id} provider=${imgProvider} model=${studio.effective.image.model || '-'} name=${characterName} w=${width} h=${height} style=${style} promptChars=${prompt.length}`
+    )
+  } catch (_) {}
+
+  try {
+    const gen = await generateBackgroundImage({
+      prompt,
+      negativePrompt,
+      width,
+      height,
+      steps: body?.steps,
+      cfgScale: body?.cfgScale,
+      guidanceScale: body?.guidanceScale,
+      sequentialImageGeneration: body?.sequentialImageGeneration,
+      provider: imgProvider,
+      sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
+      comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+      apiUrl: studio.effective.image.apiUrl,
+      model: studio.effective.image.model,
+      loras: studio.effective.image.loras,
+      proxyUrl: studio.effective.network.proxyUrl
+    })
+
+    const buf = gen.bytes
+    const ext0 = String(gen.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
+    const sniff = sniffImageMetaFromBytes(buf)
+    const ext = (sniff && sniff.ext ? sniff.ext : ext0) || 'png'
+
+    const relDir = path.join('assets', 'ai', 'character_refs')
+    const outDir = path.join(dir, relDir)
+    await mkdir(outDir, { recursive: true })
+    const safe = String(characterName || 'character').replace(/[^a-zA-Z0-9_\u4e00-\u9fa5-]+/g, '_').slice(0, 24) || 'character'
+    const fname = `ref_${safe}_${Date.now()}.${ext}`
+    const abs = path.join(outDir, fname)
+    await writeFile(abs, buf)
+
+    const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+    const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : imgProvider
+    const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
+    try {
+      console.log(`[game_studio] ch.ref:ok project=${id} provider=${provider} bytes=${buf.length} ext=${ext} ms=${Math.max(0, Date.now() - startedAt)}`)
+    } catch (_) {}
+    return c.json({ success: true, provider, assetPath, url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`, remoteUrl, prompt, negativePrompt })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const status = e && typeof e.status === 'number' ? e.status : null
+    try {
+      console.log(`[game_studio] ch.ref:fail project=${id} provider=${imgProvider} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
     } catch (_) {}
     if (status === 501) return c.json({ success: false, error: 'provider_not_configured', message: msg }, 501)
     return c.json({ success: false, error: 'ai_failed', message: msg }, 502)

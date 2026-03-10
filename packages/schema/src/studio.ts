@@ -15,6 +15,8 @@ export type CharacterV1 = {
   ai?: {
     fingerprintPrompt?: string
     negativePrompt?: string
+    // For storyboard continuity (IP-Adapter reference image).
+    referenceAssetId?: string
   }
 }
 

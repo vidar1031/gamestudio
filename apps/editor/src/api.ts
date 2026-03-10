@@ -28,7 +28,14 @@ function base() {
  * @throws 当请求失败或响应中 success !== true 时抛出错误
  */
 async function j(url: string, init?: RequestInit) {
-  const resp = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } })
+  let resp: Response
+  try {
+    resp = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    // Browser fetch throws TypeError("Failed to fetch") on network/CORS failures.
+    throw new Error(`Failed to fetch: ${url} (${msg}). 请确认 studio server 正在运行且可访问：${base()}/api/health`)
+  }
   const json = (await resp.json().catch(() => null)) as any
   if (!resp.ok || !json || json.success !== true) {
     // 优先使用 message 作为用户可见的错误信息；error 通常是简短代码如 "ai_faile
@@ -508,6 +515,26 @@ export async function analyzeBackgroundPromptAi(
   }
 }
 
+export async function generateStoryBibleAi(
+  projectId: string,
+  payload: { input: any; timeoutMs?: number }
+): Promise<{ result: any; meta: any }> {
+  const resp = await fetch(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/bible`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  })
+  const json = (await resp.json().catch(() => null)) as any
+  if (!resp.ok || !json || json.success !== true) {
+    const msg = json && (json.message || json.error) ? String(json.message || json.error) : `HTTP ${resp.status}`
+    const err = new Error(msg)
+    ;(err as any).debugOutput = json && json.debugOutput ? String(json.debugOutput) : ''
+    ;(err as any).traceId = json && json.traceId ? String(json.traceId) : ''
+    throw err
+  }
+  return { result: (json.result as any) || null, meta: (json.meta as any) || null }
+}
+
 // ===== AI 图像生成 - 角色 (AI Character) =====
 
 /**
@@ -577,6 +604,38 @@ export async function generateCharacterSpriteAi(
   }
 }
 
+export type AiCharacterReferenceRequest = {
+  characterName: string
+  globalPrompt?: string
+  fingerprintPrompt?: string
+  negativePrompt?: string
+  style?: string
+  width?: number
+  height?: number
+  steps?: number
+  cfgScale?: number
+  guidanceScale?: number
+  sequentialImageGeneration?: string
+}
+
+export async function generateCharacterReferenceAi(
+  projectId: string,
+  payload: AiCharacterReferenceRequest
+): Promise<{ assetPath: string; url: string; provider: string; remoteUrl?: string; prompt?: string; negativePrompt?: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/character/reference`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    assetPath: String(json.assetPath || ''),
+    url: String(json.url || ''),
+    provider: String(json.provider || ''),
+    remoteUrl: String(json.remoteUrl || '').trim() || undefined,
+    prompt: typeof json.prompt === 'string' ? json.prompt : undefined,
+    negativePrompt: typeof json.negativePrompt === 'string' ? json.negativePrompt : undefined
+  }
+}
+
 // ===== Assets (upload local image) =====
 export async function uploadProjectImage(
   projectId: string,
@@ -619,6 +678,7 @@ export type StudioSettings = {
     size?: string | null
     sdwebuiBaseUrl?: string | null
     comfyuiBaseUrl?: string | null
+    comfyuiModelsRoot?: string | null
   }
   tts?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
   network?: { proxyUrl?: string | null }
@@ -636,6 +696,7 @@ export type StudioEffectiveConfig = {
     size: string | null
     sdwebuiBaseUrl: string | null
     comfyuiBaseUrl: string | null
+    comfyuiModelsRoot?: string | null
   }
   tts: { provider: string; model: string | null; apiUrl: string | null }
   network: { proxyUrl: string | null }
@@ -690,4 +751,53 @@ export async function getComfyuiModels(baseUrl?: string): Promise<{ baseUrl: str
     loras: Array.isArray(json.loras) ? json.loras.map((x: any) => String(x || '')).filter(Boolean) : [],
     note: json && json.note ? String(json.note) : ''
   }
+}
+
+export async function getStudioImageModels(payload?: { settings?: StudioSettings }): Promise<{ source: string; provider: string; baseUrl?: string; modelsRoot?: string; dirs?: any; models: string[]; loras: string[]; note?: string }> {
+  const json = await j(`${base()}/api/studio/image/models`, { method: 'POST', body: JSON.stringify(payload || {}) })
+  return {
+    source: String(json.source || ''),
+    provider: String(json.provider || ''),
+    baseUrl: json.baseUrl ? String(json.baseUrl) : '',
+    modelsRoot: json.modelsRoot ? String(json.modelsRoot) : '',
+    dirs: json.dirs || null,
+    models: Array.isArray(json.models) ? json.models.map((x: any) => String(x || '')).filter(Boolean) : [],
+    loras: Array.isArray(json.loras) ? json.loras.map((x: any) => String(x || '')).filter(Boolean) : [],
+    note: json && json.note ? String(json.note) : ''
+  }
+}
+
+export async function testStudioImage(payload: {
+  settings?: StudioSettings
+  prompt?: string
+  negativePrompt?: string
+  style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+  width?: number
+  height?: number
+  steps?: number
+  cfgScale?: number
+  sampler?: string
+  scheduler?: string
+  timeoutMs?: number
+}): Promise<{ dataUrl: string; meta: any }> {
+  const json = await j(`${base()}/api/studio/image/test`, { method: 'POST', body: JSON.stringify(payload || {}) })
+  return { dataUrl: String(json.result?.dataUrl || ''), meta: json.meta as any }
+}
+
+export async function preflightStudioImage(payload?: {
+  settings?: StudioSettings
+  timeoutMs?: number
+  mode?: 'basic' | 'storyboard'
+}): Promise<{ ok: boolean; checks: any; message?: string }> {
+  // Unlike other endpoints, preflight must return structured checks even on non-2xx.
+  const resp = await fetch(`${base()}/api/studio/image/preflight`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  })
+  const json = (await resp.json().catch(() => null)) as any
+  const checks = json && typeof json === 'object' ? (json.checks || null) : null
+  const ok = Boolean(checks && checks.ok)
+  const message = json && (json.message || json.error) ? String(json.message || json.error) : (!resp.ok ? `HTTP ${resp.status}` : '')
+  return { ok, checks, message: message || undefined }
 }
