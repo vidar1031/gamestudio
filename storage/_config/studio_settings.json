@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "updatedAt": "2026-03-06T03:01:18.785Z",
+  "updatedAt": "2026-03-16T04:27:59.597Z",
   "enabled": {
     "scripts": true,
     "prompt": true,
@@ -8,12 +8,12 @@
     "tts": true
   },
   "scripts": {
-    "provider": "ollama",
-    "model": "gemma3:12b"
+    "provider": "openai",
+    "model": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"
   },
   "prompt": {
-    "provider": "ollama",
-    "model": "gemma3:12b"
+    "provider": "openai",
+    "model": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"
   },
   "image": {
     "provider": "comfyui",

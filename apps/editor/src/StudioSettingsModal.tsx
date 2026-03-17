@@ -129,6 +129,10 @@ function normalizeModelOption(v: any, provider: string) {
   return s
 }
 
+function readCurrentModel(v: any) {
+  return v && typeof v === 'object' && 'currentModel' in v ? String((v as any).currentModel || '') : ''
+}
+
 function emptyModelMemory(): ModelMemory {
   return { scripts: {}, prompt: {}, image: {} }
 }
@@ -342,11 +346,12 @@ export default function StudioSettingsModal(props: Props) {
       setSdModelList(models)
       setComfyLoraList(p === 'comfyui' && Array.isArray((res as any).loras) ? (res as any).loras.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
       setSdModelsNote(String(res.note || ''))
-      if (res.currentModel) {
+      const currentModel = readCurrentModel(res)
+      if (currentModel) {
         setDraft((d) => {
           if (String(d.image?.provider || '').toLowerCase() !== p) return d
           if (String(d.image?.model || '').trim()) return d
-          return { ...d, image: { ...(d.image || {}), model: p === 'comfyui' ? normalizeComfyModelName(String(res.currentModel || '')) : String(res.currentModel || '') } }
+          return { ...d, image: { ...(d.image || {}), model: p === 'comfyui' ? normalizeComfyModelName(currentModel) : currentModel } }
         })
       }
       if (p === 'sdwebui' && String(res.note || '') === 'models_api_not_supported') {

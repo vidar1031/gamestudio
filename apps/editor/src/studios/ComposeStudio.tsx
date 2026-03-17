@@ -1765,7 +1765,7 @@ function ensureNode(n: NodeV1): NodeV1 {
   const visuals = base.visuals || {}
   const placements = Array.isArray(visuals.placements) ? visuals.placements : []
   const choices = Array.isArray((base as any).choices) ? (base as any).choices : []
-  const normalizedChoices = choices.map((c) => ({
+  const normalizedChoices = choices.map((c: any) => ({
           ...c,
           id: String((c as any).id || ''),
           text: String((c as any).text || ''),

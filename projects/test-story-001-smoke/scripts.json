@@ -1,0 +1,89 @@
+{
+  "schemaVersion": "1.0",
+  "startNodeId": "node-0",
+  "nodes": [
+    {
+      "id": "node-0",
+      "kind": "scene",
+      "name": "欢迎",
+      "body": {
+        "text": "欢迎使用聪明的杯子，它总能预测你什么时候要喝水。",
+        "title": "杯子的声音：欢迎你！"
+      },
+      "choices": [
+        {
+          "id": "choice-0",
+          "text": "谢谢杯子",
+          "toNodeId": "node-1"
+        },
+        {
+          "id": "choice-1",
+          "text": "不看杯子",
+          "toNodeId": "node-2"
+        }
+      ]
+    },
+    {
+      "id": "node-1",
+      "kind": "scene",
+      "name": "收到感谢",
+      "body": {
+        "text": "杯子满意地在你身边待着。",
+        "title": "杯子的声音：我就在你身边哦"
+      },
+      "choices": [
+        {
+          "id": "choice-2",
+          "text": "继续喝茶",
+          "toNodeId": "node-2"
+        },
+        {
+          "id": "choice-3",
+          "text": "再喝一点",
+          "toNodeId": "node-3"
+        }
+      ]
+    },
+    {
+      "id": "node-2",
+      "kind": "scene",
+      "name": "口渴了",
+      "body": {
+        "text": "杯子主动递过来水。",
+        "title": "杯子的声音：喝水吧，你口渴了"
+      },
+      "choices": [
+        {
+          "id": "choice-4",
+          "text": "喝了",
+          "toNodeId": "node-3"
+        },
+        {
+          "id": "choice-5",
+          "text": "不喝",
+          "toNodeId": "node-4"
+        }
+      ]
+    },
+    {
+      "id": "node-3",
+      "kind": "ending",
+      "name": "满足的结局",
+      "body": {
+        "text": "杯子一直贴心地照顾你，你们成了好朋友。",
+        "title": "杯子的声音：永远做你的朋友"
+      },
+      "choices": []
+    },
+    {
+      "id": "node-4",
+      "kind": "ending",
+      "name": "你太忙了",
+      "body": {
+        "text": "杯子默默地等你自己去找水喝。",
+        "title": "杯子的声音：加油，别着急"
+      },
+      "choices": []
+    }
+  ]
+}
