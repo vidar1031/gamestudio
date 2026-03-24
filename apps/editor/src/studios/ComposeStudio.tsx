@@ -19,6 +19,7 @@ import {
   getBlueprint,
   getScripts,
 	  getProject,
+  diagnoseStudio,
   getStudioSettings,
 	  listProjects,
 	  openProjectAssetFolder,
@@ -73,6 +74,10 @@ type StoryboardBatchState = {
   aspectRatio: '9:16' | '16:9' | '1:1' | '9:1'
   width: number
   height: number
+  size?: string
+  responseFormat?: 'url' | 'b64_json'
+  watermark?: boolean
+  sequentialImageGeneration?: 'auto' | 'disabled'
   steps: number
   cfgScale: number
   sampler: string
@@ -94,6 +99,23 @@ type StoryboardPromptMeta = {
   updatedAt: string
 }
 
+type StoryboardOpenCheckState = {
+  checking: boolean
+  checkedAt: string
+  ok: boolean
+  serverOk: boolean
+  promptOk: boolean
+  imageOk: boolean
+  continuityBindingsOk: boolean
+  promptProvider: string
+  promptModel: string
+  imageProvider: string
+  imageModel: string
+  summary: string
+  issues: string[]
+  details: string[]
+}
+
 type LatestExportAction = 'overwrite' | 'delete' | 'cancel'
 
  type StoryboardBatchDraft = {
@@ -101,6 +123,10 @@ type LatestExportAction = 'overwrite' | 'delete' | 'cancel'
   aspectRatio: '9:16' | '16:9' | '1:1' | '9:1'
   width: number
   height: number
+  size?: string
+  responseFormat?: 'url' | 'b64_json'
+  watermark?: boolean
+  sequentialImageGeneration?: 'auto' | 'disabled'
   steps: number
   cfgScale: number
   sampler: string
@@ -114,6 +140,14 @@ const DOUBAO_STORYBOARD_DEFAULTS = {
   sampler: 'DPM++ 2M',
   scheduler: 'Karras'
 } as const
+
+function getDoubaoStoryboardDefaultSize(aspectRatio: string) {
+  const ar = String(aspectRatio || '').trim()
+  if (ar === '16:9') return '2560x1440'
+  if (ar === '1:1') return '1920x1920'
+  if (ar === '9:1') return '6480x720'
+  return '1440x2560'
+}
 
 const COMFYUI_STORYBOARD_DEFAULTS = {
   steps: 24,
@@ -808,8 +842,11 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [aiBusy, setAiBusy] = useState(false)
   const [aiAnalyzing, setAiAnalyzing] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [aiImageProvider, setAiImageProvider] = useState('')
+  const [aiImageModel, setAiImageModel] = useState('')
   const HUB_TEMPLATE_FIELDS_KEY = 'game_studio.ai.templateFields'
   const AI_BG_DRAFT_KEY = `game_studio.ai.backgroundDraft.${String(props.projectId || 'global')}`
+  const AI_BG_CONTINUITY_KEY = `game_studio.ai.storyboardContinuity.${String(props.projectId || 'global')}`
   const loadAiBackgroundDraft = (key: string): Partial<AiBackgroundRequest> | null => {
     try {
       const raw = localStorage.getItem(key)
@@ -828,8 +865,22 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       if (typeof v.style === 'string') out.style = v.style as any
       if (v.width != null && Number.isFinite(Number(v.width))) out.width = Number(v.width)
       if (v.height != null && Number.isFinite(Number(v.height))) out.height = Number(v.height)
+      if (typeof v.size === 'string') out.size = v.size
+      if (v.responseFormat === 'b64_json' || v.responseFormat === 'url') out.responseFormat = v.responseFormat
+      if (typeof v.watermark === 'boolean') out.watermark = v.watermark
+      if (v.sequentialImageGeneration === 'auto' || v.sequentialImageGeneration === 'disabled') out.sequentialImageGeneration = v.sequentialImageGeneration
+      if (Array.isArray(v.referenceSceneIds)) out.referenceSceneIds = v.referenceSceneIds.map((x: any) => String(x || '').trim()).filter(Boolean)
       if (v.steps != null && Number.isFinite(Number(v.steps))) out.steps = Number(v.steps)
       if (v.cfgScale != null && Number.isFinite(Number(v.cfgScale))) out.cfgScale = Number(v.cfgScale)
+      if (v.seed != null && Number.isFinite(Number(v.seed))) out.seed = Number(v.seed)
+      if (v.continuity && typeof v.continuity === 'object') {
+        out.continuity = {
+          ipadapterEnabled: Boolean((v.continuity as any).ipadapterEnabled),
+          requireCharacterRefs: (v.continuity as any).requireCharacterRefs !== false,
+          controlnetEnabled: Boolean((v.continuity as any).controlnetEnabled),
+          seedMode: String((v.continuity as any).seedMode || '').trim() === 'fixed' ? 'fixed' : 'random'
+        }
+      }
       return out
     } catch {
       return null
@@ -850,8 +901,45 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           style: draft.style || 'picture_book',
           width: draft.width ?? 768,
           height: draft.height ?? 1024,
+          size: String(draft.size || ''),
+          responseFormat: draft.responseFormat === 'b64_json' ? 'b64_json' : 'url',
+          watermark: Boolean(draft.watermark),
+          sequentialImageGeneration: draft.sequentialImageGeneration === 'disabled' ? 'disabled' : 'auto',
+          referenceSceneIds: Array.isArray(draft.referenceSceneIds) ? draft.referenceSceneIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
           steps: draft.steps ?? 20,
           cfgScale: draft.cfgScale ?? 7,
+          seed: draft.seed ?? null,
+          continuity: draft.continuity || { ipadapterEnabled: true, requireCharacterRefs: false, controlnetEnabled: false, seedMode: 'random' },
+          updatedAt: new Date().toISOString()
+        })
+      )
+    } catch {}
+  }
+
+  const loadStoryboardContinuityBackup = (key: string): { storyBibleJson?: string; entitySpec?: string; continuity?: any } | null => {
+    try {
+      const raw = localStorage.getItem(key)
+      if (!raw) return null
+      const json = JSON.parse(raw) as any
+      if (!json || typeof json !== 'object') return null
+      return {
+        storyBibleJson: typeof json.storyBibleJson === 'string' ? json.storyBibleJson : undefined,
+        entitySpec: typeof json.entitySpec === 'string' ? json.entitySpec : undefined,
+        continuity: json.continuity && typeof json.continuity === 'object' ? json.continuity : undefined
+      }
+    } catch {
+      return null
+    }
+  }
+
+  const saveStoryboardContinuityBackup = (key: string, payload: { storyBibleJson?: string; entitySpec?: string; continuity?: any }) => {
+    try {
+      localStorage.setItem(
+        key,
+        JSON.stringify({
+          storyBibleJson: String(payload.storyBibleJson || ''),
+          entitySpec: String(payload.entitySpec || ''),
+          continuity: payload.continuity || null,
           updatedAt: new Date().toISOString()
         })
       )
@@ -934,15 +1022,23 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     style: 'picture_book',
     width: 768,
     height: 1344,
+    size: getDoubaoStoryboardDefaultSize('9:16'),
+    responseFormat: 'url',
+    watermark: false,
+    sequentialImageGeneration: 'auto',
+    referenceSceneIds: [],
     steps: 20,
-    cfgScale: 7
+    cfgScale: 7,
+    seed: undefined,
+    continuity: { ipadapterEnabled: true, requireCharacterRefs: false, controlnetEnabled: false, seedMode: 'random' },
+    characterRefs: []
   }
 
   const [aiReq, setAiReq] = useState<AiBackgroundRequest>(() => {
     const saved = loadAiBackgroundDraft(AI_BG_DRAFT_KEY)
     return { ...defaultAiReq, ...(saved || {}) }
   })
-  const [aiLast, setAiLast] = useState<null | { url?: string; assetPath?: string; provider?: string; remoteUrl?: string }>(null)
+  const [aiLast, setAiLast] = useState<null | { url?: string; assetPath?: string; provider?: string; remoteUrl?: string; seed?: number; continuityUsed?: boolean }>(null)
   const [sbOpen, setSbOpen] = useState(false)
   const [sbBusyGenerate, setSbBusyGenerate] = useState(false)
   const [sbBusyApply, setSbBusyApply] = useState(false)
@@ -959,6 +1055,22 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbContinuityBusy, setSbContinuityBusy] = useState(false)
   const [sbContinuityReady, setSbContinuityReady] = useState(false)
   const [sbContinuitySummary, setSbContinuitySummary] = useState('')
+  const [sbOpenChecks, setSbOpenChecks] = useState<StoryboardOpenCheckState>({
+    checking: false,
+    checkedAt: '',
+    ok: false,
+    serverOk: false,
+    promptOk: false,
+    imageOk: false,
+    continuityBindingsOk: false,
+    promptProvider: '',
+    promptModel: '',
+    imageProvider: '',
+    imageModel: '',
+    summary: '',
+    issues: [],
+    details: []
+  })
   const [sbReq, setSbReq] = useState<StoryboardBatchState>({
     entitySpec: '',
     storyBibleJson: '',
@@ -969,6 +1081,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     aspectRatio: '9:16',
     width: 768,
     height: 1344,
+    size: '',
+    responseFormat: 'url',
+    watermark: false,
+    sequentialImageGeneration: 'disabled',
     steps: 20,
     cfgScale: 7,
     sampler: 'DPM++ 2M',
@@ -1029,7 +1145,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   }, [AI_BG_DRAFT_KEY, aiReq])
 
   useEffect(() => {
-    if (!(sbBusyGenerate || sbBusyApply)) {
+    if (!(sbBusyGenerate || sbBusyApply || sbBusyEntity)) {
       setSbElapsedMs(0)
       return
     }
@@ -1037,7 +1153,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     setSbElapsedMs(0)
     const t = window.setInterval(() => setSbElapsedMs(Date.now() - startedAt), 100)
     return () => window.clearInterval(t)
-  }, [sbBusyGenerate, sbBusyApply])
+  }, [sbBusyGenerate, sbBusyApply, sbBusyEntity])
 
   useEffect(() => {
     if (!(sbBusyGenerate || sbBusyApply) || !sbGeneratingNodeId || sbGeneratingNodeStartedAt <= 0) {
@@ -1499,6 +1615,16 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
+  useEffect(() => {
+    if (!sbOpen) return
+    if (busy || sbBusyGenerate || sbBusyApply || sbBusyEntity || sbContinuityBusy) return
+    if (doc.mode !== 'project' || !dirty) return
+    const t = window.setTimeout(() => {
+      void saveCurrent()
+    }, 1200)
+    return () => window.clearTimeout(t)
+  }, [sbOpen, busy, sbBusyGenerate, sbBusyApply, sbBusyEntity, sbContinuityBusy, doc.mode, dirty])
+
   async function exportCurrent() {
     if (doc.mode !== 'project' || !doc.project) return
     setBusy(true)
@@ -1906,6 +2032,77 @@ function ensureNode(n: NodeV1): NodeV1 {
     return `角色设定（用于一致性锁定，非每个场景都出现）：${fps.join('；')}`.slice(0, 500)
   }
 
+  function buildRoleDefinitionForNode(node: NodeV1 | null) {
+    if (!node || !doc.project) return ''
+    const placements = Array.isArray((node as any).visuals?.placements) ? ((node as any).visuals.placements as any[]) : []
+    const ids = Array.from(new Set(placements.map((p) => String(p && p.characterId ? p.characterId : '')).filter(Boolean)))
+    if (!ids.length) return ''
+    const projectCharactersById = new Map((doc.project.characters || []).filter(Boolean).map((ch) => [String((ch as any).id || ''), ch as any]))
+    const lines: string[] = []
+    for (const id of ids) {
+      const ch = projectCharactersById.get(String(id)) as any
+      if (!ch) continue
+      const name = String(ch.name || ch.id || '').trim()
+      if (!name) continue
+      const fp = String(ch.ai && ch.ai.fingerprintPrompt ? ch.ai.fingerprintPrompt : '').trim()
+      const neg = String(ch.ai && ch.ai.negativePrompt ? ch.ai.negativePrompt : '').trim()
+      const core = fp ? `${name}=${fp}` : name
+      lines.push(neg ? `${core} (avoid: ${neg})` : core)
+      if (lines.length >= 6) break
+    }
+    if (!lines.length) return ''
+    return `ROLE_DEFINITION: ${lines.join('; ')}`
+  }
+
+  function buildNodeCharacterReferenceChoices(
+    node: NodeV1 | null,
+    prevRefs: NonNullable<AiBackgroundRequest['characterRefs']> = []
+  ) {
+    if (!node || !doc.project) return []
+    const placements = Array.isArray((node as any).visuals?.placements) ? ((node as any).visuals.placements as any[]) : []
+    const ids = Array.from(new Set(placements.map((p) => String(p && p.characterId ? p.characterId : '').trim()).filter(Boolean)))
+    const assetsById = new Map((doc.project.assets || []).map((a) => [String(a.id || '').trim(), a]))
+    const prevById = new Map((prevRefs || []).map((x) => [String(x.characterId || '').trim(), x]))
+    return ids.map((characterId) => {
+      const ch = (doc.project!.characters || []).find((x) => x.id === characterId) || null
+      const refAssetId = String(ch?.ai?.referenceAssetId || ch?.imageAssetId || '').trim()
+      const asset = refAssetId ? assetsById.get(refAssetId) || null : null
+      const prev = prevById.get(characterId) || null
+      return {
+        characterId,
+        characterName: String(ch?.name || characterId).trim() || characterId,
+        fingerprintPrompt: String(ch?.ai?.fingerprintPrompt || '').trim(),
+        assetId: refAssetId || undefined,
+        assetUri: asset && String(asset.uri || '').trim() ? String(asset.uri || '').trim() : undefined,
+        available: Boolean(asset && String(asset.uri || '').trim()),
+        selected: prev ? Boolean(prev.assetUri || prev.assetPath || prev.assetId) : Boolean(asset && String(asset.uri || '').trim()),
+        weight: Number.isFinite(Number(prev?.weight)) ? Number(prev?.weight) : 0.85
+      }
+    })
+  }
+
+  function buildSelectedCharacterRefsFromChoices(choices: Array<{
+    characterId: string
+    characterName: string
+    fingerprintPrompt?: string
+    assetId?: string
+    assetUri?: string
+    available: boolean
+    selected: boolean
+    weight?: number
+  }>) {
+    return choices
+      .filter((x) => x.selected && x.available && x.assetUri)
+      .map((x) => ({
+        characterId: x.characterId,
+        characterName: x.characterName,
+        assetId: x.assetId,
+        assetUri: x.assetUri,
+        fingerprintPrompt: x.fingerprintPrompt || undefined,
+        weight: Number.isFinite(Number(x.weight)) ? Number(x.weight) : 0.85
+      }))
+  }
+
   function nowHms() {
     try {
       return new Date().toLocaleTimeString()
@@ -2074,6 +2271,134 @@ function ensureNode(n: NodeV1): NodeV1 {
     return enforceEntitySpecQuality(out)
   }
 
+  function readStoryboardEntitySpecFromProject(project: ProjectV1 | null) {
+    if (!project) return ''
+    const stateIn = project && (project as any).state && typeof (project as any).state === 'object' ? (project as any).state : {}
+    const aiBgIn = stateIn && (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+    const storyBibleObj = aiBgIn.storyBible && typeof aiBgIn.storyBible === 'object'
+      ? aiBgIn.storyBible
+      : tryParseStoryBibleJson(aiBgIn.storyBibleJson)
+    if (storyBibleObj) return buildEntitySpecFromStoryBible(storyBibleObj)
+    return String(aiBgIn.storyboardEntitySpec || '').trim()
+  }
+
+  function buildStoryboardGlobalPromptForNode(node: NodeV1 | null, baseGlobalPrompt: string) {
+    const entitySpec = readStoryboardEntitySpecFromProject(doc.project)
+    const roleDef = buildRoleDefinitionForNode(node)
+    const sceneLocks = node ? buildSceneCharacterLocks(node) : ''
+    return [entitySpec, String(baseGlobalPrompt || '').trim(), roleDef, sceneLocks].filter(Boolean).join('，')
+  }
+
+  function buildStoryboardContinuitySummary(project: ProjectV1 | null) {
+    const entitySpec = String(readStoryboardEntitySpecFromProject(project) || '').trim()
+    if (!entitySpec) return ''
+    const lines = entitySpec
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((line) => line.replace(/^([A-Z_]+):\s*/i, ''))
+    return lines.join(' / ').slice(0, 220)
+  }
+
+  function collectNodeCharacterIds(node: NodeV1 | null) {
+    if (!node) return [] as string[]
+    const placements = Array.isArray((node as any).visuals?.placements) ? ((node as any).visuals.placements as any[]) : []
+    return Array.from(new Set(placements.map((p) => String(p && p.characterId ? p.characterId : '').trim()).filter(Boolean)))
+  }
+
+  function isExternallyReachableReferenceUrl(input: string) {
+    const raw = String(input || '').trim()
+    if (!/^https?:\/\//i.test(raw)) return false
+    try {
+      const u = new URL(raw)
+      const host = String(u.hostname || '').trim().toLowerCase()
+      if (!host) return false
+      if (host === 'localhost' || host === '0.0.0.0' || host === '::1' || host.endsWith('.local')) return false
+      if (/^127\./.test(host)) return false
+      if (/^10\./.test(host)) return false
+      if (/^192\.168\./.test(host)) return false
+      if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return false
+      return true
+    } catch (_) {
+      return false
+    }
+  }
+
+  function buildReferenceSceneOptions(currentNodeId: string, selectedIds: string[] = []) {
+    if (!doc.project || !doc.story) return [] as Array<{ nodeId: string; nodeName: string; summary: string; selected: boolean; hasImage: boolean; sharedCharacterNames: string[]; previewUrl?: string; usableUrl?: string }>
+    const selectedSet = new Set((selectedIds || []).map((x) => String(x || '').trim()).filter(Boolean))
+    const sceneMap = readStoryboardSceneMapFromProject(doc.project)
+    const currentNode0 = (doc.story.nodes || []).find((n) => String((n as any).id || '') === String(currentNodeId || '')) || null
+    const currentNode = currentNode0 ? ensureNode(currentNode0 as any) : null
+    const currentCharacterIds = new Set(collectNodeCharacterIds(currentNode))
+    const characterNameById = new Map((doc.project.characters || []).map((ch) => [String(ch.id || '').trim(), String(ch.name || ch.id || '').trim() || String(ch.id || '').trim()]))
+    return (doc.story.nodes || [])
+      .map((n) => ensureNode(n as any))
+      .filter((n) => String(n.id || '') !== String(currentNodeId || ''))
+      .map((n) => {
+        const bgId = String((n as any).visuals?.backgroundAssetId || '').trim()
+        const bgAsset = bgId ? (doc.project!.assets || []).find((a) => String(a.id || '').trim() === bgId) || null : null
+        const previewUrl = bgAsset && String(bgAsset.uri || '').trim() ? resolveAsset(String(bgAsset.uri || '').trim(), doc.assetBase || '') : ''
+        const remoteUrl = bgAsset && bgAsset.source && typeof bgAsset.source === 'object' && String((bgAsset.source as any).remoteUrl || '').trim()
+          ? String((bgAsset.source as any).remoteUrl || '').trim()
+          : ''
+        const directUrl = bgAsset && /^https?:\/\//i.test(String(bgAsset.uri || '').trim()) ? String(bgAsset.uri || '').trim() : ''
+        const usableUrl = isExternallyReachableReferenceUrl(remoteUrl)
+          ? remoteUrl
+          : (isExternallyReachableReferenceUrl(directUrl) ? directUrl : '')
+        const stored = sceneMap[String(n.id || '').trim()] || null
+        const summary = String((stored && (stored.prompt || stored.userInput)) || String(bgAsset && bgAsset.source && bgAsset.source.prompt ? bgAsset.source.prompt : '') || '').replace(/\s+/g, ' ').trim()
+        const sharedCharacterNames = collectNodeCharacterIds(n)
+          .filter((id) => currentCharacterIds.has(id))
+          .map((id) => String(characterNameById.get(id) || id).trim())
+          .filter(Boolean)
+        return {
+          nodeId: String(n.id || '').trim(),
+          nodeName: String((n as any).body?.title || n.name || n.id).trim() || String(n.id || '').trim(),
+          summary: summary.slice(0, 180),
+          selected: selectedSet.has(String(n.id || '').trim()),
+          hasImage: Boolean(bgAsset && String(bgAsset.uri || '').trim()),
+          sharedCharacterNames,
+          previewUrl: previewUrl || undefined,
+          usableUrl: usableUrl || undefined
+        }
+      })
+      .filter((item) => item.hasImage || item.summary)
+      .sort((a, b) => {
+        const scoreA = (a.sharedCharacterNames.length ? 100 : 0) + (a.hasImage ? 10 : 0)
+        const scoreB = (b.sharedCharacterNames.length ? 100 : 0) + (b.hasImage ? 10 : 0)
+        return scoreB - scoreA
+      })
+  }
+
+  function buildReferenceScenePromptBlock(referenceSceneIds: string[]) {
+    if (!doc.project || !doc.story) return ''
+    const ids = Array.from(new Set((referenceSceneIds || []).map((x) => String(x || '').trim()).filter(Boolean))).slice(0, 4)
+    if (!ids.length) return ''
+    const sceneMap = readStoryboardSceneMapFromProject(doc.project)
+    const assetsById = new Map((doc.project.assets || []).map((a) => [String(a.id || '').trim(), a]))
+    const lines: string[] = []
+    for (const id of ids) {
+      const node0 = (doc.story.nodes || []).find((n) => String((n as any).id || '').trim() === id) || null
+      const node = node0 ? ensureNode(node0 as any) : null
+      if (!node) continue
+      const nodeName = String((node as any).body?.title || node.name || node.id).trim() || id
+      const stored = sceneMap[id] || null
+      const bgId = String((node as any).visuals?.backgroundAssetId || '').trim()
+      const bgAsset = bgId ? assetsById.get(bgId) || null : null
+      const sourcePrompt = String(bgAsset && bgAsset.source && bgAsset.source.prompt ? bgAsset.source.prompt : '').replace(/\s+/g, ' ').trim()
+      const scenePrompt = String(stored && stored.prompt ? stored.prompt : '').replace(/\s+/g, ' ').trim()
+      const userInput = String(stored && stored.userInput ? stored.userInput : '').replace(/\s+/g, ' ').trim()
+      const snapshot = sourcePrompt || scenePrompt || userInput
+      if (!snapshot) continue
+      lines.push(`${nodeName}: ${snapshot.slice(0, 260)}`)
+      if (lines.length >= 4) break
+    }
+    if (!lines.length) return ''
+    return `REFERENCE_SCENES: keep the same character appearance, costume silhouette, prop treatment and visual atmosphere as these approved scenes -> ${lines.join(' | ')}`
+  }
+
   function collectStoryboardUsedCharacters(): CharacterV1[] {
     if (!doc.project || !doc.story) return []
     const byId = new Map((doc.project.characters || []).map((c) => [String(c.id || ''), c]))
@@ -2095,24 +2420,174 @@ function ensureNode(n: NodeV1): NodeV1 {
     return out
   }
 
+  async function runStoryboardOpenChecks() {
+    if (doc.mode !== 'project' || !doc.project) return
+    setSbOpenChecks((prev) => ({
+      ...prev,
+      checking: true,
+      checkedAt: '',
+      summary: '',
+      issues: [],
+      details: []
+    }))
+    appendSbLog('开始检查批量分镜能力：server / prompt / image / continuity bindings')
+
+    const issues: string[] = []
+    const details: string[] = []
+    let serverOk = false
+    let promptOk = false
+    let imageOk = false
+    let continuityBindingsOk = false
+    let promptProvider = ''
+    let promptModel = ''
+    let imageProvider = ''
+    let imageModel = ''
+
+    try {
+      try {
+        const r = await fetch(resolveUrl('/api/health'), { method: 'GET' })
+        serverOk = Boolean(r && r.ok)
+        details.push(serverOk ? 'server: ok' : `server: HTTP ${r.status}`)
+        if (!serverOk) issues.push(`server 不可用（HTTP ${r.status}）`)
+      } catch (e) {
+        serverOk = false
+        issues.push(`server 不可用：${e instanceof Error ? e.message : String(e)}`)
+      }
+
+      let st: Awaited<ReturnType<typeof getStudioSettings>> | null = null
+      try {
+        st = await getStudioSettings()
+        promptProvider = String(st.effective?.prompt?.provider || '').toLowerCase()
+        promptModel = String(st.effective?.prompt?.model || '').trim()
+        imageProvider = String(st.effective?.image?.provider || '').toLowerCase()
+        imageModel = String(st.effective?.image?.model || '').trim()
+        details.push(`prompt provider: ${promptProvider || 'none'}`)
+        if (promptModel) details.push(`prompt model: ${promptModel}`)
+        details.push(`image provider: ${imageProvider || 'none'}`)
+        if (imageModel) details.push(`image model: ${imageModel}`)
+      } catch (e) {
+        issues.push(`读取 studio settings 失败：${e instanceof Error ? e.message : String(e)}`)
+      }
+
+      if (st) {
+        try {
+          const diag = await diagnoseStudio({ service: 'prompt', timeoutMs: 10_000 })
+          const promptSvc = diag && diag.services ? diag.services.prompt : null
+          promptOk = Boolean(promptSvc && promptSvc.ok !== false && st.effective.enabled.prompt && promptProvider && promptProvider !== 'none')
+          details.push(`prompt diagnose: ${promptOk ? 'ok' : String(promptSvc?.note || 'failed')}`)
+          if (!promptOk) issues.push(`提示词能力不可用：${String(promptSvc?.note || 'provider_not_configured')}`)
+        } catch (e) {
+          promptOk = false
+          issues.push(`提示词检查失败：${e instanceof Error ? e.message : String(e)}`)
+        }
+
+        try {
+          const diag = await diagnoseStudio({ service: 'image', timeoutMs: 10_000 })
+          const imageSvc = diag && diag.services ? diag.services.image : null
+          imageOk = Boolean(imageSvc && imageSvc.ok !== false && st.effective.enabled.image && imageProvider && imageProvider !== 'none')
+          details.push(`image diagnose: ${imageOk ? 'ok' : String(imageSvc?.note || 'failed')}`)
+          if (!imageOk) issues.push(`出图能力不可用：${String(imageSvc?.note || 'provider_not_configured')}`)
+        } catch (e) {
+          imageOk = false
+          issues.push(`出图检查失败：${e instanceof Error ? e.message : String(e)}`)
+        }
+
+        if (imageProvider === 'comfyui') {
+          try {
+            const pf = await preflightStudioImage({ timeoutMs: 12_000, mode: 'storyboard' })
+            const preflightOk = Boolean(pf.ok)
+            details.push(`comfyui storyboard preflight: ${preflightOk ? 'ok' : String(pf.checks?.reason || pf.message || 'failed')}`)
+            if (!preflightOk) {
+              imageOk = false
+              issues.push(`ComfyUI 连续分镜体检失败：${String(pf.checks?.reason || pf.message || 'preflight_failed')}`)
+            }
+          } catch (e) {
+            imageOk = false
+            issues.push(`ComfyUI preflight 异常：${e instanceof Error ? e.message : String(e)}`)
+          }
+        }
+      }
+
+      const cfg = sbReq.continuity || { ipadapterEnabled: false, requireCharacterRefs: true, controlnetEnabled: false }
+      const needsCharacterRefs = imageProvider === 'comfyui' && cfg.ipadapterEnabled && cfg.requireCharacterRefs
+      if (needsCharacterRefs) {
+        const usedChars = collectStoryboardUsedCharacters()
+        const assetsById = new Map((doc.project.assets || []).map((a) => [String(a.id || ''), a]))
+        const missingNames = usedChars
+          .filter((ch) => {
+            const refId = String(ch.ai?.referenceAssetId || '').trim()
+            if (!refId) return true
+            const asset = assetsById.get(refId) || null
+            return !asset || !String(asset.uri || '').trim()
+          })
+          .map((ch) => String(ch.name || ch.id))
+        continuityBindingsOk = missingNames.length === 0
+        details.push(continuityBindingsOk ? 'character refs: ok' : `character refs: missing ${missingNames.slice(0, 6).join(', ')}`)
+        if (!continuityBindingsOk) issues.push(`缺少角色参考图：${missingNames.slice(0, 6).join(', ')}`)
+      } else {
+        continuityBindingsOk = true
+        details.push(imageProvider === 'doubao' ? 'character refs: optional for doubao' : 'character refs: skipped')
+      }
+    } finally {
+      const ok = serverOk && promptOk && imageOk && continuityBindingsOk
+      const summary = ok
+        ? (imageProvider === 'doubao'
+            ? '环境检查通过，可继续生成连续性 Bible / 多场景提示词 / Doubao 批量出图。'
+            : '环境检查通过，可继续生成 Story Bible / 提示词 / 出图。')
+        : '环境检查未通过，请先修复下列问题。'
+      setSbOpenChecks({
+        checking: false,
+        checkedAt: new Date().toISOString(),
+        ok,
+        serverOk,
+        promptOk,
+        imageOk,
+        continuityBindingsOk,
+        promptProvider,
+        promptModel,
+        imageProvider,
+        imageModel,
+        summary,
+        issues,
+        details
+      })
+      appendSbLog(ok ? '批量分镜能力检查通过' : `批量分镜能力检查失败：${issues.join('；') || 'unknown_error'}`)
+      if (!ok) setSbError(summary)
+      else if (sbError === '环境检查未通过，请先修复下列问题。') setSbError('')
+    }
+  }
+
   async function runStoryboardContinuityTest() {
     if (doc.mode !== 'project' || !doc.project) return
     if (sbContinuityBusy || sbBusyGenerate || sbBusyApply || sbBusyEntity) return
     setSbContinuityBusy(true)
     setSbContinuityReady(false)
     setSbContinuitySummary('')
-    appendSbLog('开始运行连续分镜锁定测试...')
+    appendSbLog('开始运行连续性预检/锁定测试...')
     try {
       const storyBibleObj = tryParseStoryBibleJson(sbReq.storyBibleJson)
       if (!storyBibleObj) throw new Error('Story Bible 为空或不是合法 JSON')
 
-      // 1) Provider preflight (ComfyUI storyboard extras).
-      const pf = await preflightStudioImage({ timeoutMs: 12_000, mode: 'storyboard' })
-      if (!pf.ok) throw new Error(`ComfyUI 体检失败：${String(pf.checks?.reason || 'preflight_failed')}`)
+      const st = await getStudioSettings()
+      const promptProvider = String(st.effective?.prompt?.provider || '').toLowerCase()
+      const imageProvider = String(st.effective?.image?.provider || '').toLowerCase()
+      const isDoubaoStoryboard = promptProvider === 'doubao' && imageProvider === 'doubao'
 
-      // 2) Character reference binding check.
+      if (!promptProvider || promptProvider === 'none') throw new Error('文本模型未配置')
+      if (!imageProvider || imageProvider === 'none') throw new Error('生图模型未配置')
+
+      const promptDiag = await diagnoseStudio({ service: 'prompt', timeoutMs: 12_000 })
+      const promptSvc = promptDiag && promptDiag.services ? promptDiag.services.prompt : null
+      if (!promptSvc || promptSvc.ok === false) throw new Error(`文本能力不可用：${String(promptSvc?.note || 'diagnose_failed')}`)
+
+      if (imageProvider === 'comfyui') {
+        const pf = await preflightStudioImage({ timeoutMs: 12_000, mode: 'storyboard' })
+        if (!pf.ok) throw new Error(`ComfyUI 体检失败：${String(pf.checks?.reason || 'preflight_failed')}`)
+      }
+
       const cfg = sbReq.continuity || { ipadapterEnabled: false, requireCharacterRefs: true, controlnetEnabled: false }
-      if (cfg.ipadapterEnabled && cfg.requireCharacterRefs) {
+      const needsCharacterRefs = imageProvider === 'comfyui' && cfg.ipadapterEnabled && cfg.requireCharacterRefs
+      if (needsCharacterRefs) {
         const usedChars = collectStoryboardUsedCharacters()
         const assetsById = new Map((doc.project.assets || []).map((a) => [String(a.id || ''), a]))
         const missing: string[] = []
@@ -2128,13 +2603,20 @@ function ensureNode(n: NodeV1): NodeV1 {
         if (missing.length) throw new Error(`缺少角色参考图：${missing.slice(0, 8).join(', ')}`)
       }
 
-      // 3) Basic image test (ensures current provider can actually render).
+      const imageDiag = await diagnoseStudio({ service: 'image', timeoutMs: 20_000, deepImages: true })
+      const imageSvc = imageDiag && imageDiag.services ? imageDiag.services.image : null
+      if (!imageSvc || imageSvc.ok === false) throw new Error(`生图能力不可用：${String(imageSvc?.note || 'diagnose_failed')}`)
+
       const test = await testStudioImage({
         prompt: "children's picture book illustration, a simple test scene, clean outlines, warm palette",
         negativePrompt: 'text, watermark, logo, photorealistic',
         style: 'picture_book',
         width: 512,
         height: 512,
+        size: sbReq.size,
+        responseFormat: sbReq.responseFormat,
+        watermark: sbReq.watermark,
+        sequentialImageGeneration: sbReq.sequentialImageGeneration,
         steps: Math.max(10, Math.min(30, Number(sbReq.steps || 20))),
         cfgScale: Number(sbReq.cfgScale || 6.5),
         sampler: String(sbReq.sampler || 'DPM++ 2M'),
@@ -2144,13 +2626,17 @@ function ensureNode(n: NodeV1): NodeV1 {
       if (!test || !String(test.dataUrl || '').startsWith('data:image/')) throw new Error('测试出图失败：无 dataUrl')
 
       setSbContinuityReady(true)
-      setSbContinuitySummary('通过（ComfyUI 依赖就绪 + 参考绑定满足 + 测试出图成功）')
-      appendSbLog('连续分镜锁定测试通过')
+      setSbContinuitySummary(
+        isDoubaoStoryboard
+          ? '通过（Story Bible 有效 + Doubao 文本/生图可用 + 测试出图成功）'
+          : '通过（ComfyUI 依赖就绪 + 参考绑定满足 + 测试出图成功）'
+      )
+      appendSbLog(isDoubaoStoryboard ? 'Doubao 多场景连续性预检通过' : '连续分镜锁定测试通过')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setSbContinuityReady(false)
       setSbContinuitySummary(msg)
-      appendSbLog(`连续分镜锁定测试失败：${msg}`)
+      appendSbLog(`连续性预检/锁定测试失败：${msg}`)
     } finally {
       setSbContinuityBusy(false)
     }
@@ -2302,6 +2788,12 @@ function ensureNode(n: NodeV1): NodeV1 {
     if (ar === '9:16' || ar === '16:9' || ar === '1:1' || ar === '9:1') out.aspectRatio = ar
     if (Number.isFinite(Number((d as any).width))) out.width = Number((d as any).width)
     if (Number.isFinite(Number((d as any).height))) out.height = Number((d as any).height)
+    if (String((d as any).size || '').trim()) out.size = String((d as any).size || '').trim()
+    if (String((d as any).responseFormat || '').trim() === 'b64_json') out.responseFormat = 'b64_json'
+    else if (String((d as any).responseFormat || '').trim() === 'url') out.responseFormat = 'url'
+    if (typeof (d as any).watermark === 'boolean') out.watermark = Boolean((d as any).watermark)
+    if (String((d as any).sequentialImageGeneration || '').trim() === 'auto') out.sequentialImageGeneration = 'auto'
+    else if (String((d as any).sequentialImageGeneration || '').trim() === 'disabled') out.sequentialImageGeneration = 'disabled'
     if (Number.isFinite(Number((d as any).steps))) out.steps = Number((d as any).steps)
     if (Number.isFinite(Number((d as any).cfgScale))) out.cfgScale = Number((d as any).cfgScale)
     if (String((d as any).sampler || '').trim()) out.sampler = String((d as any).sampler || '').trim()
@@ -2351,10 +2843,11 @@ function ensureNode(n: NodeV1): NodeV1 {
     })
   }
 
-  function openAiStoryboardForCurrentNode() {
+  async function openAiStoryboardForCurrentNode() {
     if (doc.mode !== 'project' || !doc.project) return
     const st = (doc.project as any).state && typeof (doc.project as any).state === 'object' ? (doc.project as any).state : {}
     const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
+    const draft0 = readStoryboardBatchDraftFromProject(doc.project)
     const gpRaw = aiBg && typeof (aiBg as any).globalPrompt === 'string' ? String((aiBg as any).globalPrompt) : ''
     const gneg = aiBg && typeof (aiBg as any).globalNegativePrompt === 'string' ? String((aiBg as any).globalNegativePrompt) : ''
     const projectTitle = String((doc.project as any).title || '').trim()
@@ -2362,10 +2855,32 @@ function ensureNode(n: NodeV1): NodeV1 {
     const templateGp = buildGlobalPromptFromTemplate(tpl, projectTitle)
     const templateGneg = buildGlobalNegativeFromTemplate(tpl)
     const gp = gpRaw.trim() ? gpRaw : (templateGp || (projectTitle ? `故事名：《${projectTitle}》` : ''))
+    let imageProvider = ''
+    let imageModel = ''
+    try {
+      const studio = await getStudioSettings()
+      imageProvider = String(studio?.effective?.image?.provider || '').trim().toLowerCase()
+      imageModel = String(studio?.effective?.image?.model || '').trim()
+    } catch (_) {}
+    setAiImageProvider(imageProvider)
+    setAiImageModel(imageModel)
+    const effectiveAspectRatio = ((draft0 && draft0.aspectRatio) || sbReq.aspectRatio || aiReq.aspectRatio || '9:16') as any
+    const doubaoSize = getDoubaoStoryboardDefaultSize(effectiveAspectRatio)
 
     let userInput = String(aiReq.userInput || '')
     let prompt = String(aiReq.prompt || '')
     let negativePrompt = String(aiReq.negativePrompt || '')
+    let characterRefs = Array.isArray(aiReq.characterRefs) ? aiReq.characterRefs : []
+    const continuitySeedMode: 'random' | 'fixed' = String((aiReq.continuity as any)?.seedMode || 'random').trim() === 'fixed' ? 'fixed' : 'random'
+    const continuityCfg =
+      aiBg && (aiBg as any).storyboardContinuity && typeof (aiBg as any).storyboardContinuity === 'object'
+        ? {
+            ipadapterEnabled: Boolean((aiBg as any).storyboardContinuity.ipadapterEnabled),
+            requireCharacterRefs: (aiBg as any).storyboardContinuity.requireCharacterRefs !== false,
+            controlnetEnabled: Boolean((aiBg as any).storyboardContinuity.controlnetEnabled),
+            seedMode: continuitySeedMode
+          }
+        : (aiReq.continuity || { ipadapterEnabled: true, requireCharacterRefs: false, controlnetEnabled: false, seedMode: continuitySeedMode })
 
     if (selection.type === 'node' && doc.story) {
       const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
@@ -2377,6 +2892,7 @@ function ensureNode(n: NodeV1): NodeV1 {
         userInput = saved && saved.userInput ? saved.userInput : fallbackInput
         prompt = saved && saved.prompt ? saved.prompt : ''
         negativePrompt = saved && saved.negativePrompt ? saved.negativePrompt : ''
+        characterRefs = buildSelectedCharacterRefsFromChoices(buildNodeCharacterReferenceChoices(node, characterRefs || []))
       }
     }
 
@@ -2386,7 +2902,22 @@ function ensureNode(n: NodeV1): NodeV1 {
       globalNegativePrompt: String(gneg || '').trim() || templateGneg,
       userInput,
       prompt,
-      negativePrompt
+      negativePrompt,
+      referenceSceneIds: Array.isArray(v.referenceSceneIds) && v.referenceSceneIds.length
+        ? v.referenceSceneIds
+        : buildReferenceSceneOptions(String(selection.type === 'node' ? selection.id : ''), []).filter((item) => item.sharedCharacterNames.length > 0 && item.usableUrl).slice(0, 2).map((item) => item.nodeId),
+      style: ((draft0 && draft0.style) || sbReq.style || v.style || 'picture_book') as any,
+      aspectRatio: effectiveAspectRatio,
+      width: Number((draft0 && draft0.width) || sbReq.width || v.width || 768),
+      height: Number((draft0 && draft0.height) || sbReq.height || v.height || 1344),
+      size: String((draft0 && draft0.size) || sbReq.size || v.size || '').trim() || (imageProvider === 'doubao' ? doubaoSize : String(v.size || '').trim()),
+      responseFormat: ((((draft0 && draft0.responseFormat) || sbReq.responseFormat || v.responseFormat || 'url') === 'b64_json') ? 'b64_json' : 'url') as any,
+      watermark: typeof ((draft0 && draft0.watermark) ?? sbReq.watermark ?? v.watermark) === 'boolean' ? Boolean((draft0 && draft0.watermark) ?? sbReq.watermark ?? v.watermark) : false,
+      sequentialImageGeneration: ((((draft0 && draft0.sequentialImageGeneration) || sbReq.sequentialImageGeneration || v.sequentialImageGeneration || (imageProvider === 'doubao' ? 'auto' : 'disabled')) === 'auto') ? 'auto' : 'disabled') as any,
+      steps: Number((draft0 && draft0.steps) || sbReq.steps || v.steps || 20),
+      cfgScale: Number((draft0 && draft0.cfgScale) || sbReq.cfgScale || v.cfgScale || 7),
+      continuity: continuityCfg,
+      characterRefs
     }))
     setAiLast(null)
     setAiError('')
@@ -2416,16 +2947,25 @@ function ensureNode(n: NodeV1): NodeV1 {
     }))
     setSbItems(items)
     const draft0 = readStoryboardBatchDraftFromProject(doc.project)
+    const continuityBackup = loadStoryboardContinuityBackup(AI_BG_CONTINUITY_KEY)
+    const storyBibleJsonFromState = aiBg0.storyBible && typeof aiBg0.storyBible === 'object'
+      ? JSON.stringify(aiBg0.storyBible, null, 2)
+      : String(aiBg0.storyBibleJson || '').trim()
+    const entitySpecFromState = String(aiBg0.storyboardEntitySpec || '').trim()
     setSbReq({
-      entitySpec: String(aiBg0.storyboardEntitySpec || '').trim(),
-      storyBibleJson: aiBg0.storyBible && typeof aiBg0.storyBible === 'object'
-        ? JSON.stringify(aiBg0.storyBible, null, 2)
-        : String(aiBg0.storyBibleJson || '').trim(),
+      entitySpec: entitySpecFromState || String(continuityBackup?.entitySpec || '').trim(),
+      storyBibleJson: storyBibleJsonFromState || String(continuityBackup?.storyBibleJson || '').trim(),
       continuity: aiBg0.storyboardContinuity && typeof aiBg0.storyboardContinuity === 'object'
         ? {
             ipadapterEnabled: Boolean((aiBg0.storyboardContinuity as any).ipadapterEnabled),
             requireCharacterRefs: (aiBg0.storyboardContinuity as any).requireCharacterRefs !== false,
             controlnetEnabled: Boolean((aiBg0.storyboardContinuity as any).controlnetEnabled)
+          }
+        : continuityBackup?.continuity && typeof continuityBackup.continuity === 'object'
+        ? {
+            ipadapterEnabled: Boolean((continuityBackup.continuity as any).ipadapterEnabled),
+            requireCharacterRefs: (continuityBackup.continuity as any).requireCharacterRefs !== false,
+            controlnetEnabled: Boolean((continuityBackup.continuity as any).controlnetEnabled)
           }
         : { ipadapterEnabled: true, requireCharacterRefs: true, controlnetEnabled: false },
       globalPrompt: String(aiBg0.globalPrompt || '').trim() || templateGp,
@@ -2434,6 +2974,10 @@ function ensureNode(n: NodeV1): NodeV1 {
       aspectRatio: ((draft0 && draft0.aspectRatio) || aiReq.aspectRatio || '9:16') as any,
       width: Number((draft0 && draft0.width) || aiReq.width || 768),
       height: Number((draft0 && draft0.height) || aiReq.height || 1344),
+      size: String((draft0 && draft0.size) || aiReq.size || '').trim() || getDoubaoStoryboardDefaultSize(((draft0 && draft0.aspectRatio) || aiReq.aspectRatio || '9:16') as any),
+      responseFormat: (((draft0 && draft0.responseFormat) || aiReq.responseFormat || 'url') === 'b64_json' ? 'b64_json' : 'url') as any,
+      watermark: typeof ((draft0 && draft0.watermark) ?? aiReq.watermark) === 'boolean' ? Boolean((draft0 && draft0.watermark) ?? aiReq.watermark) : false,
+      sequentialImageGeneration: (((draft0 && draft0.sequentialImageGeneration) || aiReq.sequentialImageGeneration || 'auto') === 'auto' ? 'auto' : 'disabled') as any,
       steps: Number((draft0 && draft0.steps) || aiReq.steps || 20),
       cfgScale: Number((draft0 && draft0.cfgScale) || aiReq.cfgScale || 7),
       sampler: String((draft0 && draft0.sampler) || 'DPM++ 2M'),
@@ -2446,12 +2990,17 @@ function ensureNode(n: NodeV1): NodeV1 {
         if (imageProvider === 'doubao') {
           setSbReq((prev) => ({
             ...prev,
+            continuity: { ipadapterEnabled: false, requireCharacterRefs: false, controlnetEnabled: false },
+            size: String(prev.size || '').trim() || getDoubaoStoryboardDefaultSize(prev.aspectRatio || '9:16'),
+            responseFormat: prev.responseFormat || 'url',
+            watermark: typeof prev.watermark === 'boolean' ? prev.watermark : false,
+            sequentialImageGeneration: prev.sequentialImageGeneration || 'auto',
             steps: DOUBAO_STORYBOARD_DEFAULTS.steps,
             cfgScale: DOUBAO_STORYBOARD_DEFAULTS.cfgScale,
             sampler: DOUBAO_STORYBOARD_DEFAULTS.sampler,
             scheduler: DOUBAO_STORYBOARD_DEFAULTS.scheduler
           }))
-          appendSbLog('检测到图像 Provider=doubao，已应用默认参数：steps=30 / cfg=7.5 / DPM++ 2M / Karras')
+          appendSbLog('检测到图像 Provider=doubao，已切换到 Doubao 多场景参数面板，并应用默认项（连续模式=auto）')
         } else if (imageProvider === 'comfyui') {
           setSbReq((prev) => ({
             ...prev,
@@ -2515,11 +3064,13 @@ function ensureNode(n: NodeV1): NodeV1 {
         scenes
       }
 
-      const { result } = await generateStoryBibleAi(doc.id, { input, timeoutMs: 120_000 })
+      // timeoutMs <= 0 means wait indefinitely for Story Bible generation.
+      const { result } = await generateStoryBibleAi(doc.id, { input, timeoutMs: 0 })
       if (!result) throw new Error('empty_story_bible')
       const storyBibleJson = JSON.stringify(result, null, 2)
       const entitySpec = buildEntitySpecFromStoryBible(result)
       if (!entitySpec) throw new Error('empty_entity_spec_from_bible')
+      saveStoryboardContinuityBackup(AI_BG_CONTINUITY_KEY, { storyBibleJson, entitySpec, continuity: sbReq.continuity })
 
       setSbReq((prev) => ({ ...prev, storyBibleJson, entitySpec }))
       setSbContinuityReady(false)
@@ -2557,8 +3108,8 @@ function ensureNode(n: NodeV1): NodeV1 {
     if (doc.mode !== 'project' || !doc.story || !doc.project) return
     if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
     if (!sbContinuityReady) {
-      setSbError('请先运行“连续分镜锁定测试”，通过后才能生成场景提示词')
-      appendSbLog('阻止执行：连续分镜锁定测试未通过')
+      setSbError('请先运行“连续性预检/锁定测试”，通过后才能生成场景提示词')
+      appendSbLog('阻止执行：连续性预检/锁定测试未通过')
       return
     }
     if (!sbItems.length) {
@@ -2601,6 +3152,9 @@ function ensureNode(n: NodeV1): NodeV1 {
     let recSampler = String(sbReq.sampler || 'DPM++ 2M')
     let recScheduler = String(sbReq.scheduler || 'Automatic')
     let recParamLocked = false
+    const isDoubaoStoryboard =
+      String(sbOpenChecks.promptProvider || '').toLowerCase() === 'doubao' &&
+      String(sbOpenChecks.imageProvider || '').toLowerCase() === 'doubao'
     let globalLocked = onlyPending ? Boolean(currGlobalPrompt) : false
     if (!onlyPending && styleChanged) {
       appendSbLog('检测到风格/比例已变更：已重置全局正负提示词，并将重新生成全部场景提示词')
@@ -2723,7 +3277,17 @@ function ensureNode(n: NodeV1): NodeV1 {
         sampler: recSampler,
         scheduler: recScheduler
       }))
-      setSbContinuityReady(false)
+      if (isDoubaoStoryboard) {
+        const promptsReady = failCount === 0 && okCount > 0 && !sbQueueRef.current.cancelRequested
+        setSbContinuityReady(promptsReady)
+        setSbContinuitySummary(
+          promptsReady
+            ? '通过（连续性 Bible 已建立，全部场景提示词已生成，可直接批量出图）'
+            : '提示词已更新，请重新运行连续性预检'
+        )
+      } else {
+        setSbContinuityReady(false)
+      }
       setDocProject((p) => {
         const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
         const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
@@ -2769,8 +3333,8 @@ function ensureNode(n: NodeV1): NodeV1 {
     if (doc.mode !== 'project' || !doc.project || !doc.story) return
     if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
     if (!sbContinuityReady) {
-      setSbError('请先运行“连续分镜锁定测试”，通过后才能批量出图')
-      appendSbLog('阻止执行：连续分镜锁定测试未通过')
+      setSbError('请先运行“连续性预检/锁定测试”，通过后才能批量出图')
+      appendSbLog('阻止执行：连续性预检/锁定测试未通过')
       return
     }
     if (!sbItems.length) {
@@ -2894,7 +3458,11 @@ function ensureNode(n: NodeV1): NodeV1 {
         try {
           const roleDef = buildRoleDefinitionForNode(it.nodeId)
           const gpWithRoles = [gp, continuityAnchor, roleDef].filter(Boolean).join('，')
-          const payload: AiBackgroundRequest = {
+          const nodeForRefs = storyNodesById.get(String(it.nodeId || '')) as any
+          const characterRefs = buildSelectedCharacterRefsFromChoices(
+            buildNodeCharacterReferenceChoices(nodeForRefs ? ensureNode(nodeForRefs) : null)
+          )
+          const payloadBase: AiBackgroundRequest = {
             userInput: String(it.userInput || ''),
             globalPrompt: gpWithRoles,
             globalNegativePrompt: gneg,
@@ -2902,14 +3470,38 @@ function ensureNode(n: NodeV1): NodeV1 {
             negativePrompt: sneg,
             style: sbReq.style,
             aspectRatio: sbReq.aspectRatio,
-            width: sbReq.width,
-            height: sbReq.height,
-            steps: sbReq.steps,
-            cfgScale: sbReq.cfgScale,
-            sampler: sbReq.sampler,
-            scheduler: sbReq.scheduler,
+            continuity: {
+              ipadapterEnabled: Boolean(sbReq.continuity?.ipadapterEnabled),
+              requireCharacterRefs: Boolean(sbReq.continuity?.requireCharacterRefs),
+              controlnetEnabled: Boolean(sbReq.continuity?.controlnetEnabled),
+              seedMode: 'random'
+            },
+            characterRefs,
             timeoutMs: provider === 'doubao' ? 300_000 : 0
           }
+          const payload: AiBackgroundRequest = provider === 'doubao'
+            ? {
+                ...payloadBase,
+                width: undefined,
+                height: undefined,
+                steps: undefined,
+                cfgScale: undefined,
+                sampler: undefined,
+                scheduler: undefined,
+                size: String(sbReq.size || '').trim() || undefined,
+                responseFormat: sbReq.responseFormat || 'url',
+                watermark: Boolean(sbReq.watermark),
+                sequentialImageGeneration: sbReq.sequentialImageGeneration || 'auto'
+              }
+            : {
+                ...payloadBase,
+                width: sbReq.width,
+                height: sbReq.height,
+                steps: sbReq.steps,
+                cfgScale: sbReq.cfgScale,
+                sampler: sbReq.sampler,
+                scheduler: sbReq.scheduler
+              }
           const resp = await generateBackgroundAi(doc.id, payload)
           const rawProvider = String((resp as any).provider || '').trim()
           const bgProvider: AssetV1['source'] extends { provider?: infer P } ? P : any =
@@ -2920,11 +3512,19 @@ function ensureNode(n: NodeV1): NodeV1 {
           if (nodeIdx < 0) throw new Error(`未找到节点：${it.nodeName}`)
           const nodeNow = ensureNode((nextStory.nodes || [])[nodeIdx] as any)
           const bgId = String((nodeNow as any)?.visuals?.backgroundAssetId || '').trim()
+          const existingAsset = bgId ? (nextProject.assets || []).find((a) => a.id === bgId) || null : null
+          if (existingAsset && String(existingAsset.uri || '').trim()) {
+            payload.existingAssetUri = String(existingAsset.uri || '').trim()
+          }
           const assetIdx = bgId ? (nextProject.assets || []).findIndex((a) => a.id === bgId) : -1
           if (assetIdx >= 0) {
             appendSbLog(`覆盖已有场景图：${it.nodeName}`)
             const old = (nextProject.assets || [])[assetIdx]
-            const patched = { ...old, uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt || sp, provider: bgProvider } }
+            const patched = {
+              ...old,
+              uri: nextUri,
+              source: { type: 'ai' as const, prompt: usedPrompt || sp, provider: bgProvider, remoteUrl: String((resp as any).remoteUrl || '').trim() || undefined }
+            }
             nextProject = { ...nextProject, assets: (nextProject.assets || []).map((a, i) => (i === assetIdx ? patched : a)) }
             nextStory = {
               ...nextStory,
@@ -2939,7 +3539,7 @@ function ensureNode(n: NodeV1): NodeV1 {
               kind: 'image',
               name: `AI 分镜 ${it.nodeName}`,
               uri: nextUri,
-              source: { type: 'ai' as const, prompt: usedPrompt || sp, provider: bgProvider }
+              source: { type: 'ai' as const, prompt: usedPrompt || sp, provider: bgProvider, remoteUrl: String((resp as any).remoteUrl || '').trim() || undefined }
             }
             nextProject = { ...nextProject, assets: [...(nextProject.assets || []), asset] }
             nextStory = {
@@ -5943,9 +6543,10 @@ function ensureNode(n: NodeV1): NodeV1 {
             {doc.mode === 'project' && doc.story ? (
               <button
                 className="btn secondary"
-                onClick={() => {
-                  initStoryboardBatchFromDoc()
+                onClick={async () => {
+                  await initStoryboardBatchFromDoc()
                   setSbOpen(true)
+                  void runStoryboardOpenChecks()
                 }}
                 disabled={busy}
               >
@@ -6417,6 +7018,23 @@ function ensureNode(n: NodeV1): NodeV1 {
 	      <AiBackgroundModal
 	        open={aiOpen}
 	        value={aiReq}
+          imageProvider={aiImageProvider}
+          imageModel={aiImageModel}
+          continuityInfo={{
+            bibleReady: Boolean(String(readStoryboardEntitySpecFromProject(doc.project) || '').trim()),
+            bibleSummary: buildStoryboardContinuitySummary(doc.project),
+            inheritFromBatch: true,
+            sceneRoleLocked: Boolean(selection.type === 'node' && doc.story && (() => {
+              const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
+              return String(buildRoleDefinitionForNode(node0 ? ensureNode(node0 as any) : null) || '').trim()
+            })())
+          }}
+	        referenceScenes={selection.type === 'node' ? buildReferenceSceneOptions(selection.id, Array.isArray(aiReq.referenceSceneIds) ? aiReq.referenceSceneIds : []) : []}
+          continuityCharacters={(() => {
+            if (selection.type !== 'node' || !doc.story) return []
+            const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
+            return buildNodeCharacterReferenceChoices(node0 ? ensureNode(node0 as any) : null, Array.isArray(aiReq.characterRefs) ? aiReq.characterRefs : [])
+          })()}
 	        busy={aiBusy}
 	        analyzing={aiAnalyzing}
 	        error={aiError}
@@ -6463,8 +7081,10 @@ function ensureNode(n: NodeV1): NodeV1 {
             setAiAnalyzing(true)
             setAiError('')
             try {
-              const sceneLocks = aiReq.backgroundOnly ? '' : buildSceneCharacterLocks(node as any)
-              const globalPromptForAi = [String(aiReq.globalPrompt || '').trim(), sceneLocks].filter(Boolean).join('，')
+              const referenceSceneBlock = buildReferenceScenePromptBlock(Array.isArray(aiReq.referenceSceneIds) ? aiReq.referenceSceneIds : [])
+              const globalPromptForAi = aiReq.backgroundOnly
+                ? [readStoryboardEntitySpecFromProject(doc.project), referenceSceneBlock, String(aiReq.globalPrompt || '').trim()].filter(Boolean).join('，')
+                : [buildStoryboardGlobalPromptForNode(ensureNode(node as any), String(aiReq.globalPrompt || '')), referenceSceneBlock].filter(Boolean).join('，')
 	              // Reset per-scene fields; keep global locks.
 	              setAiReq((prev) => ({ ...prev, userInput, prompt: '', negativePrompt: '' }))
 	              const res = await analyzeBackgroundPromptAi(doc.id, {
@@ -6573,12 +7193,15 @@ function ensureNode(n: NodeV1): NodeV1 {
 		          setAiAnalyzing(true)
 		          setAiError('')
 			          try {
+                  const referenceSceneBlock = buildReferenceScenePromptBlock(Array.isArray(aiReq.referenceSceneIds) ? aiReq.referenceSceneIds : [])
                   const node0 =
                     !aiReq.backgroundOnly && selection.type === 'node' && doc.story
                       ? (doc.story.nodes || []).find((n) => n.id === selection.id) || null
                       : null
-                  const sceneLocks = node0 ? buildSceneCharacterLocks(ensureNode(node0 as any)) : ''
-                  const globalPromptForAi = [String(aiReq.globalPrompt || '').trim(), sceneLocks].filter(Boolean).join('，')
+                  const nodeForPrompt = node0 ? ensureNode(node0 as any) : null
+                  const globalPromptForAi = aiReq.backgroundOnly
+                    ? [readStoryboardEntitySpecFromProject(doc.project), referenceSceneBlock, String(aiReq.globalPrompt || '').trim()].filter(Boolean).join('，')
+                    : [buildStoryboardGlobalPromptForNode(nodeForPrompt, String(aiReq.globalPrompt || '')), referenceSceneBlock].filter(Boolean).join('，')
 			            const res = await analyzeBackgroundPromptAi(doc.id, {
 			              userInput: userInputForAi,
 			              globalPrompt: globalPromptForAi,
@@ -6644,10 +7267,28 @@ function ensureNode(n: NodeV1): NodeV1 {
 		            let gp = String(aiReq.globalPrompt || '').replace(/\s+/g, ' ').trim()
 		            let sp = String(aiReq.prompt || '').replace(/\s+/g, ' ').trim()
                 const payload: AiBackgroundRequest = { ...aiReq }
+                const provider = String(aiImageProvider || '').trim().toLowerCase()
+                const referenceSceneBlock = buildReferenceScenePromptBlock(Array.isArray(aiReq.referenceSceneIds) ? aiReq.referenceSceneIds : [])
+                const referenceSceneOptions = selection.type === 'node'
+                  ? buildReferenceSceneOptions(selection.id, Array.isArray(aiReq.referenceSceneIds) ? aiReq.referenceSceneIds : [])
+                  : []
+                const referenceImageUrls = referenceSceneOptions
+                  .filter((scene) => Array.isArray(aiReq.referenceSceneIds) && aiReq.referenceSceneIds.includes(scene.nodeId) && scene.usableUrl)
+                  .map((scene) => String(scene.usableUrl || '').trim())
+                  .filter(Boolean)
+                if (provider === 'doubao' && Array.isArray(aiReq.referenceSceneIds) && aiReq.referenceSceneIds.length > 0 && referenceImageUrls.length === 0) {
+                  throw new Error('所选参考场景还没有可被 Doubao 访问的参考图链接。请先选择带有可用参考源的场景图，或先重新生成一次参考场景。')
+                }
                 if (!aiReq.backgroundOnly && selection.type === 'node' && doc.story) {
                   const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
-                  const sceneLocks = node0 ? buildSceneCharacterLocks(ensureNode(node0 as any)) : ''
-                  gp = [gp, sceneLocks].filter(Boolean).join('，')
+                  const nodeForPrompt = node0 ? ensureNode(node0 as any) : null
+                  gp = [buildStoryboardGlobalPromptForNode(nodeForPrompt, gp), referenceSceneBlock].filter(Boolean).join('，')
+                  payload.globalPrompt = gp
+                  payload.characterRefs = buildSelectedCharacterRefsFromChoices(
+                    buildNodeCharacterReferenceChoices(node0 ? ensureNode(node0 as any) : null, Array.isArray(aiReq.characterRefs) ? aiReq.characterRefs : [])
+                  )
+                } else if (provider === 'doubao') {
+                  gp = [readStoryboardEntitySpecFromProject(doc.project), referenceSceneBlock, gp].filter(Boolean).join('，')
                   payload.globalPrompt = gp
                 }
                 if (aiReq.backgroundOnly) {
@@ -6658,6 +7299,21 @@ function ensureNode(n: NodeV1): NodeV1 {
                   payload.negativePrompt = [neg0, negAdd].filter(Boolean).join(', ')
                 }
                 payload.prompt = sp
+                if (provider === 'doubao') {
+                  payload.width = undefined
+                  payload.height = undefined
+                  payload.steps = undefined
+                  payload.cfgScale = undefined
+                  payload.sampler = undefined
+                  payload.scheduler = undefined
+                  payload.size = String(aiReq.size || '').trim() || getDoubaoStoryboardDefaultSize(String(aiReq.aspectRatio || '9:16'))
+                  payload.responseFormat = aiReq.responseFormat || 'url'
+                  payload.watermark = Boolean(aiReq.watermark)
+                  payload.sequentialImageGeneration = aiReq.sequentialImageGeneration || 'auto'
+                  payload.referenceSceneIds = Array.isArray(aiReq.referenceSceneIds) ? aiReq.referenceSceneIds : []
+                  payload.referenceImageUrls = referenceImageUrls
+                  payload.timeoutMs = 300_000
+                }
                 if (selection.type === 'node' && doc.story) {
                   const node0 = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
                   const node = node0 ? ensureNode(node0 as any) : null
@@ -6668,26 +7324,39 @@ function ensureNode(n: NodeV1): NodeV1 {
                     negativePrompt: String(payload.negativePrompt || '')
                   })
                 }
+                const nodeBefore = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
+                const existingBgId = String((nodeBefore as any)?.visuals?.backgroundAssetId || '').trim()
+                const existingBgAsset = existingBgId ? (doc.project.assets || []).find((a) => a.id === existingBgId) || null : null
+                if (existingBgAsset && String(existingBgAsset.uri || '').trim()) {
+                  payload.existingAssetUri = String(existingBgAsset.uri || '').trim()
+                }
 		            const usedPrompt = [gp, sp].filter(Boolean).join('，')
 		            const resp = await generateBackgroundAi(doc.id, payload)
 		            const rawProvider = String((resp as any).provider || '').trim()
 		            const bgProvider: AssetV1['source'] extends { provider?: infer P } ? P : any =
 		              rawProvider === 'sdwebui' || rawProvider === 'comfyui' || rawProvider === 'doubao' ? rawProvider : undefined
 		            const nextUri = resp.url ? resolveUrl(resp.url) : resp.assetPath
-		            setAiLast({ url: nextUri, assetPath: resp.assetPath, provider: rawProvider || undefined, remoteUrl: (resp as any).remoteUrl || undefined })
+		            setAiLast({
+                  url: nextUri,
+                  assetPath: resp.assetPath,
+                  provider: rawProvider || undefined,
+                  remoteUrl: (resp as any).remoteUrl || undefined,
+                  seed: Number.isFinite(Number((resp as any).seed)) ? Number((resp as any).seed) : undefined,
+                  continuityUsed: Boolean((resp as any).continuityUsed)
+                })
 		            const node = (doc.story.nodes || []).find((n) => n.id === selection.id) || null
 		            const bgId = String((node as any)?.visuals?.backgroundAssetId || '').trim()
 		            const existing = bgId ? (doc.project.assets || []).find((a) => a.id === bgId) || null : null
 
-			            if (bgId && existing) {
-			              setDocProject((p) => ({
-			                ...p,
-			                    assets: (p.assets || []).map((a) =>
-			                      a.id === bgId
-			                    ? { ...a, uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt || aiReq.prompt, provider: bgProvider } }
-			                    : a
-			                )
-			              }))
+                  if (bgId && existing) {
+                    setDocProject((p) => ({
+                      ...p,
+                          assets: (p.assets || []).map((a) =>
+                            a.id === bgId
+                          ? { ...a, uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt || aiReq.prompt, provider: bgProvider, remoteUrl: String((resp as any).remoteUrl || '').trim() || undefined } }
+                          : a
+                      )
+                    }))
 	              setDocStory((s) => ({
 	                ...s,
                 nodes: (s.nodes || []).map((n) =>
@@ -6701,7 +7370,7 @@ function ensureNode(n: NodeV1): NodeV1 {
 		                  kind: 'image',
 		                  name: `AI 背景 ${new Date().toLocaleString()}`,
 		                  uri: nextUri,
-		                source: { type: 'ai' as const, prompt: usedPrompt || aiReq.prompt, provider: bgProvider }
+                    source: { type: 'ai' as const, prompt: usedPrompt || aiReq.prompt, provider: bgProvider, remoteUrl: String((resp as any).remoteUrl || '').trim() || undefined }
 		                }
 	              setDocProject((p) => ({ ...p, assets: [...(p.assets || []), asset] }))
 	              setDocStory((s) => ({
@@ -6777,6 +7446,10 @@ function ensureNode(n: NodeV1): NodeV1 {
             aspectRatio: sbReq.aspectRatio,
             width: sbReq.width,
             height: sbReq.height,
+            size: sbReq.size,
+            responseFormat: sbReq.responseFormat,
+            watermark: sbReq.watermark,
+            sequentialImageGeneration: sbReq.sequentialImageGeneration,
             steps: sbReq.steps,
             cfgScale: sbReq.cfgScale,
             sampler: sbReq.sampler,
@@ -6786,10 +7459,12 @@ function ensureNode(n: NodeV1): NodeV1 {
           busyGenerate={sbBusyGenerate}
           busyApply={sbBusyApply}
           busyEntity={sbBusyEntity}
+          entityElapsedMs={sbBusyEntity ? sbElapsedMs : 0}
           continuityReady={sbContinuityReady}
           continuitySummary={sbContinuitySummary}
           continuityBusy={sbContinuityBusy}
           continuityConfig={sbReq.continuity}
+          openChecks={sbOpenChecks}
           characters={collectStoryboardUsedCharacters().map((ch) => ({
             id: String(ch.id || ''),
             name: String(ch.name || ch.id || ''),
@@ -6802,10 +7477,12 @@ function ensureNode(n: NodeV1): NodeV1 {
           generatingNodeElapsedMs={sbGeneratingNodeElapsedMs}
           error={sbError}
           logs={sbLogs}
+          onRunOpenChecks={() => void runStoryboardOpenChecks()}
           onGenerateEntity={runStoryboardGenerateEntitySpec}
           onClearStoryBible={() => {
-            setSbReq((prev) => ({ ...prev, storyBibleJson: '' }))
+            setSbReq((prev) => ({ ...prev, storyBibleJson: '', entitySpec: '' }))
             setSbContinuityReady(false)
+            saveStoryboardContinuityBackup(AI_BG_CONTINUITY_KEY, { storyBibleJson: '', entitySpec: '', continuity: sbReq.continuity })
             if (doc.mode === 'project') {
               setDocProject((p) => {
                 const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
@@ -6813,6 +7490,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                 const nextAiBg = { ...aiBgIn }
                 delete (nextAiBg as any).storyBible
                 delete (nextAiBg as any).storyBibleJson
+                delete (nextAiBg as any).storyboardEntitySpec
                 const nextState = { ...stateIn, aiBackground: nextAiBg }
                 return { ...p, state: nextState }
               })
@@ -6820,7 +7498,15 @@ function ensureNode(n: NodeV1): NodeV1 {
           }}
           onRunContinuityTest={() => void runStoryboardContinuityTest()}
           onChangeContinuityConfig={(patch) => {
-            setSbReq((prev) => ({ ...prev, continuity: { ...(prev.continuity || {}), ...(patch || {}) } }))
+            setSbReq((prev) => {
+              const nextReq = { ...prev, continuity: { ...(prev.continuity || {}), ...(patch || {}) } }
+              saveStoryboardContinuityBackup(AI_BG_CONTINUITY_KEY, {
+                storyBibleJson: nextReq.storyBibleJson,
+                entitySpec: nextReq.entitySpec,
+                continuity: nextReq.continuity
+              })
+              return nextReq
+            })
             setSbContinuityReady(false)
             if (doc.mode === 'project') {
               setDocProject((p) => {
@@ -6849,6 +7535,10 @@ function ensureNode(n: NodeV1): NodeV1 {
                 aspectRatio: (next.aspectRatio || prev.aspectRatio) as any,
                 width: Number(next.width ?? prev.width),
                 height: Number(next.height ?? prev.height),
+                size: String((next as any).size ?? prev.size ?? '').trim(),
+                responseFormat: (((next as any).responseFormat || prev.responseFormat || 'url') === 'b64_json' ? 'b64_json' : 'url') as any,
+                watermark: typeof ((next as any).watermark ?? prev.watermark) === 'boolean' ? Boolean((next as any).watermark ?? prev.watermark) : false,
+                sequentialImageGeneration: (((next as any).sequentialImageGeneration || prev.sequentialImageGeneration || 'disabled') === 'auto' ? 'auto' : 'disabled') as any,
                 steps: Number(next.steps ?? prev.steps),
                 cfgScale: Number(next.cfgScale ?? prev.cfgScale),
                 sampler: String(next.sampler || prev.sampler || 'DPM++ 2M'),
@@ -6858,11 +7548,20 @@ function ensureNode(n: NodeV1): NodeV1 {
               const storyBibleObj = tryParseStoryBibleJson(merged.storyBibleJson)
               if (storyBibleObj) merged.entitySpec = buildEntitySpecFromStoryBible(storyBibleObj)
               setSbContinuityReady(false)
+              saveStoryboardContinuityBackup(AI_BG_CONTINUITY_KEY, {
+                storyBibleJson: merged.storyBibleJson,
+                entitySpec: merged.entitySpec,
+                continuity: merged.continuity
+              })
               upsertStoryboardBatchDraft({
                 style: merged.style,
                 aspectRatio: merged.aspectRatio,
                 width: merged.width,
                 height: merged.height,
+                size: merged.size,
+                responseFormat: merged.responseFormat,
+                watermark: merged.watermark,
+                sequentialImageGeneration: merged.sequentialImageGeneration,
                 steps: merged.steps,
                 cfgScale: merged.cfgScale,
                 sampler: merged.sampler,
@@ -6931,8 +7630,10 @@ function ensureNode(n: NodeV1): NodeV1 {
             }
             appendSbLog('已清空全局负向提示词')
           }}
-          onClose={() => {
+          onClose={async () => {
             if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+            const ok = await saveIfDirty()
+            if (!ok) return
             setSbOpen(false)
             setSbError('')
           }}

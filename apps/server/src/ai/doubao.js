@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { getProxyUrl } from '../net/proxy.js'
+import { getStudioSecret } from '../studio/secrets.js'
 
 /*
   apps/server/src/ai/doubao.js
@@ -101,29 +102,31 @@ export function getDoubaoImagesConfigSnapshot() {
   const apiUrl = normalizeArkImagesUrl(
     process.env.DOUBAO_ARK_IMAGES_URL || process.env.DOUBAO_ARK_API_URL || 'https://ark.cn-beijing.volces.com/api/v3/images/generations'
   )
-  const model = String(process.env.DOUBAO_ARK_MODEL || 'doubao-seedream-4-0-250828').trim()
-  const apiKeyPresent = Boolean(String(process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
+  const model = String(process.env.DOUBAO_ARK_MODEL || 'doubao-seedream-5-0-260128').trim()
+  const apiKeyPresent = Boolean(String(getStudioSecret('doubao') || process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
   const authHeaderPresent = Boolean(String(process.env.DOUBAO_ARK_AUTH_HEADER || process.env.DOUBAO_AUTH_HEADER || '').trim())
   const authMode = authHeaderPresent ? 'custom_header' : apiKeyPresent ? 'bearer' : 'missing'
   return { apiUrl, model, authMode }
 }
 
-export function getDoubaoTextConfigSnapshot() {
-  const apiUrl = normalizeArkChatUrl(
-    process.env.DOUBAO_ARK_CHAT_URL ||
+export function getDoubaoTextConfigSnapshot({ apiUrl, model } = {}) {
+  const useApiUrl = normalizeArkChatUrl(
+    apiUrl ||
+      process.env.DOUBAO_ARK_CHAT_URL ||
       process.env.DOUBAO_ARK_TEXT_URL ||
       'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
   )
-  const model = String(
-    process.env.DOUBAO_ARK_TEXT_MODEL ||
+  const useModel = String(
+    model ||
+      process.env.DOUBAO_ARK_TEXT_MODEL ||
       process.env.DOUBAO_ARK_LLM_MODEL ||
       process.env.DOUBAO_LLM_MODEL ||
       'doubao-1-5-pro-32k-250115'
   ).trim()
-  const apiKeyPresent = Boolean(String(process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
+  const apiKeyPresent = Boolean(String(getStudioSecret('doubao') || process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
   const authHeaderPresent = Boolean(String(process.env.DOUBAO_ARK_AUTH_HEADER || process.env.DOUBAO_AUTH_HEADER || '').trim())
   const authMode = authHeaderPresent ? 'custom_header' : apiKeyPresent ? 'bearer' : 'missing'
-  return { apiUrl, model, authMode }
+  return { apiUrl: useApiUrl, model: useModel, authMode }
 }
 
 // getDoubaoImagesConfigSnapshot / getDoubaoTextConfigSnapshot:
@@ -132,18 +135,21 @@ export function getDoubaoTextConfigSnapshot() {
 function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
   // 使用本地 `curl` 发起 HTTP 请求并解析 JSON 响应。
   // 行为与 `background.js` 中的 curlRequestJson 类似：输出带有状态码 marker，解析并在非 2xx 时抛出带 status 的 Error。
+  const timeoutNum = Number(timeoutMs)
+  const noTimeout = Number.isFinite(timeoutNum) && timeoutNum <= 0
   const marker = '__CURL_STATUS__'
   const args = [
     '-sS',
     '-X',
     String(method || 'POST').toUpperCase(),
-    '--max-time',
-    String(Math.max(1, Math.ceil((Number(timeoutMs || 0) || 20000) / 1000))),
     ...(proxyUrl ? ['--proxy', String(proxyUrl)] : []),
     '-w',
     `\\n${marker}:%{http_code}\\n`,
     ...Object.entries(headers || {}).flatMap(([k, v]) => ['-H', `${k}: ${v}`])
   ]
+  if (!noTimeout) {
+    args.splice(3, 0, '--max-time', String(Math.max(1, Math.ceil((Number(timeoutMs || 0) || 20000) / 1000))))
+  }
   if (body != null) args.push('--data-binary', '@-')
   args.push(String(url))
 
@@ -152,18 +158,18 @@ function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
     const chunks = []
     const errChunks = []
 
-    const killTimer = setTimeout(() => {
+    const killTimer = noTimeout ? null : setTimeout(() => {
       try { p.kill('SIGKILL') } catch (_) {}
     }, Math.max(1000, Number(timeoutMs || 0) || 20000) + 1000)
 
     p.stdout.on('data', (d) => chunks.push(d))
     p.stderr.on('data', (d) => errChunks.push(d))
     p.on('error', (e) => {
-      clearTimeout(killTimer)
+      if (killTimer) clearTimeout(killTimer)
       reject(e)
     })
     p.on('close', (code) => {
-      clearTimeout(killTimer)
+      if (killTimer) clearTimeout(killTimer)
       const out = Buffer.concat(chunks).toString('utf-8')
       const errText = Buffer.concat(errChunks).toString('utf-8')
       const idx = out.lastIndexOf(`${marker}:`)
@@ -329,10 +335,12 @@ function validateBackgroundPrompt(obj) {
 // validateScriptDraft / validateBackgroundPrompt: 基于简单 schema 的轻量校验函数，
 // 在调用生成/修复接口前验证 AI 输出是否满足最小结构要求。
 
-async function doubaoChatCompletionsJson({ messages, model, temperature, timeoutMs, proxyUrl }) {
-  const { apiUrl } = getDoubaoTextConfigSnapshot()
+async function doubaoChatCompletionsJson({ messages, model, temperature, timeoutMs, proxyUrl, apiUrl }) {
+  const cfg = getDoubaoTextConfigSnapshot({ apiUrl, model })
+  const useApiUrl = cfg.apiUrl
 
   const apiKey =
+    String(getStudioSecret('doubao') || '').trim() ||
     String(process.env.DOUBAO_ARK_API_KEY || '').trim() ||
     String(process.env.ARK_API_KEY || '').trim() ||
     String(process.env.DOUBAO_API_KEY || '').trim()
@@ -351,13 +359,7 @@ async function doubaoChatCompletionsJson({ messages, model, temperature, timeout
     headers.Authorization = `Bearer ${apiKey}`
   }
 
-  const useModel = String(
-    model ||
-      process.env.DOUBAO_ARK_TEXT_MODEL ||
-      process.env.DOUBAO_ARK_LLM_MODEL ||
-      process.env.DOUBAO_LLM_MODEL ||
-      'doubao-1-5-pro-32k-250115'
-  ).trim()
+  const useModel = String(cfg.model || '').trim()
   const payload = {
     model: useModel,
     messages: Array.isArray(messages) ? messages : [],
@@ -365,7 +367,10 @@ async function doubaoChatCompletionsJson({ messages, model, temperature, timeout
   }
 
   const startedAt = Date.now()
-  const useTimeoutMs = clampInt(timeoutMs, 5_000, 120_000, 60_000)
+  const timeoutNum = Number(timeoutMs)
+  const useTimeoutMs = (Number.isFinite(timeoutNum) && timeoutNum <= 0)
+    ? 0
+    : clampInt(timeoutMs, 5_000, 120_000, 60_000)
   const useProxyUrl = String(proxyUrl || '').trim()
   try {
     const msgCount = Array.isArray(payload.messages) ? payload.messages.length : 0
@@ -374,13 +379,13 @@ async function doubaoChatCompletionsJson({ messages, model, temperature, timeout
       for (const m of payload.messages || []) chars += String(m && m.content != null ? m.content : '').length
     } catch (_) {}
     console.log(
-      `[game_studio] doubao.llm:start api=${apiUrl} model=${useModel} msgs=${msgCount} chars=${chars} proxy=${useProxyUrl ? 'on' : 'off'} timeoutMs=${useTimeoutMs}`
+      `[game_studio] doubao.llm:start api=${useApiUrl} model=${useModel} msgs=${msgCount} chars=${chars} proxy=${useProxyUrl ? 'on' : 'off'} timeoutMs=${useTimeoutMs}`
     )
   } catch (_) {}
 
   try {
     const json = await curlRequestJson({
-      url: apiUrl,
+      url: useApiUrl,
       method: 'POST',
       headers,
       body: payload,
@@ -416,6 +421,7 @@ export async function generateStrictJsonViaDoubaoChat({
   instructions,
   input,
   model,
+  apiUrl,
   timeoutMs,
   maxRetries,
   validate,
@@ -478,6 +484,7 @@ export async function generateStrictJsonViaDoubaoChat({
     const { json, meta } = await doubaoChatCompletionsJson({
       messages,
       model,
+      apiUrl,
       temperature: 0.2,
       timeoutMs,
       proxyUrl: proxyUrlUse
@@ -509,7 +516,7 @@ export async function generateStrictJsonViaDoubaoChat({
 // - 最终返回 parsed object（已 parse）和原始文本 meta
 
 
-export async function generateScriptsViaDoubao({ prompt, title, rules, formula, model, proxyUrl, timeoutMs }) {
+export async function generateScriptsViaDoubao({ prompt, title, rules, formula, model, apiUrl, proxyUrl, timeoutMs }) {
   const startedAt = Date.now()
 
   const rulesText = (() => {
@@ -584,6 +591,7 @@ export async function generateScriptsViaDoubao({ prompt, title, rules, formula, 
     input: user,
     timeoutMs: clampInt(timeoutMs, 5_000, 180_000, clampInt(process.env.STUDIO_AI_TIMEOUT_MS, 5_000, 180_000, 90_000)),
     model: String(model || process.env.DOUBAO_ARK_TEXT_MODEL || '').trim() || undefined,
+    apiUrl,
     proxyUrl,
     maxRetries: 2,
     validate: (obj) => validateScriptDraft(obj).ok
@@ -603,6 +611,7 @@ export async function repairScriptsViaDoubao({
   report,
   validation,
   model,
+  apiUrl,
   proxyUrl
 }) {
   const startedAt = Date.now()
@@ -723,6 +732,7 @@ export async function repairScriptsViaDoubao({
     input: user,
     timeoutMs: clampInt(process.env.STUDIO_AI_TIMEOUT_MS, 5_000, 120_000, 60_000),
     model: String(model || process.env.DOUBAO_ARK_TEXT_MODEL || '').trim() || undefined,
+    apiUrl,
     proxyUrl,
     maxRetries: 2,
     validate: (obj) => validateScriptDraft(obj).ok
@@ -741,6 +751,7 @@ export async function generateBackgroundPromptViaDoubao({
   aspectRatio,
   style,
   model,
+  apiUrl,
   proxyUrl,
   outputLanguage
 }) {
@@ -798,6 +809,7 @@ export async function generateBackgroundPromptViaDoubao({
     input: user,
     timeoutMs: clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 120_000, 60_000),
     model: String(model || process.env.DOUBAO_ARK_TEXT_MODEL || '').trim() || undefined,
+    apiUrl,
     proxyUrl,
     maxRetries: 2,
     validate: (obj) => validateBackgroundPrompt(obj).ok
@@ -827,6 +839,7 @@ export async function generateImageViaDoubaoArkImages(input) {
   )
 
   const apiKey =
+    String(getStudioSecret('doubao') || '').trim() ||
     String(process.env.DOUBAO_ARK_API_KEY || '').trim() ||
     String(process.env.ARK_API_KEY || '').trim() ||
     String(process.env.DOUBAO_API_KEY || '').trim()
@@ -837,7 +850,7 @@ export async function generateImageViaDoubaoArkImages(input) {
     throw e
   }
 
-  const model = String((input && input.model ? input.model : process.env.DOUBAO_ARK_MODEL) || 'doubao-seedream-4-0-250828').trim()
+  const model = String((input && input.model ? input.model : process.env.DOUBAO_ARK_MODEL) || 'doubao-seedream-5-0-260128').trim()
   const timeoutRaw = Number(input && input.timeoutMs)
   const timeoutMs = (Number.isFinite(timeoutRaw) && timeoutRaw <= 0)
     ? 300_000
@@ -931,16 +944,18 @@ export async function generateImageViaDoubaoArkImages(input) {
   const responseFormat = String(input.responseFormat || '').trim() || 'url' // url | b64_json
   const watermark = typeof input.watermark === 'boolean' ? Boolean(input.watermark) : String(process.env.DOUBAO_WATERMARK || 'false').toLowerCase() === 'true'
   const sequential = String(input.sequentialImageGeneration || 'disabled') // disabled | auto
-  const guidanceScale = clampFloat(input.guidanceScale ?? input.cfgScale, 1, 10, 5)
+  const referenceImageUrls = Array.isArray(input.referenceImageUrls)
+    ? input.referenceImageUrls.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 14)
+    : []
 
   const payload = {
     model,
     prompt,
+    ...(referenceImageUrls.length ? { image: referenceImageUrls } : {}),
     response_format: responseFormat,
     size,
     watermark,
-    sequential_image_generation: sequential,
-    guidance_scale: guidanceScale
+    sequential_image_generation: sequential
   }
 
   const headers = { 'Content-Type': 'application/json' }
@@ -953,7 +968,7 @@ export async function generateImageViaDoubaoArkImages(input) {
 
   try {
     const proxyOn = Boolean(proxyUrl)
-    console.log(`[game_studio] doubao.images:start api=${apiUrl} model=${model} size=${size} format=${responseFormat} watermark=${watermark} seq=${sequential} proxy=${proxyOn ? 'on' : 'off'} timeoutMs=${timeoutMs}`)
+    console.log(`[game_studio] doubao.images:start api=${apiUrl} model=${model} size=${size} format=${responseFormat} watermark=${watermark} seq=${sequential} refs=${referenceImageUrls.length} proxy=${proxyOn ? 'on' : 'off'} timeoutMs=${timeoutMs}`)
   } catch (_) {}
 
   const json = await curlRequestJson({

@@ -459,3 +459,127 @@ export function compileBlueprintFromScripts({ scripts, prevBlueprint, expectedFo
     debug: { indexByCardId }
   }
 }
+
+/**
+ * 将 AI 生成的脚本卡片规范为蓝图编译器可稳定解析的「i后果k / A后果」命名。
+ * - i = 第几个选择点（按脚本顺序，从 1 起），不是卡片序号。
+ * - k = 该选择点 text 里解析出的选项键（选项1→1、选项A→A）。
+ * - 仅在「当前选择点」与「下一个选择点」之间的卡片中选取后果槽位（符合「紧跟后果」约定）。
+ * 在 /api/projects/ai/create 与 ai/regenerate 写入 scripts.json 前调用，减少 missing_consequence / consequence_index_mismatch。
+ */
+function nameLooksConsequenceLike(name) {
+  const s = String(name || '').trim()
+  if (!s) return false
+  if (parseNumericConsequence(s)) return true
+  if (looksLikeConsequence(s)) return true
+  if (/后果/.test(s)) return true
+  return false
+}
+
+function nextChoiceCardIndex(cards, fromIndex) {
+  for (let j = fromIndex + 1; j < cards.length; j++) {
+    try {
+      if (pickOptions(cards[j]?.text || '').length >= 2) return j
+    } catch (_) {}
+  }
+  return cards.length
+}
+
+/**
+ * @param {any[]} cardsInput 已带 id/order 的卡片列表（会被浅拷贝后改写 name）
+ * @param {any} [expectedFormula] 与 AI 生成一致的结构公式（含 choicePoints 时用于与编译器一致的最后选择点判定）
+ * @returns {any[]} 同序卡片（新对象数组）
+ */
+export function normalizeScriptCardsForBlueprint(cardsInput, expectedFormula) {
+  void expectedFormula
+  const cards = Array.isArray(cardsInput) ? cardsInput.map((c) => ({ ...c })) : []
+  cards.sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0))
+
+  let choicePointNo = 0
+
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i]
+    if (!card) continue
+    if (isEndingCard(card)) continue
+
+    let opts = []
+    try {
+      opts = pickOptions(card.text || '')
+    } catch (_) {
+      continue
+    }
+    if (opts.length < 2) continue
+
+    choicePointNo += 1
+    const optionKeys = opts.map((o) => String(o.key))
+
+    const rangeEnd = Math.min(nextChoiceCardIndex(cards, i), i + 40, cards.length)
+    const eligible = []
+    for (let j = i + 1; j < rangeEnd; j++) {
+      const cj = cards[j]
+      if (!cj) continue
+      if (isEndingCard(cj)) continue
+      try {
+        if (pickOptions(cj.text || '').length >= 2) break
+      } catch (_) {
+        break
+      }
+      eligible.push(j)
+    }
+
+    if (!eligible.length) continue
+
+    const assigned = new Map()
+    const usedJ = new Set()
+
+    for (const j of eligible) {
+      const k = numericConsequenceKey(cards[j]?.name, choicePointNo)
+      if (k && optionKeys.includes(k) && !assigned.has(k)) {
+        assigned.set(k, j)
+        usedJ.add(j)
+      }
+    }
+
+    for (const j of eligible) {
+      if (usedJ.has(j)) continue
+      const p = parseNumericConsequence(cards[j]?.name)
+      if (p && optionKeys.includes(String(p.k)) && !assigned.has(String(p.k))) {
+        assigned.set(String(p.k), j)
+        usedJ.add(j)
+      }
+    }
+
+    for (const j of eligible) {
+      if (usedJ.has(j)) continue
+      const lk = looksLikeConsequence(cards[j]?.name)
+      if (lk && optionKeys.includes(lk) && !assigned.has(lk)) {
+        assigned.set(lk, j)
+        usedJ.add(j)
+      }
+    }
+
+    for (const k of optionKeys) {
+      if (assigned.has(k)) continue
+      const nextJ =
+        eligible.find((j) => !usedJ.has(j) && nameLooksConsequenceLike(cards[j]?.name)) ??
+        eligible.find((j) => !usedJ.has(j))
+      if (nextJ == null) break
+      assigned.set(k, nextJ)
+      usedJ.add(nextJ)
+    }
+
+    const nameForKey = (k) => {
+      if (/^\d+$/.test(String(k))) return `${choicePointNo}后果${k}`
+      return `${String(k).toUpperCase()}后果`
+    }
+
+    for (const k of optionKeys) {
+      const j = assigned.get(k)
+      if (j == null) continue
+      const want = nameForKey(k)
+      if (String(cards[j].name || '').trim() !== want) cards[j].name = want
+    }
+  }
+
+  return cards
+}

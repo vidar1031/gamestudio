@@ -5,7 +5,7 @@ export type AssetV1 = {
   kind: 'image'
   name: string
   uri: string
-  source?: { type: 'upload' | 'import' | 'ai'; prompt?: string; provider?: 'sdwebui' | 'comfyui' | 'doubao' }
+  source?: { type: 'upload' | 'import' | 'ai'; prompt?: string; provider?: 'sdwebui' | 'comfyui' | 'doubao'; remoteUrl?: string }
 }
 
 export type CharacterV1 = {
@@ -133,6 +133,10 @@ export type AiStoryboardBatchDraftV1 = {
   aspectRatio?: '9:16' | '16:9' | '1:1' | '9:1'
   width?: number
   height?: number
+  size?: string
+  responseFormat?: 'url' | 'b64_json'
+  watermark?: boolean
+  sequentialImageGeneration?: 'auto' | 'disabled'
   steps?: number
   cfgScale?: number
   sampler?: string
@@ -140,6 +144,14 @@ export type AiStoryboardBatchDraftV1 = {
   model?: string
   lora?: string
   timeoutMs?: number
+  [k: string]: any
+}
+
+export type AiStoryboardContinuityV1 = {
+  ipadapterEnabled?: boolean
+  requireCharacterRefs?: boolean
+  controlnetEnabled?: boolean
+  seedMode?: 'random' | 'fixed'
   [k: string]: any
 }
 
@@ -159,6 +171,10 @@ export type AiBackgroundStateV1 = {
   storyboardScenes: Record<string, AiStoryboardScenePromptV1>
   storyboardBatchDraft: AiStoryboardBatchDraftV1
   storyboardPromptMeta: AiStoryboardPromptMetaV1
+  storyboardEntitySpec?: string
+  storyBibleJson?: string
+  storyBible?: Record<string, any>
+  storyboardContinuity?: AiStoryboardContinuityV1
   // Legacy mirrors for backward compatibility.
   globalPrompt: string
   globalNegativePrompt: string
@@ -268,6 +284,10 @@ function asFiniteNum(v: any): number | undefined {
   return Number.isFinite(n) ? n : undefined
 }
 
+function asBool(v: any): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined
+}
+
 function asStyle(v: any): AiStoryboardBatchDraftV1['style'] | undefined {
   const s = asStr(v).trim()
   return s === 'picture_book' || s === 'cartoon' || s === 'national_style' || s === 'watercolor' ? s : undefined
@@ -307,6 +327,9 @@ export function normalizeAiBackgroundState(input: any): AiBackgroundStateV1 {
 
   const draftIn = asObj(raw.storyboardBatchDraft)
   const metaIn = asObj(raw.storyboardPromptMeta)
+  const continuityIn = asObj(raw.storyboardContinuity)
+  const storyBibleIn = asObj(raw.storyBible)
+  const storyBibleJson = asStr(raw.storyBibleJson).trim() || (Object.keys(storyBibleIn).length ? JSON.stringify(storyBibleIn, null, 2) : '')
 
   const out: AiBackgroundStateV1 = {
     schemaVersion: '1.0',
@@ -318,6 +341,10 @@ export function normalizeAiBackgroundState(input: any): AiBackgroundStateV1 {
       aspectRatio: asAspectRatio(draftIn.aspectRatio),
       width: asFiniteNum(draftIn.width),
       height: asFiniteNum(draftIn.height),
+      size: asStr(draftIn.size).trim() || undefined,
+      responseFormat: asStr(draftIn.responseFormat).trim() === 'b64_json' ? 'b64_json' : (asStr(draftIn.responseFormat).trim() === 'url' ? 'url' : undefined),
+      watermark: asBool(draftIn.watermark),
+      sequentialImageGeneration: asStr(draftIn.sequentialImageGeneration).trim() === 'disabled' ? 'disabled' : (asStr(draftIn.sequentialImageGeneration).trim() === 'auto' ? 'auto' : undefined),
       steps: asFiniteNum(draftIn.steps),
       cfgScale: asFiniteNum(draftIn.cfgScale),
       sampler: asStr(draftIn.sampler) || undefined,
@@ -335,6 +362,18 @@ export function normalizeAiBackgroundState(input: any): AiBackgroundStateV1 {
       sceneCount: asFiniteNum(metaIn.sceneCount),
       source: asStr(metaIn.source) || undefined
     },
+    storyboardEntitySpec: asStr(raw.storyboardEntitySpec).trim() || undefined,
+    storyBibleJson: storyBibleJson || undefined,
+    storyBible: Object.keys(storyBibleIn).length ? storyBibleIn : undefined,
+    storyboardContinuity: Object.keys(continuityIn).length
+      ? {
+          ...continuityIn,
+          ipadapterEnabled: asBool(continuityIn.ipadapterEnabled),
+          requireCharacterRefs: asBool(continuityIn.requireCharacterRefs),
+          controlnetEnabled: asBool(continuityIn.controlnetEnabled),
+          seedMode: asStr(continuityIn.seedMode).trim() === 'fixed' ? 'fixed' : (asStr(continuityIn.seedMode).trim() === 'random' ? 'random' : undefined)
+        }
+      : undefined,
     globalPrompt,
     globalNegativePrompt
   }
@@ -456,6 +495,25 @@ export type AiBackgroundRequest = {
   cfgScale?: number
   sampler?: string
   scheduler?: string
+  seed?: number
+  continuity?: {
+    ipadapterEnabled?: boolean
+    requireCharacterRefs?: boolean
+    controlnetEnabled?: boolean
+    seedMode?: 'random' | 'fixed'
+  }
+  referenceSceneIds?: string[]
+  referenceImageUrls?: string[]
+  existingAssetUri?: string
+  characterRefs?: Array<{
+    characterId: string
+    characterName?: string
+    assetId?: string
+    assetPath?: string
+    assetUri?: string
+    fingerprintPrompt?: string
+    weight?: number
+  }>
   // 请求超时（毫秒），用于本地模型较慢场景
   timeoutMs?: number
 }

@@ -1,4 +1,4 @@
-import { openaiResponsesJsonForTools } from './openai.js'
+import { extractResponseOutputText, openaiResponsesJsonForTools } from './openai.js'
 import { generateStrictJsonViaDoubaoChat } from './doubao.js'
 import { generateStrictJsonViaOllamaChat } from './ollama.js'
 
@@ -36,6 +36,17 @@ function listFromMaybeMap(v) {
   return []
 }
 
+function listEntriesFromMaybeMap(v) {
+  if (Array.isArray(v)) return v.map((item) => (item && typeof item === 'object' ? item : {}))
+  if (v && typeof v === 'object') {
+    return Object.entries(v).map(([key, value]) => {
+      if (value && typeof value === 'object') return { __key: key, ...value }
+      return { __key: key }
+    })
+  }
+  return []
+}
+
 function normalizeIdLike(s) {
   const out = String(s || '').trim()
   if (!out) return ''
@@ -45,15 +56,16 @@ function normalizeIdLike(s) {
 function normalizeStoryBible(obj) {
   const input = obj && typeof obj === 'object' ? obj : {}
   // Some models output maps: { characters: { protagonist: {...} } }
-  const charsIn = listFromMaybeMap(input.characters)
-  const propsIn = listFromMaybeMap(input.props)
-  const locsIn = listFromMaybeMap(input.locations)
+  const charsIn = listEntriesFromMaybeMap(input.characters)
+  const propsIn = listEntriesFromMaybeMap(input.props)
+  const locsIn = listEntriesFromMaybeMap(input.locations)
   const scenesIn = input.sceneRefs && typeof input.sceneRefs === 'object' ? input.sceneRefs : (input.scenes && typeof input.scenes === 'object' ? input.scenes : {})
 
   const normChar = (x) => {
-    const idRaw = x && (x.id || x.characterId || x.character_id) ? (x.id || x.characterId || x.character_id) : ''
+    const mapKey = clampStr(x && x.__key ? x.__key : '', 80)
+    const idRaw = x && (x.id || x.characterId || x.character_id) ? (x.id || x.characterId || x.character_id) : mapKey
     const id = clampStr(idRaw, 80)
-    const name = clampStr(x && x.name ? x.name : '', 80)
+    const name = clampStr(x && (x.name || x.characterName || x.character_name) ? (x.name || x.characterName || x.character_name) : mapKey, 80)
     return {
       id: id || (name ? `char.${normalizeIdLike(name).slice(0, 40)}` : ''),
       name,
@@ -66,9 +78,10 @@ function normalizeStoryBible(obj) {
   }
 
   const normProp = (x) => {
-    const idRaw = x && (x.id || x.propId || x.prop_id) ? (x.id || x.propId || x.prop_id) : ''
+    const mapKey = clampStr(x && x.__key ? x.__key : '', 80)
+    const idRaw = x && (x.id || x.propId || x.prop_id) ? (x.id || x.propId || x.prop_id) : mapKey
     const id = clampStr(idRaw, 80)
-    const name = clampStr(x && x.name ? x.name : '', 80)
+    const name = clampStr(x && (x.name || x.propName || x.prop_name) ? (x.name || x.propName || x.prop_name) : mapKey, 80)
     return {
       id: id || (name ? `prop.${normalizeIdLike(name).slice(0, 40)}` : ''),
       name,
@@ -80,9 +93,10 @@ function normalizeStoryBible(obj) {
   }
 
   const normLoc = (x) => {
-    const idRaw = x && (x.id || x.locationId || x.location_id) ? (x.id || x.locationId || x.location_id) : ''
+    const mapKey = clampStr(x && x.__key ? x.__key : '', 80)
+    const idRaw = x && (x.id || x.locationId || x.location_id) ? (x.id || x.locationId || x.location_id) : mapKey
     const id = clampStr(idRaw, 80)
-    const name = clampStr(x && x.name ? x.name : '', 80)
+    const name = clampStr(x && (x.name || x.locationName || x.location_name) ? (x.name || x.locationName || x.location_name) : mapKey, 80)
     return {
       id: id || (name ? `loc.${normalizeIdLike(name).slice(0, 40)}` : ''),
       name,
@@ -102,11 +116,16 @@ function normalizeStoryBible(obj) {
     if (!k) continue
     const v = v0 && typeof v0 === 'object' ? v0 : {}
     sceneRefs[k] = {
-      characters: uniqStrings(v.characters, 40),
-      props: uniqStrings(v.props, 60),
-      locations: uniqStrings(v.locations, 40)
+      characters: uniqStrings(v.characters || v.characterId || v.characterIds || v.character_id || v.character_ids, 40),
+      props: uniqStrings(v.props || v.propId || v.propIds || v.prop_id || v.prop_ids, 60),
+      locations: uniqStrings(v.locations || v.locationId || v.locationIds || v.location_id || v.location_ids, 40)
     }
   }
+
+  const eventChainIn = input.eventChain || input.event_chain || []
+  const eventChain = Array.isArray(eventChainIn)
+    ? uniqStrings(eventChainIn, 80)
+    : uniqStrings(eventChainIn && typeof eventChainIn === 'object' ? Object.values(eventChainIn) : [], 80)
 
   return {
     schemaVersion: '1.0',
@@ -114,7 +133,7 @@ function normalizeStoryBible(obj) {
     characters,
     props,
     locations,
-    eventChain: uniqStrings(input.eventChain || input.event_chain || [], 80),
+    eventChain,
     forbiddenSubstitutes: uniqStrings(input.forbiddenSubstitutes || input.forbidden_substitutes || [], 120),
     sceneRefs
   }
@@ -205,6 +224,65 @@ function storyBibleSchema() {
   }
 }
 
+function extractFirstJsonObjectText(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return ''
+  const start = s.indexOf('{')
+  if (start < 0) return ''
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < s.length; i += 1) {
+    const ch = s[i]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (ch === '\\') {
+        escaped = true
+        continue
+      }
+      if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') {
+      inString = true
+      continue
+    }
+    if (ch === '{') depth += 1
+    else if (ch === '}') {
+      depth -= 1
+      if (depth === 0) return s.slice(start, i + 1)
+    }
+  }
+  return ''
+}
+
+function parseStoryBibleJsonText(rawText) {
+  const raw = String(rawText || '').trim()
+  if (!raw) {
+    const e = new Error('empty_ai_output')
+    e.code = 'empty_ai_output'
+    throw e
+  }
+  try {
+    return JSON.parse(raw)
+  } catch (_) {}
+
+  const objText = extractFirstJsonObjectText(raw)
+  if (objText) {
+    try {
+      return JSON.parse(objText)
+    } catch (_) {}
+  }
+
+  const preview = raw.slice(0, 120).replace(/\s+/g, ' ').trim()
+  const e = new Error(`invalid_json_response:${preview}`)
+  e.code = 'invalid_json_response'
+  throw e
+}
+
 export async function generateStoryBible({
   provider,
   model,
@@ -213,7 +291,8 @@ export async function generateStoryBible({
   input
 }) {
   const p = String(provider || '').trim().toLowerCase()
-  const t = clampInt(timeoutMs, 5_000, 180_000, 90_000)
+  const timeoutRaw = Number(timeoutMs)
+  const t = (Number.isFinite(timeoutRaw) && timeoutRaw <= 0) ? 0 : clampInt(timeoutMs, 5_000, 180_000, 90_000)
   const schema = storyBibleSchema()
 
   const instructions =
@@ -232,27 +311,43 @@ export async function generateStoryBible({
 
   const user = JSON.stringify(input || {}, null, 2)
 
-  if (p === 'openai') {
-    const body = {
-      instructions,
-      input: user,
-      ...(model ? { model: String(model).trim() } : {}),
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'story_bible',
-          strict: true,
-          schema
+  if (p === 'openai' || p === 'localoxml') {
+    let lastErr = null
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const attemptInstructions =
+        attempt === 0
+          ? instructions
+          : (
+              `${instructions}\n` +
+              `再次强调：不要输出分析过程、不要输出 markdown、不要输出代码块。` +
+              `只输出一个可直接 JSON.parse 的 JSON 对象。`
+            )
+      const body = {
+        instructions: attemptInstructions,
+        input: user,
+        ...(model ? { model: String(model).trim() } : {}),
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'story_bible',
+            strict: true,
+            schema
+          }
         }
       }
+      const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, proxyUrl, timeoutMs: t })
+      const outText = extractResponseOutputText(json)
+      try {
+        const parsed = parseStoryBibleJsonText(outText)
+        const normalized = normalizeStoryBible(parsed)
+        if (!validateStoryBible(normalized)) throw new Error('invalid_story_bible')
+        return { result: normalized, meta }
+      } catch (e) {
+        lastErr = e
+        if (attempt === 1) throw e
+      }
     }
-    const { json, meta } = await openaiResponsesJsonForTools({ body, proxyUrl })
-    const outText = typeof json.output_text === 'string' ? json.output_text : ''
-    if (!outText) throw new Error('empty_ai_output')
-    const parsed = JSON.parse(outText)
-    const normalized = normalizeStoryBible(parsed)
-    if (!validateStoryBible(normalized)) throw new Error('invalid_story_bible')
-    return { result: normalized, meta }
+    throw lastErr || new Error('invalid_json_response')
   }
 
   if (p === 'doubao') {

@@ -100,7 +100,8 @@ export async function generateBackgroundPromptViaOpenAI({
   aspectRatio,
   style,
   model,
-  outputLanguage
+  outputLanguage,
+  provider
 }) {
   const ar = normalizeAspectRatio(aspectRatio) || '9:16'
   const st = normalizeStyle(style) || 'picture_book'
@@ -158,7 +159,7 @@ export async function generateBackgroundPromptViaOpenAI({
     }
   }
 
-  const { json, meta } = await openaiResponsesJsonForTools({ body })
+  const { json, meta } = await openaiResponsesJsonForTools({ body, provider })
   let outText = ''
   try {
     outText = typeof json.output_text === 'string' ? json.output_text : ''
@@ -316,7 +317,7 @@ function pickPromptProvider() {
   if (explicit) return explicit.toLowerCase()
   const bgProvider = String(process.env.STUDIO_BG_PROVIDER || '').trim().toLowerCase()
   if (bgProvider === 'doubao') return 'doubao'
-  return String(process.env.STUDIO_AI_PROVIDER || 'openai').toLowerCase()
+  return String(process.env.STUDIO_AI_PROVIDER || 'localoxml').toLowerCase()
 }
 
 function styleName(style) {
@@ -532,6 +533,6 @@ export async function generateBackgroundPrompt(input) {
       ? await generateBackgroundPromptViaDoubao(in2)
       : provider === 'ollama'
         ? await generateBackgroundPromptViaOllama(in2)
-        : await generateBackgroundPromptViaOpenAI(in2)
+        : await generateBackgroundPromptViaOpenAI({ ...in2, provider })
   return { ...out, result: normalizeBgPromptResult(out && out.result ? out.result : null, in2) }
 }

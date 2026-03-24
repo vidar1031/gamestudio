@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { cors } from 'hono/cors'
-import { mkdir, readFile, readdir, stat, writeFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, stat, writeFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -18,14 +18,15 @@ import { generateStoryBible } from './ai/storyBible.js'
 import { getDoubaoImagesConfigSnapshot } from './ai/doubao.js'
 import { diagnoseOllamaText } from './ai/ollama.js'
 import { classifyAiError, createTraceId, logStage } from './ai/runtime.js'
-import { compileBlueprintFromScripts } from './blueprint/compile.js'
+import { compileBlueprintFromScripts, normalizeScriptCardsForBlueprint } from './blueprint/compile.js'
 import { validateBlueprintDoc } from './blueprint/validate.js'
 import { loadEnv } from './env.js'
-import { diagnoseOpenAI, reviewBlueprintViaOpenAI } from './ai/openai.js'
+import { diagnoseOpenAI, isOpenAICompatibleProvider, reviewBlueprintViaOpenAI } from './ai/openai.js'
 import { reviewBlueprintLocally } from './ai/blueprintReviewLocal.js'
 import dns from 'node:dns/promises'
-import { getEffectiveStudioConfig, writeStudioSettings } from './studio/settings.js'
+import { getEffectiveStudioConfig, redactStudioSettingsForClient, writeStudioSettings } from './studio/settings.js'
 import { normalizeProjectDoc } from './studio/projectState.js'
+import { getStudioSecret } from './studio/secrets.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -37,10 +38,11 @@ const app = new Hono()
 const envInfo = loadEnv({ startDirs: [PROJECT_ROOT], maxHops: 1 })
 try {
   const provider = String(process.env.STUDIO_AI_PROVIDER || 'local')
-  const hasKey = Boolean(String(process.env.OPENAI_API_KEY || '').trim())
-  const model = String(process.env.STUDIO_AI_MODEL || '')
+  const hasOpenAIKey = Boolean(String(process.env.OPENAI_API_KEY || '').trim())
+  const hasLocalOxmlKey = Boolean(String(process.env.LOCALOXML_API_KEY || process.env.STUDIO_AI_API_KEY || process.env.OPENAI_API_KEY || '').trim())
+  const model = String(process.env.LOCALOXML_MODEL || process.env.STUDIO_AI_MODEL || process.env.OPENAI_MODEL || '')
   console.log(
-    `[game_studio] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} openaiKey=${hasKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''} aiInit=manual_only`
+    `[game_studio] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} localoxmlKey=${hasLocalOxmlKey ? 'set' : 'missing'} openaiKey=${hasOpenAIKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''} aiInit=manual_only`
   )
 } catch (_) {}
 
@@ -250,13 +252,13 @@ function extractStringListFromUnknown(raw) {
 
 app.get('/api/studio/settings', async (c) => {
   const { settings, effective } = await getEffectiveStudioConfig(ROOT)
-  return c.json({ success: true, settings: settings || null, effective })
+  return c.json({ success: true, settings: redactStudioSettingsForClient(settings) || null, effective })
 })
 
 app.put('/api/studio/settings', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const saved = await writeStudioSettings(ROOT, body && body.settings ? body.settings : body)
-  return c.json({ success: true, settings: saved })
+  return c.json({ success: true, settings: redactStudioSettingsForClient(saved) || null })
 })
 
 app.get('/api/studio/sdwebui/models', async (c) => {
@@ -968,6 +970,10 @@ app.post('/api/studio/image/test', async (c) => {
       style,
       width,
       height,
+      size: body?.size,
+      responseFormat: body?.responseFormat,
+      watermark: body?.watermark,
+      sequentialImageGeneration: body?.sequentialImageGeneration,
       steps: body?.steps,
       cfgScale: body?.cfgScale,
       sampler: body?.sampler,
@@ -1100,13 +1106,13 @@ app.post('/api/studio/diagnose', async (c) => {
     }
   }
 
-  async function diagnoseDoubaoText(model) {
-    const keyPresent = Boolean(String(process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
+  async function diagnoseDoubaoText(model, apiUrl) {
+    const keyPresent = Boolean(String(getStudioSecret('doubao') || process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
     const authHeaderPresent = Boolean(String(process.env.DOUBAO_ARK_AUTH_HEADER || process.env.DOUBAO_AUTH_HEADER || '').trim())
     const cfg = {
       provider: 'doubao',
       api: 'chat.completions',
-      apiUrl: String(process.env.DOUBAO_ARK_CHAT_URL || process.env.DOUBAO_ARK_TEXT_URL || 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'),
+      apiUrl: String(apiUrl || process.env.DOUBAO_ARK_CHAT_URL || process.env.DOUBAO_ARK_TEXT_URL || 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'),
       model: String(model || process.env.DOUBAO_ARK_TEXT_MODEL || process.env.DOUBAO_ARK_LLM_MODEL || process.env.DOUBAO_LLM_MODEL || '').trim()
     }
     const dnsRes = await dnsCheck(cfg.apiUrl)
@@ -1117,6 +1123,7 @@ app.post('/api/studio/diagnose', async (c) => {
         instructions: '输出一个 JSON：{"ok":true}，只输出 JSON。',
         input: '请输出 {"ok":true}',
         model: cfg.model || undefined,
+        apiUrl: cfg.apiUrl || undefined,
         proxyUrl: effective.network.proxyUrl,
         timeoutMs,
         maxRetries: 1,
@@ -1140,7 +1147,7 @@ app.post('/api/studio/diagnose', async (c) => {
   }
 
   async function diagnoseDoubaoImages({ apiUrl, model }) {
-    const keyPresent = Boolean(String(process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
+    const keyPresent = Boolean(String(getStudioSecret('doubao') || process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim())
     const authHeaderPresent = Boolean(String(process.env.DOUBAO_ARK_AUTH_HEADER || process.env.DOUBAO_AUTH_HEADER || '').trim())
     const url = String(apiUrl || getDoubaoImagesConfigSnapshot().apiUrl || 'https://ark.cn-beijing.volces.com/api/v3/images/generations')
     const dnsRes = await dnsCheck(url)
@@ -1170,8 +1177,8 @@ app.post('/api/studio/diagnose', async (c) => {
   if (checkScripts) {
     try {
       if (!effective.enabled.scripts) out.services.scripts = { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: 'disabled' }
-      else if (effective.scripts.provider === 'openai') out.services.scripts = await diagnoseOpenAI({ timeoutMs })
-      else if (effective.scripts.provider === 'doubao') out.services.scripts = await diagnoseDoubaoText(effective.scripts.model)
+      else if (isOpenAICompatibleProvider(effective.scripts.provider)) out.services.scripts = await diagnoseOpenAI({ timeoutMs, provider: effective.scripts.provider })
+      else if (effective.scripts.provider === 'doubao') out.services.scripts = await diagnoseDoubaoText(effective.scripts.model, effective.scripts.apiUrl)
       else if (effective.scripts.provider === 'ollama') out.services.scripts = await diagnoseOllamaTextLocal(effective.scripts.model)
       else out.services.scripts = { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: 'local' }
     } catch (e) {
@@ -1182,8 +1189,8 @@ app.post('/api/studio/diagnose', async (c) => {
   if (checkPrompt) {
     try {
       if (!effective.enabled.prompt) out.services.prompt = { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: 'disabled' }
-      else if (effective.prompt.provider === 'openai') out.services.prompt = await diagnoseOpenAI({ timeoutMs })
-      else if (effective.prompt.provider === 'doubao') out.services.prompt = await diagnoseDoubaoText(effective.prompt.model)
+      else if (isOpenAICompatibleProvider(effective.prompt.provider)) out.services.prompt = await diagnoseOpenAI({ timeoutMs, provider: effective.prompt.provider })
+      else if (effective.prompt.provider === 'doubao') out.services.prompt = await diagnoseDoubaoText(effective.prompt.model, effective.prompt.apiUrl)
       else if (effective.prompt.provider === 'ollama') out.services.prompt = await diagnoseOllamaTextLocal(effective.prompt.model)
       else out.services.prompt = { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: 'local' }
     } catch (e) {
@@ -1629,6 +1636,7 @@ app.post('/api/projects/ai/create', async (c) => {
       formula,
       provider: requestedProvider,
       model: requestedModel || undefined,
+      apiUrl: studio.effective.scripts.apiUrl || undefined,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs: aiTimeoutMs
     })
@@ -1719,6 +1727,7 @@ app.post('/api/projects/ai/create', async (c) => {
       .filter((c) => c.text.trim())
 
     const scripts = { schemaVersion: '1.0', cards, updatedAt: nowIso() }
+    scripts.cards = normalizeScriptCardsForBlueprint(scripts.cards, formula)
     scriptsOut = scripts.cards.length ? scripts : generateScriptsFromPrompt(prompt)
     await writeJson(path.join(dir, 'scripts.json'), scriptsOut)
   } else {
@@ -1798,6 +1807,7 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
       formula,
       provider: requestedProvider,
       model: requestedModel || undefined,
+      apiUrl: studio.effective.scripts.apiUrl || undefined,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs: aiTimeoutMs
     })
@@ -1847,6 +1857,7 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
       .filter((c) => c.text.trim())
 
     const scripts = { schemaVersion: '1.0', cards, updatedAt: nowIso() }
+    scripts.cards = normalizeScriptCardsForBlueprint(scripts.cards, formula)
     scriptsOut = scripts.cards.length ? scripts : generateScriptsFromPrompt(prompt)
   } else {
     scriptsOut = generateScriptsFromPrompt(prompt)
@@ -1941,7 +1952,7 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
 
   const provider = String(process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
   const startedAt = Date.now()
-  if (provider !== 'openai') {
+  if (!isOpenAICompatibleProvider(provider)) {
     const review = reviewBlueprintLocally({ formula: expectedFormula, report: compiled.report, validation })
     try {
       await writeJson(cachePath, {
@@ -1969,11 +1980,12 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
       formula: expectedFormula,
       scripts,
       report: compiled.report,
-      validation
+      validation,
+      provider
     })
     try {
       console.log(
-        `[game_studio] ai.blueprint_review project=${id} provider=${ai?.meta?.provider || 'openai'} model=${ai?.meta?.model || '-'} api=${ai?.meta?.api || '-'} ms=${ai?.meta?.durationMs || 0}`
+        `[game_studio] ai.blueprint_review project=${id} provider=${ai?.meta?.provider || provider || 'localoxml'} model=${ai?.meta?.model || '-'} api=${ai?.meta?.api || '-'} ms=${ai?.meta?.durationMs || 0}`
       )
     } catch (_) {}
     try {
@@ -2981,6 +2993,48 @@ function resolveAssetPathFromUri(projectId, uri) {
   return abs
 }
 
+function isExternallyReachableReferenceUrl(input) {
+  const raw = String(input || '').trim()
+  if (!/^https?:\/\//i.test(raw)) return false
+  try {
+    const u = new URL(raw)
+    const host = String(u.hostname || '').trim().toLowerCase()
+    if (!host) return false
+    if (host === 'localhost' || host === '0.0.0.0' || host === '::1' || host.endsWith('.local')) return false
+    if (/^127\./.test(host)) return false
+    if (/^10\./.test(host)) return false
+    if (/^192\.168\./.test(host)) return false
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return false
+    return true
+  } catch (_) {
+    return false
+  }
+}
+
+async function archiveExistingAssetForReplacement(projectId, uri) {
+  const abs = resolveAssetPathFromUri(projectId, uri)
+  if (!abs) return null
+  if (!(await existsFile(abs))) return null
+  const parsed = path.parse(abs)
+  for (let i = 1; i <= 999; i += 1) {
+    const candidate = path.join(parsed.dir, `${parsed.name}_old${i}${parsed.ext}`)
+    if (await existsFile(candidate)) continue
+    await rename(abs, candidate)
+    return candidate
+  }
+  throw new Error('archive_slot_exhausted')
+}
+
+function assetPathFromAbsolute(projectId, absPath) {
+  const id = String(projectId || '').trim()
+  if (!id || !absPath) return null
+  const base = path.resolve(projectDir(id))
+  const abs = path.resolve(String(absPath))
+  const rel = path.relative(base, abs).replace(/\\/g, '/')
+  if (!rel || rel.startsWith('..')) return null
+  return rel
+}
+
 function openFolderOnHost(folder) {
   const target = String(folder || '').trim()
   if (!target) return Promise.reject(new Error('missing_folder'))
@@ -3086,6 +3140,7 @@ app.post('/api/projects/:id/ai/background', async (c) => {
 	const sceneNegative = String(body?.negativePrompt || '').trim()
 	const globalPrompt = String(body?.globalPrompt || '').trim()
 	const globalNegativePrompt = String(body?.globalNegativePrompt || '').trim()
+  const continuity = body && body.continuity && typeof body.continuity === 'object' ? body.continuity : null
 	const width = Number(body?.width || 768)
 	const height = Number(body?.height || 1024)
 	if (!scenePrompt) return c.json({ success: false, error: 'missing_prompt' }, 400)
@@ -3107,6 +3162,37 @@ app.post('/api/projects/:id/ai/background', async (c) => {
   const promptJoiner = (bgProvider === 'sdwebui' || bgProvider === 'comfyui') ? ', ' : '，'
 	const effectivePrompt = [globalPrompt, scenePrompt].map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(promptJoiner)
 	const effectiveNegative = [globalNegativePrompt, sceneNegative].map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter(Boolean).join(', ')
+  const referenceImageUrls = Array.isArray(body?.referenceImageUrls)
+    ? body.referenceImageUrls.map((x) => String(x || '').trim()).filter((x) => isExternallyReachableReferenceUrl(x))
+    : []
+  const requestedReferenceCount = Array.isArray(body?.referenceImageUrls)
+    ? body.referenceImageUrls.map((x) => String(x || '').trim()).filter(Boolean).length
+    : 0
+  if (requestedReferenceCount > 0 && referenceImageUrls.length === 0) {
+    return c.json({ success: false, error: 'reference_image_unreachable', message: '所选参考图链接仅本机可访问，Doubao 云端无法下载。请改用带 remoteUrl 的参考场景图。' }, 400)
+  }
+  const characterRefsIn = Array.isArray(body?.characterRefs) ? body.characterRefs : []
+  const referenceImages = []
+  for (const item of characterRefsIn) {
+    if (!item || typeof item !== 'object') continue
+    const characterId = String(item.characterId || '').trim()
+    if (!characterId) continue
+    const assetAbs = resolveAssetPathFromUri(id, item.assetUri || item.assetPath || '')
+    if (!assetAbs || !(await existsFile(assetAbs))) continue
+    try {
+      const bytes = await readFile(assetAbs)
+      referenceImages.push({
+        role: 'character',
+        characterId,
+        characterName: String(item.characterName || characterId).trim() || characterId,
+        assetId: String(item.assetId || '').trim() || undefined,
+        filename: path.basename(assetAbs),
+        bytes,
+        weight: Number.isFinite(Number(item.weight)) ? Number(item.weight) : undefined,
+        fingerprintPrompt: String(item.fingerprintPrompt || '').trim() || undefined
+      })
+    } catch (_) {}
+  }
   logStage({
     stage: 'bg.create',
     event: 'start',
@@ -3114,7 +3200,7 @@ app.post('/api/projects/:id/ai/background', async (c) => {
     project: id,
     provider: bgProvider,
     model: studio.effective.image.model || '-',
-    item: `w${Math.floor(width || 0)}h${Math.floor(height || 0)}`
+    item: `w${Math.floor(width || 0)}h${Math.floor(height || 0)} refs:${referenceImages.length}`
   })
 
 	try {
@@ -3133,7 +3219,11 @@ app.post('/api/projects/:id/ai/background', async (c) => {
       steps: body?.steps,
       cfgScale: body?.cfgScale,
       sampler: body?.sampler,
-      scheduler: body?.scheduler,
+	      scheduler: body?.scheduler,
+        seed: body?.seed,
+        continuity,
+          referenceImageUrls,
+        referenceImages,
       provider: bgProvider,
       sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
       comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
@@ -3150,10 +3240,23 @@ app.post('/api/projects/:id/ai/background', async (c) => {
 	    const relDir = path.join('assets', 'ai')
 	    const outDir = path.join(dir, relDir)
 	    await mkdir(outDir, { recursive: true })
-	    const fname = `bg_${Date.now()}.${ext}`
-		    const abs = path.join(outDir, fname)
-		    await writeFile(abs, buf)
-		    const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+      const existingAssetUri = String(body?.existingAssetUri || '').trim()
+      const existingAssetAbs = existingAssetUri ? resolveAssetPathFromUri(id, existingAssetUri) : null
+      let abs = ''
+      let assetPath = ''
+      if (existingAssetAbs && await existsFile(existingAssetAbs)) {
+        const archived = await archiveExistingAssetForReplacement(id, existingAssetUri)
+        abs = existingAssetAbs
+        await writeFile(abs, buf)
+        assetPath = String(assetPathFromAbsolute(id, abs) || '')
+        if (!assetPath) throw new Error('invalid_replacement_asset_path')
+        console.log(`[game_studio] bg replace archived=${archived ? path.basename(archived) : '-'} restored=${path.basename(abs)}`)
+      } else {
+        const fname = `bg_${Date.now()}.${ext}`
+        abs = path.join(outDir, fname)
+        await writeFile(abs, buf)
+        assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+      }
 		    const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : String(process.env.STUDIO_BG_PROVIDER || 'sdwebui')
 		    const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
         logStage({
@@ -3167,7 +3270,16 @@ app.post('/api/projects/:id/ai/background', async (c) => {
           durationMs: Math.max(0, Date.now() - startedAt),
           item: `${ext}:${buf.length}`
         })
-		    return c.json({ success: true, provider, assetPath, url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`, remoteUrl, traceId })
+		    return c.json({
+          success: true,
+          provider,
+          assetPath,
+          url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
+          remoteUrl,
+          traceId,
+          seed: gen && gen.meta ? gen.meta.seed : undefined,
+          continuityUsed: Boolean(gen && gen.meta && gen.meta.continuityUsed)
+        })
 		  } catch (e) {
 		    const msg = e && e.message ? String(e.message) : String(e)
         const mapped = classifyAiError(e)
@@ -3224,7 +3336,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
     event: 'start',
     traceId,
     project: id,
-    provider: studio.effective.prompt.provider || 'openai',
+    provider: studio.effective.prompt.provider || 'localoxml',
     model: studio.effective.prompt.model || '-',
     item: `chars:${userInput.length}`
   })
@@ -3240,6 +3352,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       targetImageProvider: studio.effective.image.provider,
       provider: studio.effective.prompt.provider,
       model: studio.effective.prompt.model,
+      apiUrl: studio.effective.prompt.apiUrl,
       proxyUrl: studio.effective.network.proxyUrl
     })
     logStage({
@@ -3247,7 +3360,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       event: 'ok',
       traceId,
       project: id,
-      provider: meta && meta.provider ? meta.provider : studio.effective.prompt.provider || 'openai',
+      provider: meta && meta.provider ? meta.provider : studio.effective.prompt.provider || 'localoxml',
       model: meta && meta.model ? meta.model : studio.effective.prompt.model || '-',
       ok: true,
       durationMs: Math.max(0, Date.now() - startedAt)
@@ -3261,7 +3374,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       event: 'fail',
       traceId,
       project: id,
-      provider: studio.effective.prompt.provider || 'openai',
+      provider: studio.effective.prompt.provider || 'localoxml',
       model: studio.effective.prompt.model || '-',
       status: mapped.httpStatus,
       ok: false,
@@ -3283,12 +3396,15 @@ app.post('/api/projects/:id/ai/story/bible', async (c) => {
   const input = body && typeof body === 'object' ? body.input : null
   if (!input || typeof input !== 'object') return c.json({ success: false, error: 'missing_input' }, 400)
 
-  const timeoutMs = clampInt(
-    body?.timeoutMs,
-    5_000,
-    180_000,
-    clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 180_000, 90_000)
-  )
+  const timeoutRaw = Number(body?.timeoutMs)
+  const timeoutMs = (Number.isFinite(timeoutRaw) && timeoutRaw <= 0)
+    ? 0
+    : clampInt(
+        body?.timeoutMs,
+        5_000,
+        180_000,
+        clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 180_000, 90_000)
+      )
 
   const studio = await getEffectiveStudioConfig(ROOT)
   if (!studio.effective.enabled.prompt) {
@@ -3305,7 +3421,7 @@ app.post('/api/projects/:id/ai/story/bible', async (c) => {
     event: 'start',
     traceId,
     project: id,
-    provider: studio.effective.prompt.provider || 'openai',
+    provider: studio.effective.prompt.provider || 'localoxml',
     model: studio.effective.prompt.model || '-'
   })
   try {
@@ -3321,7 +3437,7 @@ app.post('/api/projects/:id/ai/story/bible', async (c) => {
       event: 'ok',
       traceId,
       project: id,
-      provider: meta && meta.provider ? meta.provider : studio.effective.prompt.provider || 'openai',
+      provider: meta && meta.provider ? meta.provider : studio.effective.prompt.provider || 'localoxml',
       model: meta && meta.model ? meta.model : studio.effective.prompt.model || '-',
       ok: true,
       durationMs: Math.max(0, Date.now() - startedAt)
@@ -3339,7 +3455,7 @@ app.post('/api/projects/:id/ai/story/bible', async (c) => {
       event: 'fail',
       traceId,
       project: id,
-      provider: studio.effective.prompt.provider || 'openai',
+      provider: studio.effective.prompt.provider || 'localoxml',
       model: studio.effective.prompt.model || '-',
       status: mapped.httpStatus,
       ok: false,
@@ -3396,7 +3512,7 @@ app.post('/api/projects/:id/ai/character/fingerprint', async (c) => {
   const startedAt = Date.now()
   try {
     console.log(
-      `[game_studio] ch.fp:start project=${id} provider=${studio.effective.prompt.provider || 'openai'} model=${studio.effective.prompt.model || '-'} name=${characterName} storyChars=${storyTitle.length} ctxChars=${contextText.length} globalChars=${globalPrompt.length} style=${style}`
+      `[game_studio] ch.fp:start project=${id} provider=${studio.effective.prompt.provider || 'localoxml'} model=${studio.effective.prompt.model || '-'} name=${characterName} storyChars=${storyTitle.length} ctxChars=${contextText.length} globalChars=${globalPrompt.length} style=${style}`
     )
   } catch (_) {}
 

@@ -1,64 +1,120 @@
 import dns from 'node:dns/promises'
 import { spawn } from 'node:child_process'
 import { getProxyInfo, getProxyUrl } from '../net/proxy.js'
+import { getStudioSecret } from '../studio/secrets.js'
 
-function extractResponseOutputText(respJson) {
-  try {
-    if (respJson && typeof respJson.output_text === 'string') return respJson.output_text
-  } catch (_) {}
+const OFFICIAL_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
-  try {
-    const out = Array.isArray(respJson && respJson.output) ? respJson.output : []
-    const texts = []
-    for (const item of out) {
-      if (!item || typeof item !== 'object') continue
-      if (String(item.type) !== 'message') continue
-      const content = Array.isArray(item.content) ? item.content : []
-      for (const c of content) {
-        if (c && typeof c === 'object' && String(c.type) === 'output_text' && typeof c.text === 'string') {
-          texts.push(c.text)
-        }
-      }
-    }
-    return texts.join('').trim()
-  } catch (_) {
-    return ''
-  }
+function normalizeOpenAICompatibleProvider(provider) {
+  const p = String(provider || '').trim().toLowerCase()
+  return p === 'localoxml' ? 'localoxml' : 'openai'
 }
 
-function getOpenAIConfig() {
-  const apiKey = String(process.env.OPENAI_API_KEY || '').trim()
-  const baseUrl = String(process.env.STUDIO_AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
-  const model = String(process.env.STUDIO_AI_MODEL || 'gpt-4o-mini').trim() || 'gpt-4o-mini'
-  const timeoutMsEnv = String(process.env.STUDIO_AI_TIMEOUT_MS || '').trim()
+export function isOpenAICompatibleProvider(provider) {
+  const p = String(provider || '').trim().toLowerCase()
+  return p === 'openai' || p === 'localoxml'
+}
+
+function stripJsonCodeFence(s) {
+  const raw = String(s || '').trim()
+  if (!raw) return ''
+  // Handle ```json ... ``` or ``` ... ```
+  const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  return fenced ? String(fenced[1] || '').trim() : raw
+}
+
+export function extractResponseOutputText(respJson) {
+  let raw = ''
+  try {
+    if (respJson && typeof respJson.output_text === 'string') {
+      raw = respJson.output_text
+    }
+  } catch (_) {}
+
+  if (!raw) {
+    try {
+      const out = Array.isArray(respJson && respJson.output) ? respJson.output : []
+      const texts = []
+      for (const item of out) {
+        if (!item || typeof item !== 'object') continue
+        if (String(item.type) !== 'message') continue
+        const content = Array.isArray(item.content) ? item.content : []
+        for (const c of content) {
+          if (c && typeof c === 'object' && String(c.type) === 'output_text' && typeof c.text === 'string') {
+            texts.push(c.text)
+          }
+        }
+      }
+      raw = texts.join('').trim()
+    } catch (_) {
+      return ''
+    }
+  }
+
+  // Strip markdown code fences that some models output (e.g. ```json ... ```)
+  return stripJsonCodeFence(raw)
+}
+
+function getOpenAIConfig(provider = 'openai') {
+  const p = normalizeOpenAICompatibleProvider(provider)
+  const useLocalOxml = p === 'localoxml'
+  const secretOverride = getStudioSecret(p)
+  const apiKey = String(
+    secretOverride ||
+      (
+        useLocalOxml
+          ? (process.env.LOCALOXML_API_KEY || process.env.STUDIO_AI_API_KEY || process.env.OPENAI_API_KEY || '')
+          : (process.env.OPENAI_API_KEY || '')
+      )
+  ).trim()
+  const baseUrl = String(
+    useLocalOxml
+      ? (process.env.LOCALOXML_BASE_URL || process.env.STUDIO_AI_BASE_URL || OFFICIAL_OPENAI_BASE_URL)
+      : (process.env.OPENAI_BASE_URL || OFFICIAL_OPENAI_BASE_URL)
+  ).replace(/\/+$/, '')
+  const model = String(
+    useLocalOxml
+      ? (process.env.LOCALOXML_MODEL || process.env.STUDIO_AI_MODEL || 'gpt-4o-mini')
+      : (process.env.OPENAI_MODEL || 'gpt-4o-mini')
+  ).trim() || 'gpt-4o-mini'
+  const timeoutMsEnv = String(
+    useLocalOxml
+      ? (process.env.LOCALOXML_TIMEOUT_MS || process.env.STUDIO_AI_TIMEOUT_MS || '')
+      : (process.env.OPENAI_TIMEOUT_MS || '')
+  ).trim()
   const timeoutMsRaw = timeoutMsEnv ? Number(timeoutMsEnv) : (model.startsWith('gpt-5') ? 60000 : 20000)
   const timeoutMs = Math.max(1000, Number.isFinite(timeoutMsRaw) ? timeoutMsRaw : 20000)
-  return { apiKey, baseUrl, timeoutMs, model }
+  return { provider: p, apiKey, baseUrl, timeoutMs, model }
 }
 
 // Small helper for other modules that want to use Responses API while preserving
 // proxy behavior (curl) + timeouts implemented here.
-export async function openaiResponsesJsonForTools({ body }) {
-  const { model, timeoutMs } = getOpenAIConfig()
+export async function openaiResponsesJsonForTools({ body, provider, timeoutMs: callerTimeoutMs }) {
+  const cfg = getOpenAIConfig(provider)
+  const { model } = cfg
+  // Prefer caller-supplied timeout over config default. timeoutMs <= 0 means no timeout.
+  const timeoutMs = Number.isFinite(Number(callerTimeoutMs))
+    ? Number(callerTimeoutMs)
+    : cfg.timeoutMs
   const startedAt = Date.now()
   const merged = { ...(body || {}), model: String((body && body.model) || model) }
-  const json = await openaiRequestJson({ method: 'POST', path: '/responses', body: merged, timeoutMs })
+  const json = await openaiRequestJson({ method: 'POST', path: '/responses', body: merged, timeoutMs, provider: cfg.provider })
   return {
     json,
-    meta: { provider: 'openai', api: 'responses', model: merged.model, durationMs: Math.max(0, Date.now() - startedAt) }
+    meta: { provider: cfg.provider, api: 'responses', model: merged.model, durationMs: Math.max(0, Date.now() - startedAt) }
   }
 }
 
-async function openaiRequestJson({ method, path: apiPath, body, timeoutMs }) {
-  const apiKey = String(process.env.OPENAI_API_KEY || '').trim()
+async function openaiRequestJson({ method, path: apiPath, body, timeoutMs, provider }) {
+  const cfg = getOpenAIConfig(provider)
+  const { apiKey, baseUrl } = cfg
   if (!apiKey) throw new Error('missing_openai_api_key')
-
-  const baseUrl = String(process.env.STUDIO_AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
   const url = `${baseUrl}${apiPath.startsWith('/') ? apiPath : `/${apiPath}`}`
 
   const proxyUrl = getProxyUrl()
-  const controller = new AbortController()
-  const t = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 0) || 20000))
+  const noTimeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) <= 0
+  const controller = noTimeout ? null : new AbortController()
+  const t = noTimeout ? null : setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 0) || 20000))
   try {
     // If a proxy is configured, use curl to ensure proxy support even when Node fetch doesn't.
     // This avoids confusing "browser works but CLI fails" setups (e.g. Clash Verge).
@@ -83,7 +139,7 @@ async function openaiRequestJson({ method, path: apiPath, body, timeoutMs }) {
         Authorization: `Bearer ${apiKey}`
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: controller.signal
+      ...(controller ? { signal: controller.signal } : {})
     })
     const json = await resp.json().catch(() => null)
     if (!resp.ok) {
@@ -98,24 +154,26 @@ async function openaiRequestJson({ method, path: apiPath, body, timeoutMs }) {
     }
     return json
   } finally {
-    clearTimeout(t)
+    if (t) clearTimeout(t)
   }
 }
 
 function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
   const marker = '__CURL_STATUS__'
+  const noTimeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) <= 0
   const args = [
     '-sS',
     '-X',
     String(method || 'POST').toUpperCase(),
-    '--max-time',
-    String(Math.max(1, Math.ceil((Number(timeoutMs || 0) || 20000) / 1000))),
     '--proxy',
     String(proxyUrl),
     '-w',
     `\\n${marker}:%{http_code}\\n`,
     ...Object.entries(headers || {}).flatMap(([k, v]) => ['-H', `${k}: ${v}`])
   ]
+  if (!noTimeout) {
+    args.splice(3, 0, '--max-time', String(Math.max(1, Math.ceil((Number(timeoutMs || 0) || 20000) / 1000))))
+  }
   if (body != null) args.push('--data-binary', '@-')
   args.push(String(url))
 
@@ -124,18 +182,18 @@ function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
     const chunks = []
     const errChunks = []
 
-    const killTimer = setTimeout(() => {
+    const killTimer = noTimeout ? null : setTimeout(() => {
       try { p.kill('SIGKILL') } catch (_) {}
     }, Math.max(1000, Number(timeoutMs || 0) || 20000) + 1000)
 
     p.stdout.on('data', (d) => chunks.push(d))
     p.stderr.on('data', (d) => errChunks.push(d))
     p.on('error', (e) => {
-      clearTimeout(killTimer)
+      if (killTimer) clearTimeout(killTimer)
       reject(e)
     })
     p.on('close', (code) => {
-      clearTimeout(killTimer)
+      if (killTimer) clearTimeout(killTimer)
       const out = Buffer.concat(chunks).toString('utf-8')
       const errText = Buffer.concat(errChunks).toString('utf-8')
       const idx = out.lastIndexOf(`${marker}:`)
@@ -213,8 +271,8 @@ function scriptDraftSchema() {
   }
 }
 
-export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, model, timeoutMs }) {
-  const cfg = getOpenAIConfig()
+export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, model, timeoutMs, provider }) {
+  const cfg = getOpenAIConfig(provider)
   const useModel = String(model || cfg.model).trim() || cfg.model
   const useTimeoutMs = Math.max(1_000, Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : cfg.timeoutMs)
   const startedAt = Date.now()
@@ -267,12 +325,12 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
   }
 
   try {
-    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs: useTimeoutMs })
+    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs: useTimeoutMs, provider: cfg.provider })
     const text = extractResponseOutputText(resp)
     if (!text) throw new Error('empty_ai_output')
     return {
       draft: JSON.parse(text),
-      meta: { provider: 'openai', api: 'responses', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
+      meta: { provider: cfg.provider, api: 'responses', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
     }
   } catch (e) {
     // Do not fallback on transport/timeouts; chat.completions won't help and just doubles latency.
@@ -296,13 +354,13 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
         }
       }
     }
-    const resp2 = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs: useTimeoutMs })
+    const resp2 = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs: useTimeoutMs, provider: cfg.provider })
     const content = resp2 && resp2.choices && resp2.choices[0] && resp2.choices[0].message && resp2.choices[0].message.content
     const text = typeof content === 'string' ? content.trim() : ''
     if (!text) throw new Error('empty_ai_output')
     return {
       draft: JSON.parse(text),
-      meta: { provider: 'openai', api: 'chat.completions', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
+      meta: { provider: cfg.provider, api: 'chat.completions', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
     }
   }
 }
@@ -314,9 +372,10 @@ export async function repairScriptsViaOpenAI({
   formula,
   report,
   validation,
-  model
+  model,
+  provider
 }) {
-  const cfg = getOpenAIConfig()
+  const cfg = getOpenAIConfig(provider)
   const useModel = String(model || cfg.model).trim() || cfg.model
   const timeoutMs = cfg.timeoutMs
   const startedAt = Date.now()
@@ -410,12 +469,12 @@ export async function repairScriptsViaOpenAI({
     }
   }
 
-  const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs })
+  const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs, provider: cfg.provider })
   const text = extractResponseOutputText(resp)
   if (!text) throw new Error('empty_ai_output')
   return {
     draft: JSON.parse(text),
-    meta: { provider: 'openai', api: 'responses', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
+    meta: { provider: cfg.provider, api: 'responses', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
   }
 }
 
@@ -476,8 +535,9 @@ function blueprintReviewSchema() {
   }
 }
 
-export async function reviewBlueprintViaOpenAI({ projectTitle, formula, scripts, report, validation }) {
-  const { model, timeoutMs } = getOpenAIConfig()
+export async function reviewBlueprintViaOpenAI({ projectTitle, formula, scripts, report, validation, provider }) {
+  const cfg = getOpenAIConfig(provider)
+  const { model, timeoutMs } = cfg
   const startedAt = Date.now()
 
   const instructions =
@@ -514,12 +574,12 @@ export async function reviewBlueprintViaOpenAI({ projectTitle, formula, scripts,
   }
 
   try {
-    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body, timeoutMs })
+    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body, timeoutMs, provider: cfg.provider })
     const text = extractResponseOutputText(resp)
     if (!text) throw new Error('empty_ai_output')
     return {
       review: JSON.parse(text),
-      meta: { provider: 'openai', api: 'responses', model, durationMs: Math.max(0, Date.now() - startedAt) }
+      meta: { provider: cfg.provider, api: 'responses', model, durationMs: Math.max(0, Date.now() - startedAt) }
     }
   } catch (e) {
     return {
@@ -530,7 +590,7 @@ export async function reviewBlueprintViaOpenAI({ projectTitle, formula, scripts,
         userFacingExplanation: [],
         suggestedEdits: []
       },
-      meta: { provider: 'openai', api: 'responses', model, durationMs: Math.max(0, Date.now() - startedAt), error: errToPlain(e) }
+      meta: { provider: cfg.provider, api: 'responses', model, durationMs: Math.max(0, Date.now() - startedAt), error: errToPlain(e) }
     }
   }
 }
@@ -574,9 +634,10 @@ function formatFormulaForInstructions(formula) {
   }
 }
 
-export async function diagnoseOpenAI({ timeoutMs } = {}) {
+export async function diagnoseOpenAI({ timeoutMs, provider = 'openai' } = {}) {
   const startedAt = Date.now()
-  const { apiKey, baseUrl, model, timeoutMs: cfgTimeout } = getOpenAIConfig()
+  const cfg = getOpenAIConfig(provider)
+  const { apiKey, baseUrl, model, timeoutMs: cfgTimeout } = cfg
   const useTimeout = Number(timeoutMs || cfgTimeout || 20000)
 
   const url = new URL(baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`)
@@ -594,7 +655,7 @@ export async function diagnoseOpenAI({ timeoutMs } = {}) {
   if (!apiKey) {
     return {
       ok: false,
-      provider: 'openai',
+      provider: cfg.provider,
       baseUrl,
       model,
       keyPresent: false,
@@ -606,12 +667,12 @@ export async function diagnoseOpenAI({ timeoutMs } = {}) {
   }
 
   try {
-    const json = await openaiRequestJson({ method: 'GET', path: '/models', timeoutMs: useTimeout })
+    const json = await openaiRequestJson({ method: 'GET', path: '/models', timeoutMs: useTimeout, provider: cfg.provider })
     const ids = Array.isArray(json && json.data) ? json.data.map((m) => m && m.id).filter(Boolean) : []
     const hasModel = ids.includes(model)
     return {
       ok: true,
-      provider: 'openai',
+      provider: cfg.provider,
       baseUrl,
       model,
       keyPresent: true,
@@ -623,7 +684,7 @@ export async function diagnoseOpenAI({ timeoutMs } = {}) {
   } catch (e) {
     return {
       ok: false,
-      provider: 'openai',
+      provider: cfg.provider,
       baseUrl,
       model,
       keyPresent: true,
@@ -635,7 +696,8 @@ export async function diagnoseOpenAI({ timeoutMs } = {}) {
   }
 }
 
-export function getOpenAIConfigPublic() {
-  const { apiKey, baseUrl, timeoutMs, model } = getOpenAIConfig()
-  return { provider: 'openai', baseUrl, timeoutMs, model, keyPresent: Boolean(apiKey) }
+export function getOpenAIConfigPublic(provider = 'openai') {
+  const cfg = getOpenAIConfig(provider)
+  const { apiKey, baseUrl, timeoutMs, model } = cfg
+  return { provider: cfg.provider, baseUrl, timeoutMs, model, keyPresent: Boolean(apiKey) }
 }

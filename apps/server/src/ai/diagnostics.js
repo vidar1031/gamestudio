@@ -13,11 +13,13 @@ function nowIso() {
 
 export function getAiStatusSnapshot() {
   const provider = String(process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
-  const openai = getOpenAIConfigPublic()
+  const openai = getOpenAIConfigPublic('openai')
+  const localoxml = getOpenAIConfigPublic('localoxml')
   const proxy = getProxyInfo()
   return {
     provider,
     openai,
+    localoxml,
     proxy,
     diagnostics: {
       lastCheckedAt: state.lastCheckedAt,
@@ -29,7 +31,7 @@ export function getAiStatusSnapshot() {
 
 export async function runAiDiagnostics({ force } = {}) {
   const provider = String(process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
-  const keyPresent = Boolean(String(process.env.OPENAI_API_KEY || '').trim())
+  const cfg = getOpenAIConfigPublic(provider === 'localoxml' ? 'localoxml' : 'openai')
 
   // Cache within a short window unless forced.
   const last = state.lastResult
@@ -42,14 +44,14 @@ export async function runAiDiagnostics({ force } = {}) {
   state.lastOk = null
   state.lastResult = null
 
-  if (provider !== 'openai') {
+  if (provider !== 'openai' && provider !== 'localoxml') {
     const res = { ok: true, provider, note: 'provider_not_openai' }
     state.lastOk = true
     state.lastResult = res
     return res
   }
 
-  if (!keyPresent) {
+  if (!cfg.keyPresent) {
     const res = {
       ok: false,
       provider,
@@ -60,7 +62,7 @@ export async function runAiDiagnostics({ force } = {}) {
     return res
   }
 
-  const res = await diagnoseOpenAI({})
+  const res = await diagnoseOpenAI({ provider })
   state.lastOk = Boolean(res && res.ok)
   state.lastResult = res
   return res

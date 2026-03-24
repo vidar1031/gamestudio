@@ -1,5 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { setStudioSecrets } from './secrets.js'
 
 function nowIso() {
   try { return new Date().toISOString() } catch (_) { return String(Date.now()) }
@@ -69,6 +70,13 @@ function sanitizeBool(v, fallback) {
   return Boolean(fallback)
 }
 
+function sanitizeSecret(v) {
+  const s = String(v || '').trim()
+  if (!s) return null
+  // Avoid accidental multi-line secrets; keep it bounded.
+  return s.replace(/\r?\n/g, '').slice(0, 512)
+}
+
 export function studioSettingsFilePath(storageRoot) {
   const root = String(storageRoot || '').trim()
   if (!root) throw new Error('missing_storage_root')
@@ -111,6 +119,7 @@ export async function writeStudioSettings(storageRoot, incoming) {
   const inImage = inObj?.image
   const inTts = inObj?.tts
   const inNet = inObj?.network
+  const inSecrets = inObj?.secrets
 
   const next = {
     schemaVersion: '1.0',
@@ -123,11 +132,13 @@ export async function writeStudioSettings(storageRoot, incoming) {
     },
     scripts: {
       provider: has(inScripts, 'provider') ? sanitizeProvider(inScripts.provider) : sanitizeProvider(prev?.scripts?.provider),
-      model: has(inScripts, 'model') ? sanitizeModel(inScripts.model) : sanitizeModel(prev?.scripts?.model)
+      model: has(inScripts, 'model') ? sanitizeModel(inScripts.model) : sanitizeModel(prev?.scripts?.model),
+      apiUrl: has(inScripts, 'apiUrl') ? sanitizeUrl(inScripts.apiUrl) : sanitizeUrl(prev?.scripts?.apiUrl)
     },
     prompt: {
       provider: has(inPrompt, 'provider') ? sanitizeProvider(inPrompt.provider) : sanitizeProvider(prev?.prompt?.provider),
-      model: has(inPrompt, 'model') ? sanitizeModel(inPrompt.model) : sanitizeModel(prev?.prompt?.model)
+      model: has(inPrompt, 'model') ? sanitizeModel(inPrompt.model) : sanitizeModel(prev?.prompt?.model),
+      apiUrl: has(inPrompt, 'apiUrl') ? sanitizeUrl(inPrompt.apiUrl) : sanitizeUrl(prev?.prompt?.apiUrl)
     },
     image: {
       provider: has(inImage, 'provider') ? sanitizeProvider(inImage.provider) : sanitizeProvider(prev?.image?.provider),
@@ -143,6 +154,11 @@ export async function writeStudioSettings(storageRoot, incoming) {
       provider: has(inTts, 'provider') ? sanitizeProvider(inTts.provider) : sanitizeProvider(prev?.tts?.provider),
       model: has(inTts, 'model') ? sanitizeModel(inTts.model) : sanitizeModel(prev?.tts?.model),
       apiUrl: has(inTts, 'apiUrl') ? sanitizeUrl(inTts.apiUrl) : sanitizeUrl(prev?.tts?.apiUrl)
+    },
+    secrets: {
+      openaiApiKey: has(inSecrets, 'openaiApiKey') ? sanitizeSecret(inSecrets.openaiApiKey) : sanitizeSecret(prev?.secrets?.openaiApiKey),
+      localoxmlApiKey: has(inSecrets, 'localoxmlApiKey') ? sanitizeSecret(inSecrets.localoxmlApiKey) : sanitizeSecret(prev?.secrets?.localoxmlApiKey),
+      doubaoArkApiKey: has(inSecrets, 'doubaoArkApiKey') ? sanitizeSecret(inSecrets.doubaoArkApiKey) : sanitizeSecret(prev?.secrets?.doubaoArkApiKey)
     },
     network: {
       proxyUrl: has(inNet, 'proxyUrl') ? sanitizeUrl(inNet.proxyUrl) : sanitizeUrl(prev?.network?.proxyUrl)
@@ -169,6 +185,41 @@ function envFirst(...keys) {
   return ''
 }
 
+function maskKey(v) {
+  const s = String(v || '').trim()
+  if (!s) return null
+  const tail = s.slice(-4)
+  return `****${tail}`
+}
+
+function normalizeSecretStr(v) {
+  const s = String(v || '').trim()
+  return s ? s.replace(/\r?\n/g, '').slice(0, 512) : ''
+}
+
+function pickSecret({ settingsValue, envValue }) {
+  const a = normalizeSecretStr(settingsValue)
+  if (a) return { value: a, source: 'settings' }
+  const b = normalizeSecretStr(envValue)
+  if (b) return { value: b, source: 'env' }
+  return { value: '', source: 'none' }
+}
+
+export function redactStudioSettingsForClient(settings) {
+  const s = settings && typeof settings === 'object' ? settings : null
+  if (!s) return null
+  // Do not leak raw secrets to the browser. UI should use `effective.secrets` (masked).
+  const out = { ...s }
+  if (out.secrets && typeof out.secrets === 'object') {
+    out.secrets = {
+      openaiApiKey: null,
+      localoxmlApiKey: null,
+      doubaoArkApiKey: null
+    }
+  }
+  return out
+}
+
 export async function getEffectiveStudioConfig(storageRoot, options = null) {
   const override = options && typeof options === 'object' ? options.settingsOverride : null
   const settings = (override && typeof override === 'object' ? override : ((await readStudioSettings(storageRoot)) || null))
@@ -178,17 +229,35 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
   const env = {
     aiProvider: String(process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase(),
     aiModel: String(process.env.STUDIO_AI_MODEL || '').trim(),
+    localoxmlModel: String(process.env.LOCALOXML_MODEL || process.env.STUDIO_AI_MODEL || '').trim(),
+    openaiModel: String(process.env.OPENAI_MODEL || '').trim(),
     bgProvider: String(process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase(),
     sdwebuiBaseUrl: String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860').trim(),
     comfyuiBaseUrl: String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188').trim(),
     comfyuiModelsRoot: String(process.env.STUDIO_COMFYUI_MODELS_ROOT || process.env.COMFYUI_MODELS_ROOT || '').trim(),
     doubaoImagesUrl: envFirst('DOUBAO_ARK_IMAGES_URL', 'DOUBAO_ARK_API_URL'),
+    doubaoTextUrl: envFirst('DOUBAO_ARK_CHAT_URL', 'DOUBAO_ARK_TEXT_URL'),
     doubaoImagesModel: String(process.env.DOUBAO_ARK_MODEL || '').trim(),
     doubaoTextModel: String(envFirst('DOUBAO_ARK_TEXT_MODEL', 'DOUBAO_ARK_LLM_MODEL', 'DOUBAO_LLM_MODEL') || '').trim(),
     doubaoImageSize: String(process.env.DOUBAO_IMAGE_SIZE || '').trim(),
     ollamaTextModel: String(envFirst('STUDIO_OLLAMA_MODEL', 'OLLAMA_MODEL') || '').trim(),
     proxyUrl: envFirst('STUDIO_PROXY_URL', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY')
   }
+
+  const secretsOpenaiEnv = String(process.env.OPENAI_API_KEY || '').trim()
+  const secretsLocalOxmlEnv = String(process.env.LOCALOXML_API_KEY || process.env.STUDIO_AI_API_KEY || process.env.OPENAI_API_KEY || '').trim()
+  const secretsDoubaoEnv = String(process.env.DOUBAO_ARK_API_KEY || process.env.ARK_API_KEY || process.env.DOUBAO_API_KEY || '').trim()
+
+  const secretsOpenai = pickSecret({ settingsValue: settings?.secrets?.openaiApiKey, envValue: secretsOpenaiEnv })
+  const secretsLocaloxml = pickSecret({ settingsValue: settings?.secrets?.localoxmlApiKey, envValue: secretsLocalOxmlEnv })
+  const secretsDoubao = pickSecret({ settingsValue: settings?.secrets?.doubaoArkApiKey, envValue: secretsDoubaoEnv })
+
+  // Keep a process-global secret store for provider modules (do not expose raw values via APIs).
+  setStudioSecrets({
+    openaiApiKey: secretsOpenai.value,
+    localoxmlApiKey: secretsLocaloxml.value,
+    doubaoArkApiKey: secretsDoubao.value
+  })
 
   const enabled = {
     scripts: settings ? settings?.enabled?.scripts !== false : false,
@@ -201,23 +270,29 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
   const scriptsModel = settings?.scripts?.model
     ? String(settings.scripts.model)
     : scriptsProvider === 'openai'
-      ? env.aiModel
+      ? (env.openaiModel || 'gpt-4o-mini')
+      : scriptsProvider === 'localoxml'
+        ? env.localoxmlModel
       : scriptsProvider === 'ollama'
         ? (env.ollamaTextModel || DEFAULT_OLLAMA_TEXT_MODEL)
         : scriptsProvider === 'doubao'
           ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
           : null
+  const scriptsApiUrl = settings?.scripts?.apiUrl ? String(settings.scripts.apiUrl) : env.doubaoTextUrl
 
   const promptProvider = (settings?.prompt?.provider ? String(settings.prompt.provider) : 'none') || 'none'
   const promptModel = settings?.prompt?.model
     ? String(settings.prompt.model)
     : promptProvider === 'openai'
-      ? env.aiModel
+      ? (env.openaiModel || 'gpt-4o-mini')
+      : promptProvider === 'localoxml'
+        ? env.localoxmlModel
       : promptProvider === 'ollama'
         ? (env.ollamaTextModel || DEFAULT_OLLAMA_TEXT_MODEL)
         : promptProvider === 'doubao'
           ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
           : null
+  const promptApiUrl = settings?.prompt?.apiUrl ? String(settings.prompt.apiUrl) : env.doubaoTextUrl
 
   const imageProvider = (settings?.image?.provider ? String(settings.image.provider) : 'none') || 'none'
   const imageModel = settings?.image?.model ? String(settings.image.model) : env.doubaoImagesModel
@@ -232,8 +307,8 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
 
   const effective = {
     enabled,
-    scripts: { provider: scriptsProvider, model: scriptsModel || null },
-    prompt: { provider: promptProvider, model: promptModel || null },
+    scripts: { provider: scriptsProvider, model: scriptsModel || null, apiUrl: scriptsApiUrl || null },
+    prompt: { provider: promptProvider, model: promptModel || null, apiUrl: promptApiUrl || null },
     image: {
       provider: imageProvider,
       model: imageModel || null,
@@ -248,6 +323,11 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
       provider: settings?.tts?.provider ? String(settings.tts.provider) : 'none',
       model: settings?.tts?.model ? String(settings.tts.model) : null,
       apiUrl: settings?.tts?.apiUrl ? String(settings.tts.apiUrl) : null
+    },
+    secrets: {
+      openai: { present: Boolean(secretsOpenai.value), masked: maskKey(secretsOpenai.value), source: secretsOpenai.source, value: secretsOpenai.value || null },
+      localoxml: { present: Boolean(secretsLocaloxml.value), masked: maskKey(secretsLocaloxml.value), source: secretsLocaloxml.source, value: secretsLocaloxml.value || null },
+      doubao: { present: Boolean(secretsDoubao.value), masked: maskKey(secretsDoubao.value), source: secretsDoubao.source, value: secretsDoubao.value || null }
     },
     network: { proxyUrl: proxyUrl || null }
   }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "updatedAt": "2026-03-16T04:27:59.597Z",
+  "updatedAt": "2026-03-23T08:57:38.331Z",
   "enabled": {
     "scripts": true,
     "prompt": true,
@@ -8,27 +8,34 @@
     "tts": true
   },
   "scripts": {
-    "provider": "openai",
-    "model": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"
+    "provider": "doubao",
+    "model": "doubao-1-5-pro-32k-250115",
+    "apiUrl": null
   },
   "prompt": {
-    "provider": "openai",
-    "model": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"
+    "provider": "doubao",
+    "model": "doubao-1-5-pro-32k-250115",
+    "apiUrl": null
   },
   "image": {
-    "provider": "comfyui",
-    "model": "dreamshaper_8.safetensors",
+    "provider": "doubao",
+    "model": "doubao-seedream-5-0-260128",
     "loras": [],
     "apiUrl": "https://ark.cn-beijing.volces.com/api/v3/images/generations",
     "size": "1024x1024",
     "sdwebuiBaseUrl": "http://127.0.0.1:7860",
-    "comfyuiBaseUrl": "http://127.0.0.1:8188",
+    "comfyuiBaseUrl": "http://192.168.1.156:8188",
     "comfyuiModelsRoot": "/Users/vidar/works/stable-diffusion-webui/models"
   },
   "tts": {
     "provider": "doubao",
     "model": null,
     "apiUrl": null
+  },
+  "secrets": {
+    "openaiApiKey": null,
+    "localoxmlApiKey": null,
+    "doubaoArkApiKey": "a0e59a40-f036-41a3-8428-148a455966ef"
   },
   "network": {
     "proxyUrl": null

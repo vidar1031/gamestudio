@@ -17,6 +17,12 @@ type Props = {
   onClose: () => void
 }
 
+type SecretField = 'openaiApiKey' | 'localoxmlApiKey' | 'doubaoArkApiKey'
+
+type SecretDraft = Record<SecretField, string>
+
+type SecretDirtyState = Record<SecretField, boolean>
+
 function safeBool(v: any, fallback: boolean) {
   return typeof v === 'boolean' ? v : fallback
 }
@@ -30,8 +36,8 @@ function normalizeDraft(settings: StudioSettings | null): StudioSettings {
       image: safeBool(s.enabled?.image, false),
       tts: safeBool(s.enabled?.tts, false)
     },
-    scripts: { provider: s.scripts?.provider || 'none', model: s.scripts?.model || '' },
-    prompt: { provider: s.prompt?.provider || 'none', model: s.prompt?.model || '' },
+    scripts: { provider: s.scripts?.provider || 'none', model: s.scripts?.model || '', apiUrl: s.scripts?.apiUrl || '' },
+    prompt: { provider: s.prompt?.provider || 'none', model: s.prompt?.model || '', apiUrl: s.prompt?.apiUrl || '' },
     image: {
       provider: s.image?.provider || 'none',
       model: s.image?.model || '',
@@ -43,6 +49,11 @@ function normalizeDraft(settings: StudioSettings | null): StudioSettings {
       comfyuiModelsRoot: (s.image as any)?.comfyuiModelsRoot || ''
     },
     tts: { provider: s.tts?.provider || '', model: s.tts?.model || '', apiUrl: s.tts?.apiUrl || '' },
+    secrets: {
+      openaiApiKey: (s as any)?.secrets?.openaiApiKey || '',
+      localoxmlApiKey: (s as any)?.secrets?.localoxmlApiKey || '',
+      doubaoArkApiKey: (s as any)?.secrets?.doubaoArkApiKey || ''
+    },
     network: { proxyUrl: s.network?.proxyUrl || '' }
   }
 }
@@ -156,12 +167,16 @@ function defaultModelBySectionProvider(
   }
   if (section === 'scripts' || section === 'prompt') {
     if (p === 'openai') return 'gpt-4o-mini'
+    if (p === 'localoxml') {
+      if (!effective) return ''
+      return section === 'scripts' ? String(effective.scripts?.model || '') : String(effective.prompt?.model || '')
+    }
     if (p === 'doubao') return 'doubao-1-5-pro-32k-250115'
     if (p === 'ollama') return 'qwen3:8b'
     return ''
   }
   if (section === 'image') {
-    if (p === 'doubao') return 'doubao-seedream-4-0-250828'
+    if (p === 'doubao') return 'doubao-seedream-5-0-260128'
     return ''
   }
   return ''
@@ -199,6 +214,59 @@ function pickFirstByHints(options: string[], hints: string[]) {
   return list[0] || ''
 }
 
+function emptySecretDraft(): SecretDraft {
+  return {
+    openaiApiKey: '',
+    localoxmlApiKey: '',
+    doubaoArkApiKey: ''
+  }
+}
+
+function emptySecretDirtyState(): SecretDirtyState {
+  return {
+    openaiApiKey: false,
+    localoxmlApiKey: false,
+    doubaoArkApiKey: false
+  }
+}
+
+function hasDirtySecrets(state: SecretDirtyState) {
+  return Boolean(state.openaiApiKey || state.localoxmlApiKey || state.doubaoArkApiKey)
+}
+
+function getEffectiveSecretDraft(effective: StudioEffectiveConfig | null): SecretDraft {
+  return {
+    openaiApiKey: String(effective?.secrets?.openai?.value || ''),
+    localoxmlApiKey: String(effective?.secrets?.localoxml?.value || ''),
+    doubaoArkApiKey: String(effective?.secrets?.doubao?.value || '')
+  }
+}
+
+function getRunLogColor(line: string) {
+  const text = String(line || '').toLowerCase()
+  if (!text) return 'rgba(226,232,240,0.92)'
+  if (
+    text.includes('ok=false') ||
+    text.includes('失败') ||
+    text.includes('missing_key') ||
+    text.includes('error') ||
+    text.includes('failed')
+  ) {
+    return '#fca5a5'
+  }
+  if (text.includes('ok=true') || text.includes('成功') || text.includes('verified') || text.includes('configured')) {
+    return '#86efac'
+  }
+  if (text.includes('开始') || text.includes('检测中') || text.includes('生成中')) {
+    return '#fde68a'
+  }
+  return 'rgba(226,232,240,0.92)'
+}
+
+function normalizeSecretInput(v: string) {
+  return String(v || '').replace(/\s+/g, '')
+}
+
 export default function StudioSettingsModal(props: Props) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -214,6 +282,16 @@ export default function StudioSettingsModal(props: Props) {
   const [testingService, setTestingService] = useState<'' | 'scripts' | 'prompt' | 'image'>('')
   const [modelMemory, setModelMemory] = useState<ModelMemory>(() => loadModelMemory())
   const [runLogs, setRunLogs] = useState<string[]>([])
+  const [secretDraft, setSecretDraft] = useState<SecretDraft>(() => emptySecretDraft())
+  const [secretDirty, setSecretDirty] = useState<SecretDirtyState>(() => emptySecretDirtyState())
+  const [secretAutoSaveBusy, setSecretAutoSaveBusy] = useState(false)
+  const [secretSaveNote, setSecretSaveNote] = useState('未修改')
+  const [secretSaveOk, setSecretSaveOk] = useState<boolean | null>(null)
+  const [showSecret, setShowSecret] = useState<{ openai: boolean; localoxml: boolean; doubao: boolean }>({
+    openai: false,
+    localoxml: false,
+    doubao: false
+  })
   const [sdModelsBusy, setSdModelsBusy] = useState(false)
   const [sdModelsErr, setSdModelsErr] = useState('')
   const [sdModelsNote, setSdModelsNote] = useState('')
@@ -250,6 +328,49 @@ export default function StudioSettingsModal(props: Props) {
   function appendLog(msg: string) {
     const line = `[${nowLabel()}] ${String(msg || '').trim()}`
     setRunLogs((prev) => [line, ...prev].slice(0, 200))
+  }
+
+  function buildSettingsWithSecrets(baseSettings?: StudioSettings | null): StudioSettings {
+    const src = baseSettings && typeof baseSettings === 'object' ? baseSettings : draft
+    return {
+      ...src,
+      secrets: {
+        openaiApiKey: secretDraft.openaiApiKey || null,
+        localoxmlApiKey: secretDraft.localoxmlApiKey || null,
+        doubaoArkApiKey: secretDraft.doubaoArkApiKey || null
+      }
+    }
+  }
+
+  async function persistDirtySecrets(reason: string) {
+    if (secretAutoSaveBusy || !hasDirtySecrets(secretDirty)) return
+    const secretPayload: NonNullable<StudioSettings['secrets']> = {}
+    if (secretDirty.openaiApiKey) secretPayload.openaiApiKey = secretDraft.openaiApiKey
+    if (secretDirty.localoxmlApiKey) secretPayload.localoxmlApiKey = secretDraft.localoxmlApiKey
+    if (secretDirty.doubaoArkApiKey) secretPayload.doubaoArkApiKey = secretDraft.doubaoArkApiKey
+    if (!Object.keys(secretPayload).length) return
+
+    setSecretAutoSaveBusy(true)
+    setSecretSaveOk(null)
+    setSecretSaveNote('接口 Key 保存中...')
+    try {
+      await saveStudioSettings({ secrets: secretPayload } as StudioSettings)
+      const s = await getStudioSettings()
+      setEffective(s.effective)
+      setSecretDraft(getEffectiveSecretDraft(s.effective))
+      setSecretDirty(emptySecretDirtyState())
+      setSecretSaveOk(true)
+      setSecretSaveNote('接口 Key 已保存到 server 配置')
+      appendLog(reason)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSecretSaveOk(false)
+      setSecretSaveNote(`接口 Key 保存失败：${msg}`)
+      appendLog(`接口 Key 自动保存失败：${msg}`)
+      setErr(msg)
+    } finally {
+      setSecretAutoSaveBusy(false)
+    }
   }
 
   function calcImgPreflightKey(s: StudioSettings) {
@@ -386,7 +507,7 @@ export default function StudioSettingsModal(props: Props) {
 
       appendLog('开始测试出图（使用当前草稿设置）...')
       const res = await testStudioImage({
-        settings: draft,
+        settings: buildSettingsWithSecrets(),
         style: 'picture_book',
         width: 512,
         height: 512,
@@ -417,7 +538,7 @@ export default function StudioSettingsModal(props: Props) {
       setImgPreflightOk(false)
       setImgPreflightKey('')
       appendLog('开始运行连续分镜体检（不出图）...')
-      const pf = await preflightStudioImage({ settings: draft, timeoutMs: 12000, mode: 'storyboard' })
+      const pf = await preflightStudioImage({ settings: buildSettingsWithSecrets(), timeoutMs: 12000, mode: 'storyboard' })
       const checks = pf.checks || {}
       const baseUrl = String(checks.baseUrl || '')
       const missingNodes = Array.isArray(checks.missingNodes) ? checks.missingNodes : []
@@ -539,6 +660,10 @@ export default function StudioSettingsModal(props: Props) {
       setDraft(nextDraft)
       rememberCurrentDraftModels(nextDraft)
       setEffective(s.effective)
+      setSecretDraft(getEffectiveSecretDraft(s.effective))
+      setSecretDirty(emptySecretDirtyState())
+      setSecretSaveOk(null)
+      setSecretSaveNote('已从 server 读取当前保存的接口 Key 状态')
       setSavedAt('')
       const imgProvider = String(nextDraft.image?.provider || '').toLowerCase()
       if (imgProvider === 'sdwebui') {
@@ -562,6 +687,14 @@ export default function StudioSettingsModal(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.open])
 
+  useEffect(() => {
+    if (!props.open || !hasDirtySecrets(secretDirty)) return
+    const timer = window.setTimeout(() => {
+      void persistDirtySecrets('接口 Key 已自动保存到 server 配置')
+    }, 450)
+    return () => window.clearTimeout(timer)
+  }, [props.open, secretDirty, secretDraft])
+
   const effectiveSummary = useMemo(() => {
     if (!effective) return ''
     const lines: string[] = []
@@ -569,7 +702,9 @@ export default function StudioSettingsModal(props: Props) {
     const promptProvider = effective.enabled.prompt ? effective.prompt.provider : 'none'
     const imageProvider = effective.enabled.image ? effective.image.provider : 'none'
     lines.push(`故事分镜：${scriptsProvider}${effective.enabled.scripts && effective.scripts.model ? ` / ${effective.scripts.model}` : ''}`)
+    if (effective.scripts.provider === 'doubao' && effective.scripts.apiUrl) lines.push(`  scriptsUrl：${effective.scripts.apiUrl}`)
     lines.push(`图像提示词：${promptProvider}${effective.enabled.prompt && effective.prompt.model ? ` / ${effective.prompt.model}` : ''}`)
+    if (effective.prompt.provider === 'doubao' && effective.prompt.apiUrl) lines.push(`  promptUrl：${effective.prompt.apiUrl}`)
     lines.push(`图像生成：${imageProvider}${effective.enabled.image && effective.image.model ? ` / ${effective.image.model}` : ''}`)
     if (effective.image.provider === 'doubao') {
       if (effective.image.apiUrl) lines.push(`  imagesUrl：${effective.image.apiUrl}`)
@@ -622,6 +757,11 @@ export default function StudioSettingsModal(props: Props) {
           tts: String(draft.tts?.provider || '').toLowerCase() !== 'none'
         }
       }
+      const secretPayload: NonNullable<StudioSettings['secrets']> = {}
+      if (secretDirty.openaiApiKey) secretPayload.openaiApiKey = secretDraft.openaiApiKey
+      if (secretDirty.localoxmlApiKey) secretPayload.localoxmlApiKey = secretDraft.localoxmlApiKey
+      if (secretDirty.doubaoArkApiKey) secretPayload.doubaoArkApiKey = secretDraft.doubaoArkApiKey
+      if (Object.keys(secretPayload).length) settingsOut.secrets = secretPayload
       const next = await saveStudioSettings(settingsOut)
       const nextDraft = normalizeDraft(next)
       nextDraft.image = withImageDefaults(nextDraft.image)
@@ -629,6 +769,8 @@ export default function StudioSettingsModal(props: Props) {
       rememberCurrentDraftModels(nextDraft)
       const s = await getStudioSettings()
       setEffective(s.effective)
+      setSecretDraft(getEffectiveSecretDraft(s.effective))
+      setSecretDirty(emptySecretDirtyState())
       setSavedAt(new Date().toLocaleString())
       try {
         window.dispatchEvent(
@@ -671,7 +813,7 @@ export default function StudioSettingsModal(props: Props) {
       const opts: any = {
         service,
         timeoutMs: 12000,
-        settings: draft
+        settings: buildSettingsWithSecrets()
       }
       if (service === 'image') opts.deepImages = true
       else opts.deepText = false
@@ -867,9 +1009,186 @@ done`}</pre>
             </div>
 
             <div className="ai-modal-row">
+              <div>接口 Key</div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                <div className="hint">
+                  Doubao：{effective?.secrets?.doubao?.present ? `${String(effective.secrets.doubao.masked || '(已设置)')}（来源：${String(effective.secrets.doubao.source || '-') }）` : '未设置'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    type={showSecret.doubao ? 'text' : 'password'}
+                    value={secretDraft.doubaoArkApiKey}
+                    placeholder="DOUBAO_ARK_API_KEY"
+                    onChange={(e) => {
+                      const nextValue = normalizeSecretInput(e.target.value)
+                      setSecretDraft((d) => ({ ...d, doubaoArkApiKey: nextValue }))
+                      setSecretDirty((d) => ({ ...d, doubaoArkApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('Doubao Key 已修改，等待保存')
+                    }}
+                    onPaste={(e) => {
+                      e.preventDefault()
+                      const nextValue = normalizeSecretInput(e.clipboardData.getData('text'))
+                      setSecretDraft((d) => ({ ...d, doubaoArkApiKey: nextValue }))
+                      setSecretDirty((d) => ({ ...d, doubaoArkApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('Doubao Key 已修改，等待保存')
+                    }}
+                    autoComplete="off"
+                    spellCheck={false}
+                    style={{ flex: 1, minWidth: 260 }}
+                  />
+                  <button className="btn secondary" type="button" onClick={() => setShowSecret((s) => ({ ...s, doubao: !s.doubao }))}>
+                    {showSecret.doubao ? '隐藏' : '显示'}
+                  </button>
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={() => {
+                      setSecretDraft((d) => ({ ...d, doubaoArkApiKey: '' }))
+                      setSecretDirty((d) => ({ ...d, doubaoArkApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('Doubao Key 已清空，等待保存')
+                    }}
+                  >
+                    清空
+                  </button>
+                </div>
+
+                <div className="hint">
+                  OpenAI：{effective?.secrets?.openai?.present ? `${String(effective.secrets.openai.masked || '(已设置)')}（来源：${String(effective.secrets.openai.source || '-') }）` : '未设置'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    type={showSecret.openai ? 'text' : 'password'}
+                    value={secretDraft.openaiApiKey}
+                    placeholder="OPENAI_API_KEY"
+                    onChange={(e) => {
+                      const nextValue = normalizeSecretInput(e.target.value)
+                      setSecretDraft((d) => ({ ...d, openaiApiKey: nextValue }))
+                      setSecretDirty((d) => ({ ...d, openaiApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('OpenAI Key 已修改，等待保存')
+                    }}
+                    onPaste={(e) => {
+                      e.preventDefault()
+                      const nextValue = normalizeSecretInput(e.clipboardData.getData('text'))
+                      setSecretDraft((d) => ({ ...d, openaiApiKey: nextValue }))
+                      setSecretDirty((d) => ({ ...d, openaiApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('OpenAI Key 已修改，等待保存')
+                    }}
+                    autoComplete="off"
+                    spellCheck={false}
+                    style={{ flex: 1, minWidth: 260 }}
+                  />
+                  <button className="btn secondary" type="button" onClick={() => setShowSecret((s) => ({ ...s, openai: !s.openai }))}>
+                    {showSecret.openai ? '隐藏' : '显示'}
+                  </button>
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={() => {
+                      setSecretDraft((d) => ({ ...d, openaiApiKey: '' }))
+                      setSecretDirty((d) => ({ ...d, openaiApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('OpenAI Key 已清空，等待保存')
+                    }}
+                  >
+                    清空
+                  </button>
+                </div>
+
+                <div className="hint">
+                  localoxml：{effective?.secrets?.localoxml?.present ? `${String(effective.secrets.localoxml.masked || '(已设置)')}（来源：${String(effective.secrets.localoxml.source || '-') }）` : '未设置'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    type={showSecret.localoxml ? 'text' : 'password'}
+                    value={secretDraft.localoxmlApiKey}
+                    placeholder="LOCALOXML_API_KEY"
+                    onChange={(e) => {
+                      const nextValue = normalizeSecretInput(e.target.value)
+                      setSecretDraft((d) => ({ ...d, localoxmlApiKey: nextValue }))
+                      setSecretDirty((d) => ({ ...d, localoxmlApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('localoxml Key 已修改，等待保存')
+                    }}
+                    onPaste={(e) => {
+                      e.preventDefault()
+                      const nextValue = normalizeSecretInput(e.clipboardData.getData('text'))
+                      setSecretDraft((d) => ({ ...d, localoxmlApiKey: nextValue }))
+                      setSecretDirty((d) => ({ ...d, localoxmlApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('localoxml Key 已修改，等待保存')
+                    }}
+                    autoComplete="off"
+                    spellCheck={false}
+                    style={{ flex: 1, minWidth: 260 }}
+                  />
+                  <button className="btn secondary" type="button" onClick={() => setShowSecret((s) => ({ ...s, localoxml: !s.localoxml }))}>
+                    {showSecret.localoxml ? '隐藏' : '显示'}
+                  </button>
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={() => {
+                      setSecretDraft((d) => ({ ...d, localoxmlApiKey: '' }))
+                      setSecretDirty((d) => ({ ...d, localoxmlApiKey: true }))
+                      setSecretSaveOk(null)
+                      setSecretSaveNote('localoxml Key 已清空，等待保存')
+                    }}
+                  >
+                    清空
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={() => { void persistDirtySecrets('接口 Key 已手动保存到 server 配置') }}
+                    disabled={secretAutoSaveBusy || !hasDirtySecrets(secretDirty)}
+                  >
+                    {secretAutoSaveBusy ? '保存中…' : '立即保存 Key'}
+                  </button>
+                  <span
+                    className="hint"
+                    style={{ color: secretSaveOk === false ? '#fca5a5' : secretSaveOk === true ? '#86efac' : 'rgba(226,232,240,0.72)' }}
+                  >
+                    {secretSaveNote}
+                  </span>
+                </div>
+
+                <div className="ai-modal-hint">
+                  Key 会写入 server 侧 storage/_config/studio_settings.json。当前输入框会显示实际生效值；你修改后会自动写回 server，刷新页面不会再把刚贴入的 key 丢掉。
+                </div>
+              </div>
+            </div>
+
+            <div className="ai-modal-row">
               <div>运行日志</div>
               <div style={{ display: 'grid', gap: 8 }}>
-                <textarea value={runLogs.length ? runLogs.join('\n') : '(暂无日志)'} readOnly style={{ minHeight: 110, resize: 'vertical' }} />
+                <div
+                  style={{
+                    minHeight: 110,
+                    maxHeight: 220,
+                    overflow: 'auto',
+                    resize: 'vertical',
+                    border: '1px solid rgba(148,163,184,0.18)',
+                    borderRadius: 12,
+                    background: 'rgba(15,23,42,0.65)',
+                    padding: 12,
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    whiteSpace: 'pre-wrap'
+                  }}
+                >
+                  {runLogs.length ? runLogs.map((line, idx) => (
+                    <div key={`${idx}-${line.slice(0, 24)}`} style={{ color: getRunLogColor(line) }}>{line}</div>
+                  )) : <div style={{ color: 'rgba(148,163,184,0.9)' }}>(暂无日志)</div>}
+                </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <button className="btn secondary" onClick={() => setRunLogs([])} disabled={busy || diagBusy || Boolean(testingService)}>
                     Clear
@@ -899,6 +1218,7 @@ done`}</pre>
                       }}
                     >
                       <option value="none">none</option>
+                      <option value="localoxml">localoxml</option>
                       <option value="openai">openai</option>
                       <option value="doubao">doubao</option>
                       <option value="ollama">ollama</option>
@@ -936,6 +1256,19 @@ done`}</pre>
                       {testingService === 'scripts' ? '检测中…' : '测试连接'}
                     </button>
                   </div>
+                  {String(draft.scripts?.provider || '').toLowerCase() === 'doubao' ? (
+                    <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
+                      <div>接口 URL</div>
+                      <input
+                        value={String(draft.scripts?.apiUrl || '')}
+                        placeholder="https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), apiUrl: v } }))
+                        }}
+                      />
+                    </div>
+                  ) : null}
                 </div> : null}
               </div>
 
@@ -959,6 +1292,7 @@ done`}</pre>
                       }}
                     >
                       <option value="none">none</option>
+                      <option value="localoxml">localoxml</option>
                       <option value="openai">openai</option>
                       <option value="doubao">doubao</option>
                       <option value="ollama">ollama</option>
@@ -996,6 +1330,19 @@ done`}</pre>
                       {testingService === 'prompt' ? '检测中…' : '测试连接'}
                     </button>
                   </div>
+                  {String(draft.prompt?.provider || '').toLowerCase() === 'doubao' ? (
+                    <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
+                      <div>接口 URL</div>
+                      <input
+                        value={String(draft.prompt?.apiUrl || '')}
+                        placeholder="https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), apiUrl: v } }))
+                        }}
+                      />
+                    </div>
+                  ) : null}
                 </div> : null}
               </div>
 

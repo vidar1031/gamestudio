@@ -30,7 +30,13 @@ function base() {
 async function j(url: string, init?: RequestInit) {
   let resp: Response
   try {
-    resp = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } })
+    resp = await fetch(url, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init && init.headers ? init.headers : {})
+      }
+    })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     // Browser fetch throws TypeError("Failed to fetch") on network/CORS failures.
@@ -465,7 +471,7 @@ export async function getDemo(id: string): Promise<{ demo: DemoMeta; project: Pr
 export async function generateBackgroundAi(
   projectId: string,
   payload: AiBackgroundRequest
-): Promise<{ assetPath: string; url: string; provider: string; remoteUrl?: string }> {
+): Promise<{ assetPath: string; url: string; provider: string; remoteUrl?: string; seed?: number; continuityUsed?: boolean }> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/background`, {
     method: 'POST',
     body: JSON.stringify(payload)
@@ -474,7 +480,9 @@ export async function generateBackgroundAi(
     assetPath: String(json.assetPath || ''),
     url: String(json.url || ''),
     provider: String(json.provider || ''),
-    remoteUrl: String(json.remoteUrl || '').trim() || undefined
+    remoteUrl: String(json.remoteUrl || '').trim() || undefined,
+    seed: Number.isFinite(Number(json.seed)) ? Number(json.seed) : undefined,
+    continuityUsed: Boolean(json.continuityUsed)
   }
 }
 
@@ -668,8 +676,8 @@ export type StudioSettings = {
   schemaVersion?: string
   updatedAt?: string
   enabled?: { scripts?: boolean; prompt?: boolean; image?: boolean; tts?: boolean }
-  scripts?: { provider?: string | null; model?: string | null }
-  prompt?: { provider?: string | null; model?: string | null }
+  scripts?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
+  prompt?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
   image?: {
     provider?: string | null
     model?: string | null
@@ -681,13 +689,15 @@ export type StudioSettings = {
     comfyuiModelsRoot?: string | null
   }
   tts?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
+  // NOTE: secrets are accepted on save, but never returned in full by the server.
+  secrets?: { openaiApiKey?: string | null; localoxmlApiKey?: string | null; doubaoArkApiKey?: string | null }
   network?: { proxyUrl?: string | null }
 }
 
 export type StudioEffectiveConfig = {
   enabled: { scripts: boolean; prompt: boolean; image: boolean; tts: boolean }
-  scripts: { provider: string; model: string | null }
-  prompt: { provider: string; model: string | null }
+  scripts: { provider: string; model: string | null; apiUrl?: string | null }
+  prompt: { provider: string; model: string | null; apiUrl?: string | null }
   image: {
     provider: string
     model: string | null
@@ -699,6 +709,11 @@ export type StudioEffectiveConfig = {
     comfyuiModelsRoot?: string | null
   }
   tts: { provider: string; model: string | null; apiUrl: string | null }
+  secrets?: {
+    openai: { present: boolean; masked: string | null; source: string; value?: string | null }
+    localoxml: { present: boolean; masked: string | null; source: string; value?: string | null }
+    doubao: { present: boolean; masked: string | null; source: string; value?: string | null }
+  }
   network: { proxyUrl: string | null }
 }
 
@@ -774,6 +789,10 @@ export async function testStudioImage(payload: {
   style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
   width?: number
   height?: number
+  size?: string
+  responseFormat?: 'url' | 'b64_json'
+  watermark?: boolean
+  sequentialImageGeneration?: 'auto' | 'disabled'
   steps?: number
   cfgScale?: number
   sampler?: string

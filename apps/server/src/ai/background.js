@@ -338,6 +338,8 @@ async function generateBackgroundViaSdWebui(input) {
     sampler_name: String(input.sampler || 'DPM++ 2M'),
     scheduler: String(input.scheduler || 'Automatic')
   }
+  const seed = clampSeed(input && input.seed, null)
+  if (seed != null) payload.seed = seed
   if (model) {
     payload.override_settings = {
       sd_model_checkpoint: model
@@ -378,7 +380,7 @@ async function generateBackgroundViaSdWebui(input) {
   }
 
   const b64 = String(json.images[0]).split(',').pop()
-  return { bytes: Buffer.from(b64, 'base64'), ext: 'png', meta: { provider: 'sdwebui', model: model || null } }
+  return { bytes: Buffer.from(b64, 'base64'), ext: 'png', meta: { provider: 'sdwebui', model: model || null, seed } }
 }
 
 function mapComfyScheduler(v) {
@@ -433,6 +435,122 @@ function parseComfyLoras(raw) {
   return out
 }
 
+function clampSeed(raw, fallback = null) {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(0, Math.min(4_294_967_295, Math.floor(n)))
+}
+
+function sanitizeComfyUploadName(raw, fallback = 'reference.png') {
+  const base = String(raw || '').trim() || fallback
+  const ext = /\.[a-z0-9]+$/i.test(base) ? '' : '.png'
+  return `${base.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80) || 'reference'}${ext}`
+}
+
+async function fetchComfyJson({ baseUrl, pathname, timeoutMs = 5000 }) {
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const resp = await fetch(`${baseUrl}${pathname}`, { method: 'GET', signal: controller.signal })
+    if (!resp.ok) return null
+    return await resp.json().catch(() => null)
+  } catch (_) {
+    return null
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+async function fetchComfyModelList(baseUrl, pathname, timeoutMs = 5000) {
+  const json = await fetchComfyJson({ baseUrl, pathname, timeoutMs })
+  if (Array.isArray(json)) return json.map((x) => String(x || '').trim()).filter(Boolean)
+  if (json && typeof json === 'object' && Array.isArray(json.models)) return json.models.map((x) => String(x || '').trim()).filter(Boolean)
+  return []
+}
+
+async function fetchComfyNodeSpec(baseUrl, classType, timeoutMs = 5000) {
+  const json = await fetchComfyJson({ baseUrl, pathname: `/object_info/${encodeURIComponent(String(classType))}`, timeoutMs })
+  if (!json || typeof json !== 'object') return null
+  return json && json[classType] && typeof json[classType] === 'object' ? { ...json[classType], __classType: classType } : null
+}
+
+function comfyInputNames(spec) {
+  if (!spec || typeof spec !== 'object') return new Set()
+  const input = spec.input && typeof spec.input === 'object' ? spec.input : {}
+  return new Set([
+    ...Object.keys(input.required && typeof input.required === 'object' ? input.required : {}),
+    ...Object.keys(input.optional && typeof input.optional === 'object' ? input.optional : {})
+  ])
+}
+
+function buildInputsForComfyNode(spec, candidates) {
+  const allowed = comfyInputNames(spec)
+  const out = {}
+  for (const [key, value] of Object.entries(candidates || {})) {
+    if (!allowed.size || allowed.has(key)) out[key] = value
+  }
+  const required = spec && spec.input && spec.input.required && typeof spec.input.required === 'object'
+    ? Object.keys(spec.input.required)
+    : []
+  for (const key of required) {
+    if (!Object.prototype.hasOwnProperty.call(out, key)) {
+      const e = new Error(`comfyui_missing_node_input:${String(spec?.name || spec?.display_name || 'unknown')}.${key}`)
+      e.status = 502
+      throw e
+    }
+  }
+  return out
+}
+
+function pickPreferredComfyModel(models, preferredNames = []) {
+  const list = Array.isArray(models) ? models.map((x) => String(x || '').trim()).filter(Boolean) : []
+  const prefs = preferredNames.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+  for (const pref of prefs) {
+    const exact = list.find((x) => x.toLowerCase() === pref)
+    if (exact) return exact
+    const partial = list.find((x) => x.toLowerCase().includes(pref))
+    if (partial) return partial
+  }
+  return list[0] || ''
+}
+
+async function uploadComfyImage({ baseUrl, bytes, filename, overwrite = false, type = 'input', timeoutMs = 15000 }) {
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const form = new FormData()
+    form.set('image', new Blob([bytes]), sanitizeComfyUploadName(filename))
+    form.set('type', String(type || 'input'))
+    form.set('overwrite', overwrite ? 'true' : 'false')
+    const resp = await fetch(`${baseUrl}/upload/image`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal
+    })
+    const json = await resp.json().catch(() => null)
+    if (!resp.ok || !json) {
+      const e = new Error(`comfyui_upload_failed:${resp.status}`)
+      e.status = 502
+      throw e
+    }
+    const name = String(json.name || json.filename || filename || '').trim()
+    const subfolder = String(json.subfolder || '').trim()
+    if (!name) {
+      const e = new Error('comfyui_upload_failed:missing_filename')
+      e.status = 502
+      throw e
+    }
+    return {
+      name,
+      subfolder,
+      type: String(json.type || type || 'input').trim() || 'input',
+      imageValue: subfolder ? `${subfolder}/${name}` : name
+    }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 async function waitComfyImage({ baseUrl, promptId, timeoutMs }) {
   const started = Date.now()
   while (timeoutMs <= 0 || Date.now() - started < timeoutMs) {
@@ -476,6 +594,8 @@ async function generateBackgroundViaComfyui(input) {
   const timeoutMs = parseComfyTimeoutMs(input && input.timeoutMs != null ? input.timeoutMs : process.env.STUDIO_BG_TIMEOUT_MS)
   const style = String(input && input.style ? input.style : '').trim()
   const loras = parseComfyLoras(input && input.loras ? input.loras : null)
+  const continuity = input && input.continuity && typeof input.continuity === 'object' ? input.continuity : {}
+  const referenceImages = Array.isArray(input && input.referenceImages) ? input.referenceImages : []
   const cooked = buildSdwebuiPromptAndNegative({
     prompt: String(input.prompt || '').trim(),
     negativePrompt: String(input.negativePrompt || '').trim(),
@@ -491,7 +611,7 @@ async function generateBackgroundViaComfyui(input) {
   })()
   const samplerName = mapComfySampler(input.sampler || 'DPM++ 2M')
   const scheduler = mapComfyScheduler(input.scheduler || 'Automatic')
-  const seed = Math.floor(Math.random() * 9_999_999_999)
+  const seed = clampSeed(input && input.seed, null) ?? Math.floor(Math.random() * 9_999_999_999)
 
   if (!model) {
     let t = null
@@ -539,6 +659,89 @@ async function generateBackgroundViaComfyui(input) {
     }
     comfyModelRef = [id, 0]
     comfyClipRef = [id, 1]
+  }
+
+  if (continuity && continuity.ipadapterEnabled && referenceImages.length) {
+    const loaderSpec = await fetchComfyNodeSpec(baseUrl, 'IPAdapterModelLoader', 5000)
+    const clipVisionSpec = await fetchComfyNodeSpec(baseUrl, 'CLIPVisionLoader', 5000)
+    const applySpec =
+      (await fetchComfyNodeSpec(baseUrl, 'IPAdapterAdvanced', 5000)) ||
+      (await fetchComfyNodeSpec(baseUrl, 'IPAdapterApplyAdvanced', 5000)) ||
+      (await fetchComfyNodeSpec(baseUrl, 'IPAdapterApply', 5000))
+    const loadImageSpec = await fetchComfyNodeSpec(baseUrl, 'LoadImage', 5000)
+    if (!loaderSpec || !clipVisionSpec || !applySpec || !loadImageSpec) {
+      const e = new Error('comfyui_ipadapter_not_ready: missing CLIPVisionLoader/LoadImage/IPAdapter nodes')
+      e.status = 502
+      throw e
+    }
+    const ipAdapterModels = await fetchComfyModelList(baseUrl, '/models/ipadapter', 5000)
+    const clipVisionModels = await fetchComfyModelList(baseUrl, '/models/clip_vision', 5000)
+    const ipAdapterModel =
+      pickPreferredComfyModel(ipAdapterModels, [
+        process.env.COMFYUI_IPADAPTER_MODEL || '',
+        'plus-face',
+        'faceid',
+        'ip-adapter-plus',
+        'ipadapter'
+      ]) || String(process.env.COMFYUI_IPADAPTER_MODEL || '').trim()
+    const clipVisionModel =
+      pickPreferredComfyModel(clipVisionModels, [
+        process.env.COMFYUI_CLIP_VISION_MODEL || '',
+        'vit-h',
+        'clip-vit'
+      ]) || String(process.env.COMFYUI_CLIP_VISION_MODEL || '').trim()
+    if (!ipAdapterModel || !clipVisionModel) {
+      const e = new Error('comfyui_ipadapter_not_ready: missing ipadapter/clip_vision models')
+      e.status = 502
+      throw e
+    }
+
+    const loaderId = String(nextId++)
+    workflow[loaderId] = {
+      class_type: 'IPAdapterModelLoader',
+      inputs: buildInputsForComfyNode(loaderSpec, { ipadapter_file: ipAdapterModel })
+    }
+    const clipVisionId = String(nextId++)
+    workflow[clipVisionId] = {
+      class_type: 'CLIPVisionLoader',
+      inputs: buildInputsForComfyNode(clipVisionSpec, { clip_name: clipVisionModel })
+    }
+
+    for (const ref of referenceImages) {
+      if (!ref || !ref.bytes) continue
+      const uploaded = await uploadComfyImage({
+        baseUrl,
+        bytes: ref.bytes,
+        filename: ref.filename || `${ref.characterId || 'reference'}.png`,
+        timeoutMs: timeoutMs <= 0 ? 15000 : Math.min(timeoutMs, 15000)
+      })
+      const imageNodeId = String(nextId++)
+      workflow[imageNodeId] = {
+        class_type: 'LoadImage',
+        inputs: buildInputsForComfyNode(loadImageSpec, {
+          image: uploaded.imageValue,
+          upload: 'image'
+        })
+      }
+      const applyNodeId = String(nextId++)
+      const weight = clampFloat(ref.weight, 0.1, 1.5, 0.85)
+      workflow[applyNodeId] = {
+        class_type: String(applySpec.__classType || 'IPAdapterAdvanced'),
+        inputs: buildInputsForComfyNode(applySpec, {
+          model: comfyModelRef,
+          ipadapter: [loaderId, 0],
+          clip_vision: [clipVisionId, 0],
+          image: [imageNodeId, 0],
+          weight,
+          weight_type: 'linear',
+          combine_embeds: 'concat',
+          start_at: 0,
+          end_at: 1,
+          embeds_scaling: 'V only'
+        })
+      }
+      comfyModelRef = [applyNodeId, 0]
+    }
   }
 
   workflow['5'] = { class_type: 'CLIPTextEncode', inputs: { text: String(cooked.prompt || '').trim(), clip: comfyClipRef } }
@@ -598,7 +801,14 @@ async function generateBackgroundViaComfyui(input) {
   return {
     bytes: dl.bytes,
     ext: extFromContentType(dl.contentType),
-    meta: { provider: 'comfyui', model: model || null, loras: loras.length ? loras.map((x) => x.name) : null, url: viewUrl }
+    meta: {
+      provider: 'comfyui',
+      model: model || null,
+      loras: loras.length ? loras.map((x) => x.name) : null,
+      url: viewUrl,
+      seed,
+      continuityUsed: Boolean(continuity && continuity.ipadapterEnabled && referenceImages.length)
+    }
   }
 }
 
@@ -636,11 +846,21 @@ async function generateBackgroundViaDoubao(input) {
     model: input.model,
     apiUrl: input.apiUrl,
     responseFormat: input.responseFormat || 'url',
-    sequentialImageGeneration: input.sequentialImageGeneration || 'disabled'
+    sequentialImageGeneration: input.sequentialImageGeneration || 'disabled',
+    referenceImageUrls: Array.isArray(input.referenceImageUrls) ? input.referenceImageUrls : []
   })
 
+  const continuityUsed = Boolean(
+    String(input.sequentialImageGeneration || '').trim() === 'auto' ||
+    /WORLD_ANCHOR:|CHARACTER_LOCKS:|ROLE_DEFINITION:|PROP_LOCKS:/i.test(String(prompt || ''))
+  )
+
   if (res.bytes) {
-    return { bytes: res.bytes, ext: res.ext || 'jpg', meta: { provider: 'doubao', api: 'ark', mode: res.mode || 'binary' } }
+    return {
+      bytes: res.bytes,
+      ext: res.ext || 'jpg',
+      meta: { provider: 'doubao', api: 'ark', mode: res.mode || 'binary', continuityUsed }
+    }
   }
 
   if (!res.url) {
@@ -650,7 +870,11 @@ async function generateBackgroundViaDoubao(input) {
   }
 
   const dl = await curlDownload({ url: res.url, timeoutMs, proxyUrl })
-  return { bytes: dl.bytes, ext: extFromContentType(dl.contentType), meta: { provider: 'doubao', api: 'ark', url: res.url } }
+  return {
+    bytes: dl.bytes,
+    ext: extFromContentType(dl.contentType),
+    meta: { provider: 'doubao', api: 'ark', url: res.url, continuityUsed }
+  }
 }
 
 // 根据宽高猜测最接近的纵横比预设（用于当未显式提供 aspectRatio 时）

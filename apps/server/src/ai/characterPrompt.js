@@ -42,7 +42,8 @@ export async function generateCharacterFingerprintViaOpenAI({
   contextText,
   globalPrompt,
   style,
-  model
+  model,
+  provider
 }) {
   const st = normalizeStyle(style) || 'picture_book'
 
@@ -79,7 +80,7 @@ export async function generateCharacterFingerprintViaOpenAI({
     }
   }
 
-  const { json, meta } = await openaiResponsesJsonForTools({ body })
+  const { json, meta } = await openaiResponsesJsonForTools({ body, provider })
   let outText = ''
   try {
     outText = typeof json.output_text === 'string' ? json.output_text : ''
@@ -159,7 +160,7 @@ export async function generateCharacterFingerprintViaDoubao({
 }
 
 export async function generateCharacterFingerprint(input) {
-  const provider = String((input && input.provider) || '').trim().toLowerCase() || 'openai'
+  const provider = String((input && input.provider) || process.env.STUDIO_AI_PROVIDER || '').trim().toLowerCase() || 'localoxml'
   if (provider === 'doubao') return generateCharacterFingerprintViaDoubao(input)
   return generateCharacterFingerprintViaOpenAI(input)
 }
