@@ -14,6 +14,7 @@ P0 目标：
 - 设计与协议：`game_studio/docs/DESIGN_P0.md`
 - 使用说明（工作流）：`game_studio/docs/使用说明_三层工作流.md`
 - P0 复盘（现状评估）：`game_studio/docs/P0_REVIEW_2026Q1.md`
+- 产品工具分析（现状诊断与结论）：`game_studio/docs/产品工具分析_2026-03-24.md`
 - P1 设计基线：`game_studio/docs/DESIGN_P1.md`
 - P1 注释与说明规范：`game_studio/docs/P1_COMMENTING_GUIDE.md`
 - P2 设计方向（发布优先）：`game_studio/docs/DESIGN_P2.md`
