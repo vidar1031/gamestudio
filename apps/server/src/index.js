@@ -7,14 +7,21 @@ import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import pluginStoryPixi from './plugins/storyPixi.js'
-import { genId, generateScriptDraft, generateScriptsFromPrompt, guessTitleFromPrompt, repairScriptDraft } from './ai/scripts.js'
+import { genId, generateScriptDraft, guessTitleFromPrompt, repairScriptDraft } from './ai/scripts.js'
 import { getAiStatusSnapshot, runAiDiagnostics } from './ai/diagnostics.js'
 import { analyzeScriptsForBlueprint } from './ai/analyze.js'
 import { readGlobalRules, writeGlobalRules } from './ai/globalRules.js'
-import { generateBackgroundImage } from './ai/background.js'
+import { generateBackgroundImage, generateComfyuiLineartFromReference, generateComfyuiWhiteBackgroundFromReference, mapComfySampler, mapComfyScheduler, normalizeComfyCheckpointName, parseComfyTimeoutMs, runComfyuiPromptWorkflow } from './ai/background.js'
 import { generateBackgroundPrompt } from './ai/imagePrompt.js'
+import { reviewStoryPromptLocally, reviewStoryPromptWithAi } from './ai/promptReview.js'
+import { normalizeStoryboardPromptReviewInput, reviewStoryboardPromptLocally, reviewStoryboardPromptWithAi } from './ai/storyboardPromptReview.js'
+import { deletePromptTemplate, generateStoryPromptTemplate, listPromptTemplates, savePromptTemplate } from './ai/promptTemplates.js'
+import { enhanceStoryAssetPromptWithAi } from './ai/storyAssetPromptEnhance.js'
 import { generateCharacterFingerprint } from './ai/characterPrompt.js'
 import { generateStoryBible } from './ai/storyBible.js'
+import { translatePromptText } from './ai/translate.js'
+import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, buildStorySceneRenderSpec, getStoryAssetRenderProfile, summarizeStoryAssetPlan } from './ai/storyAssets.js'
+import { buildStoryboardLockTestNegativePrompt, buildStoryboardLockTestPrompt, buildStoryboardLockTestWorkflow, pickStoryboardLockTestAsset, reviewStoryboardLockImageWithAi } from './ai/storyLock.js'
 import { getDoubaoImagesConfigSnapshot } from './ai/doubao.js'
 import { diagnoseOllamaText } from './ai/ollama.js'
 import { classifyAiError, createTraceId, logStage } from './ai/runtime.js'
@@ -403,6 +410,58 @@ function normalizeConfiguredLoraNames(raw) {
   return out
 }
 
+function hasAnimalSignals(text) {
+  const s = String(text || '').trim().toLowerCase()
+  if (!s) return false
+  if (/[猫狗兔狐狼虎狮熊鹿马牛羊猴鸟鼠]/.test(s)) return true
+  return [
+    'kitten', 'cat', 'feline', 'puppy', 'dog', 'canine', 'rabbit', 'bunny',
+    'fox', 'wolf', 'bear', 'tiger', 'lion', 'mouse', 'rat', 'deer',
+    'animal', 'furry', 'fur', 'anthropomorphic'
+  ].some((token) => s.includes(token))
+}
+
+function hasHumanSignals(text) {
+  const s = String(text || '').trim().toLowerCase()
+  if (!s) return false
+  if (/[人物男孩女孩女人男人小孩儿童少女少年]/.test(s)) return true
+  return [
+    'human', 'person', 'girl', 'boy', 'woman', 'man', 'lady', 'child',
+    'kid', 'people', 'portrait'
+  ].some((token) => s.includes(token))
+}
+
+function chooseStoryboardAssetLoras({ asset, requestedLoras }) {
+  const explicit = Array.isArray(requestedLoras) ? requestedLoras.map((x) => String(x || '').trim()).filter(Boolean) : []
+  const byKey = new Map()
+  const push = (entry) => {
+    const raw = String(entry || '').trim()
+    if (!raw) return
+    const key = normalizeComfyLoraKey(raw.split(':')[0] || '')
+    if (!key || byKey.has(key)) return
+    byKey.set(key, raw)
+  }
+
+  for (const item of explicit) push(item)
+
+  const styleDefault = 'Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7'
+  const furryDefault = 'Anime_Furry_Style_SDXL.safetensors:0.7'
+  const category = String(asset && asset.category || '').trim().toLowerCase()
+  if (!explicit.length && category !== 'prop') push(styleDefault)
+  const signalText = [
+    String(asset && asset.name || '').trim(),
+    String(asset && asset.anchorPrompt || '').trim(),
+    Array.isArray(asset && asset.aliases) ? asset.aliases.map((x) => String(x || '').trim()).join(' ') : ''
+  ].join(' ')
+  const isAnimalCharacter = category === 'character' && hasAnimalSignals(signalText)
+  const isHumanCharacter = category === 'character' && !isAnimalCharacter && hasHumanSignals(signalText)
+
+  if (isAnimalCharacter) push(furryDefault)
+  if (isHumanCharacter && !explicit.length) push(styleDefault)
+
+  return Array.from(byKey.values())
+}
+
 function normalizeComfyLoraKey(raw) {
   const s = String(raw || '').trim()
   if (!s) return ''
@@ -573,14 +632,12 @@ app.post('/api/studio/image/preflight', async (c) => {
 
   const baseUrl = normalizeComfyuiBaseUrl(effective.image.comfyuiBaseUrl)
   const modelsRoot = normalizeLocalPath(effective.image.comfyuiModelsRoot)
-  const lorasConfigured = normalizeConfiguredLoraNames(effective.image.loras)
   const requiredNodes = [
     'CheckpointLoaderSimple',
     'CLIPTextEncode',
     'KSampler',
     'VAEDecode',
-    'SaveImage',
-    ...(lorasConfigured.length ? ['LoraLoader'] : [])
+    'SaveImage'
   ]
   const check = {
     provider,
@@ -589,10 +646,6 @@ app.post('/api/studio/image/preflight', async (c) => {
     ok: false,
     requiredNodes,
     missingNodes: [],
-    modelConfigured: String(effective.image.model || '').trim(),
-    modelExists: false,
-    lorasConfigured,
-    missingLoras: [],
     extras: {
       // For storyboard continuity we expect ControlNet + IP-Adapter to be available.
       // Note: `extCount` is for SD-WebUI ControlNet extension models, which are not
@@ -616,9 +669,7 @@ app.post('/api/studio/image/preflight', async (c) => {
       controlnetDir: null,
       controlnetExtDir: null,
       ipadapterDir: null,
-      modelFileFound: null,
-      missingLorasFound: [],
-      missingLorasNotFound: []
+      modelFileFound: null
     },
     reason: ''
   }
@@ -634,66 +685,6 @@ app.post('/api/studio/image/preflight', async (c) => {
     check.missingNodes = Array.isArray(cap.missingNodes) ? cap.missingNodes : []
     if (check.missingNodes.length) {
       check.reason = 'missing_required_nodes'
-      return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
-    }
-
-    const models = Array.isArray(cap.models) ? cap.models.map((x) => String(x || '').trim()).filter(Boolean) : []
-    if (!check.modelConfigured) {
-      check.reason = 'missing_model_config'
-      return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
-    }
-    check.modelExists = models.some((x) => String(x).toLowerCase() === String(check.modelConfigured).toLowerCase())
-    if (!check.modelExists) {
-      if (modelsRoot) {
-        const base = await resolveSdWebuiModelsBase(modelsRoot)
-        const ckptDir = await pickCheckpointDir(base)
-        check.disk.checkpointsDir = ckptDir || null
-        if (ckptDir) {
-          const candidateA = path.join(ckptDir, check.modelConfigured)
-          const candidateB = path.join(ckptDir, `${check.modelConfigured}.safetensors`)
-          check.disk.modelFileFound = (await existsFile(candidateA)) || (await existsFile(candidateB))
-        }
-      }
-      check.reason = 'configured_model_not_found'
-      return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
-    }
-    // If Models Root is configured, treat missing file as not-found even if ComfyUI list is stale.
-    if (modelsRoot) {
-      const base = await resolveSdWebuiModelsBase(modelsRoot)
-      const ckptDir = check.disk.checkpointsDir || (await pickCheckpointDir(base))
-      if (ckptDir) {
-        check.disk.checkpointsDir = ckptDir || null
-        const candidateA = path.join(ckptDir, check.modelConfigured)
-        const candidateB = path.join(ckptDir, `${check.modelConfigured}.safetensors`)
-        const found = (await existsFile(candidateA)) || (await existsFile(candidateB))
-        check.disk.modelFileFound = Boolean(found)
-        if (!found) {
-          check.modelExists = false
-          check.reason = 'configured_model_missing_on_disk'
-          return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
-        }
-      }
-    }
-
-    const loras = Array.isArray(cap.loras) ? cap.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
-    const loraKeySet = new Set(loras.map((x) => normalizeComfyLoraKey(x)).filter(Boolean))
-    check.missingLoras = check.lorasConfigured.filter((name) => !loraKeySet.has(normalizeComfyLoraKey(name)))
-    if (check.missingLoras.length) {
-      if (modelsRoot) {
-        const base = await resolveSdWebuiModelsBase(modelsRoot)
-        const loraDir = await pickLoraDir(base)
-        check.disk.lorasDir = loraDir || null
-        if (loraDir) {
-          for (const miss of check.missingLoras) {
-            const a = path.join(loraDir, miss)
-            const b = path.join(loraDir, `${miss}.safetensors`)
-            const ok = (await existsFile(a)) || (await existsFile(b))
-            if (ok) check.disk.missingLorasFound.push(miss)
-            else check.disk.missingLorasNotFound.push(miss)
-          }
-        }
-      }
-      check.reason = 'configured_loras_not_found'
       return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
     }
 
@@ -876,6 +867,8 @@ app.post('/api/studio/image/test', async (c) => {
   const timeoutMs = clampInt(body?.timeoutMs, 5_000, 300_000, 60_000)
   const settingsOverride = body && body.settings && typeof body.settings === 'object' ? body.settings : null
   const { effective } = await getEffectiveStudioConfig(ROOT, { settingsOverride })
+  const requestedModel = String(body?.model || '').trim()
+  const requestedLoras = Array.isArray(body?.loras) ? body.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
 
   if (!effective.enabled.image) {
     return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
@@ -888,7 +881,8 @@ app.post('/api/studio/image/test', async (c) => {
   if (provider === 'comfyui') {
     const pre = await (async () => {
       const baseUrl = normalizeComfyuiBaseUrl(effective.image.comfyuiBaseUrl)
-      const lorasConfigured = normalizeConfiguredLoraNames(effective.image.loras)
+      const modelConfigured = requestedModel || String(effective.image.model || '').trim()
+      const lorasConfigured = normalizeConfiguredLoraNames(requestedLoras.length ? requestedLoras : effective.image.loras)
       const requiredNodes = [
         'CheckpointLoaderSimple',
         'CLIPTextEncode',
@@ -903,7 +897,7 @@ app.post('/api/studio/image/test', async (c) => {
         ok: false,
         requiredNodes,
         missingNodes: [],
-        modelConfigured: String(effective.image.model || '').trim(),
+        modelConfigured,
         modelExists: false,
         lorasConfigured,
         missingLoras: [],
@@ -979,8 +973,8 @@ app.post('/api/studio/image/test', async (c) => {
       sampler: body?.sampler,
       scheduler: body?.scheduler,
       provider,
-      model: effective.image.model,
-      loras: effective.image.loras,
+      model: requestedModel || effective.image.model,
+      loras: requestedLoras.length ? requestedLoras : effective.image.loras,
       sdwebuiBaseUrl: effective.image.sdwebuiBaseUrl,
       comfyuiBaseUrl: effective.image.comfyuiBaseUrl,
       apiUrl: effective.image.apiUrl,
@@ -1023,6 +1017,7 @@ app.post('/api/studio/diagnose', async (c) => {
       server: { ok: true, note: 'health_ok' },
       scripts: { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: '' },
       prompt: { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: '' },
+      translation: { ok: true, provider: effective.translation?.provider, model: effective.translation?.model, note: '' },
       image: { ok: true, provider: effective.image.provider, model: effective.image.model, note: '' },
       tts: effective.enabled.tts
         ? { ok: false, provider: effective.tts.provider, model: effective.tts.model, note: 'not_implemented' }
@@ -1135,15 +1130,69 @@ app.post('/api/studio/diagnose', async (c) => {
     }
   }
 
-  async function diagnoseOllamaTextLocal(model) {
+  async function diagnoseOllamaTextLocal(model, apiUrl) {
     const cfgModel = String(model || '').trim() || null
     const res = await diagnoseOllamaText({
       model: cfgModel || undefined,
+      apiUrl: String(apiUrl || '').trim() || undefined,
       timeoutMs,
       proxyUrl: effective.network.proxyUrl,
       deepText
     })
     return res
+  }
+
+  async function diagnoseTranslationText({ provider, model, apiUrl, verify }) {
+    const cfg = {
+      provider: String(provider || '').trim().toLowerCase() || 'none',
+      model: String(model || '').trim() || null,
+      apiUrl: String(apiUrl || '').trim() || null
+    }
+    if (!cfg.provider || cfg.provider === 'none') {
+      return { ok: false, note: 'provider_not_configured', ...cfg }
+    }
+    if (!verify) {
+      if (isOpenAICompatibleProvider(cfg.provider)) {
+        return await diagnoseOpenAI({
+          timeoutMs,
+          provider: cfg.provider,
+          apiUrl: cfg.apiUrl,
+          model: cfg.model,
+          proxyUrl: effective.network.proxyUrl
+        })
+      }
+      if (cfg.provider === 'doubao') return await diagnoseDoubaoText(cfg.model, cfg.apiUrl)
+      if (cfg.provider === 'ollama') return await diagnoseOllamaTextLocal(cfg.model, cfg.apiUrl)
+      return { ok: true, note: 'configured', ...cfg }
+    }
+    try {
+      const { result, meta } = await translatePromptText({
+        provider: cfg.provider,
+        model: cfg.model || undefined,
+        apiUrl: cfg.apiUrl || undefined,
+        proxyUrl: effective.network.proxyUrl || undefined,
+        timeoutMs,
+        text: '红色苹果，白色背景，极简插画',
+        sourceLang: 'zh',
+        targetLang: 'en',
+        mode: 'prompt'
+      })
+      return {
+        ok: Boolean(result && String(result.translatedText || '').trim()),
+        note: 'verified',
+        result,
+        meta,
+        ...cfg
+      }
+    } catch (e) {
+      const mapped = classifyAiError(e)
+      return {
+        ok: false,
+        note: e && e.message ? String(e.message) : String(e),
+        error: mapped,
+        ...cfg
+      }
+    }
   }
 
   async function diagnoseDoubaoImages({ apiUrl, model }) {
@@ -1172,14 +1221,15 @@ app.post('/api/studio/diagnose', async (c) => {
 
   const checkScripts = service === 'all' || service === 'scripts'
   const checkPrompt = service === 'all' || service === 'prompt'
+  const checkTranslation = service === 'all' || service === 'translation'
   const checkImage = service === 'all' || service === 'image'
 
   if (checkScripts) {
     try {
       if (!effective.enabled.scripts) out.services.scripts = { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: 'disabled' }
-      else if (isOpenAICompatibleProvider(effective.scripts.provider)) out.services.scripts = await diagnoseOpenAI({ timeoutMs, provider: effective.scripts.provider })
+      else if (isOpenAICompatibleProvider(effective.scripts.provider)) out.services.scripts = await diagnoseOpenAI({ timeoutMs, provider: effective.scripts.provider, apiUrl: effective.scripts.apiUrl, model: effective.scripts.model, proxyUrl: effective.network.proxyUrl })
       else if (effective.scripts.provider === 'doubao') out.services.scripts = await diagnoseDoubaoText(effective.scripts.model, effective.scripts.apiUrl)
-      else if (effective.scripts.provider === 'ollama') out.services.scripts = await diagnoseOllamaTextLocal(effective.scripts.model)
+      else if (effective.scripts.provider === 'ollama') out.services.scripts = await diagnoseOllamaTextLocal(effective.scripts.model, effective.scripts.apiUrl)
       else out.services.scripts = { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: 'local' }
     } catch (e) {
       out.services.scripts = { ok: false, provider: effective.scripts.provider, model: effective.scripts.model, note: e && e.message ? String(e.message) : String(e) }
@@ -1189,12 +1239,25 @@ app.post('/api/studio/diagnose', async (c) => {
   if (checkPrompt) {
     try {
       if (!effective.enabled.prompt) out.services.prompt = { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: 'disabled' }
-      else if (isOpenAICompatibleProvider(effective.prompt.provider)) out.services.prompt = await diagnoseOpenAI({ timeoutMs, provider: effective.prompt.provider })
+      else if (isOpenAICompatibleProvider(effective.prompt.provider)) out.services.prompt = await diagnoseOpenAI({ timeoutMs, provider: effective.prompt.provider, apiUrl: effective.prompt.apiUrl, model: effective.prompt.model, proxyUrl: effective.network.proxyUrl })
       else if (effective.prompt.provider === 'doubao') out.services.prompt = await diagnoseDoubaoText(effective.prompt.model, effective.prompt.apiUrl)
-      else if (effective.prompt.provider === 'ollama') out.services.prompt = await diagnoseOllamaTextLocal(effective.prompt.model)
+      else if (effective.prompt.provider === 'ollama') out.services.prompt = await diagnoseOllamaTextLocal(effective.prompt.model, effective.prompt.apiUrl)
       else out.services.prompt = { ok: true, provider: effective.prompt.provider, model: effective.prompt.model, note: 'local' }
     } catch (e) {
       out.services.prompt = { ok: false, provider: effective.prompt.provider, model: effective.prompt.model, note: e && e.message ? String(e.message) : String(e) }
+    }
+  }
+
+  if (checkTranslation) {
+    try {
+      out.services.translation = await diagnoseTranslationText({
+        provider: effective.translation?.provider,
+        model: effective.translation?.model,
+        apiUrl: effective.translation?.apiUrl,
+        verify: service === 'translation' || deepText
+      })
+    } catch (e) {
+      out.services.translation = { ok: false, provider: effective.translation?.provider || 'none', model: effective.translation?.model || null, note: e && e.message ? String(e.message) : String(e) }
     }
   }
 
@@ -1213,6 +1276,7 @@ app.post('/api/studio/diagnose', async (c) => {
   const okTargets = ['server']
   if (checkScripts) okTargets.push('scripts')
   if (checkPrompt) okTargets.push('prompt')
+  if (checkTranslation) okTargets.push('translation')
   if (checkImage) okTargets.push('image')
   out.ok = okTargets.every((k) => out.services[k] && out.services[k].ok !== false)
   return c.json({ success: true, diagnostics: out })
@@ -1228,6 +1292,196 @@ app.put('/api/ai/rules', async (c) => {
   const rulesIn = body?.rules
   const saved = await writeGlobalRules(ROOT, rulesIn)
   return c.json({ success: true, rules: saved })
+})
+
+app.post('/api/ai/prompt/review', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const prompt = String(body?.prompt || '').trim()
+  const title = String(body?.title || '').trim()
+  const formula = {
+    choicePoints: clampInt(body?.choicePoints, 1, 3, 2),
+    optionsPerChoice: Number(body?.optionsPerChoice) === 3 ? 3 : 2,
+    endings: Number(body?.optionsPerChoice) === 3 ? 3 : 2
+  }
+
+  const localReview = reviewStoryPromptLocally({ prompt, title, formula })
+  const studio = await getEffectiveStudioConfig(ROOT).catch(() => null)
+  const provider = String(studio?.effective?.scripts?.provider || '').trim().toLowerCase()
+  const model = studio?.effective?.scripts?.model || undefined
+  const apiUrl = studio?.effective?.scripts?.apiUrl || undefined
+  const proxyUrl = studio?.effective?.network?.proxyUrl || undefined
+
+  let aiReview = {
+    verdict: localReview.ok ? 'ok' : 'warn',
+    summary: localReview.summary,
+    strengths: (localReview.checks || []).filter((x) => x.ok).slice(0, 6).map((x) => String(x.message || '')),
+    risks: (localReview.checks || []).filter((x) => !x.ok).slice(0, 8).map((x) => String(x.message || '')),
+    suggestions: Array.isArray(localReview.suggestions) ? localReview.suggestions.slice(0, 8) : [],
+    optimizedPrompt: String(localReview.optimizedPrompt || prompt || '').trim()
+  }
+  let meta = { provider: 'local', model: null, api: null, durationMs: 0, note: 'local_precheck_only' }
+  let aiError = null
+
+  try {
+    if (provider && provider !== 'none') {
+      const reviewed = await reviewStoryPromptWithAi({ prompt, provider, model, apiUrl, proxyUrl, formula })
+      if (reviewed && reviewed.review) {
+        aiReview = reviewed.review
+        meta = reviewed.meta || meta
+      }
+    }
+  } catch (e) {
+    aiError = {
+      message: e instanceof Error ? e.message : String(e),
+      status: e && e.status ? Number(e.status) : null,
+      code: e && e.code ? String(e.code) : null
+    }
+  }
+
+  return c.json({
+    success: true,
+    review: {
+      local: localReview,
+      ai: aiReview,
+      meta,
+      aiError
+    }
+  })
+})
+
+app.post('/api/projects/:id/ai/storyboard/prompt-review', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const input = normalizeStoryboardPromptReviewInput(body)
+  if (!String(input.projectTitle || '').trim()) {
+    const project = await readProjectJson(id).catch(() => null)
+    input.projectTitle = String(project && project.title ? project.title : '').trim()
+  }
+
+  const localReview = reviewStoryboardPromptLocally(input)
+  const studio = await getEffectiveStudioConfig(ROOT).catch(() => null)
+  const provider = String(studio?.effective?.prompt?.provider || '').trim().toLowerCase()
+  const model = studio?.effective?.prompt?.model || undefined
+  const apiUrl = studio?.effective?.prompt?.apiUrl || undefined
+  const proxyUrl = studio?.effective?.network?.proxyUrl || undefined
+
+  let aiReview = { ...localReview }
+  let meta = { provider: 'local', model: null, api: null, durationMs: 0, note: 'local_precheck_only' }
+  let aiError = null
+
+  try {
+    if (provider && provider !== 'none') {
+      const reviewed = await reviewStoryboardPromptWithAi({ input, provider, model, apiUrl, proxyUrl })
+      if (reviewed && reviewed.review) {
+        aiReview = reviewed.review
+        meta = reviewed.meta || meta
+      }
+    }
+  } catch (e) {
+    aiError = {
+      message: e instanceof Error ? e.message : String(e),
+      status: e && e.status ? Number(e.status) : null,
+      code: e && e.code ? String(e.code) : null
+    }
+  }
+
+  return c.json({
+    success: true,
+    review: {
+      local: localReview,
+      ai: aiReview,
+      meta,
+      aiError
+    }
+  })
+})
+
+app.get('/api/ai/prompt/templates', async (c) => {
+  const items = await listPromptTemplates(ROOT)
+  return c.json({ success: true, items })
+})
+
+app.post('/api/ai/prompt/templates/generate', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const title = String(body?.title || '').trim()
+  if (!title) return c.json({ success: false, error: 'missing_title', message: '故事名称不能为空' }, 400)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.scripts) {
+    return c.json({ success: false, error: 'disabled', message: '“写故事（脚本生成）”已在设置中关闭' }, 503)
+  }
+  const provider = String(studio.effective.scripts.provider || '').trim().toLowerCase()
+  if (!provider || provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“写故事脚本”并选择 Provider/Model' }, 400)
+  }
+
+  const formula = {
+    choicePoints: clampInt(body?.choicePoints, 1, 3, 2),
+    optionsPerChoice: Number(body?.optionsPerChoice) === 3 ? 3 : 2,
+    endings: Number(body?.optionsPerChoice) === 3 ? 3 : 2
+  }
+  const generated = await generateStoryPromptTemplate({
+    title,
+    templateKey: String(body?.templateKey || '').trim(),
+    templateName: String(body?.templateName || '').trim(),
+    templateSummary: String(body?.templateSummary || '').trim(),
+    fields: body?.fields && typeof body.fields === 'object' ? body.fields : {},
+    formula,
+    provider,
+    model: studio.effective.scripts.model || undefined,
+    apiUrl: studio.effective.scripts.apiUrl || undefined,
+    proxyUrl: studio.effective.network.proxyUrl
+  })
+
+  const saved = await savePromptTemplate(ROOT, {
+    title: generated.result?.title || title,
+    templateKey: String(body?.templateKey || '').trim() || null,
+    templateName: String(body?.templateName || '').trim() || null,
+    templateSummary: String(body?.templateSummary || '').trim() || null,
+    prompt: String(generated.result?.prompt || '').trim(),
+    notes: Array.isArray(generated.result?.notes) ? generated.result.notes : [],
+    fields: body?.fields && typeof body.fields === 'object' ? body.fields : {},
+    formula,
+    meta: generated.meta || null
+  })
+
+  return c.json({ success: true, item: saved, generated: generated.result, meta: generated.meta || null })
+})
+
+app.post('/api/ai/prompt/templates', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const prompt = String(body?.prompt || '').trim()
+  const title = String(body?.title || '').trim()
+  if (!prompt) return c.json({ success: false, error: 'missing_prompt', message: '提示词不能为空' }, 400)
+
+  const formula = {
+    choicePoints: clampInt(body?.choicePoints, 1, 3, 2),
+    optionsPerChoice: Number(body?.optionsPerChoice) === 3 ? 3 : 2,
+    endings: Number(body?.optionsPerChoice) === 3 ? 3 : 2
+  }
+  const saved = await savePromptTemplate(ROOT, {
+    title: title || null,
+    templateKey: String(body?.templateKey || '').trim() || null,
+    templateName: String(body?.templateName || '').trim() || null,
+    templateSummary: String(body?.templateSummary || '').trim() || null,
+    prompt,
+    notes: Array.isArray(body?.notes) ? body.notes.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 8) : [],
+    fields: body?.fields && typeof body.fields === 'object' ? body.fields : {},
+    formula,
+    meta: body?.meta && typeof body.meta === 'object' ? body.meta : null
+  })
+  return c.json({ success: true, item: saved })
+})
+
+app.delete('/api/ai/prompt/templates/:id', async (c) => {
+  const id = String(c.req.param('id') || '').trim()
+  if (!id) return c.json({ success: false, error: 'missing_id', message: '模板 ID 不能为空' }, 400)
+  const result = await deletePromptTemplate(ROOT, id)
+  return c.json({ success: true, removed: Boolean(result.removed), items: result.items || [] })
 })
 
 async function ensureDirs() {
@@ -1247,6 +1501,14 @@ function projectBuildDir(projectId, buildId) {
   return path.join(projectBuildsDir(projectId), String(buildId))
 }
 
+function projectStoryAssetsDir(id) {
+  return path.join(projectDir(id), 'story-assets')
+}
+
+function projectStoryAssetsPlanPath(id) {
+  return path.join(projectStoryAssetsDir(id), 'plan.json')
+}
+
 function demoLibDir(demoId) {
   return path.join(DEMO_LIBRARY_DIR, String(demoId))
 }
@@ -1258,6 +1520,684 @@ async function readJson(p) {
 async function writeJson(p, obj) {
   await mkdir(path.dirname(p), { recursive: true })
   await writeFile(p, JSON.stringify(obj, null, 2), 'utf-8')
+}
+
+async function readProjectBundle(id) {
+  const dir = projectDir(id)
+  const rawProject = await readJson(path.join(dir, 'project.json'))
+  const story = await readJson(path.join(dir, 'story.json'))
+  return {
+    dir,
+    rawProject,
+    project: normalizeProjectDoc(rawProject),
+    story
+  }
+}
+
+function parseJsonObjectText(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch (_) {
+    return null
+  }
+}
+
+function readStoryBibleFromProjectDoc(project) {
+  const state = project && project.state && typeof project.state === 'object' ? project.state : {}
+  const aiBg = state && state.aiBackground && typeof state.aiBackground === 'object' ? state.aiBackground : {}
+  if (aiBg.storyBible && typeof aiBg.storyBible === 'object') return aiBg.storyBible
+  return parseJsonObjectText(aiBg.storyBibleJson)
+}
+
+async function readStoryAssetPlanIfExists(id) {
+  const planPath = projectStoryAssetsPlanPath(id)
+  if (!(await existsFile(planPath))) return null
+  try {
+    const plan = await readJson(planPath)
+    return plan && typeof plan === 'object' ? plan : null
+  } catch (_) {
+    return null
+  }
+}
+
+async function saveStoryAssetPlan(id, plan) {
+  await writeJson(projectStoryAssetsPlanPath(id), plan)
+}
+
+function storyAssetStr(v) {
+  return typeof v === 'string' ? v : ''
+}
+
+function hasCjkText(v) {
+  return /[\u3400-\u9fff]/.test(storyAssetStr(v))
+}
+
+function looksLikeEnglishPrompt(v) {
+  const s = storyAssetStr(v).trim()
+  if (!s) return false
+  if (hasCjkText(s)) return false
+  return /[A-Za-z]{3,}/.test(s)
+}
+
+function pickEnglishPrompt(candidate, ...fallbacks) {
+  const preferred = storyAssetStr(candidate).trim()
+  if (looksLikeEnglishPrompt(preferred)) return preferred
+  for (const fallback of fallbacks) {
+    const alt = storyAssetStr(fallback).trim()
+    if (looksLikeEnglishPrompt(alt)) return alt
+  }
+  return preferred || storyAssetStr(fallbacks.find(Boolean)).trim()
+}
+
+function splitStoryAssetPromptParts(input) {
+  return storyAssetStr(input)
+    .split(/[,\n，、|]/g)
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+function uniqStoryAssetPromptParts(parts, max = 120) {
+  const out = []
+  const seen = new Set()
+  for (const part of parts) {
+    const value = storyAssetStr(part).trim()
+    if (!value) continue
+    const key = value.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(value)
+    if (out.length >= max) break
+  }
+  return out
+}
+
+function sanitizeProtectedAssetPrompt({ asset, promptEn, negativePrompt }) {
+  const lockProfile = storyAssetStr(asset && asset.lockProfile).trim().toLowerCase()
+  const lockWorkflow = storyAssetStr(asset && asset.lockWorkflow).trim().toLowerCase()
+  const protectedProfiles = new Set(['wearable_prop', 'slender_prop', 'rigid_prop', 'soft_prop', 'ambient_prop', 'organic_prop'])
+  const rawPositive = storyAssetStr(promptEn).trim()
+  const rawNegative = storyAssetStr(negativePrompt).trim()
+  if (!protectedProfiles.has(lockProfile)) {
+    return { promptEn: rawPositive, negativePrompt: rawNegative }
+  }
+  const bannedPositive = [
+    /\bchildren'?s?\b/i, /\bchild\b/i, /\bgirl\b/i, /\bboy\b/i, /\bkid\b/i, /\bwoman\b/i, /\bman\b/i,
+    /\bportrait\b/i, /\bupper body\b/i, /\bhalf[-\s]?length\b/i, /\bface\b/i, /\bhead\b/i, /\bmodel\b/i,
+    /\bwearing\b/i, /\bworn\b/i, /\bon (?:a|the) head\b/i, /\bunder chin\b/i, /\boutfit\b/i, /\bdress\b/i,
+    /\bshirt\b/i, /\bskirt\b/i, /\bbook illustration style\b/i, /\bstorybook\b/i, /\bfashion editorial\b/i
+  ]
+  const positiveParts = splitStoryAssetPromptParts(rawPositive).filter((part) => !bannedPositive.some((re) => re.test(part)))
+  const safePositive = uniqStoryAssetPromptParts(positiveParts, 80).join(', ')
+  const extraNegative = lockProfile === 'wearable_prop'
+    ? ['person', 'girl', 'boy', 'child', 'portrait', 'head', 'face', 'upper body', 'model', 'wearing display', 'worn on head', 'mannequin', 'hair', 'scalp', 'ears']
+    : ['person', 'portrait', 'character', 'environment']
+  if (lockWorkflow === 'prop_hat') {
+    extraNegative.push('woman', 'female body', 'shoulders', 'collarbone', 'neckline', 'bust', 'statue', 'sculpture', 'figurine', 'pedestal', 'display base')
+  }
+  return {
+    promptEn: safePositive,
+    negativePrompt: uniqStoryAssetPromptParts([...splitStoryAssetPromptParts(rawNegative), ...extraNegative], 120).join(', ')
+  }
+}
+
+function normalizeStoryAssetUri(raw) {
+  return storyAssetStr(raw).trim().replace(/\\/g, '/').replace(/^\/+/, '')
+}
+
+function storyAssetCategoryFolder(category) {
+  const value = storyAssetStr(category).trim().toLowerCase()
+  if (value === 'character' || value === 'prop' || value === 'location') return value
+  return 'asset'
+}
+
+function storyAssetSlug(asset) {
+  const raw = storyAssetStr(asset && asset.id).trim() || storyAssetStr(asset && asset.name).trim() || 'asset'
+  return raw
+    .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80) || 'asset'
+}
+
+function getStoryAssetTimeZone() {
+  return storyAssetStr(process.env.STUDIO_ASSET_TIMEZONE).trim() || 'Asia/Shanghai'
+}
+
+function getDatePartsForStoryAssets(date = new Date()) {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: getStoryAssetTimeZone(),
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    })
+    const parts = Object.fromEntries(fmt.formatToParts(date).map((part) => [part.type, part.value]))
+    return {
+      year: storyAssetStr(parts.year).trim() || String(date.getFullYear()),
+      month: storyAssetStr(parts.month).trim() || String(date.getMonth() + 1).padStart(2, '0'),
+      day: storyAssetStr(parts.day).trim() || String(date.getDate()).padStart(2, '0'),
+      hour: storyAssetStr(parts.hour).trim() || String(date.getHours()).padStart(2, '0'),
+      minute: storyAssetStr(parts.minute).trim() || String(date.getMinutes()).padStart(2, '0'),
+      second: storyAssetStr(parts.second).trim() || String(date.getSeconds()).padStart(2, '0')
+    }
+  } catch (_) {
+    const iso = new Date(date.getTime() - (date.getTimezoneOffset() * 60_000)).toISOString()
+    return {
+      year: iso.slice(0, 4),
+      month: iso.slice(5, 7),
+      day: iso.slice(8, 10),
+      hour: iso.slice(11, 13),
+      minute: iso.slice(14, 16),
+      second: iso.slice(17, 19)
+    }
+  }
+}
+
+function getStoryAssetDateFolder(date = new Date()) {
+  const parts = getDatePartsForStoryAssets(date)
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
+
+function getStoryAssetTimestampToken(date = new Date()) {
+  const parts = getDatePartsForStoryAssets(date)
+  return `${parts.year}${parts.month}${parts.day}_${parts.hour}${parts.minute}${parts.second}`
+}
+
+function buildStoryAssetStorageInfo(asset, date = new Date()) {
+  const category = storyAssetCategoryFolder(asset && asset.category)
+  const slug = storyAssetSlug(asset)
+  const dateFolder = getStoryAssetDateFolder(date)
+  const relDir = path.join('assets', 'ai', 'story_assets', category, slug, dateFolder)
+  return { category, slug, dateFolder, relDir }
+}
+
+function buildStoryAssetFileTarget({ dir, asset, prefix, ext, seed, date = new Date() }) {
+  const storage = buildStoryAssetStorageInfo(asset, date)
+  const safeExt = storyAssetStr(ext).replace(/[^a-z0-9]+/gi, '') || 'png'
+  const stamp = getStoryAssetTimestampToken(date)
+  const safePrefix = storyAssetStr(prefix).trim().replace(/[^a-z0-9_.-]+/gi, '_') || 'asset'
+  const seedPart = Number.isFinite(Number(seed)) ? `_seed_${Math.max(0, Math.floor(Number(seed)))}` : ''
+  const filename = `${safePrefix}${seedPart}_${stamp}.${safeExt}`
+  return {
+    ...storage,
+    filename,
+    outDir: path.join(dir, storage.relDir),
+    absPath: path.join(dir, storage.relDir, filename),
+    assetPath: `${storage.relDir}/${filename}`.replace(/\\/g, '/')
+  }
+}
+
+function buildStoryAssetComfyPrefix(asset, variant, date = new Date()) {
+  const storage = buildStoryAssetStorageInfo(asset, date)
+  const safeVariant = storyAssetStr(variant).trim().replace(/[^a-z0-9_.-]+/gi, '_') || 'asset'
+  return path.posix.join('game_studio_story_lock', storage.dateFolder, storage.category, storage.slug, safeVariant)
+}
+
+function getManagedStoryAssetPrefixes(asset) {
+  const category = storyAssetCategoryFolder(asset && asset.category)
+  const slug = storyAssetSlug(asset)
+  return {
+    current: `assets/ai/story_assets/${category}/${slug}/`,
+    legacyRefs: `assets/ai/story_assets/${slug}_`,
+    legacyLineart: `assets/ai/story_lineart/${slug}_`,
+    legacyLineartDir: `assets/ai/story_lineart/${category}/${slug}/`
+  }
+}
+
+function isManagedStoryAssetPathForAsset(asset, rawPath) {
+  const uri = normalizeStoryAssetUri(rawPath)
+  if (!uri) return false
+  const prefixes = getManagedStoryAssetPrefixes(asset)
+  return (
+    uri.startsWith(prefixes.current) ||
+    uri.startsWith(prefixes.legacyRefs) ||
+    uri.startsWith(prefixes.legacyLineart) ||
+    uri.startsWith(prefixes.legacyLineartDir)
+  )
+}
+
+function labelForStoryAssetGalleryKind(kind) {
+  if (kind === 'reference') return '参考图'
+  if (kind === 'selected_white_bg') return '白底主参考'
+  if (kind === 'lineart_hint') return '线稿 Hint'
+  if (kind === 'lineart_final') return '线稿成品'
+  return '图片'
+}
+
+function inferStoryAssetGalleryKind({ uri, ref, asset }) {
+  const normalized = normalizeStoryAssetUri(uri)
+  if (!normalized) return 'unknown'
+  if (normalized === normalizeStoryAssetUri(asset && asset.lineartHintAssetUri)) return 'lineart_hint'
+  if (normalized === normalizeStoryAssetUri(asset && asset.lineartFinalAssetUri)) return 'lineart_final'
+  if (storyAssetStr(ref && ref.postprocess).trim() === 'rmbg_white_bg') return 'selected_white_bg'
+  const base = path.basename(normalized).toLowerCase()
+  if (base.includes('selected_white')) return 'selected_white_bg'
+  if (base.includes('lineart_hint') || base.includes('_hint_')) return 'lineart_hint'
+  if (base.includes('lineart_final') || base.includes('_lineart_') || base.includes('_final_')) return 'lineart_final'
+  return 'reference'
+}
+
+function storyAssetCreatedAtFallback(uri) {
+  const normalized = normalizeStoryAssetUri(uri)
+  const match = normalized.match(/(20\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/)
+  if (!match) return ''
+  return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}+08:00`
+}
+
+function buildStoryAssetGalleryEntries({ projectId, project, plan, asset }) {
+  const projectAssets = Array.isArray(project && project.assets) ? project.assets : []
+  const projectAssetByUri = new Map()
+  for (const item of projectAssets) {
+    const uri = normalizeStoryAssetUri(item && item.uri)
+    if (uri) projectAssetByUri.set(uri, item)
+  }
+  const generatedRefs = Array.isArray(asset && asset.generatedRefs) ? asset.generatedRefs : []
+  const latestBatch = Array.isArray(asset && asset.latestReferenceBatch) ? asset.latestReferenceBatch : []
+  const refByUri = new Map()
+  for (const ref of generatedRefs) {
+    const uri = normalizeStoryAssetUri(ref && ref.projectAssetUri)
+    if (uri) refByUri.set(uri, ref)
+  }
+  const batchByUri = new Map()
+  for (const item of latestBatch) {
+    const uri = normalizeStoryAssetUri(item && item.assetPath)
+    if (uri) batchByUri.set(uri, item)
+  }
+  const seen = new Set()
+  const rows = []
+  const candidateUris = new Set()
+  for (const ref of generatedRefs) {
+    const uri = normalizeStoryAssetUri(ref && ref.projectAssetUri)
+    if (uri) candidateUris.add(uri)
+  }
+  for (const item of latestBatch) {
+    const uri = normalizeStoryAssetUri(item && item.assetPath)
+    if (uri) candidateUris.add(uri)
+  }
+  for (const projectAsset of projectAssets) {
+    const uri = normalizeStoryAssetUri(projectAsset && projectAsset.uri)
+    if (uri && isManagedStoryAssetPathForAsset(asset, uri)) candidateUris.add(uri)
+  }
+  const specialUris = [
+    normalizeStoryAssetUri(asset && asset.primaryReferenceAssetUri),
+    normalizeStoryAssetUri(asset && asset.lineartHintAssetUri),
+    normalizeStoryAssetUri(asset && asset.lineartFinalAssetUri)
+  ].filter(Boolean)
+  for (const uri of specialUris) candidateUris.add(uri)
+
+  for (const uri of candidateUris) {
+    if (!uri || !isManagedStoryAssetPathForAsset(asset, uri) || seen.has(uri)) continue
+    seen.add(uri)
+    const ref = refByUri.get(uri) || null
+    const batch = batchByUri.get(uri) || null
+    const projectAsset = projectAssetByUri.get(uri) || null
+    const kind = inferStoryAssetGalleryKind({ uri, ref, asset })
+    const analysis = batch && batch.analysis && typeof batch.analysis === 'object'
+      ? batch.analysis
+      : (normalizeStoryAssetUri(asset && asset.primaryReferenceAssetUri) === uri && asset && asset.latestReferenceReview && typeof asset.latestReferenceReview === 'object'
+        ? asset.latestReferenceReview
+        : null)
+    const createdAt = storyAssetStr(ref && ref.createdAt).trim() || storyAssetCreatedAtFallback(uri)
+    const refSeedValue = ref && typeof ref === 'object' ? ref.seed : undefined
+    const projectAssetSource = projectAsset && projectAsset.source && typeof projectAsset.source === 'object'
+      ? projectAsset.source
+      : null
+    const projectAssetSeedValue = projectAssetSource ? projectAssetSource.seed : undefined
+    rows.push({
+      assetPath: uri,
+      url: `/project-assets/${encodeURIComponent(String(projectId || ''))}/${uri}`,
+      kind,
+      label: labelForStoryAssetGalleryKind(kind),
+      createdAt: createdAt || undefined,
+      seed: Number.isFinite(Number(refSeedValue)) ? Number(refSeedValue) : (Number.isFinite(Number(projectAssetSeedValue)) ? Number(projectAssetSeedValue) : undefined),
+      provider: storyAssetStr(ref && ref.provider).trim() || storyAssetStr(projectAssetSource && projectAssetSource.provider).trim() || undefined,
+      prompt: storyAssetStr(ref && ref.prompt).trim() || storyAssetStr(projectAssetSource && projectAssetSource.prompt).trim() || undefined,
+      negativePrompt: storyAssetStr(ref && ref.negativePrompt).trim() || storyAssetStr(projectAssetSource && projectAssetSource.negativePrompt).trim() || undefined,
+      isPrimary: normalizeStoryAssetUri(asset && asset.primaryReferenceAssetUri) === uri,
+      isCurrentLineart: (
+        normalizeStoryAssetUri(asset && asset.lineartHintAssetUri) === uri ||
+        normalizeStoryAssetUri(asset && asset.lineartFinalAssetUri) === uri
+      ),
+      recommended: Boolean(
+        normalizeStoryAssetUri(asset && asset.latestRecommendedReferenceAssetUri) === uri ||
+        (batch && batch.recommended)
+      ),
+      inLatestBatch: batchByUri.has(uri),
+      analysis
+    })
+  }
+  rows.sort((a, b) => {
+    const priorityA = a.isPrimary ? 30 : (a.isCurrentLineart ? 20 : 0)
+    const priorityB = b.isPrimary ? 30 : (b.isCurrentLineart ? 20 : 0)
+    if (priorityA !== priorityB) return priorityB - priorityA
+    const timeA = Date.parse(String(a.createdAt || ''))
+    const timeB = Date.parse(String(b.createdAt || ''))
+    if (Number.isFinite(timeA) && Number.isFinite(timeB) && timeA !== timeB) return timeB - timeA
+    return String(a.assetPath || '').localeCompare(String(b.assetPath || ''))
+  })
+  return rows
+}
+
+async function pruneMissingStoryAssetGalleryEntries({ id, dir, plan, asset }) {
+  let currentPlan = plan
+  let currentAsset = asset
+  let currentProject = null
+  let items = []
+
+  while (true) {
+    const bundle = await readProjectBundle(id)
+    currentProject = normalizeProjectDoc(bundle.rawProject)
+    items = buildStoryAssetGalleryEntries({ projectId: id, project: currentProject, plan: currentPlan, asset: currentAsset })
+    const missing = []
+    for (const item of items) {
+      const uri = normalizeStoryAssetUri(item && item.assetPath)
+      if (!uri) continue
+      const abs = path.join(dir, uri)
+      if (!(await existsFile(abs))) missing.push(uri)
+    }
+    if (!missing.length) break
+    for (const missingUri of missing) {
+      const liveAsset = (Array.isArray(currentPlan && currentPlan.assets)
+        ? currentPlan.assets.find((entry) => storyAssetStr(entry && entry.id).trim() === storyAssetStr(currentAsset && currentAsset.id).trim())
+        : null) || currentAsset
+      const cleaned = await deleteStoryAssetManagedFile({
+        id,
+        dir,
+        plan: currentPlan,
+        asset: liveAsset,
+        targetAssetPath: missingUri
+      })
+      currentPlan = cleaned.plan
+      currentAsset = cleaned.asset
+    }
+  }
+
+  return {
+    plan: currentPlan,
+    asset: currentAsset,
+    project: currentProject,
+    items
+  }
+}
+
+function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalNegativePromptZh, currentPromptZh, currentPromptEn, currentNegativePromptZh, currentNegativePrompt }) {
+  const category = storyAssetStr(asset && asset.category).trim()
+  const lockProfile = storyAssetStr(asset && asset.lockProfile).trim()
+  const name = storyAssetStr(asset && asset.name).trim() || '当前资产'
+  const anchor = storyAssetStr(asset && asset.anchorPrompt).trim()
+  const hint = storyAssetStr(asset && asset.referencePromptHint).trim()
+  const zhBase = storyAssetStr(currentPromptZh).trim()
+  const enBase = storyAssetStr(currentPromptEn).trim()
+  const zhNegBase = storyAssetStr(currentNegativePromptZh).trim()
+  const enNegBase = storyAssetStr(currentNegativePrompt).trim()
+  const worldAnchor = storyAssetStr(plan && plan.worldAnchor).trim()
+  const globalZh = storyAssetStr(globalPromptZh).trim()
+  const globalNegZh = storyAssetStr(globalNegativePromptZh).trim()
+
+  let promptZh = zhBase
+  if (!promptZh) {
+    if (lockProfile === 'character_core' || category === 'character') {
+      promptZh = [
+        `${name}角色参考表，单主体，全身，正面站姿，居中构图`,
+        '纯白无缝背景，无地面线，无投影，无场景环境',
+        '双手自然下垂且空手，不拿任何道具，不戴帽子',
+        '重点锁定脸型、耳朵、眼睛颜色、毛色花纹、服装版型、腰带、鞋子和整体比例',
+        '儿童绘本插画，线条干净，配色柔和，细节清晰，不能画成真人小孩或拟人猫娘'
+      ].join('，')
+    } else if (lockProfile === 'wearable_prop') {
+      promptZh = [
+        `${name}道具设计图，单一物件，居中展示，仅画物件本身`,
+        '纯白背景，无手持，无人物，无头部，无模特，无佩戴展示，无场景，无头模',
+        '清楚表现材质、结构、尺寸比例、开口、边缘轮廓和独立摆放关系',
+        '强调这是可穿戴但未佩戴的独立物件，必要时开口或内部结构可见',
+        '中性商品参考插画，设计图表达，轮廓清晰，便于后续连续场景复用'
+      ].join('，')
+    } else if (lockProfile === 'slender_prop') {
+      promptZh = [
+        `${name}细长道具锁定图，单一物件，完整显示全长，居中展示`,
+        '纯白背景，无人物，无手持，无场景，不允许两端裁切，不允许透视缩短',
+        '清楚表现长度比例、端头结构、孔位或节点细节，轮廓笔直可读',
+        '中性设计参考图，线条干净，便于后续连续场景复用'
+      ].join('，')
+    } else if (lockProfile === 'rigid_prop') {
+      promptZh = [
+        `${name}硬结构道具参考图，单一物件，稳定透视，居中展示`,
+        '纯白背景，无人物，无场景，无额外杂物',
+        '清楚表现主要结构部件、体块关系、材质和比例，不能塌陷变形',
+        '中性商品参考插画，轮廓清晰，便于后续连续场景复用'
+      ].join('，')
+    } else if (lockProfile === 'ambient_prop') {
+      promptZh = [
+        `${name}氛围元素参考图，单一元素，居中展示`,
+        '干净浅色背景，不要整张大场景，不要地平线，不要树木建筑人物',
+        '清楚表现该元素自身轮廓、体积和内部层次，便于在不同场景中稳定复用',
+        '中性参考插画，轮廓清晰，便于后续连续场景复用'
+      ].join('，')
+    } else if (category === 'prop') {
+      promptZh = [
+        `${name}道具设计图，单一物件，居中展示，仅画物件本身`,
+        '纯白背景，无手持，无人物，无头部，无模特，无佩戴展示，无场景',
+        '清楚表现材质、结构、尺寸比例、开口、边缘轮廓和正反面造型关系',
+        '中性商品参考插画，轮廓清晰，便于后续连续场景复用'
+      ].join('，')
+    } else {
+      promptZh = [
+        `${name}地点参考图，稳定构图，统一环境语言`,
+        '突出建筑、地形、植被、水体和光线关系',
+        '儿童绘本风格，适合作为连续场景统一地点锚点'
+      ].join('，')
+    }
+  }
+
+  const fallbackPromptEn = buildStoryAssetReferencePrompt({
+    plan,
+    asset,
+    style: 'picture_book',
+    globalPrompt: category === 'location' ? worldAnchor : '',
+    assetPrompt: hint
+  })
+  let promptEn = pickEnglishPrompt(enBase, storyAssetStr(asset && asset.referencePromptEn).trim(), hint, fallbackPromptEn)
+
+  const summary = (lockProfile === 'character_core' || category === 'character')
+    ? `已强化为角色锁定参考图提示词：去掉场景环境与道具干扰，保留白底、正面全身、空手和外观锁定。`
+    : category === 'prop'
+      ? `已强化为道具锁定参考图提示词：突出单物件、白底和结构稳定。`
+      : `已强化为地点锁定提示词：突出环境构图和统一世界观。`
+
+  const negativePromptZh = zhNegBase || (
+    category === 'character'
+      ? '多人，多主体，人物脸，真人小孩，拟人猫娘，帽子，鱼竿，水桶，场景背景，树木，草地，水面，桥，侧面，背面，三分之二侧面，投影，地面线，文字，水印'
+      : category === 'prop'
+        ? '人物，角色，儿童，女孩，男孩，头部，脸部，半身像，上半身，手持，佩戴展示，戴在头上，模特，人体穿戴关系，场景背景，树木，草地，水面，文字，水印'
+        : '人物特写，人群，文字，水印'
+  )
+
+  return {
+    promptZh,
+    promptEn,
+    negativePromptZh,
+    negativePrompt: enNegBase || buildStoryAssetReferenceNegativePrompt({
+      plan,
+      asset,
+      globalNegativePrompt: globalNegZh
+    }),
+    summary,
+    context: {
+      anchor,
+      hint,
+      worldAnchor,
+      globalPromptZh: globalZh
+    }
+  }
+}
+
+async function translateStoryAssetPromptPair({ studio, promptZh, negativePromptZh, fallbackPromptEn, fallbackNegativePrompt, timeoutMs = 60_000 }) {
+  const translationCfg = studio?.effective?.translation || studio?.effective?.prompt || {}
+  const provider = storyAssetStr(translationCfg.provider).trim().toLowerCase()
+  if (!provider || provider === 'none') {
+    return {
+      promptEn: storyAssetStr(fallbackPromptEn).trim(),
+      negativePrompt: storyAssetStr(fallbackNegativePrompt).trim(),
+      meta: { provider: 'fallback', model: null, api: null, note: 'translation_provider_missing' }
+    }
+  }
+  const proxyUrl = studio?.effective?.network?.proxyUrl || undefined
+  const apiUrl = translationCfg.apiUrl || undefined
+  const model = translationCfg.model || undefined
+  const [promptRes, negativeRes] = await Promise.all([
+    translatePromptText({
+      provider,
+      model,
+      apiUrl,
+      proxyUrl,
+      timeoutMs,
+      text: storyAssetStr(promptZh).trim(),
+      sourceLang: 'zh',
+      targetLang: 'en',
+      mode: 'prompt'
+    }),
+    translatePromptText({
+      provider,
+      model,
+      apiUrl,
+      proxyUrl,
+      timeoutMs,
+      text: storyAssetStr(negativePromptZh).trim(),
+      sourceLang: 'zh',
+      targetLang: 'en',
+      mode: 'prompt'
+    })
+  ])
+  return {
+    promptEn: pickEnglishPrompt(storyAssetStr(promptRes?.result?.translatedText).trim(), fallbackPromptEn),
+    negativePrompt: storyAssetStr(negativeRes?.result?.translatedText).trim() || storyAssetStr(fallbackNegativePrompt).trim(),
+    meta: {
+      provider: promptRes?.meta?.provider || provider,
+      model: promptRes?.meta?.model || model || null,
+      api: promptRes?.meta?.api || apiUrl || null
+    }
+  }
+}
+
+async function cleanupEmptyStoryAssetDirs(startDir, stopDir) {
+  const stop = path.resolve(stopDir)
+  let current = path.resolve(startDir)
+  while (current.startsWith(stop) && current !== stop) {
+    const items = await readdir(current).catch(() => null)
+    if (!Array.isArray(items) || items.length > 0) break
+    await rm(current, { recursive: true, force: true }).catch(() => null)
+    current = path.dirname(current)
+  }
+}
+
+async function deleteStoryAssetManagedFile({ id, dir, plan, asset, targetAssetPath }) {
+  const targetUri = normalizeStoryAssetUri(targetAssetPath)
+  if (!targetUri) {
+    const e = new Error('missing_asset_path')
+    e.status = 400
+    throw e
+  }
+  if (!isManagedStoryAssetPathForAsset(asset, targetUri)) {
+    const e = new Error('story_asset_delete_forbidden')
+    e.status = 403
+    throw e
+  }
+
+  const bundle = await readProjectBundle(id)
+  const projectAssets = Array.isArray(bundle.rawProject && bundle.rawProject.assets) ? bundle.rawProject.assets : []
+  const removedProjectAssets = projectAssets.filter((item) => normalizeStoryAssetUri(item && item.uri) === targetUri)
+  const removedProjectAssetIds = new Set(removedProjectAssets.map((item) => storyAssetStr(item && item.id).trim()).filter(Boolean))
+
+  const abs = path.join(dir, targetUri)
+  await rm(abs, { force: true }).catch(() => null)
+  await cleanupEmptyStoryAssetDirs(path.dirname(abs), path.join(dir, 'assets', 'ai'))
+
+  const nextProject = {
+    ...bundle.rawProject,
+    assets: projectAssets.filter((item) => normalizeStoryAssetUri(item && item.uri) !== targetUri),
+    characters: Array.isArray(bundle.rawProject && bundle.rawProject.characters)
+      ? bundle.rawProject.characters.map((ch) => {
+          const refId = storyAssetStr(ch && ch.ai && ch.ai.referenceAssetId).trim()
+          if (!refId || !removedProjectAssetIds.has(refId)) return ch
+          return {
+            ...ch,
+            ai: {
+              ...((ch && ch.ai && typeof ch.ai === 'object') ? ch.ai : {}),
+              referenceAssetId: ''
+            }
+          }
+        })
+      : bundle.rawProject.characters,
+    updatedAt: new Date().toISOString()
+  }
+  await writeJson(path.join(dir, 'project.json'), nextProject)
+
+  const deletingPrimary = normalizeStoryAssetUri(asset && asset.primaryReferenceAssetUri) === targetUri
+  const deletingHint = normalizeStoryAssetUri(asset && asset.lineartHintAssetUri) === targetUri
+  const deletingFinal = normalizeStoryAssetUri(asset && asset.lineartFinalAssetUri) === targetUri
+  const nextPlan = {
+    ...plan,
+    generatedAt: new Date().toISOString(),
+    assets: Array.isArray(plan && plan.assets) ? plan.assets.map((item) => {
+      if (storyAssetStr(item && item.id).trim() !== storyAssetStr(asset && asset.id).trim()) return item
+      const nextGeneratedRefs = Array.isArray(item && item.generatedRefs)
+        ? item.generatedRefs.filter((ref) => normalizeStoryAssetUri(ref && ref.projectAssetUri) !== targetUri)
+        : []
+      const nextBatch = Array.isArray(item && item.latestReferenceBatch)
+        ? item.latestReferenceBatch.filter((entry) => normalizeStoryAssetUri(entry && entry.assetPath) !== targetUri)
+        : []
+      const primaryReferenceAssetUri = deletingPrimary ? '' : storyAssetStr(item && item.primaryReferenceAssetUri).trim()
+      const primaryReferenceAssetId = deletingPrimary ? '' : storyAssetStr(item && item.primaryReferenceAssetId).trim()
+      const lineartHintAssetUri = deletingHint || deletingPrimary ? '' : storyAssetStr(item && item.lineartHintAssetUri).trim()
+      const lineartHintAssetId = deletingHint || deletingPrimary ? '' : storyAssetStr(item && item.lineartHintAssetId).trim()
+      const lineartFinalAssetUri = deletingFinal || deletingPrimary ? '' : storyAssetStr(item && item.lineartFinalAssetUri).trim()
+      const lineartFinalAssetId = deletingFinal || deletingPrimary ? '' : storyAssetStr(item && item.lineartFinalAssetId).trim()
+      const lineartReady = Boolean(lineartHintAssetUri && lineartFinalAssetUri)
+      let referenceStatus = primaryReferenceAssetUri ? 'ready' : (nextBatch.length || nextGeneratedRefs.length ? 'candidates_ready' : 'missing')
+      if (!primaryReferenceAssetUri && storyAssetStr(item && item.renderStrategy).trim() === 'prompt_only') referenceStatus = 'missing'
+      return {
+        ...item,
+        generatedRefs: nextGeneratedRefs,
+        latestReferenceBatch: nextBatch,
+        latestRecommendedReferenceAssetUri: normalizeStoryAssetUri(item && item.latestRecommendedReferenceAssetUri) === targetUri
+          ? ''
+          : storyAssetStr(item && item.latestRecommendedReferenceAssetUri).trim(),
+        primaryReferenceAssetUri,
+        primaryReferenceAssetId,
+        primaryReferenceSelectedAt: primaryReferenceAssetUri ? storyAssetStr(item && item.primaryReferenceSelectedAt).trim() : '',
+        latestReferenceReview: (
+          item && item.latestReferenceReview && typeof item.latestReferenceReview === 'object' &&
+          normalizeStoryAssetUri(item.latestReferenceReview.targetAssetUri) === targetUri
+        )
+          ? null
+          : (item.latestReferenceReview || null),
+        referenceStatus,
+        lineartHintAssetUri,
+        lineartHintAssetId,
+        lineartFinalAssetUri,
+        lineartFinalAssetId,
+        lineartStatus: lineartReady ? 'ready' : 'missing',
+        lineartPrompt: lineartReady ? storyAssetStr(item && item.lineartPrompt).trim() : '',
+        lineartNegativePrompt: lineartReady ? storyAssetStr(item && item.lineartNegativePrompt).trim() : '',
+        lineartMeta: lineartReady ? (item && item.lineartMeta && typeof item.lineartMeta === 'object' ? item.lineartMeta : null) : null,
+        lineartGeneratedAt: lineartReady ? storyAssetStr(item && item.lineartGeneratedAt).trim() : ''
+      }
+    }) : plan.assets
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await saveStoryAssetPlan(id, nextPlan)
+  return {
+    plan: nextPlan,
+    asset: (Array.isArray(nextPlan.assets) ? nextPlan.assets.find((item) => storyAssetStr(item && item.id).trim() === storyAssetStr(asset && asset.id).trim()) : null) || null,
+    items: buildStoryAssetGalleryEntries({ projectId: id, project: normalizeProjectDoc(nextProject), plan: nextPlan, asset: (Array.isArray(nextPlan.assets) ? nextPlan.assets.find((item) => storyAssetStr(item && item.id).trim() === storyAssetStr(asset && asset.id).trim()) : null) || asset }),
+    deleted: true
+  }
 }
 
 async function existsDir(p) {
@@ -1517,6 +2457,29 @@ function defaultBlueprint() {
   }
 }
 
+async function writeAiDraftProject({ dir, id, title, formula, scripts, blueprint, projectBase = null }) {
+  await mkdir(path.join(dir, 'assets'), { recursive: true })
+  const project = normalizeProjectDoc(projectBase || {
+    schemaVersion: '2.0',
+    id,
+    title,
+    pluginId: 'story-pixi',
+    pluginVersion: '0.1.0',
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    characters: [],
+    assets: [],
+    events: [],
+    state: { vars: [] }
+  })
+  await writeJson(path.join(dir, 'project.json'), project)
+  await writeJson(path.join(dir, 'story.json'), defaultStory())
+  await writeJson(path.join(dir, 'scripts.json'), scripts || defaultScripts())
+  await writeJson(path.join(dir, 'blueprint.json'), blueprint || defaultBlueprint())
+  await writeJson(path.join(dir, 'meta.json'), { ...defaultMeta({ id, title }), aiFormula: formula })
+  return project
+}
+
 function normalizeProjectAndDetectChanges(project) {
   const before = project && typeof project === 'object' ? project : {}
   const after = normalizeProjectDoc(before)
@@ -1542,6 +2505,286 @@ async function touchProjectUpdatedAt(dir) {
       await writeJson(metaPath, { ...meta, updatedAt: nowIso() })
     }
   } catch (_) {}
+}
+
+function normalizeAiStoryFormula(input) {
+  const choicePoints = clampInt(input?.choicePoints, 1, 3, 2)
+  const optionsPerChoice = Number(input?.optionsPerChoice) === 3 ? 3 : 2
+  const endings = optionsPerChoice
+  return { schemaVersion: '1.0', format: 'numeric', choicePoints, optionsPerChoice, endings }
+}
+
+function buildScriptsFromDraftCards(cardsIn, prevScripts, formula) {
+  const sourceCards = Array.isArray(cardsIn) ? cardsIn : []
+  const prevCards = prevScripts && typeof prevScripts === 'object' && Array.isArray(prevScripts.cards) ? prevScripts.cards : []
+  const preserveIds = prevCards.length > 0 && prevCards.length === sourceCards.length
+
+  const cards = sourceCards
+    .map((x, i) => {
+      const base = preserveIds ? prevCards[i] : null
+      const idUse = base && base.id ? String(base.id) : genId('sc')
+      const orderUse = base && base.order != null ? Number(base.order) : i + 1
+      return {
+        id: idUse,
+        name: String(x && x.name ? x.name : `场景${i + 1}`),
+        order: Number.isFinite(orderUse) && orderUse > 0 ? orderUse : i + 1,
+        text: String(x && x.text ? x.text : ''),
+        updatedAt: nowIso()
+      }
+    })
+    .filter((c) => c.text.trim())
+
+  if (!cards.length) return null
+
+  const scripts = { schemaVersion: '1.0', cards, updatedAt: nowIso() }
+  scripts.cards = normalizeScriptCardsForBlueprint(scripts.cards, formula)
+  return scripts
+}
+
+function collectBlockingScriptIssues(report, validation) {
+  const out = []
+  const blockingReportWarnings = new Set([
+    'formula_choicePoints_mismatch',
+    'formula_optionsPerChoice_mismatch',
+    'formula_endings_too_few',
+    'missing_consequence',
+    'consequence_index_mismatch'
+  ])
+  const blockingValidationWarnings = new Set([
+    'scene_no_choices',
+    'ending_has_choices',
+    'unreachable_nodes',
+    'no_reachable_endings'
+  ])
+
+  for (const item of Array.isArray(report?.errors) ? report.errors : []) {
+    if (!item || !item.message) continue
+    out.push({ source: 'compile', severity: 'error', code: String(item.code || ''), message: String(item.message) })
+  }
+  for (const item of Array.isArray(report?.warnings) ? report.warnings : []) {
+    const code = String(item?.code || '')
+    if (!blockingReportWarnings.has(code) || !item?.message) continue
+    out.push({ source: 'compile', severity: 'warning', code, message: String(item.message) })
+  }
+  for (const item of Array.isArray(validation?.errors) ? validation.errors : []) {
+    if (!item || !item.message) continue
+    out.push({ source: 'validate', severity: 'error', code: String(item.code || ''), message: String(item.message) })
+  }
+  for (const item of Array.isArray(validation?.warnings) ? validation.warnings : []) {
+    const code = String(item?.code || '')
+    if (!blockingValidationWarnings.has(code) || !item?.message) continue
+    out.push({ source: 'validate', severity: 'warning', code, message: String(item.message) })
+  }
+  return out
+}
+
+function summarizeScriptIssues(issues) {
+  const items = Array.isArray(issues) ? issues : []
+  if (!items.length) return ''
+  return items.slice(0, 3).map((item) => String(item?.message || '').trim()).filter(Boolean).join('；')
+}
+
+async function generateClosedScriptDraft({
+  prompt,
+  title,
+  projectTitle,
+  rules,
+  formula,
+  provider,
+  model,
+  apiUrl,
+  proxyUrl,
+  timeoutMs,
+  prevScripts,
+  prevBlueprint
+}) {
+  let generated = null
+  let genMeta = null
+  try {
+    generated = await generateScriptDraft({
+      prompt,
+      title: title || undefined,
+      rules,
+      formula,
+      provider,
+      model,
+      apiUrl,
+      proxyUrl,
+      timeoutMs
+    })
+    if (generated && typeof generated === 'object' && generated.meta) genMeta = generated.meta
+    if (generated && typeof generated === 'object' && generated.draft) generated = generated.draft
+  } catch (e) {
+    const err = {
+      message: e instanceof Error ? e.message : String(e),
+      status: e && e.status ? Number(e.status) : null,
+      code: e && e.code ? String(e.code) : null,
+      cause: e && e.cause ? (e.cause.message ? String(e.cause.message) : String(e.cause)) : null
+    }
+    return {
+      ok: false,
+      repaired: false,
+      status: Number.isFinite(Number(err.status)) ? Math.max(400, Math.min(599, Number(err.status))) : 502,
+      message: err.message || 'ai_generate_failed',
+      meta: { provider, model: model || null, api: apiUrl || null, error: err },
+      scripts: null,
+      blueprint: null,
+      before: null,
+      after: null
+    }
+  }
+
+  const generatedTitle = generated && typeof generated.title === 'string' ? String(generated.title).trim() : ''
+  if (!generated || typeof generated !== 'object' || !Array.isArray(generated.cards)) {
+    const err = genMeta && genMeta.error ? genMeta.error : null
+    return {
+      ok: false,
+      repaired: false,
+      status: err && Number.isFinite(Number(err.status)) ? Math.max(400, Math.min(599, Number(err.status))) : 502,
+      message: err && err.message ? String(err.message) : 'AI 未返回有效脚本卡片',
+      title: generatedTitle,
+      meta: genMeta || { provider, model: model || null, api: apiUrl || null, error: err },
+      scripts: null,
+      blueprint: null,
+      before: null,
+      after: null
+    }
+  }
+
+  const initialScripts = buildScriptsFromDraftCards(generated.cards, prevScripts, formula)
+  if (!initialScripts) {
+    return {
+      ok: false,
+      repaired: false,
+      status: 502,
+      message: 'AI 返回了空脚本，未生成可用场景卡片',
+      title: generatedTitle,
+      meta: genMeta || { provider, model: model || null, api: apiUrl || null, error: null },
+      scripts: null,
+      blueprint: null,
+      before: null,
+      after: null
+    }
+  }
+
+  const compiledBefore = compileBlueprintFromScripts({ scripts: initialScripts, prevBlueprint, expectedFormula: formula })
+  const validationBefore = validateBlueprintDoc(compiledBefore.blueprint)
+  const beforeIssues = collectBlockingScriptIssues(compiledBefore.report, validationBefore)
+  const before = { report: compiledBefore.report, validation: validationBefore, issues: beforeIssues }
+
+  if (!beforeIssues.length) {
+    return {
+      ok: true,
+      repaired: false,
+      title: generatedTitle,
+      scripts: initialScripts,
+      blueprint: compiledBefore.blueprint,
+      meta: genMeta || { provider, model: model || null, api: apiUrl || null, error: null },
+      before,
+      after: before
+    }
+  }
+
+  let fixed = null
+  try {
+    fixed = await repairScriptDraft({
+      projectTitle: String(projectTitle || title || generatedTitle || '').trim(),
+      scripts: initialScripts,
+      rules,
+      formula,
+      report: compiledBefore.report,
+      validation: validationBefore,
+      provider,
+      model,
+      apiUrl,
+      proxyUrl,
+      timeoutMs
+    })
+  } catch (e) {
+    const err = {
+      message: e instanceof Error ? e.message : String(e),
+      status: e && e.status ? Number(e.status) : null,
+      code: e && e.code ? String(e.code) : null,
+      cause: e && e.cause ? (e.cause.message ? String(e.cause.message) : String(e.cause)) : null
+    }
+    return {
+      ok: false,
+      repaired: true,
+      status: Number.isFinite(Number(err.status)) ? Math.max(400, Math.min(599, Number(err.status))) : 502,
+      message: `脚本初稿未通过校验，AI 修复失败：${err.message || 'unknown_error'}`,
+      title: generatedTitle,
+      meta: { ...(genMeta || { provider, model: model || null, api: apiUrl || null }), error: err },
+      scripts: initialScripts,
+      blueprint: compiledBefore.blueprint,
+      before,
+      after: null
+    }
+  }
+
+  if (!fixed || typeof fixed !== 'object' || !fixed.draft || typeof fixed.draft !== 'object' || !Array.isArray(fixed.draft.cards)) {
+    return {
+      ok: false,
+      repaired: true,
+      status: 502,
+      message: `脚本初稿未通过校验，且当前 Provider 没有返回可用修复结果：${summarizeScriptIssues(beforeIssues) || 'unknown_issue'}`,
+      title: generatedTitle,
+      meta: fixed && typeof fixed === 'object' && fixed.meta
+        ? fixed.meta
+        : (genMeta || { provider, model: model || null, api: apiUrl || null, error: null }),
+      scripts: initialScripts,
+      blueprint: compiledBefore.blueprint,
+      before,
+      after: null
+    }
+  }
+
+  const repairedTitle = fixed.draft && typeof fixed.draft.title === 'string' ? String(fixed.draft.title).trim() : generatedTitle
+  const repairedScripts = buildScriptsFromDraftCards(fixed.draft.cards, prevScripts || initialScripts, formula)
+  if (!repairedScripts) {
+    return {
+      ok: false,
+      repaired: true,
+      status: 502,
+      message: 'AI 修复返回了空脚本，无法生成可用场景卡片',
+      title: repairedTitle,
+      meta: fixed.meta || genMeta || { provider, model: model || null, api: apiUrl || null, error: null },
+      scripts: initialScripts,
+      blueprint: compiledBefore.blueprint,
+      before,
+      after: null
+    }
+  }
+
+  const compiledAfter = compileBlueprintFromScripts({ scripts: repairedScripts, prevBlueprint, expectedFormula: formula })
+  const validationAfter = validateBlueprintDoc(compiledAfter.blueprint)
+  const afterIssues = collectBlockingScriptIssues(compiledAfter.report, validationAfter)
+  const after = { report: compiledAfter.report, validation: validationAfter, issues: afterIssues }
+
+  if (afterIssues.length) {
+    return {
+      ok: false,
+      repaired: true,
+      status: 502,
+      message: `AI 修复后仍未通过结构校验：${summarizeScriptIssues(afterIssues) || 'unknown_issue'}`,
+      title: repairedTitle,
+      meta: fixed.meta || genMeta || { provider, model: model || null, api: apiUrl || null, error: null },
+      scripts: repairedScripts,
+      blueprint: compiledAfter.blueprint,
+      before,
+      after
+    }
+  }
+
+  return {
+    ok: true,
+    repaired: true,
+    title: repairedTitle,
+    scripts: repairedScripts,
+    blueprint: compiledAfter.blueprint,
+    meta: fixed.meta || genMeta || { provider, model: model || null, api: apiUrl || null, error: null },
+    before,
+    after
+  }
 }
 
 app.get('/api/projects', async (c) => {
@@ -1606,17 +2849,12 @@ app.post('/api/projects/ai/create', async (c) => {
   }
 
   const titleIn = String(body?.title || '').trim()
-  const choicePoints = clampInt(body?.choicePoints, 1, 3, 2)
-  const optionsPerChoice = clampInt(body?.optionsPerChoice, 2, 5, 2)
-  const endings = clampInt(body?.endings, 2, 3, 2)
-  const formula = { schemaVersion: '1.0', format: 'numeric', choicePoints, optionsPerChoice, endings }
+  const formula = normalizeAiStoryFormula(body)
   const id = crypto.randomUUID ? crypto.randomUUID() : `p_${Math.random().toString(36).slice(2, 10)}`
   const dir = projectDir(id)
 
   const startedAt = Date.now()
   const aiTimeoutMs = 90_000
-  let gen = null
-  let genMeta = null
   const requestedProvider = String(studio.effective.scripts.provider || 'local').toLowerCase()
   const requestedModel = studio.effective.scripts.model || null
   if (!requestedProvider || requestedProvider === 'none') {
@@ -1625,139 +2863,112 @@ app.post('/api/projects/ai/create', async (c) => {
   const globalRules = await readGlobalRules(ROOT)
   try {
     console.log(
-      `[game_studio] ai.create:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${choicePoints} optionsPerChoice=${optionsPerChoice} endings=${endings}`
+      `[game_studio] ai.create:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${formula.choicePoints} optionsPerChoice=${formula.optionsPerChoice} endings=${formula.endings}`
     )
   } catch (_) {}
-  try {
-    gen = await generateScriptDraft({
-      prompt,
-      title: titleIn || undefined,
-      rules: globalRules,
-      formula,
-      provider: requestedProvider,
-      model: requestedModel || undefined,
-      apiUrl: studio.effective.scripts.apiUrl || undefined,
-      proxyUrl: studio.effective.network.proxyUrl,
-      timeoutMs: aiTimeoutMs
-    })
-    if (gen && typeof gen === 'object' && gen.meta) genMeta = gen.meta
-    if (gen && typeof gen === 'object' && gen.draft) gen = gen.draft
-  } catch (e) {
-    try {
-      const msg = e instanceof Error ? e.message : String(e)
-      // include low-level cause (DNS / TLS / proxy / etc.)
-      const cause = (e && typeof e === 'object' && 'cause' in e) ? e.cause : null
-      const causeMsg = cause && typeof cause === 'object' && cause.message ? String(cause.message) : (cause ? String(cause) : '')
-      const causeCode = cause && typeof cause === 'object' && cause.code ? String(cause.code) : ''
-      console.error('[game_studio] ai generate failed:', msg, causeMsg ? `cause=${causeMsg}` : '', causeCode ? `code=${causeCode}` : '')
-    } catch (_) {}
-    gen = null
-    try {
-      // Keep metadata so UI can explain fallback.
-      const model = String(process.env.STUDIO_AI_MODEL || '').trim() || null
-      genMeta = {
-        provider: 'local',
-        model,
-        api: null,
-        error: {
-          message: e instanceof Error ? e.message : String(e),
-          status: e && e.status ? Number(e.status) : null,
-          code: e && e.code ? String(e.code) : null,
-          cause: e && e.cause ? (e.cause.message ? String(e.cause.message) : String(e.cause)) : null
+  const closed = await generateClosedScriptDraft({
+    prompt,
+    title: titleIn || undefined,
+    projectTitle: titleIn || undefined,
+    rules: globalRules,
+    formula,
+    provider: requestedProvider,
+    model: requestedModel || undefined,
+    apiUrl: studio.effective.scripts.apiUrl || undefined,
+    proxyUrl: studio.effective.network.proxyUrl,
+    timeoutMs: aiTimeoutMs,
+    prevScripts: null,
+    prevBlueprint: null
+  })
+  const title = titleIn || closed.title || guessTitleFromPrompt(prompt)
+
+  if (!closed.ok) {
+    const err = closed.meta && closed.meta.error ? closed.meta.error : null
+    const durationMs = Math.max(0, Date.now() - startedAt)
+    if (!closed.scripts) {
+      const status = Number.isFinite(Number(closed.status)) ? Math.max(400, Math.min(599, Number(closed.status))) : 502
+      return c.json({
+        success: false,
+        error: 'ai_generate_failed',
+        message: closed.message || (err && err.message ? String(err.message) : 'ai_generate_failed'),
+        gen: {
+          ok: false,
+          requestedProvider,
+          provider: closed.meta?.provider || requestedProvider,
+          model: closed.meta?.model || null,
+          api: closed.meta?.api || null,
+          durationMs,
+          formula,
+          error: err,
+          repaired: Boolean(closed.repaired),
+          before: closed.before || null,
+          after: closed.after || null
         }
-      }
-    } catch (_) {}
-  }
-
-  const genTitle = gen && typeof gen.title === 'string' ? String(gen.title).trim() : ''
-  const title = titleIn || genTitle || guessTitleFromPrompt(prompt)
-
-  // For remote providers, if AI call failed, do not create a broken project entry.
-  if (requestedProvider !== 'local' && (!gen || !Array.isArray(gen.cards))) {
-    const err = genMeta && genMeta.error ? genMeta.error : null
-    const msg = err && err.message ? String(err.message) : 'ai_generate_failed'
-    const status = err && Number.isFinite(Number(err.status)) ? Math.max(400, Math.min(599, Number(err.status))) : 502
+      }, status)
+    }
+    const project = await writeAiDraftProject({
+      dir,
+      id,
+      title,
+      formula,
+      scripts: closed.scripts,
+      blueprint: closed.blueprint
+    })
     return c.json({
-      success: false,
-      error: 'ai_generate_failed',
-      message: msg,
+      success: true,
+      project,
+      scripts: closed.scripts,
+      blueprint: closed.blueprint || defaultBlueprint(),
       gen: {
+        ok: false,
+        message: closed.message || (err && err.message ? String(err.message) : 'ai_generate_failed'),
         requestedProvider,
-        provider: genMeta?.provider || requestedProvider,
-        model: genMeta?.model || null,
-        api: genMeta?.api || null,
-        durationMs: Math.max(0, Date.now() - startedAt),
+        provider: closed.meta?.provider || requestedProvider,
+        model: closed.meta?.model || null,
+        api: closed.meta?.api || null,
+        durationMs,
         formula,
-        error: err
+        error: err,
+        repaired: Boolean(closed.repaired),
+        before: closed.before || null,
+        after: closed.after || null
       }
-    }, status)
+    })
   }
 
-  await mkdir(path.join(dir, 'assets'), { recursive: true })
-
-  const project = normalizeProjectDoc({
-    schemaVersion: '2.0',
+  const project = await writeAiDraftProject({
+    dir,
     id,
     title,
-    pluginId: 'story-pixi',
-    pluginVersion: '0.1.0',
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-    characters: [],
-    assets: [],
-    events: [],
-    state: { vars: [] }
+    formula,
+    scripts: closed.scripts,
+    blueprint: closed.blueprint
   })
-
-  await writeJson(path.join(dir, 'project.json'), project)
-  await writeJson(path.join(dir, 'story.json'), defaultStory())
-
-  // scripts (generated)
-  let scriptsOut = null
-  if (gen && typeof gen === 'object' && Array.isArray(gen.cards)) {
-    const cardsIn = gen.cards
-    const cards = cardsIn
-      .map((x, i) => ({
-        id: genId('sc'),
-        name: String(x && x.name ? x.name : `场景${i + 1}`),
-        order: i + 1,
-        text: String(x && x.text ? x.text : ''),
-        updatedAt: nowIso()
-      }))
-      .filter((c) => c.text.trim())
-
-    const scripts = { schemaVersion: '1.0', cards, updatedAt: nowIso() }
-    scripts.cards = normalizeScriptCardsForBlueprint(scripts.cards, formula)
-    scriptsOut = scripts.cards.length ? scripts : generateScriptsFromPrompt(prompt)
-    await writeJson(path.join(dir, 'scripts.json'), scriptsOut)
-  } else {
-    scriptsOut = generateScriptsFromPrompt(prompt)
-    await writeJson(path.join(dir, 'scripts.json'), scriptsOut)
-  }
-
-  // keep blueprint placeholder file for workflow
-  await writeJson(path.join(dir, 'blueprint.json'), defaultBlueprint())
-  await writeJson(path.join(dir, 'meta.json'), { ...defaultMeta({ id, title }), aiFormula: formula })
 
   const durationMs = Math.max(0, Date.now() - startedAt)
   try {
     console.log(
-      `[game_studio] ai.create project=${id} requestedProvider=${requestedProvider} provider=${genMeta?.provider || 'local'} model=${genMeta?.model || '-'} api=${genMeta?.api || '-'} cards=${Array.isArray(scriptsOut?.cards) ? scriptsOut.cards.length : 0} ms=${durationMs}`
+      `[game_studio] ai.create project=${id} requestedProvider=${requestedProvider} provider=${closed.meta?.provider || requestedProvider} model=${closed.meta?.model || '-'} api=${closed.meta?.api || '-'} repaired=${closed.repaired ? 'true' : 'false'} cards=${Array.isArray(closed.scripts?.cards) ? closed.scripts.cards.length : 0} ms=${durationMs}`
     )
   } catch (_) {}
 
   return c.json({
     success: true,
     project,
-    scripts: scriptsOut,
+    scripts: closed.scripts,
+    blueprint: closed.blueprint,
     gen: {
+      ok: true,
       requestedProvider,
-      provider: genMeta?.provider || 'local',
-      model: genMeta?.model || null,
-      api: genMeta?.api || null,
+      provider: closed.meta?.provider || requestedProvider,
+      model: closed.meta?.model || null,
+      api: closed.meta?.api || null,
       durationMs,
       formula,
-      error: genMeta && genMeta.error ? genMeta.error : null
+      repaired: Boolean(closed.repaired),
+      error: closed.meta && closed.meta.error ? closed.meta.error : null,
+      before: closed.before || null,
+      after: closed.after || null
     }
   })
 })
@@ -1779,14 +2990,9 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   }
 
   const titleIn = String(body?.title || '').trim()
-  const choicePoints = clampInt(body?.choicePoints, 1, 3, 2)
-  const optionsPerChoice = clampInt(body?.optionsPerChoice, 2, 5, 2)
-  const endings = clampInt(body?.endings, 2, 3, 2)
-  const formula = { schemaVersion: '1.0', format: 'numeric', choicePoints, optionsPerChoice, endings }
+  const formula = normalizeAiStoryFormula(body)
   const startedAt = Date.now()
   const aiTimeoutMs = 90_000
-  let gen = null
-  let genMeta = null
   const requestedProvider = String(studio.effective.scripts.provider || 'local').toLowerCase()
   const requestedModel = studio.effective.scripts.model || null
   if (!requestedProvider || requestedProvider === 'none') {
@@ -1795,74 +3001,88 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   const globalRules = await readGlobalRules(ROOT)
   try {
     console.log(
-      `[game_studio] ai.regen:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${choicePoints} optionsPerChoice=${optionsPerChoice} endings=${endings}`
+      `[game_studio] ai.regen:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${formula.choicePoints} optionsPerChoice=${formula.optionsPerChoice} endings=${formula.endings}`
     )
   } catch (_) {}
 
-  try {
-    gen = await generateScriptDraft({
-      prompt,
-      title: titleIn || undefined,
-      rules: globalRules,
-      formula,
-      provider: requestedProvider,
-      model: requestedModel || undefined,
-      apiUrl: studio.effective.scripts.apiUrl || undefined,
-      proxyUrl: studio.effective.network.proxyUrl,
-      timeoutMs: aiTimeoutMs
-    })
-    if (gen && typeof gen === 'object' && gen.meta) genMeta = gen.meta
-    if (gen && typeof gen === 'object' && gen.draft) gen = gen.draft
-  } catch (e) {
-    try {
-      const msg = e instanceof Error ? e.message : String(e)
-      const cause = (e && typeof e === 'object' && 'cause' in e) ? e.cause : null
-      const causeMsg = cause && typeof cause === 'object' && cause.message ? String(cause.message) : (cause ? String(cause) : '')
-      const causeCode = cause && typeof cause === 'object' && cause.code ? String(cause.code) : ''
-      console.error('[game_studio] ai regen failed:', msg, causeMsg ? `cause=${causeMsg}` : '', causeCode ? `code=${causeCode}` : '')
-    } catch (_) {}
-    gen = null
-    try {
-      const model = String(process.env.STUDIO_AI_MODEL || '').trim() || null
-      genMeta = {
-        provider: 'local',
-        model,
-        api: null,
-        error: {
-          message: e instanceof Error ? e.message : String(e),
-          status: e && e.status ? Number(e.status) : null,
-          code: e && e.code ? String(e.code) : null,
-          cause: e && e.cause ? (e.cause.message ? String(e.cause.message) : String(e.cause)) : null
-        }
-      }
-    } catch (_) {}
-  }
-
   const currProject = normalizeProjectDoc(await readJson(path.join(dir, 'project.json')))
-  const genTitle = gen && typeof gen.title === 'string' ? String(gen.title).trim() : ''
-  const nextTitle = titleIn || String(currProject?.title || '').trim() || genTitle || guessTitleFromPrompt(prompt)
+  let currScripts = null
+  try { currScripts = await readJson(path.join(dir, 'scripts.json')) } catch (_) { currScripts = defaultScripts() }
+  let currBlueprint = null
+  try { currBlueprint = await readJson(path.join(dir, 'blueprint.json')) } catch (_) { currBlueprint = defaultBlueprint() }
 
-  // scripts (generated) overwrite
-  let scriptsOut = null
-  if (gen && typeof gen === 'object' && Array.isArray(gen.cards)) {
-    const cardsIn = gen.cards
-    const cards = cardsIn
-      .map((x, i) => ({
-        id: genId('sc'),
-        name: String(x && x.name ? x.name : `场景${i + 1}`),
-        order: i + 1,
-        text: String(x && x.text ? x.text : ''),
-        updatedAt: nowIso()
-      }))
-      .filter((c) => c.text.trim())
+  const closed = await generateClosedScriptDraft({
+    prompt,
+    title: titleIn || undefined,
+    projectTitle: String(currProject?.title || '').trim() || titleIn || undefined,
+    rules: globalRules,
+    formula,
+    provider: requestedProvider,
+    model: requestedModel || undefined,
+    apiUrl: studio.effective.scripts.apiUrl || undefined,
+    proxyUrl: studio.effective.network.proxyUrl,
+    timeoutMs: aiTimeoutMs,
+    prevScripts: currScripts,
+    prevBlueprint: currBlueprint
+  })
+  const nextTitle = titleIn || String(currProject?.title || '').trim() || closed.title || guessTitleFromPrompt(prompt)
 
-    const scripts = { schemaVersion: '1.0', cards, updatedAt: nowIso() }
-    scripts.cards = normalizeScriptCardsForBlueprint(scripts.cards, formula)
-    scriptsOut = scripts.cards.length ? scripts : generateScriptsFromPrompt(prompt)
-  } else {
-    scriptsOut = generateScriptsFromPrompt(prompt)
+  if (!closed.ok) {
+    const err = closed.meta && closed.meta.error ? closed.meta.error : null
+    const durationMs = Math.max(0, Date.now() - startedAt)
+    if (!closed.scripts) {
+      const status = Number.isFinite(Number(closed.status)) ? Math.max(400, Math.min(599, Number(closed.status))) : 502
+      return c.json({
+        success: false,
+        error: 'ai_generate_failed',
+        message: closed.message || (err && err.message ? String(err.message) : 'ai_generate_failed'),
+        gen: {
+          ok: false,
+          requestedProvider,
+          provider: closed.meta?.provider || requestedProvider,
+          model: closed.meta?.model || null,
+          api: closed.meta?.api || null,
+          durationMs,
+          formula,
+          error: err,
+          repaired: Boolean(closed.repaired),
+          before: closed.before || null,
+          after: closed.after || null
+        }
+      }, status)
+    }
+    await writeJson(path.join(dir, 'scripts.json'), closed.scripts)
+    await writeJson(path.join(dir, 'blueprint.json'), closed.blueprint || defaultBlueprint())
+    const failedProject = normalizeProjectDoc({ ...(currProject || {}), id, title: nextTitle, updatedAt: nowIso() })
+    await writeJson(path.join(dir, 'project.json'), failedProject)
+    try {
+      const metaPath = path.join(dir, 'meta.json')
+      const meta = (await existsFile(metaPath)) ? await readJson(metaPath) : null
+      await writeJson(metaPath, { ...(meta && typeof meta === 'object' ? meta : defaultMeta({ id, title: nextTitle })), id, title: nextTitle, updatedAt: nowIso(), aiFormula: formula })
+    } catch (_) {}
+    return c.json({
+      success: true,
+      project: failedProject,
+      scripts: closed.scripts,
+      blueprint: closed.blueprint || defaultBlueprint(),
+      gen: {
+        ok: false,
+        message: closed.message || (err && err.message ? String(err.message) : 'ai_generate_failed'),
+        requestedProvider,
+        provider: closed.meta?.provider || requestedProvider,
+        model: closed.meta?.model || null,
+        api: closed.meta?.api || null,
+        durationMs,
+        formula,
+        error: err,
+        repaired: Boolean(closed.repaired),
+        before: closed.before || null,
+        after: closed.after || null
+      }
+    })
   }
-  await writeJson(path.join(dir, 'scripts.json'), scriptsOut)
+  await writeJson(path.join(dir, 'scripts.json'), closed.scripts)
+  await writeJson(path.join(dir, 'blueprint.json'), closed.blueprint)
 
   // keep titles + timestamps in sync
   const nextProject = normalizeProjectDoc({ ...(currProject || {}), id, title: nextTitle, updatedAt: nowIso() })
@@ -1878,22 +3098,27 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   const durationMs = Math.max(0, Date.now() - startedAt)
   try {
     console.log(
-      `[game_studio] ai.regen project=${id} requestedProvider=${requestedProvider} provider=${genMeta?.provider || 'local'} model=${genMeta?.model || '-'} api=${genMeta?.api || '-'} cards=${Array.isArray(scriptsOut?.cards) ? scriptsOut.cards.length : 0} ms=${durationMs}`
+      `[game_studio] ai.regen project=${id} requestedProvider=${requestedProvider} provider=${closed.meta?.provider || requestedProvider} model=${closed.meta?.model || '-'} api=${closed.meta?.api || '-'} repaired=${closed.repaired ? 'true' : 'false'} cards=${Array.isArray(closed.scripts?.cards) ? closed.scripts.cards.length : 0} ms=${durationMs}`
     )
   } catch (_) {}
 
   return c.json({
     success: true,
     project: nextProject,
-    scripts: scriptsOut,
+    scripts: closed.scripts,
+    blueprint: closed.blueprint,
     gen: {
+      ok: true,
       requestedProvider,
-      provider: genMeta?.provider || 'local',
-      model: genMeta?.model || null,
-      api: genMeta?.api || null,
+      provider: closed.meta?.provider || requestedProvider,
+      model: closed.meta?.model || null,
+      api: closed.meta?.api || null,
       durationMs,
       formula,
-      error: genMeta && genMeta.error ? genMeta.error : null
+      repaired: Boolean(closed.repaired),
+      error: closed.meta && closed.meta.error ? closed.meta.error : null,
+      before: closed.before || null,
+      after: closed.after || null
     }
   })
 })
@@ -1950,7 +3175,10 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
   const compiled = compileBlueprintFromScripts({ scripts, prevBlueprint: currBlueprint, expectedFormula })
   const validation = validateBlueprintDoc(compiled.blueprint)
 
-  const provider = String(process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
+  const studio = await getEffectiveStudioConfig(ROOT)
+  const provider = String(studio.effective.scripts.provider || process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
+  const model = studio.effective.scripts.model || undefined
+  const apiUrl = studio.effective.scripts.apiUrl || undefined
   const startedAt = Date.now()
   if (!isOpenAICompatibleProvider(provider)) {
     const review = reviewBlueprintLocally({ formula: expectedFormula, report: compiled.report, validation })
@@ -1981,7 +3209,9 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
       scripts,
       report: compiled.report,
       validation,
-      provider
+      provider,
+      apiUrl,
+      model
     })
     try {
       console.log(
@@ -2066,6 +3296,7 @@ app.post('/api/projects/:id/ai/fix/scripts', async (c) => {
       validation: validationBefore,
       provider: requestedProvider,
       model: requestedModel || undefined,
+      apiUrl: studio.effective.scripts.apiUrl || undefined,
       proxyUrl: studio.effective.network.proxyUrl
     })
   } catch (e) {
@@ -2164,7 +3395,30 @@ app.put('/api/projects/:id', async (c) => {
 
   const curr0 = await readJson(path.join(dir, 'project.json'))
   const { project: curr } = normalizeProjectAndDetectChanges(curr0)
-  const next0 = project ? { ...curr, ...project, id, updatedAt: nowIso() } : { ...curr, updatedAt: nowIso() }
+  let mergedProject = project ? { ...curr, ...project, id, updatedAt: nowIso() } : { ...curr, updatedAt: nowIso() }
+  if (project && Array.isArray(project.assets)) {
+    const incomingAssets = Array.isArray(project.assets) ? project.assets : []
+    const incomingKeys = new Set(incomingAssets.map((item) => `${String(item && item.id || '').trim()}::${normalizeStoryAssetUri(item && item.uri)}`))
+    const preservedManagedAssets = Array.isArray(curr.assets)
+      ? curr.assets.filter((item) => {
+          const uri = normalizeStoryAssetUri(item && item.uri)
+          if (!uri) return false
+          const managed = (
+            uri.startsWith('assets/ai/story_assets/') ||
+            uri.startsWith('assets/ai/story_lineart/') ||
+            uri.startsWith('assets/ai/story_lock_tests/')
+          )
+          if (!managed) return false
+          const key = `${String(item && item.id || '').trim()}::${uri}`
+          return !incomingKeys.has(key)
+        })
+      : []
+    mergedProject = {
+      ...mergedProject,
+      assets: [...incomingAssets, ...preservedManagedAssets]
+    }
+  }
+  const next0 = mergedProject
   const next = normalizeProjectDoc(next0)
   await writeJson(path.join(dir, 'project.json'), next)
   if (story) await writeJson(path.join(dir, 'story.json'), story)
@@ -3140,6 +4394,8 @@ app.post('/api/projects/:id/ai/background', async (c) => {
 	const sceneNegative = String(body?.negativePrompt || '').trim()
 	const globalPrompt = String(body?.globalPrompt || '').trim()
 	const globalNegativePrompt = String(body?.globalNegativePrompt || '').trim()
+  const requestedModel = String(body?.model || '').trim()
+  const requestedLoras = Array.isArray(body?.loras) ? body.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
   const continuity = body && body.continuity && typeof body.continuity === 'object' ? body.continuity : null
 	const width = Number(body?.width || 768)
 	const height = Number(body?.height || 1024)
@@ -3172,6 +4428,7 @@ app.post('/api/projects/:id/ai/background', async (c) => {
     return c.json({ success: false, error: 'reference_image_unreachable', message: '所选参考图链接仅本机可访问，Doubao 云端无法下载。请改用带 remoteUrl 的参考场景图。' }, 400)
   }
   const characterRefsIn = Array.isArray(body?.characterRefs) ? body.characterRefs : []
+  const assetRefsIn = Array.isArray(body?.assetRefs) ? body.assetRefs : []
   const referenceImages = []
   for (const item of characterRefsIn) {
     if (!item || typeof item !== 'object') continue
@@ -3193,13 +4450,31 @@ app.post('/api/projects/:id/ai/background', async (c) => {
       })
     } catch (_) {}
   }
+  for (const item of assetRefsIn) {
+    if (!item || typeof item !== 'object') continue
+    const assetId = String(item.assetId || '').trim()
+    const assetName = String(item.assetName || item.name || assetId || 'reference').trim()
+    const assetAbs = resolveAssetPathFromUri(id, item.assetUri || item.assetPath || '')
+    if (!assetAbs || !(await existsFile(assetAbs))) continue
+    try {
+      const bytes = await readFile(assetAbs)
+      referenceImages.push({
+        role: String(item.assetType || item.category || 'asset').trim() || 'asset',
+        assetId: assetId || undefined,
+        assetName,
+        filename: path.basename(assetAbs),
+        bytes,
+        weight: Number.isFinite(Number(item.weight)) ? Number(item.weight) : undefined
+      })
+    } catch (_) {}
+  }
   logStage({
     stage: 'bg.create',
     event: 'start',
     traceId,
     project: id,
     provider: bgProvider,
-    model: studio.effective.image.model || '-',
+    model: requestedModel || studio.effective.image.model || '-',
     item: `w${Math.floor(width || 0)}h${Math.floor(height || 0)} refs:${referenceImages.length}`
   })
 
@@ -3224,12 +4499,14 @@ app.post('/api/projects/:id/ai/background', async (c) => {
         continuity,
           referenceImageUrls,
         referenceImages,
+      workflowMode: String(body?.workflowMode || '').trim() || undefined,
+      lockProfile: String(body?.lockProfile || '').trim() || undefined,
       provider: bgProvider,
       sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
       comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
       apiUrl: studio.effective.image.apiUrl,
-      model: studio.effective.image.model,
-      loras: studio.effective.image.loras,
+      model: requestedModel || studio.effective.image.model,
+      loras: requestedLoras.length ? requestedLoras : studio.effective.image.loras,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs: bgTimeoutMs
 	    })
@@ -3428,6 +4705,7 @@ app.post('/api/projects/:id/ai/story/bible', async (c) => {
     const { result, meta } = await generateStoryBible({
       provider: studio.effective.prompt.provider,
       model: studio.effective.prompt.model,
+      apiUrl: studio.effective.prompt.apiUrl,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs,
       input
@@ -3472,6 +4750,1674 @@ app.post('/api/projects/:id/ai/story/bible', async (c) => {
       },
       mapped.httpStatus
     )
+  }
+})
+
+app.post('/api/projects/:id/ai/translate', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const textIn = String(body?.text || '').trim()
+  if (!textIn) return c.json({ success: false, error: 'missing_text', message: 'text 不能为空' }, 400)
+
+  const timeoutRaw = Number(body?.timeoutMs)
+  const timeoutMs = (Number.isFinite(timeoutRaw) && timeoutRaw <= 0)
+    ? 0
+    : clampInt(body?.timeoutMs, 5_000, 180_000, clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 180_000, 60_000))
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  const translationCfg = studio.effective.translation || studio.effective.prompt
+  if (!translationCfg?.provider || translationCfg.provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中配置“提示词翻译接口”' }, 400)
+  }
+
+  const startedAt = Date.now()
+  const traceId = createTraceId()
+  logStage({ stage: 'prompt.translate', event: 'start', traceId, project: id, provider: translationCfg.provider || 'localoxml', model: translationCfg.model || '-' })
+  try {
+    const { result, meta } = await translatePromptText({
+      provider: translationCfg.provider,
+      model: translationCfg.model,
+      apiUrl: translationCfg.apiUrl,
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs,
+      text: textIn,
+      sourceLang: body?.sourceLang,
+      targetLang: body?.targetLang,
+      mode: body?.mode
+    })
+    logStage({ stage: 'prompt.translate', event: 'ok', traceId, project: id, provider: meta && meta.provider ? meta.provider : translationCfg.provider || 'localoxml', model: meta && meta.model ? meta.model : translationCfg.model || '-', ok: true, durationMs: Math.max(0, Date.now() - startedAt) })
+    return c.json({ success: true, result, meta, traceId })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    logStage({ stage: 'prompt.translate', event: 'fail', traceId, project: id, provider: translationCfg.provider || 'localoxml', model: translationCfg.model || '-', status: mapped.httpStatus, ok: false, durationMs: Math.max(0, Date.now() - startedAt), err: msg })
+    return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
+  }
+
+})
+
+app.post('/api/projects/:id/ai/story/assets/plan', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const bundle = await readProjectBundle(id)
+  const storyBible = body && body.storyBible && typeof body.storyBible === 'object'
+    ? body.storyBible
+    : readStoryBibleFromProjectDoc(bundle.project)
+  if (!storyBible || typeof storyBible !== 'object') {
+    return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible，或在请求中传入 storyBible。' }, 400)
+  }
+
+  const prevManifest = body && body.rebuild ? null : await readStoryAssetPlanIfExists(id)
+  const plan = buildStoryAssetPlan({
+    project: bundle.project,
+    story: bundle.story,
+    storyBible,
+    prevManifest
+  })
+  await saveStoryAssetPlan(id, plan)
+  return c.json({ success: true, plan })
+})
+
+async function generateAndPersistStoryAssetReference({
+  id,
+  dir,
+  bundle,
+  plan,
+  asset,
+  studio,
+  imgProvider,
+  style,
+  width,
+  height,
+  steps,
+  cfgScale,
+  sampler,
+  scheduler,
+  loras,
+  prompt,
+  negativePrompt,
+  timeoutMs,
+  seed
+}) {
+  const renderProfile = getStoryAssetRenderProfile(asset)
+  const gen = await generateBackgroundImage({
+    prompt,
+    negativePrompt,
+    width,
+    height,
+    style,
+    steps,
+    cfgScale,
+    sampler,
+    scheduler,
+    seed,
+    provider: imgProvider,
+    sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
+    comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+    apiUrl: studio.effective.image.apiUrl,
+    model: studio.effective.image.model,
+    loras,
+    workflowMode: String(renderProfile.workflowMode || '').trim() || undefined,
+    lockProfile: String(renderProfile.profile || '').trim() || undefined,
+    proxyUrl: studio.effective.network.proxyUrl,
+    timeoutMs
+  })
+
+  const finalGen = gen
+  const buf = finalGen.bytes
+  const ext0 = String(finalGen.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
+  const sniff = sniffImageMetaFromBytes(buf)
+  const ext = (sniff && sniff.ext ? sniff.ext : ext0) || 'png'
+  const target = buildStoryAssetFileTarget({
+    dir,
+    asset,
+    prefix: 'reference',
+    ext,
+    seed
+  })
+  await mkdir(target.outDir, { recursive: true })
+  await writeFile(target.absPath, buf)
+  const assetPath = target.assetPath
+
+  const projectAssetId = genId('asset')
+  const projectAsset = {
+    id: projectAssetId,
+    kind: 'image',
+    name: `故事资产 ${String(asset.name || asset.id || projectAssetId).trim()}`,
+    uri: assetPath,
+    source: {
+      type: 'ai',
+      prompt,
+      negativePrompt,
+      provider: String(finalGen?.meta?.provider || imgProvider || ''),
+      remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
+      loras: Array.isArray(loras) ? loras : undefined,
+      seed: Number.isFinite(Number(seed)) ? Number(seed) : (Number.isFinite(Number(finalGen?.meta?.seed)) ? Number(finalGen.meta.seed) : undefined)
+    }
+  }
+  const nextProject = {
+    ...bundle.rawProject,
+    assets: [...(Array.isArray(bundle.rawProject.assets) ? bundle.rawProject.assets : []), projectAsset],
+    updatedAt: new Date().toISOString()
+  }
+  await writeJson(path.join(dir, 'project.json'), nextProject)
+
+  const nextPlan = {
+    ...plan,
+    generatedAt: new Date().toISOString(),
+    assets: Array.isArray(plan.assets) ? plan.assets.map((item) => {
+      if (String(item && item.id || '').trim() !== String(asset.id || '').trim()) return item
+      const prevRefs = Array.isArray(item.generatedRefs) ? item.generatedRefs : []
+      const hasPrimary = Boolean(String(item?.primaryReferenceAssetUri || '').trim())
+      return {
+        ...item,
+        referenceStatus: hasPrimary ? 'ready' : 'candidates_ready',
+        generatedRefs: [
+          ...prevRefs,
+          {
+            projectAssetId,
+            projectAssetUri: assetPath,
+            createdAt: new Date().toISOString(),
+            provider: String(finalGen?.meta?.provider || imgProvider || ''),
+            remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
+            loras: Array.isArray(loras) ? loras : undefined,
+            prompt,
+            negativePrompt,
+            width,
+            height,
+            seed: Number.isFinite(Number(seed)) ? Number(seed) : (Number.isFinite(Number(finalGen?.meta?.seed)) ? Number(finalGen.meta.seed) : undefined)
+          }
+        ]
+      }
+    }) : plan.assets
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await saveStoryAssetPlan(id, nextPlan)
+
+  return {
+    asset: (Array.isArray(nextPlan.assets) ? nextPlan.assets.find((item) => String(item && item.id || '').trim() === String(asset.id || '').trim()) : null) || null,
+    projectAsset,
+    assetPath,
+    url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
+    provider: String(finalGen?.meta?.provider || imgProvider || ''),
+    remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
+    prompt,
+    negativePrompt,
+    seed: Number.isFinite(Number(seed)) ? Number(seed) : (Number.isFinite(Number(finalGen?.meta?.seed)) ? Number(finalGen.meta.seed) : undefined),
+    plan: nextPlan
+  }
+}
+
+async function applyWhiteBackgroundToStoryAssetReference({
+  id,
+  dir,
+  plan,
+  asset,
+  sourceRef,
+  studio,
+  timeoutMs
+}) {
+  const category = String(asset?.category || '').trim()
+  const comfyuiBaseUrl = String(studio?.effective?.image?.comfyuiBaseUrl || '').trim()
+  if (!['character', 'prop'].includes(category) || !comfyuiBaseUrl) {
+    return {
+      plan,
+      primaryReferenceAssetId: String(sourceRef?.projectAssetId || '').trim(),
+      primaryReferenceAssetUri: String(sourceRef?.projectAssetUri || '').trim()
+    }
+  }
+
+  const sourceUri = String(sourceRef?.projectAssetUri || '').trim().replace(/^\/+/, '')
+  if (!sourceUri) {
+    return {
+      plan,
+      primaryReferenceAssetId: String(sourceRef?.projectAssetId || '').trim(),
+      primaryReferenceAssetUri: String(sourceRef?.projectAssetUri || '').trim()
+    }
+  }
+
+  try {
+    const abs = path.join(dir, sourceUri)
+    const bytes = await readFile(abs)
+    const post = await generateComfyuiWhiteBackgroundFromReference({
+      referenceBytes: bytes,
+      referenceFilename: `${String(asset?.id || 'asset').trim() || 'asset'}_selected.png`,
+      comfyuiBaseUrl,
+      processRes: Math.max(Number(sourceRef?.width) || 0, Number(sourceRef?.height) || 0, 1024),
+      timeoutMs,
+      prefix: buildStoryAssetComfyPrefix(asset, 'selected_white_bg')
+    })
+
+    const ext = String(post.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
+    const target = buildStoryAssetFileTarget({
+      dir,
+      asset,
+      prefix: 'selected_white_bg',
+      ext,
+      seed: sourceRef && sourceRef.seed
+    })
+    await mkdir(target.outDir, { recursive: true })
+    await writeFile(target.absPath, post.bytes)
+    const relPath = target.assetPath
+
+    const projectAssetId = genId('asset')
+    const projectAsset = {
+      id: projectAssetId,
+      kind: 'image',
+      name: `故事资产白底 ${String(asset?.name || asset?.id || projectAssetId).trim()}`,
+      uri: relPath,
+      source: {
+        type: 'ai',
+        prompt: String(sourceRef?.prompt || '').trim() || undefined,
+        negativePrompt: String(sourceRef?.negativePrompt || '').trim() || undefined,
+        provider: String(post?.meta?.provider || 'comfyui'),
+        remoteUrl: String(post?.meta?.url || '').trim() || undefined,
+        loras: Array.isArray(sourceRef?.loras) ? sourceRef.loras : undefined,
+        seed: Number.isFinite(Number(sourceRef?.seed)) ? Number(sourceRef.seed) : undefined,
+        postprocess: 'rmbg_white_bg'
+      }
+    }
+
+    const bundle = await readProjectBundle(id)
+    const nextProject = {
+      ...bundle.rawProject,
+      assets: [...(Array.isArray(bundle.rawProject.assets) ? bundle.rawProject.assets : []), projectAsset],
+      updatedAt: new Date().toISOString()
+    }
+    await writeJson(path.join(dir, 'project.json'), nextProject)
+
+    const nextPlan = {
+      ...plan,
+      generatedAt: new Date().toISOString(),
+      assets: Array.isArray(plan.assets) ? plan.assets.map((item) => {
+        if (String(item && item.id || '').trim() !== String(asset?.id || '').trim()) return item
+        const prevRefs = Array.isArray(item.generatedRefs) ? item.generatedRefs : []
+        return {
+          ...item,
+          generatedRefs: [
+            ...prevRefs,
+            {
+              projectAssetId,
+              projectAssetUri: relPath,
+              createdAt: new Date().toISOString(),
+              provider: String(post?.meta?.provider || 'comfyui'),
+              remoteUrl: String(post?.meta?.url || '').trim() || undefined,
+              loras: Array.isArray(sourceRef?.loras) ? sourceRef.loras : undefined,
+              prompt: String(sourceRef?.prompt || '').trim(),
+              negativePrompt: String(sourceRef?.negativePrompt || '').trim(),
+              width: Number(sourceRef?.width) || undefined,
+              height: Number(sourceRef?.height) || undefined,
+              seed: Number.isFinite(Number(sourceRef?.seed)) ? Number(sourceRef.seed) : undefined,
+              postprocess: 'rmbg_white_bg'
+            }
+          ]
+        }
+      }) : plan.assets
+    }
+    nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+    await saveStoryAssetPlan(id, nextPlan)
+    return { plan: nextPlan, primaryReferenceAssetId: projectAssetId, primaryReferenceAssetUri: relPath }
+  } catch (_) {
+    return {
+      plan,
+      primaryReferenceAssetId: String(sourceRef?.projectAssetId || '').trim(),
+      primaryReferenceAssetUri: String(sourceRef?.projectAssetUri || '').trim()
+    }
+  }
+}
+
+function deriveStoryAssetReferenceStatus(item) {
+  const primaryUri = String(item?.primaryReferenceAssetUri || '').trim()
+  if (primaryUri) return 'ready'
+  const batch = Array.isArray(item?.latestReferenceBatch) ? item.latestReferenceBatch : []
+  const refs = Array.isArray(item?.generatedRefs) ? item.generatedRefs : []
+  if (batch.length || refs.length) return 'candidates_ready'
+  return String(item?.referenceStatus || 'missing').trim() || 'missing'
+}
+
+async function persistStoryAssetReferenceBatch({
+  id,
+  plan,
+  assetId,
+  latestReferenceBatch,
+  recommendedReferenceAssetUri
+}) {
+  const nextPlan = {
+    ...plan,
+    generatedAt: new Date().toISOString(),
+    assets: Array.isArray(plan.assets) ? plan.assets.map((item) => {
+      if (String(item && item.id || '').trim() !== String(assetId || '').trim()) return item
+      const batch = Array.isArray(latestReferenceBatch) ? latestReferenceBatch.filter((x) => x && typeof x === 'object') : []
+      const refStatus = String(item?.primaryReferenceAssetUri || '').trim() ? 'ready' : (batch.length ? 'candidates_ready' : deriveStoryAssetReferenceStatus(item))
+      return {
+        ...item,
+        referenceStatus: refStatus,
+        latestReferenceBatch: batch,
+        latestRecommendedReferenceAssetUri: String(recommendedReferenceAssetUri || '').trim(),
+        latestReferenceReview: String(item?.primaryReferenceAssetUri || '').trim() ? item.latestReferenceReview || null : null
+      }
+    }) : plan.assets
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await saveStoryAssetPlan(id, nextPlan)
+  return nextPlan
+}
+
+async function writeStoryAssetPrimaryToProject({ id, dir, asset, primaryReferenceAssetId }) {
+  const bundle = await readProjectBundle(id)
+  const nextProject = {
+    ...bundle.rawProject,
+    updatedAt: new Date().toISOString(),
+    characters: Array.isArray(bundle.rawProject.characters) ? bundle.rawProject.characters.map((ch) => {
+      if (String(asset?.category || '').trim() !== 'character') return ch
+      if (String(ch && ch.id || '').trim() !== String(asset?.projectCharacterId || '').trim()) return ch
+      return {
+        ...ch,
+        ai: {
+          ...((ch && ch.ai && typeof ch.ai === 'object') ? ch.ai : {}),
+          referenceAssetId: String(primaryReferenceAssetId || '').trim()
+        }
+      }
+    }) : bundle.rawProject.characters
+  }
+  await writeJson(path.join(dir, 'project.json'), nextProject)
+}
+
+function getStoryAssetRenderSize(asset) {
+  const profile = getStoryAssetRenderProfile(asset && typeof asset === 'object' ? asset : { category: asset })
+  return { width: Number(profile.width || 768), height: Number(profile.height || 768) }
+}
+
+async function persistStoryAssetLineartResult({
+  id,
+  dir,
+  plan,
+  asset,
+  hintBytes,
+  hintExt,
+  finalBytes,
+  finalExt,
+  meta,
+  prompt,
+  negativePrompt
+}) {
+  const hintTarget = buildStoryAssetFileTarget({
+    dir,
+    asset,
+    prefix: 'lineart_hint',
+    ext: String(hintExt || 'png'),
+    seed: meta && meta.seed
+  })
+  const finalTarget = buildStoryAssetFileTarget({
+    dir,
+    asset,
+    prefix: 'lineart_final',
+    ext: String(finalExt || 'png'),
+    seed: meta && meta.seed
+  })
+  await mkdir(hintTarget.outDir, { recursive: true })
+  await writeFile(hintTarget.absPath, hintBytes)
+  await writeFile(finalTarget.absPath, finalBytes)
+  const hintPath = hintTarget.assetPath
+  const finalPath = finalTarget.assetPath
+
+  const hintAssetId = genId('asset')
+  const finalAssetId = genId('asset')
+  const hintProjectAsset = {
+    id: hintAssetId,
+    kind: 'image',
+    name: `线稿提示 ${String(asset?.name || asset?.id || hintAssetId).trim()}`,
+    uri: hintPath,
+    source: {
+      type: 'ai',
+      prompt,
+      provider: String(meta?.provider || 'comfyui'),
+      remoteUrl: String(meta?.hintUrl || '').trim() || undefined
+    }
+  }
+  const finalProjectAsset = {
+    id: finalAssetId,
+    kind: 'image',
+    name: `线稿成品 ${String(asset?.name || asset?.id || finalAssetId).trim()}`,
+    uri: finalPath,
+    source: {
+      type: 'ai',
+      prompt,
+      provider: String(meta?.provider || 'comfyui'),
+      remoteUrl: String(meta?.finalUrl || '').trim() || undefined
+    }
+  }
+
+  const bundle = await readProjectBundle(id)
+  const nextProject = {
+    ...bundle.rawProject,
+    assets: [
+      ...(Array.isArray(bundle.rawProject.assets) ? bundle.rawProject.assets : []),
+      hintProjectAsset,
+      finalProjectAsset
+    ],
+    updatedAt: new Date().toISOString()
+  }
+  await writeJson(path.join(dir, 'project.json'), nextProject)
+
+  const nextPlan = {
+    ...plan,
+    generatedAt: new Date().toISOString(),
+    assets: Array.isArray(plan.assets) ? plan.assets.map((item) => {
+      if (String(item && item.id || '').trim() !== String(asset?.id || '').trim()) return item
+      return {
+        ...item,
+        lineartHintAssetId: hintAssetId,
+        lineartHintAssetUri: hintPath,
+        lineartFinalAssetId: finalAssetId,
+        lineartFinalAssetUri: finalPath,
+        lineartStatus: 'ready',
+        lineartPrompt: String(prompt || '').trim(),
+        lineartNegativePrompt: String(negativePrompt || '').trim(),
+        lineartMeta: meta && typeof meta === 'object' ? meta : null,
+        lineartGeneratedAt: new Date().toISOString()
+      }
+    }) : plan.assets
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await saveStoryAssetPlan(id, nextPlan)
+  return {
+    plan: nextPlan,
+    asset: (Array.isArray(nextPlan.assets) ? nextPlan.assets.find((item) => String(item && item.id || '').trim() === String(asset?.id || '').trim()) : null) || null,
+    hintProjectAsset,
+    finalProjectAsset,
+    hintAssetPath: hintPath,
+    finalAssetPath: finalPath,
+    hintUrl: `/project-assets/${encodeURIComponent(String(id))}/${hintPath}`,
+    finalUrl: `/project-assets/${encodeURIComponent(String(id))}/${finalPath}`
+  }
+}
+
+async function reviewAndPersistStoryAssetReference({
+  id,
+  dir,
+  studio,
+  plan,
+  asset,
+  prompt,
+  negativePrompt,
+  assetPath
+}) {
+  const abs = path.join(dir, String(assetPath || '').replace(/^\/+/, ''))
+  const buf = await readFile(abs)
+  const sniff = sniffImageMetaFromBytes(buf)
+  if (!sniff) {
+    const e = new Error('invalid_story_asset_reference_image')
+    e.status = 400
+    throw e
+  }
+  const analysis = await reviewStoryboardLockImageWithAi({
+    provider: studio.effective.prompt.provider,
+    model: studio.effective.prompt.model,
+    apiUrl: studio.effective.prompt.apiUrl,
+    proxyUrl: studio.effective.network.proxyUrl,
+    asset,
+    prompt,
+    negativePrompt,
+    imageDataUrl: `data:${sniff.contentType};base64,${buf.toString('base64')}`,
+    attempt: 1,
+    maxAttempts: 1
+  })
+
+  const review = {
+    reviewedAt: new Date().toISOString(),
+    targetAssetUri: String(assetPath || '').trim(),
+    prompt: String(prompt || '').trim(),
+    negativePrompt: String(negativePrompt || '').trim(),
+    passed: Boolean(analysis && analysis.passed),
+    score: Number.isFinite(Number(analysis && analysis.score)) ? Math.max(0, Math.min(100, Math.round(Number(analysis.score)))) : null,
+    summary: String(analysis && analysis.summary || '').trim(),
+    issues: Array.isArray(analysis && analysis.issues) ? analysis.issues.map((x) => String(x || '').trim()).filter(Boolean) : [],
+    revisedPrompt: String(analysis && analysis.revisedPrompt || '').trim(),
+    revisedNegativePrompt: String(analysis && analysis.revisedNegativePrompt || '').trim(),
+    skipped: Boolean(analysis && analysis.skipped)
+  }
+  const nextPlan = {
+    ...plan,
+    assets: Array.isArray(plan.assets) ? plan.assets.map((item) => {
+      if (String(item && item.id || '').trim() !== String(asset.id || '').trim()) return item
+      return { ...item, latestReferenceReview: review }
+    }) : plan.assets
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await saveStoryAssetPlan(id, nextPlan)
+
+  return {
+    asset: (Array.isArray(nextPlan.assets) ? nextPlan.assets.find((item) => String(item && item.id || '').trim() === String(asset.id || '').trim()) : null) || null,
+    analysis: review,
+    plan: nextPlan
+  }
+}
+
+function storyAssetReviewScore(analysis) {
+  const score = Number(analysis && analysis.score)
+  if (Number.isFinite(score)) return Math.max(0, Math.min(100, Math.round(score)))
+  return analysis && analysis.passed ? 100 : -1
+}
+
+async function setPrimaryStoryAssetReference({
+  id,
+  plan,
+  assetId,
+  primaryReferenceAssetId,
+  primaryReferenceAssetUri,
+  latestReferenceReview,
+  latestReferenceBatch,
+  selectedBatchAssetPath,
+  resetLineart = true
+}) {
+  const selectedBatchUri = normalizeStoryAssetUri(selectedBatchAssetPath)
+  const normalizedPrimaryUri = normalizeStoryAssetUri(primaryReferenceAssetUri)
+  const nextPlan = {
+    ...plan,
+    generatedAt: new Date().toISOString(),
+    assets: Array.isArray(plan.assets) ? plan.assets.map((item) => {
+      if (String(item && item.id || '').trim() !== String(assetId || '').trim()) return item
+      const nextBatch = Array.isArray(latestReferenceBatch)
+        ? latestReferenceBatch
+          .filter((x) => x && typeof x === 'object')
+          .map((entry) => {
+            const entryPath = normalizeStoryAssetUri(entry && entry.assetPath)
+            if (!selectedBatchUri || !normalizedPrimaryUri || entryPath !== selectedBatchUri) return entry
+            return {
+              ...entry,
+              assetPath: normalizedPrimaryUri,
+              url: `/project-assets/${encodeURIComponent(String(id || ''))}/${normalizedPrimaryUri}`
+            }
+          })
+        : (Array.isArray(item.latestReferenceBatch) ? item.latestReferenceBatch : [])
+      const nextItem = {
+        ...item,
+        primaryReferenceAssetId: String(primaryReferenceAssetId || '').trim(),
+        primaryReferenceAssetUri: String(primaryReferenceAssetUri || '').trim(),
+        primaryReferenceSelectedAt: new Date().toISOString(),
+        referenceStatus: String(primaryReferenceAssetUri || '').trim() ? 'ready' : deriveStoryAssetReferenceStatus(item),
+        latestReferenceReview: latestReferenceReview && typeof latestReferenceReview === 'object' ? latestReferenceReview : (item.latestReferenceReview || null),
+        latestReferenceBatch: nextBatch
+      }
+      if (!resetLineart) return nextItem
+      return {
+        ...nextItem,
+        lineartHintAssetId: '',
+        lineartHintAssetUri: '',
+        lineartFinalAssetId: '',
+        lineartFinalAssetUri: '',
+        lineartStatus: 'missing',
+        lineartPrompt: '',
+        lineartNegativePrompt: '',
+        lineartMeta: null,
+        lineartGeneratedAt: ''
+      }
+    }) : plan.assets
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await saveStoryAssetPlan(id, nextPlan)
+  return nextPlan
+}
+
+app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const traceId = createTraceId()
+
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = String(body?.assetId || '').trim()
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+
+  const bundle = await readProjectBundle(id)
+  let plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) {
+    const storyBible = readStoryBibleFromProjectDoc(bundle.project)
+    if (!storyBible || typeof storyBible !== 'object') {
+      return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible 并创建资产计划。' }, 400)
+    }
+    plan = buildStoryAssetPlan({ project: bundle.project, story: bundle.story, storyBible, prevManifest: null })
+  }
+
+  const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
+  }
+  const imgProvider = String(studio.effective.image.provider || process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
+  if (!imgProvider || imgProvider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“出图（背景图）”并选择 Provider/Model' }, 400)
+  }
+
+  const aiBg = bundle.project && bundle.project.state && bundle.project.state.aiBackground && typeof bundle.project.state.aiBackground === 'object'
+    ? bundle.project.state.aiBackground
+    : {}
+  const draft = aiBg && aiBg.storyboardBatchDraft && typeof aiBg.storyboardBatchDraft === 'object'
+    ? aiBg.storyboardBatchDraft
+    : {}
+  const requestedLoras = Array.isArray(body?.loras)
+    ? body.loras.map((x) => String(x || '').trim()).filter(Boolean)
+    : (
+        Array.isArray(draft?.loras)
+          ? draft.loras.map((x) => String(x || '').trim()).filter(Boolean)
+          : (Array.isArray(studio.effective.image.loras) ? studio.effective.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : [])
+      )
+  const effectiveLoras = chooseStoryboardAssetLoras({ asset, requestedLoras })
+  const style = normalizeStyleEnum(body?.style || draft.style || 'picture_book')
+  const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
+  const width = clampInt(body?.width, 256, 2048, widthDefault)
+  const height = clampInt(body?.height, 256, 2048, heightDefault)
+  const batchSize = clampInt(body?.batchSize, 1, 6, 4)
+  const globalPrompt = String(body?.globalPrompt || '').trim()
+  const globalNegativePrompt = String(body?.globalNegativePrompt || '').trim()
+  const sanitizedDraft = sanitizeProtectedAssetPrompt({
+    asset,
+    promptEn: String(body?.assetPrompt || body?.promptEn || '').trim(),
+    negativePrompt: String(body?.assetNegativePrompt || '').trim()
+  })
+  const assetPrompt = pickEnglishPrompt(
+    sanitizedDraft.promptEn,
+    storyAssetStr(asset && asset.referencePromptEn).trim(),
+    storyAssetStr(asset && asset.referencePromptHint).trim()
+  )
+  const assetNegativePrompt = sanitizedDraft.negativePrompt
+  const prompt = String(body?.prompt || '').trim() || buildStoryAssetReferencePrompt({ plan, asset, style, globalPrompt, assetPrompt })
+  const negativePrompt = String(body?.negativePrompt || '').trim() || buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNegativePrompt, assetNegativePrompt })
+
+  try {
+    logStage({ stage: 'asset.reference.batch', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'generate_candidates_only' })
+    let currentPlan = plan
+    let currentBundle = bundle
+    let bestResult = null
+    let bestReview = null
+    let attemptPrompt = prompt
+    let attemptNegativePrompt = negativePrompt
+    const baseSeed = Math.floor(Math.random() * 4_294_900_000)
+    const rawCandidates = []
+    for (let i = 0; i < batchSize; i += 1) {
+      const seed = (baseSeed + i * 9973) % 4_294_967_295
+      const result = await generateAndPersistStoryAssetReference({
+        id,
+        dir,
+        bundle: currentBundle,
+        plan: currentPlan,
+        asset,
+        studio,
+        imgProvider,
+        style,
+        width,
+        height,
+        steps: body?.steps,
+        cfgScale: body?.cfgScale,
+        sampler: body?.sampler,
+        scheduler: body?.scheduler,
+        loras: effectiveLoras,
+        prompt: attemptPrompt,
+        negativePrompt: attemptNegativePrompt,
+        timeoutMs: body?.timeoutMs,
+        seed
+      })
+      currentPlan = result.plan
+      currentBundle = await readProjectBundle(id)
+      const reviewed = await reviewAndPersistStoryAssetReference({
+        id,
+        dir,
+        studio,
+        plan: currentPlan,
+        asset,
+        prompt: result.prompt,
+        negativePrompt: result.negativePrompt,
+        assetPath: result.assetPath
+      })
+      currentPlan = reviewed.plan
+      rawCandidates.push({
+        attempt: i + 1,
+        seed,
+        assetPath: result.assetPath,
+        url: result.url,
+        analysis: reviewed.analysis
+      })
+      const revisedPrompt = pickEnglishPrompt(String(reviewed.analysis?.revisedPrompt || '').trim(), attemptPrompt)
+      const revisedNegativePrompt = String(reviewed.analysis?.revisedNegativePrompt || '').trim() || attemptNegativePrompt
+      if (!Boolean(reviewed.analysis?.passed) && (revisedPrompt !== attemptPrompt || revisedNegativePrompt !== attemptNegativePrompt)) {
+        attemptPrompt = revisedPrompt
+        attemptNegativePrompt = revisedNegativePrompt
+      }
+      if (!bestResult || storyAssetReviewScore(reviewed.analysis) > storyAssetReviewScore(bestReview)) {
+        bestResult = result
+        bestReview = reviewed.analysis
+      }
+    }
+    const recommendedAssetPath = bestResult ? String(bestResult.assetPath || '').trim() : ''
+    const candidates = rawCandidates.map((item) => ({
+      ...item,
+      recommended: Boolean(recommendedAssetPath && String(item.assetPath || '').trim() === recommendedAssetPath)
+    }))
+    currentPlan = await persistStoryAssetReferenceBatch({
+      id,
+      plan: currentPlan,
+      assetId,
+      latestReferenceBatch: candidates,
+      recommendedReferenceAssetUri: recommendedAssetPath
+    })
+    const currentAsset = (Array.isArray(currentPlan.assets) ? currentPlan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || null
+    logStage({ stage: 'asset.reference.batch', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'generate_candidates_only', count: candidates.length })
+    return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, candidates, ...(bestResult || {}), plan: currentPlan })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    logStage({ stage: 'asset.reference.batch', event: 'fail', traceId, project: id, item: assetId, status: mapped.httpStatus, ok: false, err: msg })
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
+app.post('/api/projects/:id/ai/story/assets/reference/review', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = String(body?.assetId || '').trim()
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
+  const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+
+  const assetPath = String(asset.primaryReferenceAssetUri || '').trim()
+  if (!assetPath) return c.json({ success: false, error: 'missing_reference_image', message: '请先从 4 张候选图中手动选择主参考，再执行分析。' }, 400)
+  const latestRef = Array.isArray(asset.generatedRefs) ? asset.generatedRefs.find((x) => String(x?.projectAssetUri || '').trim() === assetPath) : null
+  const prompt = String(latestRef?.prompt || buildStoryAssetReferencePrompt({ plan, asset, style: 'picture_book' })).trim()
+  const negativePrompt = String(latestRef?.negativePrompt || buildStoryAssetReferenceNegativePrompt({ plan, asset })).trim()
+
+  try {
+    const studio = await getEffectiveStudioConfig(ROOT)
+    const result = await reviewAndPersistStoryAssetReference({
+      id,
+      dir,
+      studio,
+      plan,
+      asset,
+      prompt,
+      negativePrompt,
+      assetPath
+    })
+    return c.json({ success: true, ...result })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
+app.post('/api/projects/:id/ai/story/assets/reference/optimize', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = String(body?.assetId || '').trim()
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+
+  const bundle = await readProjectBundle(id)
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
+  const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+
+  const currentAssetPath = String(asset.primaryReferenceAssetUri || '').trim()
+  if (!currentAssetPath) return c.json({ success: false, error: 'missing_reference_image', message: '请先从 4 张候选图中手动选择主参考，再执行增强。' }, 400)
+
+  try {
+    const studio = await getEffectiveStudioConfig(ROOT)
+    if (!studio.effective.enabled.image) {
+      return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
+    }
+    const imgProvider = String(studio.effective.image.provider || process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
+    if (!imgProvider || imgProvider === 'none') {
+      return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“出图（背景图）”并选择 Provider/Model' }, 400)
+    }
+
+    const latestRef = Array.isArray(asset.generatedRefs) ? asset.generatedRefs.find((x) => String(x?.projectAssetUri || '').trim() === currentAssetPath) : null
+    const globalPrompt = String(body?.globalPrompt || '').trim()
+    const globalNegativePrompt = String(body?.globalNegativePrompt || '').trim()
+    const sanitizedDraft = sanitizeProtectedAssetPrompt({
+      asset,
+      promptEn: String(body?.assetPrompt || body?.promptEn || '').trim(),
+      negativePrompt: String(body?.assetNegativePrompt || '').trim()
+    })
+    const assetPrompt = pickEnglishPrompt(
+      sanitizedDraft.promptEn,
+      storyAssetStr(asset && asset.referencePromptEn).trim(),
+      storyAssetStr(asset && asset.referencePromptHint).trim()
+    )
+    const assetNegativePrompt = sanitizedDraft.negativePrompt
+    const prompt = String(latestRef?.prompt || buildStoryAssetReferencePrompt({ plan, asset, style: String(body?.style || 'picture_book'), globalPrompt, assetPrompt })).trim()
+    const negativePrompt = String(latestRef?.negativePrompt || buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNegativePrompt, assetNegativePrompt })).trim()
+    const reviewed = await reviewAndPersistStoryAssetReference({
+      id,
+      dir,
+      studio,
+      plan,
+      asset,
+      prompt,
+      negativePrompt,
+      assetPath: currentAssetPath
+    })
+    const effectiveAnalysis = reviewed.analysis || {}
+    const style = normalizeStyleEnum(body?.style || 'picture_book')
+    const aiBg = bundle.project && bundle.project.state && bundle.project.state.aiBackground && typeof bundle.project.state.aiBackground === 'object'
+      ? bundle.project.state.aiBackground
+      : {}
+    const draft = aiBg && aiBg.storyboardBatchDraft && typeof aiBg.storyboardBatchDraft === 'object'
+      ? aiBg.storyboardBatchDraft
+      : {}
+    const requestedLoras = Array.isArray(body?.loras)
+      ? body.loras.map((x) => String(x || '').trim()).filter(Boolean)
+      : (
+          Array.isArray(draft?.loras)
+            ? draft.loras.map((x) => String(x || '').trim()).filter(Boolean)
+            : (Array.isArray(studio.effective.image.loras) ? studio.effective.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : [])
+        )
+    const effectiveLoras = chooseStoryboardAssetLoras({ asset, requestedLoras })
+    const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
+    const width = clampInt(body?.width, 256, 2048, widthDefault)
+    const height = clampInt(body?.height, 256, 2048, heightDefault)
+    const batchSize = clampInt(body?.batchSize, 1, 6, 4)
+    let currentPlan = reviewed.plan
+    let currentBundle = bundle
+    let bestResult = null
+    let bestReview = effectiveAnalysis
+    let attemptPrompt = pickEnglishPrompt(String(effectiveAnalysis.revisedPrompt || '').trim(), prompt)
+    let attemptNegativePrompt = String(effectiveAnalysis.revisedNegativePrompt || negativePrompt).trim() || negativePrompt
+    const baseSeed = Math.floor(Math.random() * 4_294_900_000)
+    const rawCandidates = []
+    for (let i = 0; i < batchSize; i += 1) {
+      const seed = (baseSeed + i * 9973) % 4_294_967_295
+      const result = await generateAndPersistStoryAssetReference({
+        id,
+        dir,
+        bundle: currentBundle,
+        plan: currentPlan,
+        asset,
+        studio,
+        imgProvider,
+        style,
+        width,
+        height,
+        steps: body?.steps,
+        cfgScale: body?.cfgScale,
+        sampler: body?.sampler,
+        scheduler: body?.scheduler,
+        loras: effectiveLoras,
+        prompt: attemptPrompt,
+        negativePrompt: attemptNegativePrompt,
+        timeoutMs: body?.timeoutMs,
+        seed
+      })
+      currentPlan = result.plan
+      currentBundle = await readProjectBundle(id)
+      const rerReviewed = await reviewAndPersistStoryAssetReference({
+        id,
+        dir,
+        studio,
+        plan: currentPlan,
+        asset,
+        prompt: result.prompt,
+        negativePrompt: result.negativePrompt,
+        assetPath: result.assetPath
+      })
+      currentPlan = rerReviewed.plan
+      rawCandidates.push({
+        attempt: i + 1,
+        seed,
+        assetPath: result.assetPath,
+        url: result.url,
+        analysis: rerReviewed.analysis
+      })
+      const revisedPrompt = pickEnglishPrompt(String(rerReviewed.analysis?.revisedPrompt || '').trim(), attemptPrompt)
+      const revisedNegativePrompt = String(rerReviewed.analysis?.revisedNegativePrompt || '').trim() || attemptNegativePrompt
+      if (!Boolean(rerReviewed.analysis?.passed) && (revisedPrompt !== attemptPrompt || revisedNegativePrompt !== attemptNegativePrompt)) {
+        attemptPrompt = revisedPrompt
+        attemptNegativePrompt = revisedNegativePrompt
+      }
+      if (!bestResult || storyAssetReviewScore(rerReviewed.analysis) > storyAssetReviewScore(bestReview)) {
+        bestResult = result
+        bestReview = rerReviewed.analysis
+      }
+    }
+    const recommendedAssetPath = bestResult ? String(bestResult.assetPath || '').trim() : ''
+    const candidates = rawCandidates.map((item) => ({
+      ...item,
+      recommended: Boolean(recommendedAssetPath && String(item.assetPath || '').trim() === recommendedAssetPath)
+    }))
+    currentPlan = await persistStoryAssetReferenceBatch({
+      id,
+      plan: currentPlan,
+      assetId,
+      latestReferenceBatch: candidates,
+      recommendedReferenceAssetUri: recommendedAssetPath
+    })
+    const currentAsset = (Array.isArray(currentPlan.assets) ? currentPlan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || null
+    return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, ...(bestResult || {}), candidates, plan: currentPlan })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
+app.get('/api/projects/:id/ai/story/assets/:assetId/gallery', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const assetId = storyAssetStr(c.req.param('assetId')).trim()
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
+  const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => storyAssetStr(item && item.id).trim() === assetId) : null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+  const cleaned = await pruneMissingStoryAssetGalleryEntries({ id, dir, plan, asset })
+  return c.json({ success: true, asset: cleaned.asset, items: cleaned.items, plan: cleaned.plan })
+})
+
+app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const assetId = storyAssetStr(c.req.param('assetId')).trim()
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+
+  const body = await c.req.json().catch(() => ({}))
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
+  const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => storyAssetStr(item && item.id).trim() === assetId) : null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+
+  const bundle = await readProjectBundle(id)
+  const fallback = buildStoryAssetPromptEnhancement({
+    asset,
+    plan,
+    globalPromptZh: body?.globalPromptZh,
+    globalNegativePromptZh: body?.globalNegativePromptZh,
+    currentPromptZh: body?.promptZh,
+    currentPromptEn: body?.promptEn,
+    currentNegativePromptZh: body?.negativePromptZh,
+    currentNegativePrompt: body?.negativePrompt
+  })
+  const fallbackSanitized = sanitizeProtectedAssetPrompt({
+    asset,
+    promptEn: fallback.promptEn,
+    negativePrompt: fallback.negativePrompt
+  })
+  const studio = await getEffectiveStudioConfig(ROOT).catch(() => null)
+  const provider = String(studio?.effective?.prompt?.provider || '').trim().toLowerCase()
+  const model = studio?.effective?.prompt?.model || undefined
+  const apiUrl = studio?.effective?.prompt?.apiUrl || undefined
+  const proxyUrl = studio?.effective?.network?.proxyUrl || undefined
+  const traceId = createTraceId()
+  const startedAt = Date.now()
+
+  let result = {
+    ...fallback,
+    promptEn: fallbackSanitized.promptEn || fallback.promptEn,
+    negativePrompt: fallbackSanitized.negativePrompt || fallback.negativePrompt
+  }
+  let meta = { provider: 'local', model: null, api: null, durationMs: 0, note: 'local_template_fallback' }
+  let aiError = null
+  try {
+    if (provider && provider !== 'none') {
+      logStage({ stage: 'asset.prompt_enhance', event: 'start', traceId, project: id, provider: provider || 'local', model: model || '-', item: assetId })
+      const aiInput = {
+        projectTitle: String(bundle?.project?.title || '').trim(),
+        storyBibleJson: JSON.stringify(readStoryBibleFromProjectDoc(bundle.project) || {}, null, 2),
+        asset,
+        plan,
+        globalPromptZh: body?.globalPromptZh,
+        globalNegativePromptZh: body?.globalNegativePromptZh,
+        currentPromptZh: body?.promptZh,
+        currentPromptEn: body?.promptEn,
+        currentNegativePromptZh: body?.negativePromptZh,
+        currentNegativePrompt: body?.negativePrompt
+      }
+      const enhanced = await Promise.race([
+        enhanceStoryAssetPromptWithAi({
+          input: aiInput,
+          provider,
+          model,
+          apiUrl,
+          proxyUrl
+        }),
+        new Promise((_, reject) => setTimeout(() => {
+          const e = new Error('asset_prompt_enhance_timeout')
+          e.status = 504
+          reject(e)
+        }, 15_000))
+      ])
+      if (enhanced && enhanced.result) {
+        const nextPromptZh = storyAssetStr(enhanced.result.promptZh).trim() || fallback.promptZh
+        const nextNegativePromptZh = storyAssetStr(enhanced.result.negativePromptZh).trim() || fallback.negativePromptZh
+        const translated = await translateStoryAssetPromptPair({
+          studio,
+          promptZh: nextPromptZh,
+          negativePromptZh: nextNegativePromptZh,
+          fallbackPromptEn: fallback.promptEn,
+          fallbackNegativePrompt: fallback.negativePrompt,
+          timeoutMs: 60_000
+        }).catch(() => ({
+          promptEn: fallback.promptEn,
+          negativePrompt: fallback.negativePrompt,
+          meta: { provider: 'fallback', model: null, api: null, note: 'translation_fallback' }
+        }))
+        const sanitizedTranslated = sanitizeProtectedAssetPrompt({
+          asset,
+          promptEn: translated.promptEn,
+          negativePrompt: translated.negativePrompt
+        })
+        result = {
+          promptZh: nextPromptZh,
+          promptEn: sanitizedTranslated.promptEn || fallback.promptEn,
+          negativePromptZh: nextNegativePromptZh,
+          negativePrompt: sanitizedTranslated.negativePrompt || fallback.negativePrompt,
+          summary: storyAssetStr(enhanced.result.summary).trim() || fallback.summary,
+          context: {
+            ...(fallback.context || {}),
+            aiGenerated: true,
+            translatedBy: translated.meta || null
+          }
+        }
+        meta = {
+          ...(enhanced.meta || {}),
+          provider: enhanced.meta?.provider || provider,
+          model: enhanced.meta?.model || model || null,
+          api: enhanced.meta?.api || apiUrl || null,
+          durationMs: Math.max(0, Date.now() - startedAt)
+        }
+        logStage({ stage: 'asset.prompt_enhance', event: 'ok', traceId, project: id, provider: meta.provider || provider || 'local', model: meta.model || model || '-', item: assetId, ok: true, durationMs: meta.durationMs })
+      }
+    }
+  } catch (e) {
+    aiError = {
+      message: e instanceof Error ? e.message : String(e),
+      status: e && e.status ? Number(e.status) : null,
+      code: e && e.code ? String(e.code) : null
+    }
+    meta = {
+      ...meta,
+      provider: provider || 'local',
+      model: model || null,
+      api: apiUrl || null,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      note: 'ai_failed_fallback_to_local_template'
+    }
+    logStage({ stage: 'asset.prompt_enhance', event: 'fail', traceId, project: id, provider: provider || 'local', model: model || '-', item: assetId, status: aiError.status || 500, ok: false, durationMs: meta.durationMs, err: aiError.message })
+  }
+  return c.json({ success: true, asset, result, meta, aiError, traceId })
+})
+
+app.post('/api/projects/:id/ai/story/assets/:assetId/gallery/delete', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const routeAssetId = storyAssetStr(c.req.param('assetId')).trim()
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = storyAssetStr(body && body.assetId).trim() || routeAssetId
+  const assetPath = normalizeStoryAssetUri(body && body.assetPath)
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+  if (!assetPath) return c.json({ success: false, error: 'missing_asset_path', message: 'assetPath 不能为空' }, 400)
+
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
+  const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => storyAssetStr(item && item.id).trim() === assetId) : null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+
+  try {
+    const result = await deleteStoryAssetManagedFile({ id, dir, plan, asset, targetAssetPath: assetPath })
+    const cleaned = await pruneMissingStoryAssetGalleryEntries({
+      id,
+      dir,
+      plan: result.plan,
+      asset: result.asset || asset
+    })
+    return c.json({
+      success: true,
+      ...result,
+      plan: cleaned.plan,
+      asset: cleaned.asset,
+      items: cleaned.items
+    })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const status = e && typeof e.status === 'number' ? e.status : 500
+    return c.json({ success: false, error: 'story_asset_delete_failed', message: msg }, status)
+  }
+})
+
+app.post('/api/projects/:id/ai/story/assets/reference/select', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const traceId = createTraceId()
+
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = String(body?.assetId || '').trim()
+  const targetAssetPath = String(body?.assetPath || body?.primaryReferenceAssetUri || '').trim().replace(/^\/+/, '')
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+  if (!targetAssetPath) return c.json({ success: false, error: 'missing_asset_path', message: '请选择一个候选图作为主参考。' }, 400)
+
+  let plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
+  const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+
+  const batch = Array.isArray(asset.latestReferenceBatch) ? asset.latestReferenceBatch : []
+  const pickedCandidate = batch.find((item) => String(item?.assetPath || '').trim().replace(/^\/+/, '') === targetAssetPath) || null
+  const generatedRef = Array.isArray(asset.generatedRefs)
+    ? asset.generatedRefs.find((item) => String(item?.projectAssetUri || '').trim().replace(/^\/+/, '') === targetAssetPath)
+    : null
+  if (!pickedCandidate && !generatedRef) {
+    return c.json({ success: false, error: 'candidate_not_found', message: '所选候选图不在当前资产的候选列表中。' }, 404)
+  }
+
+  try {
+    logStage({ stage: 'asset.reference.select', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'white_background_only' })
+    const studio = await getEffectiveStudioConfig(ROOT)
+    const sourceRef = generatedRef || {
+      projectAssetId: '',
+      projectAssetUri: targetAssetPath,
+      prompt: '',
+      negativePrompt: '',
+      width: undefined,
+      height: undefined,
+      seed: undefined,
+      loras: undefined
+    }
+    const processed = await applyWhiteBackgroundToStoryAssetReference({
+      id,
+      dir,
+      plan,
+      asset,
+      sourceRef,
+      studio,
+      timeoutMs: body?.timeoutMs
+    })
+    plan = processed.plan
+    const primaryReferenceAssetId = String(processed.primaryReferenceAssetId || '').trim()
+    const primaryReferenceAssetUri = String(processed.primaryReferenceAssetUri || targetAssetPath).trim()
+    plan = await setPrimaryStoryAssetReference({
+      id,
+      plan,
+      assetId,
+      primaryReferenceAssetId,
+      primaryReferenceAssetUri,
+      latestReferenceReview: pickedCandidate?.analysis || asset.latestReferenceReview || null,
+      latestReferenceBatch: batch,
+      selectedBatchAssetPath: targetAssetPath,
+      resetLineart: true
+    })
+    const nextAsset = (Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || asset
+    await writeStoryAssetPrimaryToProject({ id, dir, asset: nextAsset, primaryReferenceAssetId })
+    logStage({ stage: 'asset.reference.select', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'white_background_only' })
+    return c.json({ success: true, asset: nextAsset, plan })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    logStage({ stage: 'asset.reference.select', event: 'fail', traceId, project: id, item: assetId, status: mapped.httpStatus, ok: false, err: msg })
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
+app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const traceId = createTraceId()
+
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = String(body?.assetId || '').trim()
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
+  const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+
+  const primaryReferenceAssetUri = String(asset.primaryReferenceAssetUri || '').trim()
+  if (!primaryReferenceAssetUri) {
+    return c.json({ success: false, error: 'missing_reference_image', message: '请先从 4 张候选图中手动选择主参考，再生成线稿。' }, 400)
+  }
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  const comfyuiBaseUrl = String(studio.effective.image.comfyuiBaseUrl || process.env.COMFYUI_BASE_URL || '').trim()
+  if (!comfyuiBaseUrl) {
+    return c.json({ success: false, error: 'missing_comfyui_base_url', message: '未配置 ComfyUI 地址，无法生成线稿。' }, 400)
+  }
+
+  try {
+    logStage({ stage: 'asset.lineart', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'controlnet_lineart_only' })
+    const abs = path.join(dir, primaryReferenceAssetUri.replace(/^\/+/, ''))
+    const refBytes = await readFile(abs)
+    const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
+    const lineartPrompt = String(body?.prompt || '').trim() || (
+      String(asset.category || '').trim() === 'character'
+        ? `redraw the uploaded ${String(asset.name || asset.id || 'character').trim()} reference as clean black ink lineart, preserve exact species, face shape, fur markings, outfit silhouette, body proportions and pose, full body, one subject only, white background, monochrome, no color fill, no shading, no gray wash, no painterly rendering`
+        : `redraw the uploaded ${String(asset.name || asset.id || 'prop').trim()} reference as clean black ink object lineart, preserve exact silhouette, handle, rim, strap, edge shape and proportions, single object only, centered, white background, monochrome, no color fill, no shading, no extra objects, no person`
+    )
+    const lineartNegative = String(body?.negativePrompt || '').trim() || 'color, watercolor, gouache, shading, shadow, grayscale wash, background scene, extra character, extra limbs, multiple views, text, logo, realistic photo'
+    const result = await generateComfyuiLineartFromReference({
+      referenceBytes: refBytes,
+      referenceFilename: `${String(asset.id || 'asset').trim() || 'asset'}.png`,
+      comfyuiBaseUrl,
+      model: String(body?.model || studio.effective.image.model || '').trim(),
+      controlnetModel: String(body?.controlnetModel || '').trim() || 'SDXL/controlnet-union-sdxl-1.0/diffusion_pytorch_model_promax.safetensors',
+      width: clampInt(body?.width, 256, 2048, widthDefault),
+      height: clampInt(body?.height, 256, 2048, heightDefault),
+      preprocessor: String(asset.category || '').trim() === 'character' ? 'anime' : 'lineart',
+      unionType: 'canny/lineart/anime_lineart/mlsd',
+      prompt: lineartPrompt,
+      negativePrompt: lineartNegative,
+      steps: body?.steps,
+      cfgScale: body?.cfgScale,
+      denoise: body?.denoise,
+      seed: body?.seed,
+      timeoutMs: body?.timeoutMs,
+      hintPrefix: buildStoryAssetComfyPrefix(asset, 'lineart_hint'),
+      finalPrefix: buildStoryAssetComfyPrefix(asset, 'lineart_final')
+    })
+    const persisted = await persistStoryAssetLineartResult({
+      id,
+      dir,
+      plan,
+      asset,
+      hintBytes: result.hintBytes,
+      hintExt: result.hintExt,
+      finalBytes: result.finalBytes,
+      finalExt: result.finalExt,
+      meta: result.meta,
+      prompt: lineartPrompt,
+      negativePrompt: lineartNegative
+    })
+    logStage({ stage: 'asset.lineart', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'controlnet_lineart_only' })
+    return c.json({ success: true, asset: persisted.asset, plan: persisted.plan, hintAssetPath: persisted.hintAssetPath, finalAssetPath: persisted.finalAssetPath, hintUrl: persisted.hintUrl, finalUrl: persisted.finalUrl, meta: result.meta, prompt: lineartPrompt, negativePrompt: lineartNegative })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    logStage({ stage: 'asset.lineart', event: 'fail', traceId, project: id, item: assetId, status: mapped.httpStatus, ok: false, err: msg })
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
+app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const bundle = await readProjectBundle(id)
+  let plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) {
+    const storyBible = readStoryBibleFromProjectDoc(bundle.project)
+    if (!storyBible || typeof storyBible !== 'object') {
+      return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible 并创建资产计划。' }, 400)
+    }
+    plan = buildStoryAssetPlan({ project: bundle.project, story: bundle.story, storyBible, prevManifest: null })
+    await saveStoryAssetPlan(id, plan)
+  }
+
+  const testTarget = pickStoryboardLockTestAsset(plan)
+  if (!testTarget) {
+    return c.json({ success: false, error: 'missing_test_target', message: '资产计划为空，无法执行锁定测试。' }, 400)
+  }
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
+  }
+  const imgProvider = String(studio.effective.image.provider || process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
+  if (imgProvider !== 'comfyui') {
+    return c.json({ success: false, error: 'story_lock_requires_comfyui', message: '锁定测试工作流目前仅支持 ComfyUI。' }, 400)
+  }
+
+  const requestedModel = normalizeComfyCheckpointName(body?.model || studio.effective.image.model || '')
+  const requestedLoras = Array.isArray(body?.loras) ? body.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
+  if (!requestedModel) {
+    return c.json({ success: false, error: 'missing_model_config', message: '请先在锁定事物标签中填写 checkpoint。' }, 400)
+  }
+
+  const style = normalizeStyleEnum(body?.style || 'picture_book')
+  const width = clampInt(body?.width, 256, 2048, 512)
+  const height = clampInt(body?.height, 256, 2048, 512)
+  const steps = clampInt(body?.steps, 5, 80, 20)
+  const cfgScale = Number.isFinite(Number(body?.cfgScale)) ? Number(body.cfgScale) : 7
+  const sampler = mapComfySampler(body?.sampler || 'DPM++ 2M')
+  const scheduler = mapComfyScheduler(body?.scheduler || 'Automatic')
+  const timeoutMs = parseComfyTimeoutMs(body?.timeoutMs)
+  const maxAttempts = clampInt(body?.maxAttempts, 1, 4, 3)
+  const traceId = createTraceId()
+
+  let positivePrompt = buildStoryboardLockTestPrompt({ plan, asset: testTarget, style })
+  let negativePrompt = buildStoryboardLockTestNegativePrompt({ plan, asset: testTarget })
+  const attempts = []
+  let passed = false
+  let finalSummary = ''
+
+  logStage({
+    stage: 'story.lock_test',
+    event: 'start',
+    traceId,
+    project: id,
+    provider: imgProvider,
+    model: requestedModel || '-',
+    item: `${String(testTarget.name || testTarget.id || 'asset').trim()} / attempts:${maxAttempts}`
+  })
+
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const workflow = await buildStoryboardLockTestWorkflow({
+        model: requestedModel,
+        loras: requestedLoras.length ? requestedLoras : studio.effective.image.loras,
+        positivePrompt,
+        negativePrompt,
+        width,
+        height,
+        steps,
+        cfgScale,
+        samplerName: sampler,
+        scheduler,
+        seed: Math.floor(Math.random() * 9_999_999_999),
+        filenamePrefix: buildStoryAssetComfyPrefix(testTarget, 'lock_test')
+      })
+      const gen = await runComfyuiPromptWorkflow({
+        workflow,
+        comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+        timeoutMs
+      })
+      const buf = gen.bytes
+      const ext0 = String(gen.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
+      const sniff = sniffImageMetaFromBytes(buf)
+      const ext = (sniff && sniff.ext ? sniff.ext : ext0) || 'png'
+      const relDir = path.join('assets', 'ai', 'story_lock_tests')
+      const outDir = path.join(dir, relDir)
+      await mkdir(outDir, { recursive: true })
+      const safeAssetSlug = String(testTarget.id || 'asset').replace(/[^a-z0-9_.-]+/gi, '_')
+      const fname = `${safeAssetSlug}_attempt_${attempt}_${Date.now()}.${ext}`
+      const abs = path.join(outDir, fname)
+      await writeFile(abs, buf)
+      const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+      const dataUrl = `data:${sniff?.contentType || (ext === 'jpg' ? 'image/jpeg' : 'image/png')};base64,${buf.toString('base64')}`
+
+      const analysis = await reviewStoryboardLockImageWithAi({
+        provider: studio.effective.prompt.provider,
+        model: studio.effective.prompt.model,
+        apiUrl: studio.effective.prompt.apiUrl,
+        proxyUrl: studio.effective.network.proxyUrl,
+        asset: testTarget,
+        prompt: positivePrompt,
+        negativePrompt,
+        imageDataUrl: dataUrl,
+        attempt,
+        maxAttempts
+      })
+
+      attempts.push({
+        attempt,
+        assetId: String(testTarget.id || '').trim(),
+        assetName: String(testTarget.name || testTarget.id || '').trim(),
+        prompt: positivePrompt,
+        negativePrompt,
+        assetPath,
+        url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
+        remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
+        analysis
+      })
+
+      if (analysis && analysis.passed) {
+        passed = true
+        finalSummary = String(analysis.summary || '锁定测试已通过').trim() || '锁定测试已通过'
+        break
+      }
+
+      positivePrompt = String((analysis && analysis.revisedPrompt) || positivePrompt).trim() || positivePrompt
+      negativePrompt = String((analysis && analysis.revisedNegativePrompt) || negativePrompt).trim() || negativePrompt
+      finalSummary = String((analysis && analysis.summary) || '锁定测试未通过').trim() || '锁定测试未通过'
+    }
+
+    if (!passed && !finalSummary) {
+      finalSummary = `锁定测试未通过，已达到最大重试次数（${maxAttempts}）`
+    } else if (passed) {
+      finalSummary = finalSummary || `锁定测试通过：${String(testTarget.name || testTarget.id || 'asset')}`
+    }
+
+    logStage({
+      stage: 'story.lock_test',
+      event: passed ? 'ok' : 'fail',
+      traceId,
+      project: id,
+      provider: imgProvider,
+      model: requestedModel || '-',
+      item: `${String(testTarget.name || testTarget.id || 'asset').trim()} / attempts:${attempts.length}`
+    })
+
+    return c.json({
+      success: true,
+      passed,
+      summary: finalSummary,
+      testTarget: {
+        id: String(testTarget.id || '').trim(),
+        name: String(testTarget.name || '').trim(),
+        category: String(testTarget.category || '').trim(),
+        anchorPrompt: String(testTarget.anchorPrompt || '').trim(),
+        referencePromptHint: String(testTarget.referencePromptHint || '').trim()
+      },
+      attempts
+    })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    logStage({
+      stage: 'story.lock_test',
+      event: 'error',
+      traceId,
+      project: id,
+      provider: imgProvider,
+      model: requestedModel || '-',
+      item: msg
+    })
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
+app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const sceneId = c.req.param('sceneId')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const bundle = await readProjectBundle(id)
+  let plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) {
+    const storyBible = readStoryBibleFromProjectDoc(bundle.project)
+    if (!storyBible || typeof storyBible !== 'object') {
+      return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible 并创建资产计划。' }, 400)
+    }
+    plan = buildStoryAssetPlan({ project: bundle.project, story: bundle.story, storyBible, prevManifest: null })
+    await saveStoryAssetPlan(id, plan)
+  }
+
+  const renderSpec = buildStorySceneRenderSpec({ plan, sceneId })
+  if (!renderSpec) return c.json({ success: false, error: 'scene_not_found', message: `未找到场景：${sceneId}` }, 404)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
+  }
+  const imgProvider = String(studio.effective.image.provider || process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
+  if (!imgProvider || imgProvider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“出图（背景图）”并选择 Provider/Model' }, 400)
+  }
+
+  const aiBg = bundle.project && bundle.project.state && bundle.project.state.aiBackground && typeof bundle.project.state.aiBackground === 'object'
+    ? bundle.project.state.aiBackground
+    : {}
+  const draft = aiBg && aiBg.storyboardBatchDraft && typeof aiBg.storyboardBatchDraft === 'object'
+    ? aiBg.storyboardBatchDraft
+    : {}
+  const style = normalizeStyleEnum(body?.style || draft.style || 'picture_book')
+  const width = clampInt(body?.width, 256, 2048, clampInt(draft.width, 256, 2048, 768))
+  const height = clampInt(body?.height, 256, 2048, clampInt(draft.height, 256, 2048, 1024))
+
+  const referenceImages = []
+  for (const ref of Array.isArray(renderSpec.referenceAssets) ? renderSpec.referenceAssets : []) {
+    const assetAbs = resolveAssetPathFromUri(id, ref.assetUri || '')
+    if (!assetAbs || !(await existsFile(assetAbs))) continue
+    try {
+      const bytes = await readFile(assetAbs)
+      referenceImages.push({
+        role: String(ref.category || 'asset').trim() || 'asset',
+        assetId: String(ref.assetId || ref.id || '').trim() || undefined,
+        assetName: String(ref.name || ref.id || 'reference').trim(),
+        filename: path.basename(assetAbs),
+        bytes,
+        weight: Number.isFinite(Number(ref.weight)) ? Number(ref.weight) : undefined
+      })
+    } catch (_) {}
+  }
+
+  const bodyPrompt = String(body?.scenePrompt || body?.prompt || '').trim()
+  const prompt = [
+    String(plan.worldAnchor || '').trim(),
+    ...((Array.isArray(renderSpec.promptLocks) ? renderSpec.promptLocks : []).slice(0, 20)),
+    bodyPrompt || String(renderSpec.summary || '').trim()
+  ]
+    .map((x) => String(x || '').trim())
+    .filter(Boolean)
+    .join(', ')
+  if (!prompt) {
+    return c.json({ success: false, error: 'missing_scene_prompt', message: '场景提示词为空，无法渲染。' }, 400)
+  }
+  const negativePrompt = [
+    String(renderSpec.negativePrompt || '').trim(),
+    String(body?.negativePrompt || '').trim()
+  ].filter(Boolean).join(', ')
+
+  try {
+    const gen = await generateBackgroundImage({
+      prompt,
+      negativePrompt,
+      width,
+      height,
+      style,
+      steps: body?.steps ?? draft.steps,
+      cfgScale: body?.cfgScale ?? draft.cfgScale,
+      sampler: body?.sampler ?? draft.sampler,
+      scheduler: body?.scheduler ?? draft.scheduler,
+      continuity: {
+        ipadapterEnabled: referenceImages.length > 0,
+        requireCharacterRefs: false,
+        controlnetEnabled: false,
+        seedMode: 'random'
+      },
+      referenceImages,
+      workflowMode: String(renderSpec.workflow || '').trim() || undefined,
+      provider: imgProvider,
+      sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
+      comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+      apiUrl: studio.effective.image.apiUrl,
+      model: studio.effective.image.model,
+      loras: studio.effective.image.loras,
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs: body?.timeoutMs
+    })
+
+    const buf = gen.bytes
+    const ext0 = String(gen.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
+    const sniff = sniffImageMetaFromBytes(buf)
+    const ext = (sniff && sniff.ext ? sniff.ext : ext0) || 'png'
+    const safeSceneSlug = String(renderSpec.sceneId || 'scene').replace(/[^a-z0-9_.-]+/gi, '_')
+    const relDir = path.join('assets', 'ai', 'story_scenes')
+    const outDir = path.join(dir, relDir)
+    await mkdir(outDir, { recursive: true })
+    const fname = `${safeSceneSlug}_${Date.now()}.${ext}`
+    const abs = path.join(outDir, fname)
+    await writeFile(abs, buf)
+    const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+
+    const projectAssetId = genId('asset')
+    const projectAsset = {
+      id: projectAssetId,
+      kind: 'image',
+      name: `故事场景 ${String(renderSpec.sceneName || renderSpec.sceneId || projectAssetId).trim()}`,
+      uri: assetPath,
+      source: {
+        type: 'ai',
+        prompt,
+        provider: String(finalGen?.meta?.provider || imgProvider || ''),
+        remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined
+      }
+    }
+
+    const nextStory = {
+      ...bundle.story,
+      nodes: Array.isArray(bundle.story.nodes) ? bundle.story.nodes.map((node) => {
+        if (String(node && node.id || '').trim() !== String(renderSpec.sceneId || '').trim()) return node
+        const visuals = node && node.visuals && typeof node.visuals === 'object' ? node.visuals : {}
+        return {
+          ...node,
+          visuals: {
+            ...visuals,
+            backgroundAssetId: projectAssetId
+          }
+        }
+      }) : bundle.story.nodes
+    }
+    const nextProject = {
+      ...bundle.rawProject,
+      assets: [...(Array.isArray(bundle.rawProject.assets) ? bundle.rawProject.assets : []), projectAsset],
+      updatedAt: new Date().toISOString()
+    }
+    await writeJson(path.join(dir, 'project.json'), nextProject)
+    await writeJson(path.join(dir, 'story.json'), nextStory)
+
+    return c.json({
+      success: true,
+      projectAsset,
+      renderSpec,
+      assetPath,
+      url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
+      provider: String(finalGen?.meta?.provider || imgProvider || ''),
+      remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
+      prompt,
+      negativePrompt
+    })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
 })
 
@@ -3525,6 +6471,7 @@ app.post('/api/projects/:id/ai/character/fingerprint', async (c) => {
       style,
       provider: studio.effective.prompt.provider,
       model: studio.effective.prompt.model,
+      apiUrl: studio.effective.prompt.apiUrl,
       proxyUrl: studio.effective.network.proxyUrl
     })
 

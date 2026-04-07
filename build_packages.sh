@@ -2,7 +2,7 @@
 set -e
 
 echo "=== 构建 schema 包 ==="
-cd /Users/zhanghongqin/work/game_studio
+cd .
 npm --workspace @game-studio/schema run build
 
 echo "=== 构建 builder 包 ==="

@@ -59,9 +59,9 @@ export function generateScriptsFromPrompt(prompt) {
 export async function generateScriptDraft({ prompt, title, rules, formula, provider, model, apiUrl, proxyUrl, timeoutMs }) {
   const p = String(provider || process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
   if (p === 'doubao') return generateScriptsViaDoubao({ prompt, title, rules, formula, model, apiUrl, proxyUrl, timeoutMs })
-  if (p === 'ollama') return generateScriptsViaOllama({ prompt, title, rules, formula, model, proxyUrl, timeoutMs })
+  if (p === 'ollama') return generateScriptsViaOllama({ prompt, title, rules, formula, model, apiUrl, proxyUrl, timeoutMs })
   if (p !== 'openai' && p !== 'localoxml') return null
-  return generateScriptsViaOpenAI({ prompt, title, rules, formula, model, timeoutMs, provider: p })
+  return generateScriptsViaOpenAI({ prompt, title, rules, formula, model, apiUrl, proxyUrl, timeoutMs, provider: p })
 }
 
 export async function repairScriptDraft({
@@ -74,7 +74,8 @@ export async function repairScriptDraft({
   provider,
   model,
   apiUrl,
-  proxyUrl
+  proxyUrl,
+  timeoutMs
 }) {
   const p = String(provider || process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
   if (p === 'doubao') {
@@ -87,7 +88,8 @@ export async function repairScriptDraft({
       validation,
       model,
       apiUrl,
-      proxyUrl
+      proxyUrl,
+      timeoutMs
     })
   }
   if (p === 'ollama') {
@@ -99,7 +101,9 @@ export async function repairScriptDraft({
       report,
       validation,
       model,
-      proxyUrl
+      apiUrl,
+      proxyUrl,
+      timeoutMs
     })
   }
   if (p === 'openai' || p === 'localoxml') {
@@ -111,7 +115,9 @@ export async function repairScriptDraft({
       report,
       validation,
       model,
-      provider: p
+      provider: p,
+      apiUrl,
+      timeoutMs
     })
   }
   return null

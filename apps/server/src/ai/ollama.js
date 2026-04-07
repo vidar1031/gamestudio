@@ -386,6 +386,15 @@ export async function generateScriptsViaOllama({ prompt, title, rules, formula, 
     `- 选择点之后要紧跟对应数量的后果卡（每个选项 1 张后果卡）。\n` +
     `- 结局卡：name 以“结局”开头（例如：结局1/结局2）。\n` +
     `- 结局与最后一次选择必须一一对应：如果本次结构公式指定结局数量 N，则“最后一个选择点”的每个选项后果应直接落到对应的结局卡（结局1..结局N），不要把多个结局顺序堆在最后却没有分支指向。\n` +
+    `- 分支连续性必须自洽：如果多个分支会重新合流到同一张卡，这张合流卡只能描述“所有上游分支都成立的共同事实”；若某个状态只属于单一路径，就不能写进共享合流卡，必须拆成不同承接卡或不同选择点。\n` +
+    `- 结局不能引用不属于当前路径的历史。只有当某条路径必然发生过某件事时，结局才能明确提到它。\n` +
+    `- 结构顺序必须可编译：不要写游离场景卡。普通场景如果不是选择点、后果卡或结局卡，就必须处于清晰的线性主链上，不能插成不可达节点。
+- 当 choicePoints=1 时，必须严格按这个可编译顺序输出：铺垫场景（可有 1~4 张） -> 1选择点 -> 1后果1 -> 结局1 -> 1后果2 -> 结局2（若为 3 选则继续 1后果3 -> 结局3）。
+- 当 choicePoints=1 时，不允许在 1后果k 和 结局k 之间再插入一个普通命名场景；若需要表现“钓到大鱼”“再次分心”这类过程，必须直接写进对应的 1后果k 或 结局k 的 text。
+- 当 choicePoints>1 时，每个选择点之后都必须先紧跟该选择点自己的全部后果卡；只有在这些后果卡都写完后，才能进入下一轮共享场景或下一选择点。
+- 不要夹杂英文单词、英文拟声词或中英混写描述；全部用自然中文表达。
+` +
+    `- text 中必须使用真实换行，不要输出字面量 \\n。\n` +
     `- 场景可演出：尽量包含动作/对话/环境变化，便于后续做蓝图与演出。\n` +
     `- 使用中文。\n` +
     (formulaText ? `\n本次结构公式（必须严格满足）：\n${formulaText}\n` : '') +
@@ -418,7 +427,8 @@ export async function repairScriptsViaOllama({
   validation,
   model,
   apiUrl,
-  proxyUrl
+  proxyUrl,
+  timeoutMs
 }) {
   const startedAt = Date.now()
   const rulesText = formatRulesForInstructions(rules)
@@ -486,6 +496,9 @@ export async function repairScriptsViaOllama({
     `- 选择点之后要紧跟对应数量的后果卡（每个选项 1 张后果卡）。\n` +
     `- 结局卡：name 以“结局”开头（例如：结局1/结局2）。\n` +
     `- 结局与最后一次选择必须一一对应：最后一个选择点的每个选项后果应直接落到对应的结局卡（结局1..结局N）。\n` +
+    `- 分支连续性必须自洽：如果多个分支重新合流到同一张卡，这张卡只能写所有分支都共同成立的事实；若引用了某一条路径专属状态，必须拆成不同承接卡，不得硬合流。\n` +
+    `- 结局只能引用当前路径真实发生过的事件，不能偷用其他分支的记忆。\n` +
+    `- text 中必须使用真实换行，不要输出字面量 \\n。\n` +
     `- 控制长度：卡片总数 <= 20；每张卡 text 1~4 句即可。\n` +
     `- 使用中文。\n` +
     (formulaText ? `\n本次结构公式（必须严格满足）：\n${formulaText}\n` : '') +
@@ -502,7 +515,7 @@ export async function repairScriptsViaOllama({
     model: String(model || '').trim() || undefined,
     apiUrl,
     proxyUrl,
-    timeoutMs: clampInt(process.env.STUDIO_AI_TIMEOUT_MS, 5_000, 180_000, 60_000),
+    timeoutMs: clampInt(timeoutMs, 5_000, 180_000, clampInt(process.env.STUDIO_AI_TIMEOUT_MS, 5_000, 180_000, 90_000)),
     maxRetries: 2,
     validate: (obj) => validateScriptDraft(obj).ok
   })

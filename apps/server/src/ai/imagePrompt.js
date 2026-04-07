@@ -101,7 +101,8 @@ export async function generateBackgroundPromptViaOpenAI({
   style,
   model,
   outputLanguage,
-  provider
+  provider,
+  apiUrl
 }) {
   const ar = normalizeAspectRatio(aspectRatio) || '9:16'
   const st = normalizeStyle(style) || 'picture_book'
@@ -159,7 +160,7 @@ export async function generateBackgroundPromptViaOpenAI({
     }
   }
 
-  const { json, meta } = await openaiResponsesJsonForTools({ body, provider })
+  const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl })
   let outText = ''
   try {
     outText = typeof json.output_text === 'string' ? json.output_text : ''

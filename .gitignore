@@ -6,6 +6,7 @@ packages/*/dist/
 storage/demos/
 storage/projects/
 storage/demo_library/
+storage/_config/studio_settings.json
 .env
 .env.local
 .env.*.local

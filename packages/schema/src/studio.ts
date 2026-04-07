@@ -332,6 +332,7 @@ export function normalizeAiBackgroundState(input: any): AiBackgroundStateV1 {
   const storyBibleJson = asStr(raw.storyBibleJson).trim() || (Object.keys(storyBibleIn).length ? JSON.stringify(storyBibleIn, null, 2) : '')
 
   const out: AiBackgroundStateV1 = {
+    ...(raw as any),
     schemaVersion: '1.0',
     global: { prompt: globalPrompt, negativePrompt: globalNegativePrompt },
     storyboardScenes,
@@ -491,6 +492,8 @@ export type AiBackgroundRequest = {
   sequentialImageGeneration?: 'auto' | 'disabled'
   width?: number
   height?: number
+  model?: string
+  loras?: string[]
   steps?: number
   cfgScale?: number
   sampler?: string

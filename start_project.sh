@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT="/Users/zhanghongqin/work/game_studio"
+ROOT="."
 SERVER_PORT="${PORT:-1999}"
 EDITOR_PORT="${VITE_PORT:-8868}"
 SERVER_PID=""
@@ -11,6 +11,7 @@ SERVER_LOG="${RUN_DIR}/server.log"
 EDITOR_LOG="${RUN_DIR}/editor.log"
 SERVER_PID_FILE="${RUN_DIR}/server.pid"
 EDITOR_PID_FILE="${RUN_DIR}/editor.pid"
+RESTARTED=0
 
 usage() {
   cat <<EOF
@@ -38,6 +39,20 @@ case "${1:-}" in
 esac
 
 mkdir -p "${RUN_DIR}"
+
+ensure_local_dependencies() {
+  if [ ! -d "${ROOT}/node_modules" ]; then
+    echo "❌ 未找到 ${ROOT}/node_modules，无法构建 workspace 包" >&2
+    echo "请先在仓库根目录执行: npm install" >&2
+    exit 1
+  fi
+
+  if [ ! -x "${ROOT}/node_modules/.bin/tsc" ]; then
+    echo "❌ 未找到本地 TypeScript 编译器: ${ROOT}/node_modules/.bin/tsc" >&2
+    echo "当前启动流程会先执行 npm run build:packages；请先执行: npm install" >&2
+    exit 1
+  fi
+}
 
 is_pid_running() {
   local pid_file="$1"
@@ -74,7 +89,7 @@ wait_for_http() {
   local max_attempts="${3:-30}"
   local attempt=1
   while [ "${attempt}" -le "${max_attempts}" ]; do
-    if curl -fsS "${url}" >/dev/null 2>&1; then
+    if curl --noproxy '*' -fsS "${url}" >/dev/null 2>&1; then
       echo "✅ ${label} 就绪: ${url}"
       return 0
     fi
@@ -87,25 +102,74 @@ wait_for_http() {
 
 http_ready() {
   local url="$1"
-  curl -fsS "${url}" >/dev/null 2>&1
+  curl --noproxy '*' -fsS "${url}" >/dev/null 2>&1
 }
 
-already_running() {
+wait_for_port_free() {
+  local port="$1"
+  local label="$2"
+  local max_attempts="${3:-20}"
+  local attempt=1
+  while [ "${attempt}" -le "${max_attempts}" ]; do
+    if [ -z "$(listener_pid "${port}" || true)" ]; then
+      return 0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  echo "❌ ${label} 端口 :${port} 未在预期时间内释放" >&2
+  return 1
+}
+
+stop_listener_if_needed() {
+  local label="$1"
+  local port="$2"
+  local pid
+  pid="$(listener_pid "${port}" || true)"
+  if [ -z "${pid}" ]; then
+    return 0
+  fi
+  echo "ℹ️  检测到 ${label} 已存在，准备重启（pid ${pid}）"
+  kill "${pid}" >/dev/null 2>&1 || true
+  sleep 1
+  if kill -0 "${pid}" >/dev/null 2>&1; then
+    echo "⚠️  ${label} 未响应 SIGTERM，执行强制结束（pid ${pid}）"
+    kill -9 "${pid}" >/dev/null 2>&1 || true
+  fi
+  wait_for_port_free "${port}" "${label}" 20
+}
+
+restart_existing_services_if_needed() {
   local server_pid
   local editor_pid
+  local server_ok=0
+  local editor_ok=0
   server_pid="$(listener_pid "${SERVER_PORT}" || true)"
   editor_pid="$(listener_pid "${EDITOR_PORT}" || true)"
-  if [ -z "${server_pid}" ] || [ -z "${editor_pid}" ]; then
-    return 1
+  if [ -n "${server_pid}" ]; then
+    echo "${server_pid}" > "${SERVER_PID_FILE}"
+    if http_ready "http://127.0.0.1:${SERVER_PORT}/api/health"; then
+      server_ok=1
+    fi
   fi
-  http_ready "http://127.0.0.1:${SERVER_PORT}/api/health" || return 1
-  http_ready "http://localhost:${EDITOR_PORT}" || return 1
-  echo "${server_pid}" > "${SERVER_PID_FILE}"
-  echo "${editor_pid}" > "${EDITOR_PID_FILE}"
-  echo "ℹ️  Game Studio 已在运行，跳过重复启动"
-  echo "Server PID: ${server_pid}"
-  echo "Editor PID: ${editor_pid}"
-  return 0
+  if [ -n "${editor_pid}" ]; then
+    echo "${editor_pid}" > "${EDITOR_PID_FILE}"
+    if http_ready "http://localhost:${EDITOR_PORT}"; then
+      editor_ok=1
+    fi
+  fi
+  if [ -z "${server_pid}" ] && [ -z "${editor_pid}" ]; then
+    return 0
+  fi
+  if [ "${server_ok}" = "1" ] && [ "${editor_ok}" = "1" ]; then
+    echo "ℹ️  Game Studio 已在运行，按要求执行自动重启"
+  else
+    echo "ℹ️  检测到旧的或异常的 Game Studio 进程，执行自动清理后重启"
+  fi
+  RESTARTED=1
+  stop_listener_if_needed "server" "${SERVER_PORT}"
+  stop_listener_if_needed "editor" "${EDITOR_PORT}"
+  rm -f "${SERVER_PID_FILE}" "${EDITOR_PID_FILE}"
 }
 
 cleanup() {
@@ -136,33 +200,21 @@ else
 fi
 echo ""
 
-  if already_running; then
-    exit 0
-  fi
+ensure_local_dependencies
 
 echo "▶ 构建 packages ..."
 npm run build:packages
 echo ""
 
+restart_existing_services_if_needed
+
 if [ "${DETACHED}" = "1" ]; then
-  EXISTING_SERVER_PID="$(listener_pid "${SERVER_PORT}" || true)"
-  EXISTING_EDITOR_PID="$(listener_pid "${EDITOR_PORT}" || true)"
+  echo "▶ 后台启动 server ..."
+  SERVER_PID="$(spawn_detached "npm run dev:server" "${SERVER_LOG}")"
+  sleep 2
 
-  if [ -n "${EXISTING_SERVER_PID}" ] && [ -n "${EXISTING_EDITOR_PID}" ]; then
-    echo "${EXISTING_SERVER_PID}" > "${SERVER_PID_FILE}"
-    echo "${EXISTING_EDITOR_PID}" > "${EDITOR_PID_FILE}"
-    echo "ℹ️  server/editor 已在运行，跳过重复启动"
-  elif [ -n "${EXISTING_SERVER_PID}" ] || [ -n "${EXISTING_EDITOR_PID}" ]; then
-    echo "❌ 检测到端口处于半启动状态，请先运行 ./stop_project.sh 清理后再启动" >&2
-    exit 1
-  else
-    echo "▶ 后台启动 server ..."
-    SERVER_PID="$(spawn_detached "npm run dev:server" "${SERVER_LOG}")"
-    sleep 2
-
-    echo "▶ 后台启动 editor ..."
-    EDITOR_PID="$(spawn_detached "npm run dev:editor" "${EDITOR_LOG}")"
-  fi
+  echo "▶ 后台启动 editor ..."
+  EDITOR_PID="$(spawn_detached "npm run dev:editor" "${EDITOR_LOG}")"
 
   wait_for_http "http://127.0.0.1:${SERVER_PORT}/api/health" "server" 30
   wait_for_http "http://localhost:${EDITOR_PORT}" "editor" 30
@@ -172,6 +224,9 @@ if [ "${DETACHED}" = "1" ]; then
 
   echo ""
   echo "✅ Detached launcher finished"
+  if [ "${RESTARTED}" = "1" ]; then
+    echo "Mode note: auto-restarted existing server/editor"
+  fi
   echo "Server PID: $(cat "${SERVER_PID_FILE}" 2>/dev/null || echo unknown)"
   echo "Editor PID: $(cat "${EDITOR_PID_FILE}" 2>/dev/null || echo unknown)"
   echo "Server log: ${SERVER_LOG}"

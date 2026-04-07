@@ -97,13 +97,7 @@ When the user asks about project status, startup, or basic checks, manager must 
 - Canonical URLs:
   - server `http://127.0.0.1:1999`
   - editor `http://localhost:8868`
-- Ignore deprecated wrapper scripts when deciding how to run the project:
-  - `start.sh`
-  - `start_all.sh`
-  - `start_game_studio.sh`
-  - `build_and_start.sh`
-  - `启动.sh`
-  - `find_and_start.sh`
+- Deprecated wrapper scripts have been removed; do not recreate alternate startup entrypoints.
 - Structural story work belongs in script and blueprint stages first, not compose-only edits.
 - After meaningful work, update project memory files with:
   - current goal

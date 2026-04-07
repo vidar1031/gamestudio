@@ -5,6 +5,21 @@ import { getStudioSecret } from '../studio/secrets.js'
 
 const OFFICIAL_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
+function isLocalHost(hostname) {
+  const h = String(hostname || '').trim().toLowerCase()
+  if (!h) return false
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]'
+}
+
+function shouldBypassProxyForTarget(url) {
+  try {
+    const u = new URL(String(url || ''))
+    return isLocalHost(u.hostname)
+  } catch (_) {
+    return false
+  }
+}
+
 function normalizeOpenAICompatibleProvider(provider) {
   const p = String(provider || '').trim().toLowerCase()
   return p === 'localoxml' ? 'localoxml' : 'openai'
@@ -55,9 +70,27 @@ export function extractResponseOutputText(respJson) {
   return stripJsonCodeFence(raw)
 }
 
-function getOpenAIConfig(provider = 'openai') {
+function normalizeOpenAICompatibleBaseUrl(raw, provider = 'openai') {
+  let s = String(raw || '').trim()
+  if (!s) return OFFICIAL_OPENAI_BASE_URL
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s) && /^[a-z0-9_.-]+(?::\d{1,5})?(?:\/.*)?$/i.test(s)) {
+    s = `http://${s}`
+  }
+  try {
+    const u = new URL(s)
+    if (!/^https?:$/i.test(String(u.protocol || ''))) return OFFICIAL_OPENAI_BASE_URL
+    const pathname = String(u.pathname || '').replace(/\/+$/, '')
+    if (!pathname || pathname === '/') u.pathname = '/v1'
+    return u.toString().replace(/\/+$/, '')
+  } catch (_) {
+    return OFFICIAL_OPENAI_BASE_URL
+  }
+}
+
+function getOpenAIConfig(provider = 'openai', overrides = null) {
   const p = normalizeOpenAICompatibleProvider(provider)
   const useLocalOxml = p === 'localoxml'
+  const inOverrides = overrides && typeof overrides === 'object' ? overrides : {}
   const secretOverride = getStudioSecret(p)
   const apiKey = String(
     secretOverride ||
@@ -67,15 +100,20 @@ function getOpenAIConfig(provider = 'openai') {
           : (process.env.OPENAI_API_KEY || '')
       )
   ).trim()
-  const baseUrl = String(
-    useLocalOxml
-      ? (process.env.LOCALOXML_BASE_URL || process.env.STUDIO_AI_BASE_URL || OFFICIAL_OPENAI_BASE_URL)
-      : (process.env.OPENAI_BASE_URL || OFFICIAL_OPENAI_BASE_URL)
-  ).replace(/\/+$/, '')
+  const baseUrl = normalizeOpenAICompatibleBaseUrl(
+    inOverrides.apiUrl ||
+      (
+        useLocalOxml
+          ? (process.env.LOCALOXML_BASE_URL || process.env.STUDIO_AI_BASE_URL || OFFICIAL_OPENAI_BASE_URL)
+          : (process.env.OPENAI_BASE_URL || OFFICIAL_OPENAI_BASE_URL)
+      ),
+    p
+  )
   const model = String(
-    useLocalOxml
+    inOverrides.model ||
+      (useLocalOxml
       ? (process.env.LOCALOXML_MODEL || process.env.STUDIO_AI_MODEL || 'gpt-4o-mini')
-      : (process.env.OPENAI_MODEL || 'gpt-4o-mini')
+      : (process.env.OPENAI_MODEL || 'gpt-4o-mini'))
   ).trim() || 'gpt-4o-mini'
   const timeoutMsEnv = String(
     useLocalOxml
@@ -89,8 +127,8 @@ function getOpenAIConfig(provider = 'openai') {
 
 // Small helper for other modules that want to use Responses API while preserving
 // proxy behavior (curl) + timeouts implemented here.
-export async function openaiResponsesJsonForTools({ body, provider, timeoutMs: callerTimeoutMs }) {
-  const cfg = getOpenAIConfig(provider)
+export async function openaiResponsesJsonForTools({ body, provider, timeoutMs: callerTimeoutMs, apiUrl, model: modelOverride, proxyUrl }) {
+  const cfg = getOpenAIConfig(provider, { apiUrl, model: modelOverride })
   const { model } = cfg
   // Prefer caller-supplied timeout over config default. timeoutMs <= 0 means no timeout.
   const timeoutMs = Number.isFinite(Number(callerTimeoutMs))
@@ -98,20 +136,22 @@ export async function openaiResponsesJsonForTools({ body, provider, timeoutMs: c
     : cfg.timeoutMs
   const startedAt = Date.now()
   const merged = { ...(body || {}), model: String((body && body.model) || model) }
-  const json = await openaiRequestJson({ method: 'POST', path: '/responses', body: merged, timeoutMs, provider: cfg.provider })
+  const json = await openaiRequestJson({ method: 'POST', path: '/responses', body: merged, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
   return {
     json,
     meta: { provider: cfg.provider, api: 'responses', model: merged.model, durationMs: Math.max(0, Date.now() - startedAt) }
   }
 }
 
-async function openaiRequestJson({ method, path: apiPath, body, timeoutMs, provider }) {
-  const cfg = getOpenAIConfig(provider)
+async function openaiRequestJson({ method, path: apiPath, body, timeoutMs, provider, apiUrl, model, proxyUrl: proxyUrlOverride }) {
+  const cfg = getOpenAIConfig(provider, { apiUrl, model })
   const { apiKey, baseUrl } = cfg
-  if (!apiKey) throw new Error('missing_openai_api_key')
+  const allowMissingKey = cfg.provider === 'localoxml'
+  if (!apiKey && !allowMissingKey) throw new Error('missing_openai_api_key')
   const url = `${baseUrl}${apiPath.startsWith('/') ? apiPath : `/${apiPath}`}`
 
-  const proxyUrl = getProxyUrl()
+  const proxyUrlRaw = String(proxyUrlOverride || getProxyUrl() || '').trim()
+  const proxyUrl = shouldBypassProxyForTarget(url) ? '' : proxyUrlRaw
   const noTimeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) <= 0
   const controller = noTimeout ? null : new AbortController()
   const t = noTimeout ? null : setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 0) || 20000))
@@ -124,7 +164,7 @@ async function openaiRequestJson({ method, path: apiPath, body, timeoutMs, provi
         method,
         headers: {
           ...(body ? { 'Content-Type': 'application/json' } : {}),
-          Authorization: `Bearer ${apiKey}`
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
         },
         body,
         timeoutMs,
@@ -136,7 +176,7 @@ async function openaiRequestJson({ method, path: apiPath, body, timeoutMs, provi
       method: String(method || 'POST').toUpperCase(),
       headers: {
         ...(body ? { 'Content-Type': 'application/json' } : {}),
-        Authorization: `Bearer ${apiKey}`
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
       ...(controller ? { signal: controller.signal } : {})
@@ -271,8 +311,8 @@ function scriptDraftSchema() {
   }
 }
 
-export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, model, timeoutMs, provider }) {
-  const cfg = getOpenAIConfig(provider)
+export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, model, timeoutMs, provider, apiUrl, proxyUrl }) {
+  const cfg = getOpenAIConfig(provider, { apiUrl, model })
   const useModel = String(model || cfg.model).trim() || cfg.model
   const useTimeoutMs = Math.max(1_000, Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : cfg.timeoutMs)
   const startedAt = Date.now()
@@ -298,6 +338,15 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
     `- 选择点之后要紧跟对应数量的后果卡（每个选项 1 张后果卡）。\n` +
     `- 结局卡：name 以“结局”开头（例如：结局1/结局2）。\n` +
     `- 结局与最后一次选择必须一一对应：如果本次结构公式指定结局数量 N，则“最后一个选择点”的每个选项后果应直接落到对应的结局卡（结局1..结局N），不要把多个结局顺序堆在最后却没有分支指向。\n` +
+    `- 分支连续性必须自洽：如果多个分支会重新合流到同一张卡，这张合流卡只能描述“所有上游分支都成立的共同事实”；若某个状态只属于单一路径（例如已经钓到鱼、鱼竿丢了、受了伤、拿到了道具），就不能写进共享合流卡，必须拆成不同承接卡或不同选择点。\n` +
+    `- 结局不能引用不属于当前路径的历史。只有当某条路径必然发生过某件事时，结局才能明确提到它。\n` +
+    `- 结构顺序必须可编译：不要写游离场景卡。普通场景如果不是选择点、后果卡或结局卡，就必须处于清晰的线性主链上，不能插成不可达节点。
+- 当 choicePoints=1 时，必须严格按这个可编译顺序输出：铺垫场景（可有 1~4 张） -> 1选择点 -> 1后果1 -> 结局1 -> 1后果2 -> 结局2（若为 3 选则继续 1后果3 -> 结局3）。
+- 当 choicePoints=1 时，不允许在 1后果k 和 结局k 之间再插入一个普通命名场景；若需要表现“钓到大鱼”“再次分心”这类过程，必须直接写进对应的 1后果k 或 结局k 的 text。
+- 当 choicePoints>1 时，每个选择点之后都必须先紧跟该选择点自己的全部后果卡；只有在这些后果卡都写完后，才能进入下一轮共享场景或下一选择点。
+- 不要夹杂英文单词、英文拟声词或中英混写描述；全部用自然中文表达。
+` +
+    `- text 中必须使用真实换行，不要输出字面量 \\n。\n` +
     `- 场景可演出：尽量包含动作/对话/环境变化，便于后续做蓝图与演出。\n` +
     `- 使用中文。\n` +
     (formulaText ? `\n本次结构公式（必须严格满足）：\n${formulaText}\n` : '') +
@@ -325,7 +374,7 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
   }
 
   try {
-    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs: useTimeoutMs, provider: cfg.provider })
+    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs: useTimeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
     const text = extractResponseOutputText(resp)
     if (!text) throw new Error('empty_ai_output')
     return {
@@ -354,7 +403,7 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
         }
       }
     }
-    const resp2 = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs: useTimeoutMs, provider: cfg.provider })
+    const resp2 = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs: useTimeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
     const content = resp2 && resp2.choices && resp2.choices[0] && resp2.choices[0].message && resp2.choices[0].message.content
     const text = typeof content === 'string' ? content.trim() : ''
     if (!text) throw new Error('empty_ai_output')
@@ -373,11 +422,16 @@ export async function repairScriptsViaOpenAI({
   report,
   validation,
   model,
-  provider
+  provider,
+  apiUrl,
+  proxyUrl,
+  timeoutMs: callerTimeoutMs
 }) {
-  const cfg = getOpenAIConfig(provider)
+  const cfg = getOpenAIConfig(provider, { apiUrl, model })
   const useModel = String(model || cfg.model).trim() || cfg.model
-  const timeoutMs = cfg.timeoutMs
+  const timeoutMs = Number.isFinite(Number(callerTimeoutMs))
+    ? Number(callerTimeoutMs)
+    : cfg.timeoutMs
   const startedAt = Date.now()
 
   const rulesText = formatRulesForInstructions(rules)
@@ -444,6 +498,15 @@ export async function repairScriptsViaOpenAI({
     `- 选择点之后要紧跟对应数量的后果卡（每个选项 1 张后果卡）。\n` +
     `- 结局卡：name 以“结局”开头（例如：结局1/结局2）。\n` +
     `- 结局与最后一次选择必须一一对应：最后一个选择点的每个选项后果应直接落到对应的结局卡（结局1..结局N）。\n` +
+    `- 分支连续性必须自洽：如果多个分支重新合流到同一张卡，这张卡只能写所有分支都共同成立的事实；若引用了某一条路径专属状态，必须拆成不同承接卡，不得硬合流。\n` +
+    `- 结局只能引用当前路径真实发生过的事件，不能偷用其他分支的记忆。\n` +
+    `- 结构顺序必须可编译：不要写游离场景卡。普通场景如果不是选择点、后果卡或结局卡，就必须处于清晰的线性主链上，不能插成不可达节点。
+- 当 choicePoints=1 时，必须严格按这个可编译顺序输出：铺垫场景（可有 1~4 张） -> 1选择点 -> 1后果1 -> 结局1 -> 1后果2 -> 结局2（若为 3 选则继续 1后果3 -> 结局3）。
+- 当 choicePoints=1 时，不允许在 1后果k 和 结局k 之间再插入一个普通命名场景；若需要表现“钓到大鱼”“再次分心”这类过程，必须直接写进对应的 1后果k 或 结局k 的 text。
+- 当 choicePoints>1 时，每个选择点之后都必须先紧跟该选择点自己的全部后果卡；只有在这些后果卡都写完后，才能进入下一轮共享场景或下一选择点。
+- 不要夹杂英文单词、英文拟声词或中英混写描述；全部用自然中文表达。
+` +
+    `- text 中必须使用真实换行，不要输出字面量 \\n。\n` +
     `- 控制长度：卡片总数 <= 20；每张卡 text 1~4 句即可。\n` +
     `- 使用中文。\n` +
     (formulaText ? `\n本次结构公式（必须严格满足）：\n${formulaText}\n` : '') +
@@ -469,7 +532,7 @@ export async function repairScriptsViaOpenAI({
     }
   }
 
-  const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs, provider: cfg.provider })
+  const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
   const text = extractResponseOutputText(resp)
   if (!text) throw new Error('empty_ai_output')
   return {
@@ -494,6 +557,19 @@ function errToPlain(e) {
     }
   } catch (_) {}
   return out
+}
+
+function explainOpenAICompatibleDiagnoseFailure(cfg, apiKey, err) {
+  const provider = String(cfg && cfg.provider || '').trim().toLowerCase()
+  const message = err && err.message ? String(err.message) : String(err || '')
+  const status = err && typeof err.status === 'number' ? Number(err.status) : null
+  if (provider === 'localoxml' && !apiKey && status === 401) {
+    return 'API key required; admin/chat may work via browser session, but Game Studio needs a Bearer API key'
+  }
+  if (provider === 'localoxml' && status === 401) {
+    return 'unauthorized_api_key'
+  }
+  return message || 'request_failed'
 }
 
 function blueprintReviewSchema() {
@@ -535,8 +611,8 @@ function blueprintReviewSchema() {
   }
 }
 
-export async function reviewBlueprintViaOpenAI({ projectTitle, formula, scripts, report, validation, provider }) {
-  const cfg = getOpenAIConfig(provider)
+export async function reviewBlueprintViaOpenAI({ projectTitle, formula, scripts, report, validation, provider, apiUrl, model: modelOverride, proxyUrl }) {
+  const cfg = getOpenAIConfig(provider, { apiUrl, model: modelOverride })
   const { model, timeoutMs } = cfg
   const startedAt = Date.now()
 
@@ -574,7 +650,7 @@ export async function reviewBlueprintViaOpenAI({ projectTitle, formula, scripts,
   }
 
   try {
-    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body, timeoutMs, provider: cfg.provider })
+    const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
     const text = extractResponseOutputText(resp)
     if (!text) throw new Error('empty_ai_output')
     return {
@@ -634,10 +710,10 @@ function formatFormulaForInstructions(formula) {
   }
 }
 
-export async function diagnoseOpenAI({ timeoutMs, provider = 'openai' } = {}) {
+export async function diagnoseOpenAI({ timeoutMs, provider = 'openai', apiUrl, model, proxyUrl } = {}) {
   const startedAt = Date.now()
-  const cfg = getOpenAIConfig(provider)
-  const { apiKey, baseUrl, model, timeoutMs: cfgTimeout } = cfg
+  const cfg = getOpenAIConfig(provider, { apiUrl, model })
+  const { apiKey, baseUrl, model: resolvedModel, timeoutMs: cfgTimeout } = cfg
   const useTimeout = Number(timeoutMs || cfgTimeout || 20000)
 
   const url = new URL(baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`)
@@ -652,12 +728,12 @@ export async function diagnoseOpenAI({ timeoutMs, provider = 'openai' } = {}) {
   }
 
   const proxy = getProxyInfo()
-  if (!apiKey) {
+  if (!apiKey && cfg.provider !== 'localoxml') {
     return {
       ok: false,
       provider: cfg.provider,
       baseUrl,
-      model,
+      model: resolvedModel,
       keyPresent: false,
       proxy,
       dns: dnsInfo,
@@ -667,18 +743,20 @@ export async function diagnoseOpenAI({ timeoutMs, provider = 'openai' } = {}) {
   }
 
   try {
-    const json = await openaiRequestJson({ method: 'GET', path: '/models', timeoutMs: useTimeout, provider: cfg.provider })
+    const json = await openaiRequestJson({ method: 'GET', path: '/models', timeoutMs: useTimeout, provider: cfg.provider, apiUrl, proxyUrl })
     const ids = Array.isArray(json && json.data) ? json.data.map((m) => m && m.id).filter(Boolean) : []
-    const hasModel = ids.includes(model)
+    const hasModel = ids.includes(resolvedModel)
     return {
-      ok: true,
+      ok: hasModel,
       provider: cfg.provider,
       baseUrl,
-      model,
-      keyPresent: true,
+      model: resolvedModel,
+      keyPresent: Boolean(apiKey),
       proxy,
       dns: dnsInfo,
+      note: hasModel ? 'verified' : 'model_not_found',
       models: { count: ids.length, ids: ids.slice(0, 5000), hasModel },
+      error: hasModel ? null : { message: `configured model not found: ${resolvedModel}`, code: 'model_not_found' },
       durationMs: Math.max(0, Date.now() - startedAt)
     }
   } catch (e) {
@@ -686,18 +764,19 @@ export async function diagnoseOpenAI({ timeoutMs, provider = 'openai' } = {}) {
       ok: false,
       provider: cfg.provider,
       baseUrl,
-      model,
-      keyPresent: true,
+      model: resolvedModel,
+      keyPresent: Boolean(apiKey),
       proxy,
       dns: dnsInfo,
+      note: explainOpenAICompatibleDiagnoseFailure(cfg, apiKey, e),
       error: errToPlain(e),
       durationMs: Math.max(0, Date.now() - startedAt)
     }
   }
 }
 
-export function getOpenAIConfigPublic(provider = 'openai') {
-  const cfg = getOpenAIConfig(provider)
+export function getOpenAIConfigPublic(provider = 'openai', options = null) {
+  const cfg = getOpenAIConfig(provider, options)
   const { apiKey, baseUrl, timeoutMs, model } = cfg
   return { provider: cfg.provider, baseUrl, timeoutMs, model, keyPresent: Boolean(apiKey) }
 }

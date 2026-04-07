@@ -3,16 +3,26 @@ import {
   analyzeProjectScripts,
   createProjectWithAiDetailed,
   deleteProject,
+  fixScriptsWithAi,
+  generateStoryPromptTemplateWithAi,
+  saveStoryPromptTemplate,
+  deleteStoryPromptTemplate,
   getBlueprint,
   getProject,
   getScripts,
   getStudioSettings,
   getGlobalAiRules,
+  listStoryPromptTemplates,
   listProjects,
   regenerateProjectScriptsWithAiDetailed,
+  reviewStoryPrompt,
+  reviewBlueprintWithAi,
   saveGlobalAiRules,
   type AiCreateResult,
+  type AiBlueprintReview,
   type AiScriptAnalysis,
+  type StoryPromptTemplateItem,
+  type StoryPromptReview,
   type ProjectV1,
   type StudioEffectiveConfig
 } from '../api'
@@ -22,8 +32,6 @@ const AI_TITLE_KEY = 'game_studio.ai.title'
 const AI_CHOICE_POINTS_KEY = 'game_studio.ai.choicePoints'
 const AI_OPTIONS_PER_CHOICE_KEY = 'game_studio.ai.optionsPerChoice'
 const AI_ENDINGS_KEY = 'game_studio.ai.endings'
-const AI_TEMPLATE_KEY = 'game_studio.ai.templateKey'
-const AI_TEMPLATE_FIELDS_KEY = 'game_studio.ai.templateFields'
 
 type PromptTemplate = {
   key: string
@@ -38,41 +46,6 @@ const PROMPT_TEMPLATES: PromptTemplate[] = [
   { key: 'mystery', name: '悬念解谜版', summary: '适合“线索递进 + 反转”', suggestedFormula: { choicePoints: 3, optionsPerChoice: 3, endings: 3 } },
   { key: 'daily', name: '校园日常版', summary: '适合“情绪成长 + 人际关系”', suggestedFormula: { choicePoints: 2, optionsPerChoice: 2, endings: 2 } }
 ]
-
-type TemplateFields = {
-  theme: string
-  moral: string
-  world: string
-  protagonist: string
-  style: string
-  tone: string
-  constraints: string
-  extra: string
-}
-
-type TemplateTagField = keyof Pick<TemplateFields, 'moral' | 'world' | 'protagonist' | 'style' | 'tone' | 'constraints'>
-
-const TEMPLATE_COMMON_TAGS: Record<TemplateTagField, string[]> = {
-  moral: ['诚实守信', '勇敢担当', '善良互助', '守诺负责', '尊重自然', '团结协作'],
-  world: ['古代东方村镇', '山林与河谷', '四季分明', '晨雾与暖阳', '童话森林', '市井烟火'],
-  protagonist: ['少年主角', '动物伙伴', '师徒同行', '兄妹组合', '旅人角色', '成长型人物'],
-  style: ['绘本', '卡通', '国风', '水彩', '剪纸风', '扁平插画'],
-  tone: ['温暖积极', '轻松幽默', '温柔治愈', '克制沉稳', '明快节奏', '悬念递进'],
-  constraints: ['适合儿童阅读', '避免暴力血腥', '避免恐怖元素', '无现实品牌', '语言简洁易懂', '角色行为可演出']
-}
-
-function defaultTemplateFields(): TemplateFields {
-  return {
-    theme: '',
-    moral: '诚实守信，勇敢担当',
-    world: '古代东方村镇，山林与河谷，四季分明',
-    protagonist: '少年主角，动物伙伴，成长型人物',
-    style: '绘本',
-    tone: '温暖、积极',
-    constraints: '避免暴力血腥，适合儿童阅读',
-    extra: ''
-  }
-}
 
 function clampInt(n: any, min: number, max: number, fallback: number) {
   const v = Number(n)
@@ -102,6 +75,14 @@ function randomAiFormula() {
   const optionsPerChoice = [2, 3][Math.floor(Math.random() * 2)]
   const endings = optionsPerChoice
   return { choicePoints, optionsPerChoice, endings }
+}
+
+function pickAutoPromptTemplate(formula: { choicePoints: number; optionsPerChoice: number; endings: number }) {
+  const f = normalizeAiFormula(formula)
+  if (f.choicePoints === 1) return PROMPT_TEMPLATES.find((t) => t.key === 'fable') || PROMPT_TEMPLATES[0]
+  if (f.choicePoints === 3 && f.optionsPerChoice === 3) return PROMPT_TEMPLATES.find((t) => t.key === 'mystery') || PROMPT_TEMPLATES[0]
+  if (f.choicePoints === 3) return PROMPT_TEMPLATES.find((t) => t.key === 'fairy') || PROMPT_TEMPLATES[0]
+  return PROMPT_TEMPLATES.find((t) => t.key === 'fable') || PROMPT_TEMPLATES[0]
 }
 
 function loadAiDraft(): { title: string; prompt: string; choicePoints: number; optionsPerChoice: number; endings: number } {
@@ -143,68 +124,12 @@ function clearAiDraft() {
   } catch {}
 }
 
-function loadTemplateKey() {
-  try {
-    const raw = String(localStorage.getItem(AI_TEMPLATE_KEY) || '').trim()
-    return PROMPT_TEMPLATES.some((t) => t.key === raw) ? raw : PROMPT_TEMPLATES[0].key
-  } catch {
-    return PROMPT_TEMPLATES[0].key
-  }
+function normalizeStoryTitle(value: string) {
+  return String(value || '').trim().replace(/\s+/g, ' ')
 }
 
-function loadTemplateFields(): TemplateFields {
-  try {
-    const raw = localStorage.getItem(AI_TEMPLATE_FIELDS_KEY)
-    if (!raw) return defaultTemplateFields()
-    const json = JSON.parse(raw) as any
-    return {
-      theme: String(json?.theme || ''),
-      moral: String(json?.moral || ''),
-      world: String(json?.world || ''),
-      protagonist: String(json?.protagonist || ''),
-      style: String(json?.style || '绘本'),
-      tone: String(json?.tone || '温暖、积极'),
-      constraints: String(json?.constraints || '避免暴力血腥，适合儿童阅读'),
-      extra: String(json?.extra || '')
-    }
-  } catch {
-    return defaultTemplateFields()
-  }
-}
-
-function persistTemplateState(templateKey: string, fields: TemplateFields) {
-  try {
-    localStorage.setItem(AI_TEMPLATE_KEY, templateKey)
-    localStorage.setItem(AI_TEMPLATE_FIELDS_KEY, JSON.stringify(fields))
-  } catch {}
-}
-
-function buildTemplatePrompt(
-  template: PromptTemplate,
-  title: string,
-  fields: TemplateFields,
-  formula: { choicePoints: number; optionsPerChoice: number; endings: number }
-) {
-  // 故事主题以“故事名称”为唯一来源，避免被历史 theme 缓存覆盖。
-  const topic = String(title || '').trim()
-  const lines = [
-    `模板：${template.name}（${template.summary}）`,
-    `故事主题：${topic || '请根据标题和寓意补全'}`,
-    `核心寓意：${fields.moral || '在结局明确体现寓意差异'}`,
-    `世界观锚点：${fields.world || '请明确时代、地点、季节、天气、建筑风格'}`,
-    `主角设定：${fields.protagonist || '请补全主角外观、关键道具、身份动机'}`,
-    `视觉风格：${fields.style || '绘本'}`,
-    `叙事语气：${fields.tone || '温暖、积极'}`,
-    `限制条件：${fields.constraints || '避免暴力血腥，适合儿童阅读'}`,
-    `互动结构：选择点 ${formula.choicePoints}，每点 ${formula.optionsPerChoice} 选，结局 ${formula.endings}`,
-    `分镜要求：每卡 1-3 句，必须包含可演出动作/环境变化；选择必须有真实后果，不要伪选择`,
-    `可视化约束：禁止只写“面临选择/关键节点/后果总结”，必须写可见画面（人物动作、景别、道具、光线）`,
-    `生图友好：每个场景可提炼出“主体+动作+场景+光线+镜头+情绪”，并保持角色外观前后一致`,
-    `一致性锚点：主角外观（服装/发型/年龄感/关键道具）在所有场景不漂移`,
-    `命名约束：选项使用“选项1..N”，后果卡使用“i后果k”，结局使用“结局1..结局N”`,
-    `补充说明：${fields.extra || '无'}`
-  ]
-  return lines.join('\n')
+function normalizePromptText(value: string) {
+  return String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
 }
 
 type Props = {
@@ -216,6 +141,15 @@ type ProjectProgress = {
   blueprintReady: boolean
   composeReady: boolean
   previewReady: boolean
+}
+
+type InlineConfirmState = {
+  open: boolean
+  title: string
+  message: string
+  confirmLabel: string
+  cancelLabel: string
+  danger: boolean
 }
 
 export default function Hub(props: Props) {
@@ -231,8 +165,6 @@ export default function Hub(props: Props) {
   const [aiModalOpen, setAiModalOpen] = useState(false)
   const [aiPrompt, setAiPrompt] = useState(draft.prompt)
   const [aiTitle, setAiTitle] = useState(draft.title)
-  const [aiTemplateKey, setAiTemplateKey] = useState(loadTemplateKey())
-  const [aiTemplateFields, setAiTemplateFields] = useState<TemplateFields>(loadTemplateFields())
   const [aiChoicePoints, setAiChoicePoints] = useState(draft.choicePoints)
   const [aiOptionsPerChoice, setAiOptionsPerChoice] = useState(draft.optionsPerChoice)
   const [aiEndings, setAiEndings] = useState(draft.endings)
@@ -240,21 +172,39 @@ export default function Hub(props: Props) {
   const [aiTab, setAiTab] = useState<'preview' | 'analysis'>('preview')
   const [analysis, setAnalysis] = useState<AiScriptAnalysis | null>(null)
   const [analysisBusy, setAnalysisBusy] = useState(false)
+  const [blueprintReview, setBlueprintReview] = useState<AiBlueprintReview | null>(null)
+  const [blueprintReviewMeta, setBlueprintReviewMeta] = useState<{ provider?: string; model?: string; api?: string; durationMs?: number } | null>(null)
+  const [selfCheckBusy, setSelfCheckBusy] = useState(false)
+  const [selfCheckError, setSelfCheckError] = useState('')
+  const [selfFixBusy, setSelfFixBusy] = useState(false)
+  const [selfFixNote, setSelfFixNote] = useState('')
   const [rulesText, setRulesText] = useState('')
   const [rulesError, setRulesError] = useState('')
   const [aiFormulaError, setAiFormulaError] = useState('')
-  const [templateTagPickers, setTemplateTagPickers] = useState<Record<TemplateTagField, string>>({
-    moral: '',
-    world: '',
-    protagonist: '',
-    style: '',
-    tone: '',
-    constraints: ''
-  })
+  const [promptReview, setPromptReview] = useState<StoryPromptReview | null>(null)
+  const [promptReviewBusy, setPromptReviewBusy] = useState(false)
+  const [promptReviewError, setPromptReviewError] = useState('')
+  const [promptReviewApplied, setPromptReviewApplied] = useState<'ai' | 'local' | ''>('')
+  const [promptApplyNote, setPromptApplyNote] = useState('')
+  const [savedPromptTemplates, setSavedPromptTemplates] = useState<StoryPromptTemplateItem[]>([])
+  const [savedTemplateId, setSavedTemplateId] = useState<string>('')
+  const [templateGenBusy, setTemplateGenBusy] = useState(false)
+  const [templateGenError, setTemplateGenError] = useState('')
   const [aiElapsedMs, setAiElapsedMs] = useState<number>(0)
+  const [inlineConfirm, setInlineConfirm] = useState<InlineConfirmState>({
+    open: false,
+    title: '',
+    message: '',
+    confirmLabel: '确定',
+    cancelLabel: '取消',
+    danger: false
+  })
   const aiTimerIdRef = useRef<number | null>(null)
+  const promptInputRef = useRef<HTMLTextAreaElement | null>(null)
   const aiTimerStartedAtRef = useRef<number>(0)
   const aiRequestLockRef = useRef(false)
+  const lastAutoPromptRef = useRef<string>(draft.prompt.startsWith('模板：') ? draft.prompt : '')
+  const inlineConfirmResolverRef = useRef<((ok: boolean) => void) | null>(null)
 
   function stopAiTimer() {
     if (aiTimerIdRef.current != null) {
@@ -277,8 +227,34 @@ export default function Hub(props: Props) {
   useEffect(() => () => stopAiTimer(), [])
 
   useEffect(() => {
-    persistTemplateState(aiTemplateKey, aiTemplateFields)
-  }, [aiTemplateKey, aiTemplateFields])
+    return () => {
+      if (inlineConfirmResolverRef.current) {
+        inlineConfirmResolverRef.current(false)
+        inlineConfirmResolverRef.current = null
+      }
+    }
+  }, [])
+
+  function askInlineConfirm(input: Partial<InlineConfirmState> & { message: string }) {
+    return new Promise<boolean>((resolve) => {
+      inlineConfirmResolverRef.current = resolve
+      setInlineConfirm({
+        open: true,
+        title: String(input.title || '请确认'),
+        message: String(input.message || '').trim(),
+        confirmLabel: String(input.confirmLabel || '确定'),
+        cancelLabel: String(input.cancelLabel || '取消'),
+        danger: Boolean(input.danger)
+      })
+    })
+  }
+
+  function closeInlineConfirm(ok: boolean) {
+    const resolver = inlineConfirmResolverRef.current
+    inlineConfirmResolverRef.current = null
+    setInlineConfirm((prev) => ({ ...prev, open: false }))
+    if (resolver) resolver(ok)
+  }
 
   const selected = useMemo(() => projects.find((p) => p.id === selectedId) || null, [projects, selectedId])
 
@@ -340,9 +316,14 @@ export default function Hub(props: Props) {
     setBusy(true)
     setError('')
     try {
-      const [items, st] = await Promise.all([listProjects(), getStudioSettings().catch(() => null)])
+      const [items, st, templates] = await Promise.all([listProjects(), getStudioSettings().catch(() => null), listStoryPromptTemplates().catch(() => [])])
       setProjects(items)
       if (st && st.effective) setEffectiveAi(st.effective)
+      setSavedPromptTemplates(Array.isArray(templates) ? templates : [])
+      setSavedTemplateId((prev) => {
+        if (prev && Array.isArray(templates) && templates.some((x) => x.id === prev)) return prev
+        return Array.isArray(templates) && templates[0] ? String(templates[0].id || '') : ''
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -407,6 +388,19 @@ export default function Hub(props: Props) {
       return
     }
 
+    const normalizedTitle = normalizeStoryTitle(title)
+    const sameTitleProjects = projects.filter((p) => normalizeStoryTitle(String(p.title || '')) === normalizedTitle)
+    if (sameTitleProjects.length) {
+      const ok = await askInlineConfirm({
+        title: '替换同名草稿',
+        message: `已存在 ${sameTitleProjects.length} 个同名草稿“${title}”。继续后将删除旧草稿，并使用新生成内容替换。`,
+        confirmLabel: '删除旧稿并生成',
+        cancelLabel: '取消',
+        danger: true
+      })
+      if (!ok) return
+    }
+
     aiRequestLockRef.current = true
     setBusy(true)
     startAiTimer()
@@ -420,9 +414,26 @@ export default function Hub(props: Props) {
       setAiResult(res)
       setAiTab('preview')
       setAnalysis(null)
+      setPromptReview(null)
+      setPromptReviewError('')
+      setBlueprintReview(null)
+      setBlueprintReviewMeta(null)
+      setSelfCheckError('')
+      setSelfFixNote('')
       setRulesText('')
       setRulesError('')
+      if (sameTitleProjects.length) {
+        await Promise.all(
+          sameTitleProjects
+            .filter((item) => item.id !== res.project?.id)
+            .map(async (item) => {
+              await deleteProject(item.id).catch(() => null)
+              if (selectedId === item.id) setSelectedId('')
+            })
+        )
+      }
       await refresh()
+      if (res?.project?.id) setSelectedId(res.project.id)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -430,6 +441,192 @@ export default function Hub(props: Props) {
       stopAiTimer()
       aiRequestLockRef.current = false
     }
+  }
+
+  async function runPromptReview(promptOverride?: string, appliedSource: 'ai' | 'local' | '' = '') {
+    const title = aiTitle.trim()
+    const prompt = normalizePromptText(promptOverride != null ? promptOverride : aiPrompt)
+    if (!title) {
+      setError('请输入故事名称')
+      return
+    }
+    if (!prompt) {
+      setError('请输入提示文本')
+      return
+    }
+    const formulaCheck = validateAiFormula({ choicePoints: aiChoicePoints, optionsPerChoice: aiOptionsPerChoice, endings: aiEndings })
+    if (!formulaCheck.ok) {
+      setAiFormulaError(formulaCheck.message)
+      return
+    }
+    setPromptReviewBusy(true)
+    setPromptReviewError('')
+    try {
+      const review = await reviewStoryPrompt(prompt, title, {
+        choicePoints: aiChoicePoints,
+        optionsPerChoice: aiOptionsPerChoice,
+        endings: aiEndings
+      })
+      setPromptReview(review)
+      setPromptReviewApplied(appliedSource)
+      if (appliedSource) setPromptApplyNote(`已应用${appliedSource === 'ai' ? ' AI 优化版' : '预检优化版'}，并完成重新分析。`)
+    } catch (e) {
+      setPromptReviewError(e instanceof Error ? e.message : String(e))
+      if (appliedSource) setPromptApplyNote(`已应用${appliedSource === 'ai' ? ' AI 优化版' : '预检优化版'}，但重新分析失败。`)
+    } finally {
+      setPromptReviewBusy(false)
+    }
+  }
+
+  async function saveCurrentPromptVersion(promptText: string, notes: string[], meta?: Record<string, any> | null) {
+    const normalized = normalizePromptText(promptText)
+    if (!normalized) return null
+    try {
+      const item = await saveStoryPromptTemplate({
+        prompt: normalized,
+        title: aiTitle.trim() || undefined,
+        templateName: '提示词版本',
+        templateSummary: '来自提示词编辑/修复流程的保存版本',
+        notes,
+        choicePoints: aiChoicePoints,
+        optionsPerChoice: aiOptionsPerChoice,
+        endings: aiEndings,
+        meta: meta || null
+      })
+      await refresh()
+      if (item?.id) setSavedTemplateId(String(item.id))
+      return item
+    } catch (e) {
+      setPromptApplyNote(`版本保存失败：${e instanceof Error ? e.message : String(e)}`)
+      return null
+    }
+  }
+
+  async function applyReviewedPrompt(source: 'ai' | 'local') {
+    const next = normalizePromptText(source === 'ai' ? promptReview?.ai?.optimizedPrompt || '' : promptReview?.local?.optimizedPrompt || '')
+    if (!next) {
+      setPromptApplyNote(source === 'ai' ? 'AI 没有返回可替换的优化版提示词。' : '预检没有生成可替换的优化版提示词。')
+      return
+    }
+    const current = normalizePromptText(aiPrompt)
+    if (current === next) {
+      setPromptReviewApplied(source)
+      setPromptApplyNote(`${source === 'ai' ? 'AI 优化版' : '预检优化版'}与当前提示词一致，没有可应用的差异。`)
+      return
+    }
+    setAiPrompt(next)
+    lastAutoPromptRef.current = ''
+    setPromptReviewApplied(source)
+    setPromptApplyNote(`已应用${source === 'ai' ? ' AI 优化版' : '预检优化版'}，正在重新分析。`)
+    setPromptReviewError('')
+    persistAiDraft(aiTitle, next, aiChoicePoints, aiOptionsPerChoice, aiEndings)
+    await saveCurrentPromptVersion(next, [source === 'ai' ? 'AI 评审优化版' : '本地预检优化版'], {
+      source,
+      reviewMeta: promptReview?.meta || null
+    })
+    try {
+      promptInputRef.current?.focus()
+      promptInputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    } catch {}
+    await runPromptReview(next, source)
+  }
+
+  async function deleteSelectedPromptTemplate() {
+    const id = String(savedTemplateId || '').trim()
+    if (!id) return
+    const item = savedPromptTemplates.find((x) => String(x.id || '') === id)
+    const ok = await askInlineConfirm({
+      title: '删除提示词版本',
+      message: `确定删除“${String(item?.title || '未命名模板')}”这条提示词版本记录吗？此操作不可撤销。`,
+      confirmLabel: '删除版本',
+      cancelLabel: '取消',
+      danger: true
+    })
+    if (!ok) return
+    try {
+      const res = await deleteStoryPromptTemplate(id)
+      const items = Array.isArray(res.items) ? res.items : []
+      setSavedPromptTemplates(items)
+      setSavedTemplateId(items[0] ? String(items[0].id || '') : '')
+      setPromptApplyNote(res.removed ? '已删除提示词版本。' : '未找到要删除的提示词版本。')
+    } catch (e) {
+      setPromptApplyNote(`删除版本失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  async function savePromptVersionManually() {
+    const prompt = normalizePromptText(aiPrompt)
+    if (!prompt) {
+      setPromptApplyNote('当前提示文本为空，无法保存版本。')
+      return
+    }
+    const item = await saveCurrentPromptVersion(prompt, ['手动保存版本'], { source: 'manual' })
+    if (item) setPromptApplyNote('当前提示词已保存为新版本。')
+  }
+
+  async function generatePromptTemplateWithAi() {
+    const title = aiTitle.trim()
+    if (!title) {
+      setError('请输入故事名称')
+      return
+    }
+    const template = pickAutoPromptTemplate({
+      choicePoints: aiChoicePoints,
+      optionsPerChoice: aiOptionsPerChoice,
+      endings: aiEndings
+    })
+    setTemplateGenBusy(true)
+    setTemplateGenError('')
+    try {
+      const res = await generateStoryPromptTemplateWithAi({
+        title,
+        templateKey: template.key,
+        templateName: template.name,
+        templateSummary: template.summary,
+        fields: {},
+        choicePoints: aiChoicePoints,
+        optionsPerChoice: aiOptionsPerChoice,
+        endings: aiEndings
+      })
+      const next = String(res.generated?.prompt || '').trim()
+      if (next) {
+        setAiPrompt(next)
+        lastAutoPromptRef.current = next
+        setPromptReview(null)
+        setPromptReviewApplied('')
+        setPromptApplyNote('')
+        setPromptReviewError('')
+        persistAiDraft(aiTitle, next, aiChoicePoints, aiOptionsPerChoice, aiEndings)
+      }
+      await refresh()
+      if (res.item?.id) setSavedTemplateId(String(res.item.id))
+    } catch (e) {
+      setTemplateGenError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTemplateGenBusy(false)
+    }
+  }
+
+  function openSavedTemplate() {
+    const item = savedPromptTemplates.find((x) => String(x.id || '') === String(savedTemplateId || ''))
+    if (!item) return
+    const nextPrompt = String(item.prompt || '').trim()
+    if (!nextPrompt) return
+    setAiPrompt(nextPrompt)
+    lastAutoPromptRef.current = ''
+    setPromptReview(null)
+    setPromptReviewApplied('')
+    setPromptApplyNote('')
+    setPromptReviewError('')
+    setTemplateGenError('')
+    if (item.title && String(item.title).trim()) setAiTitle(String(item.title).trim())
+    const cp = Number(item.formula?.choicePoints || aiChoicePoints) || aiChoicePoints
+    const op = Number(item.formula?.optionsPerChoice || aiOptionsPerChoice) === 3 ? 3 : 2
+    const en = op
+    setAiChoicePoints(cp)
+    setAiOptionsPerChoice(op)
+    setAiEndings(en)
+    persistAiDraft(String(item.title || aiTitle || ''), nextPrompt, cp, op, en)
   }
 
   async function regenerateAiOverwrite() {
@@ -454,7 +651,13 @@ export default function Hub(props: Props) {
       setAiFormulaError(formulaCheck.message)
       return
     }
-    const ok = window.confirm(`重新生成将覆盖当前草稿（故事ID：${pid}）的脚本内容，确定继续？`)
+    const ok = await askInlineConfirm({
+      title: '覆盖当前草稿',
+      message: `重新生成将覆盖当前草稿（故事ID：${pid}）的脚本内容。`,
+      confirmLabel: '覆盖并生成',
+      cancelLabel: '取消',
+      danger: true
+    })
     if (!ok) return
 
     aiRequestLockRef.current = true
@@ -470,6 +673,12 @@ export default function Hub(props: Props) {
       setAiResult(res)
       setAiTab('preview')
       setAnalysis(null)
+      setPromptReview(null)
+      setPromptReviewError('')
+      setBlueprintReview(null)
+      setBlueprintReviewMeta(null)
+      setSelfCheckError('')
+      setSelfFixNote('')
       setRulesText('')
       setRulesError('')
       await refresh()
@@ -490,15 +699,74 @@ export default function Hub(props: Props) {
     try {
       const res = await analyzeProjectScripts(pid)
       setAnalysis(res)
-      if (res?.proposedRules) {
-        setRulesText(JSON.stringify(res.proposedRules, null, 2))
-      } else {
-        setRulesText('')
-      }
+      setRulesText('')
     } catch (e) {
       setRulesError(e instanceof Error ? e.message : String(e))
     } finally {
       setAnalysisBusy(false)
+    }
+  }
+
+  async function runSelfCheck(projectId?: string) {
+    const pid = projectId || aiResult?.project?.id
+    if (!pid) return
+    setSelfCheckBusy(true)
+    setSelfCheckError('')
+    try {
+      const [analysisRes, reviewRes] = await Promise.all([
+        analyzeProjectScripts(pid),
+        reviewBlueprintWithAi(pid)
+      ])
+      setAnalysis(analysisRes)
+      setRulesText('')
+      setBlueprintReview(reviewRes.review || null)
+      setBlueprintReviewMeta(reviewRes.meta || null)
+    } catch (e) {
+      setSelfCheckError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSelfCheckBusy(false)
+      setAnalysisBusy(false)
+    }
+  }
+
+  async function continueAiSelfFix() {
+    const pid = aiResult?.project?.id
+    if (!pid) return
+    const ok = await askInlineConfirm({
+      title: '继续 AI 修复',
+      message: '将基于本轮自检结果继续调用 AI 修复脚本，并重新生成自检报告。',
+      confirmLabel: '继续修复',
+      cancelLabel: '取消',
+      danger: false
+    })
+    if (!ok) return
+
+    setSelfFixBusy(true)
+    setSelfFixNote('')
+    setSelfCheckError('')
+    try {
+      const fixed = await fixScriptsWithAi(pid)
+      setAiResult((prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          scripts: fixed.scripts,
+          blueprint: fixed.after?.blueprint || prev.blueprint,
+          gen: {
+            ...prev.gen,
+            repaired: true,
+            before: fixed.before || prev.gen.before || null,
+            after: fixed.after || prev.gen.after || null
+          }
+        }
+      })
+      setSelfFixNote(`已完成一轮 AI 修复：${fixed.meta?.provider || 'unknown'}${fixed.meta?.model ? ` / ${fixed.meta.model}` : ''}${fixed.meta?.durationMs != null ? ` / ${fixed.meta.durationMs}ms` : ''}`)
+      await runSelfCheck(pid)
+      await refresh()
+    } catch (e) {
+      setSelfCheckError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSelfFixBusy(false)
     }
   }
 
@@ -541,7 +809,13 @@ export default function Hub(props: Props) {
 
   async function removeProject(id: string) {
     if (!id) return
-    const ok = window.confirm('确定删除该故事草稿？（不可恢复）')
+    const ok = await askInlineConfirm({
+      title: '删除故事草稿',
+      message: '确定删除该故事草稿？此操作不可恢复。',
+      confirmLabel: '删除',
+      cancelLabel: '取消',
+      danger: true
+    })
     if (!ok) return
 
     setBusy(true)
@@ -562,34 +836,35 @@ export default function Hub(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveAi])
 
-  const aiTemplate = useMemo(
-    () => PROMPT_TEMPLATES.find((t) => t.key === aiTemplateKey) || PROMPT_TEMPLATES[0],
-    [aiTemplateKey]
+  const autoTemplate = useMemo(
+    () => pickAutoPromptTemplate({ choicePoints: aiChoicePoints, optionsPerChoice: aiOptionsPerChoice, endings: aiEndings }),
+    [aiChoicePoints, aiOptionsPerChoice, aiEndings]
   )
 
-  function applyTemplateToPrompt(nextFormula?: { choicePoints: number; optionsPerChoice: number; endings: number }) {
-    const f = normalizeAiFormula(nextFormula || { choicePoints: aiChoicePoints, optionsPerChoice: aiOptionsPerChoice, endings: aiEndings })
-    const text = buildTemplatePrompt(aiTemplate, aiTitle, aiTemplateFields, f)
-    setAiPrompt(text)
-    persistAiDraft(aiTitle, text, f.choicePoints, f.optionsPerChoice, f.endings)
-  }
+  useEffect(() => {
+    const pid = aiResult?.project?.id
+    if (!pid) return
+    setSelfFixNote('')
+    setSelfCheckError('')
+    setBlueprintReview(null)
+    setBlueprintReviewMeta(null)
+    void runSelfCheck(pid)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiResult?.project?.id])
 
-  function mergeTemplateTagValue(raw: string, tag: string) {
-    const base = String(raw || '').trim()
-    const existing = base
-      .split(/[，,]/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-    if (existing.includes(tag)) return base
-    return base ? `${base}，${tag}` : tag
-  }
+  const blueprintReviewIsFallback = useMemo(() => {
+    const summary = String(blueprintReview?.summary || '').trim()
+    return summary.includes('AI 分析失败（已回退为本地提示）')
+  }, [blueprintReview])
 
-  function appendTemplateTag(field: TemplateTagField, tag: string) {
-    setAiTemplateFields((prev) => ({
-      ...prev,
-      [field]: mergeTemplateTagValue(String(prev[field] || ''), tag)
-    }))
-  }
+  const selfCheckNeedsAttention = useMemo(() => {
+    if (aiResult?.gen?.ok === false) return true
+    if (analysis && analysis.ok === false) return true
+    if (blueprintReview && blueprintReview.verdict === 'error') return true
+    if (blueprintReview && blueprintReview.verdict === 'warn' && !blueprintReviewIsFallback) return true
+    if (aiResult?.gen?.after && Array.isArray(aiResult.gen.after.issues) && aiResult.gen.after.issues.length) return true
+    return false
+  }, [analysis, blueprintReview, blueprintReviewIsFallback, aiResult])
 
   return (
     <div className="app">
@@ -701,14 +976,18 @@ export default function Hub(props: Props) {
                   const d = loadAiDraft()
                   setAiPrompt(d.prompt)
                   setAiTitle(d.title)
-                  setAiTemplateKey(loadTemplateKey())
-                  setAiTemplateFields(loadTemplateFields())
                   setAiChoicePoints(d.choicePoints)
                   setAiOptionsPerChoice(d.optionsPerChoice)
                   setAiEndings(d.endings)
                   setAiResult(null)
+                  setPromptReview(null)
+                  setPromptReviewError('')
                   setAiTab('preview')
                   setAnalysis(null)
+                  setBlueprintReview(null)
+                  setBlueprintReviewMeta(null)
+                  setSelfCheckError('')
+                  setSelfFixNote('')
                   setRulesText('')
                   setRulesError('')
                 }}
@@ -741,7 +1020,7 @@ export default function Hub(props: Props) {
 
       {aiModalOpen ? (
         <div className="ai-modal" role="dialog" aria-modal="true" aria-label="AI 生成新故事">
-          <div className="ai-modal-card" style={{ width: 860 }}>
+          <div className="ai-modal-card" style={{ width: 'min(1180px, calc(100vw - 32px))', maxHeight: 'calc(100vh - 24px)' }}>
             <div className="ai-modal-title">AI 生成新故事（脚本层草稿）</div>
             {!aiResult ? (
                 <div className="form">
@@ -753,6 +1032,10 @@ export default function Hub(props: Props) {
                       onChange={(e) => {
                         const v = e.target.value
                         setAiTitle(v)
+                        setPromptReview(null)
+                        setPromptReviewApplied('')
+                        setPromptApplyNote('')
+                        setPromptReviewError('')
                         persistAiDraft(v, aiPrompt, aiChoicePoints, aiOptionsPerChoice, aiEndings)
                       }}
                       placeholder="请输入故事名称（必填）"
@@ -769,6 +1052,10 @@ export default function Hub(props: Props) {
                         onChange={(e) => {
                           const v = Number(e.target.value) || 2
                           setAiFormulaError('')
+                          setPromptReview(null)
+                          setPromptReviewApplied('')
+                          setPromptApplyNote('')
+                          setPromptReviewError('')
                           setAiChoicePoints(v)
                           persistAiDraft(aiTitle, aiPrompt, v, aiOptionsPerChoice, aiEndings)
                         }}
@@ -787,6 +1074,10 @@ export default function Hub(props: Props) {
                         onChange={(e) => {
                           const v = Number(e.target.value) === 3 ? 3 : 2
                           setAiFormulaError('')
+                          setPromptReview(null)
+                          setPromptReviewApplied('')
+                          setPromptApplyNote('')
+                          setPromptReviewError('')
                           // Keep formula valid by construction.
                           setAiOptionsPerChoice(v)
                           setAiEndings(v)
@@ -811,6 +1102,10 @@ export default function Hub(props: Props) {
                             return
                           }
                           setAiFormulaError('')
+                          setPromptReview(null)
+                          setPromptReviewApplied('')
+                          setPromptApplyNote('')
+                          setPromptReviewError('')
                           setAiEndings(v)
                           persistAiDraft(aiTitle, aiPrompt, aiChoicePoints, aiOptionsPerChoice, v)
                         }}
@@ -830,13 +1125,14 @@ export default function Hub(props: Props) {
                         onClick={() => {
                           const r = randomAiFormula()
                           setAiFormulaError('')
+                          setPromptReview(null)
+                          setPromptReviewApplied('')
+                          setPromptApplyNote('')
+                          setPromptReviewError('')
                           setAiChoicePoints(r.choicePoints)
                           setAiOptionsPerChoice(r.optionsPerChoice)
                           setAiEndings(r.endings)
                           persistAiDraft(aiTitle, aiPrompt, r.choicePoints, r.optionsPerChoice, r.endings)
-                          const text = buildTemplatePrompt(aiTemplate, aiTitle, aiTemplateFields, r)
-                          setAiPrompt(text)
-                          persistAiDraft(aiTitle, text, r.choicePoints, r.optionsPerChoice, r.endings)
                         }}
                         title="随机一个合法结构公式"
                       >
@@ -852,11 +1148,17 @@ export default function Hub(props: Props) {
                   <div className="form-row">
                     <label>提示文本</label>
                     <textarea
+                      ref={promptInputRef}
                       className="textarea"
                       value={aiPrompt}
                       onChange={(e) => {
                         const v = e.target.value
                         setAiPrompt(v)
+                        if (v !== lastAutoPromptRef.current) lastAutoPromptRef.current = ''
+                        setPromptReview(null)
+                        setPromptReviewApplied('')
+                        setPromptApplyNote('')
+                        setPromptReviewError('')
                         persistAiDraft(aiTitle, v, aiChoicePoints, aiOptionsPerChoice, aiEndings)
                       }}
                       placeholder="例如：写一个《狼来了》风格的互动故事，包含 3 个关键选择点和多个结局（先生成脚本大纲）"
@@ -866,228 +1168,152 @@ export default function Hub(props: Props) {
                   </div>
 
                   <div className="form-row">
-                    <label>提示模板</label>
+                    <label>AI 模板</label>
                     <div style={{ display: 'grid', gap: 8 }}>
+                      <div className="hint">
+                        当前将按结构公式自动使用：{autoTemplate.name}（{autoTemplate.summary}）。不再手工填写模板字段，点击下方按钮由 AI 生成完整提示文本。
+                      </div>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <select
-                          className="sel"
-                          value={aiTemplateKey}
-                          onChange={(e) => {
-                            const key = e.target.value
-                            setAiTemplateKey(key)
-                            const t = PROMPT_TEMPLATES.find((x) => x.key === key) || PROMPT_TEMPLATES[0]
-                            setAiChoicePoints(t.suggestedFormula.choicePoints)
-                            setAiOptionsPerChoice(t.suggestedFormula.optionsPerChoice)
-                            setAiEndings(t.suggestedFormula.endings)
-                            persistAiDraft(
-                              aiTitle,
-                              aiPrompt,
-                              t.suggestedFormula.choicePoints,
-                              t.suggestedFormula.optionsPerChoice,
-                              t.suggestedFormula.endings
-                            )
-                          }}
-                          disabled={busy}
-                        >
-                          {PROMPT_TEMPLATES.map((t) => (
-                            <option key={t.key} value={t.key}>
-                              {t.name}
+                        <button className="btn secondary" type="button" disabled={busy || templateGenBusy} onClick={() => void generatePromptTemplateWithAi()}>
+                          {templateGenBusy ? '生成中…' : 'AI 一键生成提示文本'}
+                        </button>
+                        <select className="sel" value={savedTemplateId} onChange={(e) => setSavedTemplateId(String(e.target.value || ''))} disabled={busy || templateGenBusy || !savedPromptTemplates.length}>
+                          <option value="">已生成模板</option>
+                          {savedPromptTemplates.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {(item.title || '未命名模板') + ' · ' + String(item.createdAt || '').slice(0, 16).replace('T', ' ')}
                             </option>
                           ))}
                         </select>
-                        <button className="btn secondary" type="button" disabled={busy} onClick={() => applyTemplateToPrompt()}>
-                          一键生成提示文本
+                        <button className="btn secondary" type="button" disabled={busy || !savedTemplateId} onClick={() => openSavedTemplate()}>
+                          打开模板
+                        </button>
+                        <button className="btn secondary" type="button" disabled={busy || !aiPrompt.trim()} onClick={() => void savePromptVersionManually()}>
+                          保存版本
+                        </button>
+                        <button className="btn secondary" type="button" disabled={busy || !savedTemplateId} onClick={() => void deleteSelectedPromptTemplate()}>
+                          删除模板
                         </button>
                       </div>
-                      <div className="hint">{aiTemplate.summary}</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 8 }}>
-                          <input
-                            className="input"
-                            placeholder="核心寓意，如 诚实比聪明更重要"
-                            value={aiTemplateFields.moral}
-                            onChange={(e) => setAiTemplateFields((v) => ({ ...v, moral: e.target.value }))}
-                            disabled={busy}
-                          />
-                          <select
-                            className="sel"
-                            value={templateTagPickers.moral}
-                            onChange={(e) => {
-                              const v = String(e.target.value || '').trim()
-                              setTemplateTagPickers((prev) => ({ ...prev, moral: v }))
-                              if (!v) return
-                              appendTemplateTag('moral', v)
-                              setTemplateTagPickers((prev) => ({ ...prev, moral: '' }))
-                            }}
-                            disabled={busy}
+                      {templateGenError ? <div style={{ color: '#fca5a5' }}>{templateGenError}</div> : null}
+                    </div>
+                  </div>
+
+                  <div className="form-row">
+                    <label>提示词预检 / AI 分析</label>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button className="btn secondary" type="button" disabled={busy || promptReviewBusy} onClick={() => void runPromptReview(undefined, '')}>
+                          {promptReviewBusy ? '分析中…' : '分析提示词'}
+                        </button>
+                        {promptReview?.ai?.optimizedPrompt ? (
+                          <button
+                            className="btn secondary"
+                            type="button"
+                            disabled={busy || promptReviewBusy}
+                            onClick={() => void applyReviewedPrompt('ai')}
                           >
-                            <option value="">寓意标签</option>
-                            {TEMPLATE_COMMON_TAGS.moral.map((tag) => (
-                              <option key={`moral-${tag}`} value={tag}>
-                                {tag}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 8 }}>
-                          <input
-                            className="input"
-                            placeholder="世界观，如 古代山村、秋季、阴天"
-                            value={aiTemplateFields.world}
-                            onChange={(e) => setAiTemplateFields((v) => ({ ...v, world: e.target.value }))}
-                            disabled={busy}
-                          />
-                          <select
-                            className="sel"
-                            value={templateTagPickers.world}
-                            onChange={(e) => {
-                              const v = String(e.target.value || '').trim()
-                              setTemplateTagPickers((prev) => ({ ...prev, world: v }))
-                              if (!v) return
-                              appendTemplateTag('world', v)
-                              setTemplateTagPickers((prev) => ({ ...prev, world: '' }))
-                            }}
-                            disabled={busy}
+                            AI 修复并替换
+                          </button>
+                        ) : null}
+                        {promptReview?.local?.optimizedPrompt ? (
+                          <button
+                            className="btn secondary"
+                            type="button"
+                            disabled={busy || promptReviewBusy}
+                            onClick={() => void applyReviewedPrompt('local')}
                           >
-                            <option value="">世界观标签</option>
-                            {TEMPLATE_COMMON_TAGS.world.map((tag) => (
-                              <option key={`world-${tag}`} value={tag}>
-                                {tag}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 8 }}>
-                          <input
-                            className="input"
-                            placeholder="主角设定，如 牧童、草帽、竹笛"
-                            value={aiTemplateFields.protagonist}
-                            onChange={(e) => setAiTemplateFields((v) => ({ ...v, protagonist: e.target.value }))}
-                            disabled={busy}
-                          />
-                          <select
-                            className="sel"
-                            value={templateTagPickers.protagonist}
-                            onChange={(e) => {
-                              const v = String(e.target.value || '').trim()
-                              setTemplateTagPickers((prev) => ({ ...prev, protagonist: v }))
-                              if (!v) return
-                              appendTemplateTag('protagonist', v)
-                              setTemplateTagPickers((prev) => ({ ...prev, protagonist: '' }))
-                            }}
-                            disabled={busy}
-                          >
-                            <option value="">主角标签</option>
-                            {TEMPLATE_COMMON_TAGS.protagonist.map((tag) => (
-                              <option key={`protagonist-${tag}`} value={tag}>
-                                {tag}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 8 }}>
-                          <input
-                            className="input"
-                            placeholder="视觉风格，如 绘本/卡通/国风"
-                            value={aiTemplateFields.style}
-                            onChange={(e) => setAiTemplateFields((v) => ({ ...v, style: e.target.value }))}
-                            disabled={busy}
-                          />
-                          <select
-                            className="sel"
-                            value={templateTagPickers.style}
-                            onChange={(e) => {
-                              const v = String(e.target.value || '').trim()
-                              setTemplateTagPickers((prev) => ({ ...prev, style: v }))
-                              if (!v) return
-                              appendTemplateTag('style', v)
-                              setTemplateTagPickers((prev) => ({ ...prev, style: '' }))
-                            }}
-                            disabled={busy}
-                          >
-                            <option value="">风格标签</option>
-                            {TEMPLATE_COMMON_TAGS.style.map((tag) => (
-                              <option key={`style-${tag}`} value={tag}>
-                                {tag}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 8 }}>
-                          <input
-                            className="input"
-                            placeholder="叙事语气，如 温暖、幽默"
-                            value={aiTemplateFields.tone}
-                            onChange={(e) => setAiTemplateFields((v) => ({ ...v, tone: e.target.value }))}
-                            disabled={busy}
-                          />
-                          <select
-                            className="sel"
-                            value={templateTagPickers.tone}
-                            onChange={(e) => {
-                              const v = String(e.target.value || '').trim()
-                              setTemplateTagPickers((prev) => ({ ...prev, tone: v }))
-                              if (!v) return
-                              appendTemplateTag('tone', v)
-                              setTemplateTagPickers((prev) => ({ ...prev, tone: '' }))
-                            }}
-                            disabled={busy}
-                          >
-                            <option value="">语气标签</option>
-                            {TEMPLATE_COMMON_TAGS.tone.map((tag) => (
-                              <option key={`tone-${tag}`} value={tag}>
-                                {tag}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
+                            应用预检优化版
+                          </button>
+                        ) : null}
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 8 }}>
-                        <input
-                          className="input"
-                          placeholder="限制条件，如 避免恐怖与血腥"
-                          value={aiTemplateFields.constraints}
-                          onChange={(e) => setAiTemplateFields((v) => ({ ...v, constraints: e.target.value }))}
-                          disabled={busy}
-                        />
-                        <select
-                          className="sel"
-                          value={templateTagPickers.constraints}
-                          onChange={(e) => {
-                            const v = String(e.target.value || '').trim()
-                            setTemplateTagPickers((prev) => ({ ...prev, constraints: v }))
-                            if (!v) return
-                            appendTemplateTag('constraints', v)
-                            setTemplateTagPickers((prev) => ({ ...prev, constraints: '' }))
+
+                      {promptReviewError ? <div style={{ color: '#fca5a5' }}>{promptReviewError}</div> : null}
+                      {promptApplyNote ? <div style={{ color: '#93c5fd' }}>{promptApplyNote}</div> : null}
+
+                      {promptReview ? (
+                        <div
+                          style={{
+                            display: 'grid',
+                            gap: 10,
+                            padding: 12,
+                            borderRadius: 12,
+                            border: `1px solid ${promptReview.local.ok && promptReview.ai.verdict === 'ok' ? '#10b981' : '#f59e0b'}`,
+                            background: promptReview.local.ok && promptReview.ai.verdict === 'ok' ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)'
                           }}
-                          disabled={busy}
                         >
-                          <option value="">限制标签</option>
-                          {TEMPLATE_COMMON_TAGS.constraints.map((tag) => (
-                            <option key={`constraints-${tag}`} value={tag}>
-                              {tag}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <textarea
-                        className="textarea"
-                        placeholder="补充说明（可选）：可写你希望突出的人物关系、关键道具、镜头偏好"
-                        value={aiTemplateFields.extra}
-                        onChange={(e) => setAiTemplateFields((v) => ({ ...v, extra: e.target.value }))}
-                        style={{ minHeight: 70 }}
-                        disabled={busy}
-                      />
+                          <div className="hint" style={{ color: promptReview.local.ok && promptReview.ai.verdict === 'ok' ? '#a7f3d0' : '#fde68a' }}>
+                            预检评分：{promptReview.local.score}/100 · {promptReview.local.summary}
+                          </div>
+                          {promptReviewApplied ? (
+                            <div className="hint" style={{ color: '#93c5fd' }}>
+                              已应用{promptReviewApplied === 'ai' ? ' AI 优化版' : '预检优化版'}提示词。当前评分仍对应应用前的分析结果；如需更新，请重新点击“分析提示词”。
+                            </div>
+                          ) : null}
+
+                          <div>
+                            <div className="hint" style={{ fontWeight: 700, marginBottom: 6 }}>本地预检</div>
+                            <div style={{ display: 'grid', gap: 6 }}>
+                              {promptReview.local.checks.map((c) => (
+                                <div key={c.id} className="hint" style={{ color: c.ok ? '#a7f3d0' : c.severity === 'error' ? '#fca5a5' : '#fde68a' }}>
+                                  {c.ok ? '✓' : '•'} {c.message}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="hint" style={{ fontWeight: 700, marginBottom: 6 }}>
+                              AI 评审
+                              {promptReview.meta?.provider ? `：${promptReview.meta.provider}${promptReview.meta.model ? ` / ${promptReview.meta.model}` : ''}${promptReview.meta.durationMs != null ? ` / ${promptReview.meta.durationMs}ms` : ''}` : ''}
+                            </div>
+                            <div className="hint" style={{ color: promptReview.ai.verdict === 'ok' ? '#a7f3d0' : promptReview.ai.verdict === 'error' ? '#fca5a5' : '#fde68a', marginBottom: 6 }}>
+                              {promptReview.ai.summary}
+                            </div>
+                            {promptReview.ai.strengths?.length ? (
+                              <div style={{ display: 'grid', gap: 6, marginBottom: 8 }}>
+                                {promptReview.ai.strengths.map((s, i) => (
+                                  <div key={`strength-${i}`} className="hint" style={{ color: '#a7f3d0' }}>- {s}</div>
+                                ))}
+                              </div>
+                            ) : null}
+                            {promptReview.ai.risks?.length ? (
+                              <div style={{ display: 'grid', gap: 6, marginBottom: 8 }}>
+                                {promptReview.ai.risks.map((s, i) => (
+                                  <div key={`risk-${i}`} className="hint" style={{ color: '#fde68a' }}>- {s}</div>
+                                ))}
+                              </div>
+                            ) : null}
+                            {promptReview.ai.suggestions?.length ? (
+                              <div style={{ display: 'grid', gap: 6 }}>
+                                {promptReview.ai.suggestions.map((s, i) => (
+                                  <div key={`suggest-${i}`} className="hint">- {s}</div>
+                                ))}
+                              </div>
+                            ) : null}
+                            {promptReview.aiError?.message ? (
+                              <div style={{ marginTop: 8, color: '#fca5a5' }}>AI 评审回退：{promptReview.aiError.message}</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="hint">点击“分析提示词”后，会先做结构预检，再用当前故事模型做一轮 AI 评审，并返回优化版提示词。</div>
+                      )}
                     </div>
                   </div>
                 </div>
             ) : (
               <>
                 <div className="hint" style={{ marginBottom: 10 }}>
-                  生成完成：{aiResult.gen?.provider}
+                  {aiResult.gen?.ok === false ? '已保存可修正草稿' : '生成完成'}：{aiResult.gen?.provider}
                   {aiResult.gen?.model ? ` / ${aiResult.gen.model}` : ''}
                   {typeof aiResult.gen?.durationMs === 'number' ? ` / ${aiResult.gen.durationMs}ms` : ''}
                 </div>
+                {aiResult.gen?.ok === false && aiResult.gen?.message ? (
+                  <div className="hint" style={{ marginBottom: 10, color: '#fde68a' }}>
+                    当前草稿未通过最终结构校验：{aiResult.gen.message}
+                  </div>
+                ) : null}
                 {aiResult.gen?.requestedProvider && aiResult.gen.requestedProvider !== aiResult.gen.provider ? (
                   <div className="hint" style={{ marginBottom: 10, color: '#fde68a' }}>
                     已请求：{aiResult.gen.requestedProvider}，但实际使用：{aiResult.gen.provider}（通常是设置尚未“保存并应用”、未读到环境变量，或 AI 调用失败后回退）。
@@ -1099,6 +1325,29 @@ export default function Hub(props: Props) {
                     {aiResult.gen.error.code ? `（${aiResult.gen.error.code}）` : ''}
                   </div>
                 ) : null}
+                <div
+                  style={{
+                    marginBottom: 10,
+                    padding: 10,
+                    borderRadius: 10,
+                    border: `1px solid ${selfCheckBusy ? '#3b82f6' : selfCheckNeedsAttention ? '#f59e0b' : '#10b981'}`,
+                    background: selfCheckBusy ? 'rgba(59,130,246,0.08)' : selfCheckNeedsAttention ? 'rgba(245,158,11,0.08)' : 'rgba(16,185,129,0.08)'
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>生成后自检</div>
+                  <div className="hint" style={{ color: selfCheckBusy ? '#93c5fd' : selfCheckNeedsAttention ? '#fde68a' : '#a7f3d0' }}>
+                    {selfCheckBusy
+                      ? '正在执行结构分析 + AI 自检，请先确认结果。'
+                      : selfCheckNeedsAttention
+                        ? '发现需要确认或修改的风险。当前草稿已保留，建议先看“结构分析”，再决定继续 AI 修复或进入脚本人工修改。'
+                        : blueprintReviewIsFallback
+                          ? '结构分析已通过。AI 自检本轮暂不可用，但不影响继续进入后续处理。'
+                          : '本轮自检未发现明显风险。你仍可查看分析结果后再进入脚本。'}
+                  </div>
+                  {aiResult.gen?.repaired ? <div className="hint" style={{ marginTop: 4 }}>本轮生成已包含自动修复。</div> : null}
+                  {selfFixNote ? <div className="hint" style={{ marginTop: 4, color: '#a7f3d0' }}>{selfFixNote}</div> : null}
+                  {selfCheckError ? <div style={{ marginTop: 6, color: '#fca5a5' }}>{selfCheckError}</div> : null}
+                </div>
                 <div className="hr" />
                 <div className="tabs" style={{ paddingLeft: 0, paddingRight: 0 }}>
                   <div className={`tab ${aiTab === 'preview' ? 'active' : ''}`} onClick={() => setAiTab('preview')}>
@@ -1108,7 +1357,7 @@ export default function Hub(props: Props) {
                     className={`tab ${aiTab === 'analysis' ? 'active' : ''}`}
                     onClick={() => {
                       setAiTab('analysis')
-                      if (!analysis && !analysisBusy) void runAnalysis()
+                      if ((!analysis || !blueprintReview) && !analysisBusy && !selfCheckBusy) void runSelfCheck()
                     }}
                   >
                     结构分析
@@ -1129,14 +1378,11 @@ export default function Hub(props: Props) {
                 ) : (
                   <div className="mini-scroll" style={{ maxHeight: '46vh', overflow: 'auto' }}>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-                      <button className="btn secondary" onClick={() => void runAnalysis()} disabled={analysisBusy}>
-                        {analysisBusy ? '分析中…' : '重新分析'}
+                      <button className="btn secondary" onClick={() => void runSelfCheck()} disabled={analysisBusy || selfCheckBusy || selfFixBusy}>
+                        {analysisBusy || selfCheckBusy ? '自检中…' : '重新自检'}
                       </button>
-                      <button className="btn secondary" onClick={() => void loadCurrentGlobalRules()} disabled={analysisBusy} title="加载当前全局规则到编辑框">
-                        载入全局规则
-                      </button>
-                      <button className="btn" onClick={() => void adoptRules()} disabled={analysisBusy || !rulesText.trim()} title="将编辑框中的规则保存为全局规则">
-                        采纳为全局规则
+                      <button className="btn secondary" onClick={() => void continueAiSelfFix()} disabled={selfCheckBusy || selfFixBusy}>
+                        {selfFixBusy ? '修复中…' : '继续 AI 修复'}
                       </button>
                     </div>
 
@@ -1177,13 +1423,42 @@ export default function Hub(props: Props) {
                         ) : null}
                       </>
                     ) : (
-                      <div className="hint">{analysisBusy ? '分析中…' : '暂无分析结果'}</div>
+                      <div className="hint">{analysisBusy || selfCheckBusy ? '分析中…' : '暂无分析结果'}</div>
                     )}
 
+                    <div className="hr" />
                     <div className="hint" style={{ fontWeight: 700, marginBottom: 6 }}>
-                      全局规则（JSON，可编辑）
+                      AI 自检结论
                     </div>
-                    <textarea className="textarea" value={rulesText} onChange={(e) => setRulesText(e.target.value)} style={{ minHeight: 220 }} disabled={analysisBusy} />
+                    {blueprintReview ? (
+                      <>
+                        <div className="hint" style={{ marginBottom: 10, color: blueprintReviewIsFallback ? 'rgba(226,232,240,0.78)' : blueprintReview.verdict === 'ok' ? '#a7f3d0' : blueprintReview.verdict === 'error' ? '#fca5a5' : '#fde68a' }}>
+                          {blueprintReviewIsFallback ? 'AI 自检暂不可用（已回退本地提示，不影响当前结构结论）。' : blueprintReview.summary}
+                          {blueprintReviewMeta?.provider ? `（${blueprintReviewMeta.provider}${blueprintReviewMeta.model ? ` / ${blueprintReviewMeta.model}` : ''}${blueprintReviewMeta.durationMs != null ? ` / ${blueprintReviewMeta.durationMs}ms` : ''}）` : ''}
+                        </div>
+                        {blueprintReview.rootCauses?.length ? (
+                          <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+                            {blueprintReview.rootCauses.map((s, i) => (
+                              <div key={`root-${i}`} className="hint" style={{ color: '#fde68a' }}>
+                                - {s}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {blueprintReview.suggestedEdits?.length ? (
+                          <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+                            {blueprintReview.suggestedEdits.map((s, i) => (
+                              <div key={`edit-${i}`} className="hint">
+                                - {s.target}：{s.change}{s.example ? ` 例：${s.example}` : ''}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="hint">{selfCheckBusy ? 'AI 自检中…' : '暂无 AI 自检结论'}</div>
+                    )}
+
                   </div>
                 )}
               </>
@@ -1201,6 +1476,10 @@ export default function Hub(props: Props) {
                 onClick={() => {
                   if (aiResult) {
                     setAiResult(null)
+                    setBlueprintReview(null)
+                    setBlueprintReviewMeta(null)
+                    setSelfCheckError('')
+                    setSelfFixNote('')
                     return
                   }
                   setAiModalOpen(false)
@@ -1213,15 +1492,17 @@ export default function Hub(props: Props) {
                 <button
                   className="btn secondary"
                   onClick={() => {
-                    setAiTitle('')
                     setAiPrompt('')
-                    setAiTemplateKey(PROMPT_TEMPLATES[0].key)
-                    setAiTemplateFields(defaultTemplateFields())
-                    setAiChoicePoints(2)
-                    setAiOptionsPerChoice(2)
-                    setAiEndings(2)
                     setAiResult(null)
-                    clearAiDraft()
+                    setBlueprintReview(null)
+                    setBlueprintReviewMeta(null)
+                    setSelfCheckError('')
+                    setSelfFixNote('')
+                    setPromptReview(null)
+                    setPromptReviewApplied('')
+                    setPromptApplyNote('')
+                    setPromptReviewError('')
+                    persistAiDraft(aiTitle, '', aiChoicePoints, aiOptionsPerChoice, aiEndings)
                   }}
                   disabled={busy}
                 >
@@ -1237,6 +1518,9 @@ export default function Hub(props: Props) {
                   <button className="btn secondary" onClick={() => void regenerateAiOverwrite()} disabled={busy} title="用当前提示重新生成并覆盖脚本">
                     {busy ? '生成中…' : '重新生成（覆盖）'}
                   </button>
+                  <button className="btn secondary" onClick={() => void continueAiSelfFix()} disabled={selfCheckBusy || selfFixBusy} title="基于当前自检结果继续让 AI 修复脚本">
+                    {selfFixBusy ? '修复中…' : '继续 AI 修复'}
+                  </button>
                   <button
                     className="btn"
                     onClick={() => {
@@ -1244,13 +1528,55 @@ export default function Hub(props: Props) {
                       setAiModalOpen(false)
                       // Keep draft by default (user may want to generate variations).
                       setAiResult(null)
+                      setBlueprintReview(null)
+                      setBlueprintReviewMeta(null)
+                      setSelfCheckError('')
+                      setSelfFixNote('')
                       if (id) props.onOpenProject(id, 'script')
                     }}
                   >
-                    进入脚本
+                    进入脚本人工修改
                   </button>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {inlineConfirm.open ? (
+        <div
+          className="ai-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={inlineConfirm.title || '请确认'}
+          style={{ zIndex: 80, background: 'rgba(3, 7, 18, 0.74)' }}
+        >
+          <div
+            className="ai-modal-card"
+            style={{
+              width: 520,
+              maxWidth: 'calc(100vw - 32px)',
+              borderColor: inlineConfirm.danger ? 'rgba(239, 68, 68, 0.35)' : undefined
+            }}
+          >
+            <div className="ai-modal-title" style={{ marginBottom: 10 }}>
+              {inlineConfirm.title}
+            </div>
+            <div className="hint" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7, marginBottom: 16 }}>
+              {inlineConfirm.message}
+            </div>
+            <div className="ai-modal-actions">
+              <button className="btn secondary" type="button" onClick={() => closeInlineConfirm(false)}>
+                {inlineConfirm.cancelLabel}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => closeInlineConfirm(true)}
+                style={inlineConfirm.danger ? { background: '#dc2626' } : undefined}
+              >
+                {inlineConfirm.confirmLabel}
+              </button>
             </div>
           </div>
         </div>

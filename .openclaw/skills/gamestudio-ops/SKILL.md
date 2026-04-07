@@ -5,7 +5,7 @@ description: Use when working on the local game_studio project and you need a st
 
 # Gamestudio Ops
 
-Use this skill for work inside `/Users/zhanghongqin/work/game_studio`.
+Use this skill for work inside `.`.
 
 ## Read Order
 

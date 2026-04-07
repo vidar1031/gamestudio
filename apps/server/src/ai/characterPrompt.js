@@ -43,7 +43,8 @@ export async function generateCharacterFingerprintViaOpenAI({
   globalPrompt,
   style,
   model,
-  provider
+  provider,
+  apiUrl
 }) {
   const st = normalizeStyle(style) || 'picture_book'
 
@@ -80,7 +81,7 @@ export async function generateCharacterFingerprintViaOpenAI({
     }
   }
 
-  const { json, meta } = await openaiResponsesJsonForTools({ body, provider })
+  const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl })
   let outText = ''
   try {
     outText = typeof json.output_text === 'string' ? json.output_text : ''

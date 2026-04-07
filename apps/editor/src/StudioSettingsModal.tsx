@@ -1,13 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   diagnoseStudio,
-  getComfyuiModels,
   preflightStudioImage,
   getSdwebuiModels,
-  getStudioImageModels,
   getStudioSettings,
   saveStudioSettings,
-  testStudioImage,
   type StudioEffectiveConfig,
   type StudioSettings
 } from './api'
@@ -38,6 +35,11 @@ function normalizeDraft(settings: StudioSettings | null): StudioSettings {
     },
     scripts: { provider: s.scripts?.provider || 'none', model: s.scripts?.model || '', apiUrl: s.scripts?.apiUrl || '' },
     prompt: { provider: s.prompt?.provider || 'none', model: s.prompt?.model || '', apiUrl: s.prompt?.apiUrl || '' },
+    translation: {
+      provider: s.translation?.provider || s.prompt?.provider || 'none',
+      model: s.translation?.model || s.prompt?.model || '',
+      apiUrl: s.translation?.apiUrl || s.prompt?.apiUrl || ''
+    },
     image: {
       provider: s.image?.provider || 'none',
       model: s.image?.model || '',
@@ -59,10 +61,14 @@ function normalizeDraft(settings: StudioSettings | null): StudioSettings {
 }
 
 const MODEL_MEMORY_KEY = 'studio.model.memory.v1'
-type ModelSection = 'scripts' | 'prompt' | 'image'
+const URL_MEMORY_KEY = 'studio.url.memory.v1'
+type ModelSection = 'scripts' | 'prompt' | 'translation' | 'image'
+type TextSection = 'scripts' | 'prompt' | 'translation'
 type ModelMemory = Record<ModelSection, Record<string, string>>
+type UrlMemory = Record<TextSection, Record<string, string>>
 // Curated presets for common local Ollama models. Users can still type a custom id.
 const OLLAMA_MODEL_PRESETS = ['gemma3:12b', 'qwen3:8b', 'qwen3-vl:8b', 'qwen3.5:27b']
+const OPENAI_MODEL_PRESETS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4o-mini']
 const SDWEBUI_MODEL_PRESETS = [
   'dreamshaper_8.safetensors [879db523c3]',
   'hellocartoonfilm_V30p.safetensors [a606a40b56]',
@@ -72,50 +78,44 @@ const SDWEBUI_MODEL_PRESETS = [
   'svd_xt.safetensors',
   'v1-5-pruned-emaonly-fp16.safetensors'
 ]
-const COMFYUI_MODEL_PRESETS = [
-  'dreamshaper_8.safetensors',
-  'hellocartoonfilm_V30p.safetensors',
-  'meinapastel_v6Pastel.safetensors',
-  'nigi3d_v20.safetensors',
-  'sd_xl_base_1.0.safetensors',
-  'svd_xt.safetensors',
-  'v1-5-pruned-emaonly-fp16.safetensors'
-]
-const COMFYUI_LORA_PRESETS = [
-  'AncientCustomsStyle_Highface',
-  'Concept_Art_Ultimatum_Style_LoRA_Pony_XL_v6',
-  'DonMM4ch1n3W0rldXL',
-  'merge_house_evol_v1_0.7_1.1',
-  'J_sci-fi',
-  'Mythical_Beasts',
-  'sdxl',
-  'TileMapStyle_v1',
-  'WarcraftStyle_v2',
-  'blindbox_v1_mix',
-  'mw_charturn3',
-  'chibi_3in1_v1',
-  'chubby_20230714115856',
-  'ouka_V3',
-  'watercolor_imagerya_20231214112636'
-]
 
-const COMFYUI_STORYBOOK_MODEL_HINTS = [
-  'illustrious',
-  'dreamshaper',
-  'juggernaut',
-  'realvisxl',
-  'sd_xl_base_1.0',
-  'xl'
-]
+function textProviderModelPlaceholder(provider: string | null | undefined) {
+  const p = String(provider || '').trim().toLowerCase()
+  if (p === 'localoxml') return '如 Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit'
+  if (p === 'openai') return '如 gpt-5 / gpt-5-mini / gpt-5-nano / gpt-4o-mini'
+  if (p === 'doubao') return '如 doubao-1-5-pro-32k-250115'
+  if (p === 'ollama') return '如 qwen3:8b / qwen3.5:27b'
+  return '可留空'
+}
 
-const COMFYUI_STORYBOOK_LORA_HINTS = [
-  'storybook',
-  'picture',
-  'watercolor',
-  'cartoon',
-  'children',
-  'illustration'
-]
+function textProviderUrlMeta(provider: string | null | undefined) {
+  const p = String(provider || '').trim().toLowerCase()
+  if (p === 'localoxml') {
+    return {
+      label: 'OXML URL',
+      placeholder: 'http://127.0.0.1:18888 或 http://127.0.0.1:18888/v1'
+    }
+  }
+  if (p === 'ollama') {
+    return {
+      label: 'Ollama URL',
+      placeholder: 'http://127.0.0.1:11434'
+    }
+  }
+  if (p === 'openai') {
+    return {
+      label: 'Base URL',
+      placeholder: 'https://api.openai.com/v1'
+    }
+  }
+  if (p === 'doubao') {
+    return {
+      label: '接口 URL',
+      placeholder: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
+    }
+  }
+  return null
+}
 
 function normalizeComfyModelName(v: string | null | undefined) {
   return String(v || '').trim().replace(/\s+\[[^\]]+\]\s*$/, '').trim()
@@ -145,12 +145,25 @@ function readCurrentModel(v: any) {
 }
 
 function emptyModelMemory(): ModelMemory {
-  return { scripts: {}, prompt: {}, image: {} }
+  return { scripts: {}, prompt: {}, translation: {}, image: {} } as ModelMemory
+}
+
+function emptyUrlMemory(): UrlMemory {
+  return { scripts: {}, prompt: {}, translation: {} }
 }
 
 function providerKey(v: string | null | undefined) {
   const s = String(v || '').trim().toLowerCase()
   return s || '__default'
+}
+
+function defaultTextProviderApiUrl(provider: string | null | undefined) {
+  const p = String(provider || '').trim().toLowerCase()
+  if (p === 'openai') return 'https://api.openai.com/v1'
+  if (p === 'localoxml') return 'http://127.0.0.1:18888/v1'
+  if (p === 'ollama') return 'http://127.0.0.1:11434'
+  if (p === 'doubao') return 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
+  return ''
 }
 
 function defaultModelBySectionProvider(
@@ -163,13 +176,16 @@ function defaultModelBySectionProvider(
     if (!effective) return ''
     if (section === 'scripts') return String(effective.scripts?.model || '')
     if (section === 'prompt') return String(effective.prompt?.model || '')
+    if (section === 'translation') return String(effective.translation?.model || effective.prompt?.model || '')
     return String(effective.image?.model || '')
   }
-  if (section === 'scripts' || section === 'prompt') {
-    if (p === 'openai') return 'gpt-4o-mini'
+  if (section === 'scripts' || section === 'prompt' || section === 'translation') {
+    if (p === 'openai') return 'gpt-5-mini'
     if (p === 'localoxml') {
       if (!effective) return ''
-      return section === 'scripts' ? String(effective.scripts?.model || '') : String(effective.prompt?.model || '')
+      if (section === 'scripts') return String(effective.scripts?.model || '')
+      if (section === 'translation') return String(effective.translation?.model || effective.prompt?.model || '')
+      return String(effective.prompt?.model || '')
     }
     if (p === 'doubao') return 'doubao-1-5-pro-32k-250115'
     if (p === 'ollama') return 'qwen3:8b'
@@ -191,10 +207,27 @@ function loadModelMemory(): ModelMemory {
     return {
       scripts: json && typeof json.scripts === 'object' ? json.scripts : {},
       prompt: json && typeof json.prompt === 'object' ? json.prompt : {},
+      translation: json && typeof json.translation === 'object' ? json.translation : {},
       image: json && typeof json.image === 'object' ? json.image : {}
     }
   } catch (_) {
     return emptyModelMemory()
+  }
+}
+
+function loadUrlMemory(): UrlMemory {
+  if (typeof window === 'undefined') return emptyUrlMemory()
+  try {
+    const raw = window.localStorage.getItem(URL_MEMORY_KEY)
+    if (!raw) return emptyUrlMemory()
+    const json = JSON.parse(raw) as any
+    return {
+      scripts: json && typeof json.scripts === 'object' ? json.scripts : {},
+      prompt: json && typeof json.prompt === 'object' ? json.prompt : {},
+      translation: json && typeof json.translation === 'object' ? json.translation : {}
+    }
+  } catch (_) {
+    return emptyUrlMemory()
   }
 }
 
@@ -203,15 +236,19 @@ function isOllamaPresetModel(v: string | null | undefined) {
   return OLLAMA_MODEL_PRESETS.includes(s)
 }
 
-function pickFirstByHints(options: string[], hints: string[]) {
-  const list = Array.isArray(options) ? options.map((x) => String(x || '').trim()).filter(Boolean) : []
-  for (const h of hints) {
-    const key = String(h || '').trim().toLowerCase()
-    if (!key) continue
-    const found = list.find((x) => x.toLowerCase().includes(key))
-    if (found) return found
-  }
-  return list[0] || ''
+
+function isOpenAIPresetModel(v: string | null | undefined) {
+  const s = String(v || '').trim()
+  return OPENAI_MODEL_PRESETS.includes(s)
+}
+
+function isLikelyInvalidOpenAIModel(v: string | null | undefined) {
+  const s = String(v || '').trim()
+  if (!s) return false
+  if (OPENAI_MODEL_PRESETS.includes(s)) return false
+  if (/^gpt-5\.\d/i.test(s)) return true
+  if (/^gpt-5\.0/i.test(s)) return true
+  return false
 }
 
 function emptySecretDraft(): SecretDraft {
@@ -254,7 +291,14 @@ function getRunLogColor(line: string) {
   ) {
     return '#fca5a5'
   }
-  if (text.includes('ok=true') || text.includes('成功') || text.includes('verified') || text.includes('configured')) {
+  if (
+    text.includes('ok=true') ||
+    text.includes('成功') ||
+    text.includes('通过') ||
+    text.includes('已就绪') ||
+    text.includes('verified') ||
+    text.includes('configured')
+  ) {
     return '#86efac'
   }
   if (text.includes('开始') || text.includes('检测中') || text.includes('生成中')) {
@@ -279,8 +323,9 @@ export default function StudioSettingsModal(props: Props) {
   const [diagDeepText, setDiagDeepText] = useState(false)
   const [diagDeepImages, setDiagDeepImages] = useState(false)
   const [diagnostics, setDiagnostics] = useState<any>(null)
-  const [testingService, setTestingService] = useState<'' | 'scripts' | 'prompt' | 'image'>('')
+  const [testingService, setTestingService] = useState<'' | 'scripts' | 'prompt' | 'translation' | 'image'>('')
   const [modelMemory, setModelMemory] = useState<ModelMemory>(() => loadModelMemory())
+  const [urlMemory, setUrlMemory] = useState<UrlMemory>(() => loadUrlMemory())
   const [runLogs, setRunLogs] = useState<string[]>([])
   const [secretDraft, setSecretDraft] = useState<SecretDraft>(() => emptySecretDraft())
   const [secretDirty, setSecretDirty] = useState<SecretDirtyState>(() => emptySecretDirtyState())
@@ -297,19 +342,14 @@ export default function StudioSettingsModal(props: Props) {
   const [sdModelsNote, setSdModelsNote] = useState('')
   const [sdModelsSource, setSdModelsSource] = useState<'api' | 'disk'>('api')
   const [sdModelList, setSdModelList] = useState<string[]>([])
-  const [comfyLoraList, setComfyLoraList] = useState<string[]>([])
   const [imgPreflightBusy, setImgPreflightBusy] = useState(false)
-  const [imgPreflightOk, setImgPreflightOk] = useState(false)
-  const [imgPreflightKey, setImgPreflightKey] = useState('')
   const [imgPreflightSummary, setImgPreflightSummary] = useState('')
   const [imgPreflightDiagOpen, setImgPreflightDiagOpen] = useState(false)
   const [imgPreflightDiag, setImgPreflightDiag] = useState<any>(null)
-  const [imgTestBusy, setImgTestBusy] = useState(false)
-  const [imgTestErr, setImgTestErr] = useState('')
-  const [imgTestUrl, setImgTestUrl] = useState('')
-  const [foldOpen, setFoldOpen] = useState<{ scripts: boolean; prompt: boolean; image: boolean; tts: boolean }>({
+  const [foldOpen, setFoldOpen] = useState<{ scripts: boolean; prompt: boolean; translation: boolean; image: boolean; tts: boolean }>({
     scripts: true,
     prompt: true,
+    translation: false,
     image: true,
     tts: false
   })
@@ -321,6 +361,13 @@ export default function StudioSettingsModal(props: Props) {
     } catch (_) {}
   }, [modelMemory])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(URL_MEMORY_KEY, JSON.stringify(urlMemory))
+    } catch (_) {}
+  }, [urlMemory])
+
   function nowLabel() {
     try { return new Date().toLocaleTimeString() } catch (_) { return String(Date.now()) }
   }
@@ -328,6 +375,18 @@ export default function StudioSettingsModal(props: Props) {
   function appendLog(msg: string) {
     const line = `[${nowLabel()}] ${String(msg || '').trim()}`
     setRunLogs((prev) => [line, ...prev].slice(0, 200))
+  }
+
+  function rememberUrl(section: TextSection, provider: string, apiUrl: string) {
+    const pKey = providerKey(provider)
+    const value = String(apiUrl || '').trim()
+    setUrlMemory((prev) => ({
+      ...prev,
+      [section]: {
+        ...(prev[section] || {}),
+        [pKey]: value
+      }
+    }))
   }
 
   function buildSettingsWithSecrets(baseSettings?: StudioSettings | null): StudioSettings {
@@ -373,24 +432,6 @@ export default function StudioSettingsModal(props: Props) {
     }
   }
 
-  function calcImgPreflightKey(s: StudioSettings) {
-    const img: any = (s && (s as any).image) ? (s as any).image : {}
-    const loras = Array.isArray(img.loras) ? img.loras.map((x: any) => String(x || '').trim()).filter(Boolean).sort() : []
-    return JSON.stringify({
-      provider: String(img.provider || '').toLowerCase(),
-      baseUrl: String(img.comfyuiBaseUrl || '').trim(),
-      model: String(img.model || '').trim(),
-      loras,
-      modelsRoot: String(img.comfyuiModelsRoot || '').trim()
-    })
-  }
-
-  const imgPreflightReady =
-    String(draft.image?.provider || '').toLowerCase() === 'comfyui' &&
-    imgPreflightOk &&
-    imgPreflightKey &&
-    imgPreflightKey === calcImgPreflightKey(draft)
-
   function rememberModel(section: ModelSection, provider: string | null | undefined, model: string | null | undefined) {
     const key = providerKey(provider)
     const val = String(model || '')
@@ -412,6 +453,10 @@ export default function StudioSettingsModal(props: Props) {
       prompt: {
         ...(prev.prompt || {}),
         [providerKey(nextDraft.prompt?.provider || '')]: String(nextDraft.prompt?.model || '')
+      },
+      translation: {
+        ...(prev.translation || {}),
+        [providerKey(nextDraft.translation?.provider || '')]: String(nextDraft.translation?.model || '')
       },
       image: {
         ...(prev.image || {}),
@@ -438,12 +483,10 @@ export default function StudioSettingsModal(props: Props) {
     return next
   }
 
-  async function loadImageModels(provider: string, baseUrl?: string, settingsOverride?: StudioSettings | null) {
+  async function loadImageModels(provider: string, baseUrl?: string) {
     const p = String(provider || '').toLowerCase()
-    const settings = settingsOverride && typeof settingsOverride === 'object' ? settingsOverride : draft
-    if (p !== 'sdwebui' && p !== 'comfyui') {
+    if (p !== 'sdwebui') {
       setSdModelList([])
-      setComfyLoraList([])
       setSdModelsErr('')
       setSdModelsNote('')
       setSdModelsSource('api')
@@ -454,78 +497,29 @@ export default function StudioSettingsModal(props: Props) {
     setSdModelsNote('')
     setSdModelsSource('api')
     try {
-      const modelsRoot = p === 'comfyui' ? String((settings.image as any)?.comfyuiModelsRoot || '').trim() : ''
-      const res =
-        p === 'comfyui' && modelsRoot
-          ? await getStudioImageModels({ settings })
-          : p === 'comfyui'
-            ? await getComfyuiModels(baseUrl)
-            : await getSdwebuiModels(baseUrl)
-      if (p === 'comfyui' && String((res as any).source || '') === 'disk') setSdModelsSource('disk')
-
+      const res = await getSdwebuiModels(baseUrl)
       const models = (res.models || []).map((x: any) => normalizeModelOption(x, p)).filter(Boolean)
       setSdModelList(models)
-      setComfyLoraList(p === 'comfyui' && Array.isArray((res as any).loras) ? (res as any).loras.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
       setSdModelsNote(String(res.note || ''))
       const currentModel = readCurrentModel(res)
       if (currentModel) {
         setDraft((d) => {
           if (String(d.image?.provider || '').toLowerCase() !== p) return d
           if (String(d.image?.model || '').trim()) return d
-          return { ...d, image: { ...(d.image || {}), model: p === 'comfyui' ? normalizeComfyModelName(currentModel) : currentModel } }
+          return { ...d, image: { ...(d.image || {}), model: currentModel } }
         })
       }
-      if (p === 'sdwebui' && String(res.note || '') === 'models_api_not_supported') {
+      if (String(res.note || '') === 'models_api_not_supported') {
         appendLog('已连接 SDWebUI，但当前版本不支持模型列表接口（可手动填写模型名）')
       } else {
-        const isDisk = p === 'comfyui' && String((res as any).source || '') === 'disk'
-        appendLog(
-          `已${isDisk ? '从磁盘扫描' : '加载'} ${p === 'comfyui' ? 'ComfyUI' : 'SDWebUI'} 模型：${Array.isArray(res.models) ? res.models.length : 0} 个` +
-          `${p === 'comfyui' ? `，LoRA：${Array.isArray((res as any).loras) ? (res as any).loras.length : 0} 个` : ''}`
-        )
+        appendLog(`已加载 SDWebUI 模型：${Array.isArray(res.models) ? res.models.length : 0} 个`)
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setSdModelsErr(msg)
-      appendLog(`加载 ${p === 'comfyui' ? 'ComfyUI' : 'SDWebUI'} 模型失败：${msg}`)
+      appendLog(`加载 SDWebUI 模型失败：${msg}`)
     } finally {
       setSdModelsBusy(false)
-    }
-  }
-
-  async function runImageTest() {
-    if (imgTestBusy) return
-    setImgTestBusy(true)
-    setImgTestErr('')
-    setImgTestUrl('')
-    try {
-      if (String(draft.image?.provider || '').toLowerCase() === 'comfyui' && !imgPreflightReady) {
-        appendLog('未通过连续分镜体检或配置已变更：先运行体检（不出图）')
-        await runImagePreflightOnly()
-        return
-      }
-
-      appendLog('开始测试出图（使用当前草稿设置）...')
-      const res = await testStudioImage({
-        settings: buildSettingsWithSecrets(),
-        style: 'picture_book',
-        width: 512,
-        height: 512,
-        steps: 18,
-        cfgScale: 6.5,
-        prompt: "children's picture book illustration, a cute rabbit reading a book under a tree, soft watercolor texture, clean outlines, warm color palette",
-        negativePrompt: 'photorealistic, realistic skin texture, text, watermark, logo'
-      })
-      if (!res.dataUrl) throw new Error('test_no_data_url')
-      setImgTestUrl(res.dataUrl)
-      appendLog(`测试出图成功（provider=${String(res.meta?.provider || '')} model=${String(res.meta?.model || '')}）`)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setImgTestErr(msg)
-      if (!imgPreflightSummary) setImgPreflightSummary(`硬检验/测试失败：${msg}`)
-      appendLog(`测试出图失败：${msg}`)
-    } finally {
-      setImgTestBusy(false)
     }
   }
 
@@ -533,22 +527,14 @@ export default function StudioSettingsModal(props: Props) {
     if (imgPreflightBusy) return
     setImgPreflightBusy(true)
     setImgPreflightSummary('')
-    setImgTestErr('')
     try {
-      setImgPreflightOk(false)
-      setImgPreflightKey('')
       appendLog('开始运行连续分镜体检（不出图）...')
       const pf = await preflightStudioImage({ settings: buildSettingsWithSecrets(), timeoutMs: 12000, mode: 'storyboard' })
       const checks = pf.checks || {}
       const baseUrl = String(checks.baseUrl || '')
       const missingNodes = Array.isArray(checks.missingNodes) ? checks.missingNodes : []
-      const missingLoras = Array.isArray(checks.missingLoras) ? checks.missingLoras : []
-      const modelCfg = String(checks.modelConfigured || '').trim()
-      const modelNotFound = modelCfg && checks.modelExists === false ? modelCfg : ''
       if (pf.ok) {
         const msg = `体检通过：${baseUrl || 'comfyui'} 连续分镜依赖就绪`
-        setImgPreflightOk(true)
-        setImgPreflightKey(calcImgPreflightKey(draft))
         setImgPreflightSummary(msg)
         appendLog(msg)
         return
@@ -556,9 +542,7 @@ export default function StudioSettingsModal(props: Props) {
       const lines = [
         baseUrl ? `baseUrl=${baseUrl}` : '',
         checks.reason ? `reason=${checks.reason}` : '',
-        modelNotFound ? `modelNotFound=${modelNotFound}` : '',
         missingNodes.length ? `missingNodes=${missingNodes.join(',')}` : '',
-        missingLoras.length ? `missingLoras=${missingLoras.join(',')}` : '',
         pf.message ? `message=${pf.message}` : ''
       ].filter(Boolean)
       const msg = `检查失败：${lines.join(' ; ')}`
@@ -573,81 +557,6 @@ export default function StudioSettingsModal(props: Props) {
     } finally {
       setImgPreflightBusy(false)
     }
-  }
-
-  function normalizeLoraKeyFront(raw: any) {
-    const s = String(raw || '').trim()
-    if (!s) return ''
-    const base = s.replace(/^.*[\\/]/, '')
-    return base.replace(/\s+\[[^\]]+\]\s*$/, '').replace(/\.(safetensors|ckpt|pt|pth)$/i, '').trim().toLowerCase()
-  }
-
-  function fixMissingLorasByRemoving(missing: string[]) {
-    const missKeys = new Set((missing || []).map((x) => normalizeLoraKeyFront(x)).filter(Boolean))
-    setDraft((d) => {
-      const curr = Array.isArray(d.image?.loras) ? d.image?.loras : []
-      const next = curr.filter((x) => !missKeys.has(normalizeLoraKeyFront(String(x).split(':')[0])))
-      return { ...d, image: { ...(d.image || {}), loras: next } }
-    })
-    appendLog('已从配置中移除缺失 LoRA')
-  }
-
-  function fixMissingLorasByReplacing(missing: string[]) {
-    const currAvail = Array.isArray(comfyLoraList) ? comfyLoraList : []
-    const byKey = new Map(currAvail.map((x) => [normalizeLoraKeyFront(x), x]))
-    setDraft((d) => {
-      const curr = Array.isArray(d.image?.loras) ? d.image?.loras : []
-      const next = curr.map((entry) => {
-        const raw = String(entry || '').trim()
-        if (!raw) return raw
-        const parts = raw.split(':')
-        const baseName = String(parts[0] || '').trim()
-        const key = normalizeLoraKeyFront(baseName)
-        if (!key) return raw
-        if (!(missing || []).some((m) => normalizeLoraKeyFront(m) === key)) return raw
-        const fixed = byKey.get(key)
-        if (!fixed) return raw
-        parts[0] = fixed
-        return parts.join(':')
-      })
-      return { ...d, image: { ...(d.image || {}), loras: next } }
-    })
-    appendLog('已尝试按 ComfyUI 实际文件名修正 LoRA')
-  }
-
-  function fixMissingModelByPickingFirst() {
-    const picked = pickFirstByHints(sdModelOptions, COMFYUI_STORYBOOK_MODEL_HINTS) || (sdModelOptions[0] || '')
-    if (!picked) return
-    setDraft((d) => ({ ...d, image: { ...(d.image || {}), model: picked } }))
-    appendLog(`已自动选择可用模型：${picked}`)
-  }
-
-  function applyComfyStorybookProfile() {
-    const model = pickFirstByHints(sdModelOptions, COMFYUI_STORYBOOK_MODEL_HINTS)
-    const loraBase = Array.isArray(comfyLoraOptions) ? comfyLoraOptions : []
-    const selectedLoras = loraBase
-      .filter((name) => COMFYUI_STORYBOOK_LORA_HINTS.some((h) => String(name || '').toLowerCase().includes(h)))
-      .slice(0, 3)
-      .map((name, idx) => {
-        const w = idx === 0 ? 0.8 : idx === 1 ? 0.65 : 0.5
-        return `${name}:${w}`
-      })
-
-    setDraft((d) => ({
-      ...d,
-      image: withImageDefaults({
-        ...(d.image || {}),
-        provider: 'comfyui',
-        model: model || String(d.image?.model || ''),
-        comfyuiBaseUrl: String(d.image?.comfyuiBaseUrl || '').trim() || 'http://127.0.0.1:8188',
-        size: String(d.image?.size || '').trim() || '1024x1024',
-        loras: selectedLoras
-      })
-    }))
-    appendLog(
-      `已应用儿童绘本硬配置：provider=comfyui${model ? ` model=${model}` : ''}` +
-      `${selectedLoras.length ? ` loras=${selectedLoras.join(' | ')}` : ' loras=(未匹配到，可手选)'}`
-    )
   }
 
   async function refresh() {
@@ -667,12 +576,9 @@ export default function StudioSettingsModal(props: Props) {
       setSavedAt('')
       const imgProvider = String(nextDraft.image?.provider || '').toLowerCase()
       if (imgProvider === 'sdwebui') {
-        void loadImageModels('sdwebui', String(nextDraft.image?.sdwebuiBaseUrl || ''), nextDraft)
-      } else if (imgProvider === 'comfyui') {
-        void loadImageModels('comfyui', String(nextDraft.image?.comfyuiBaseUrl || ''), nextDraft)
+        void loadImageModels('sdwebui', String(nextDraft.image?.sdwebuiBaseUrl || ''))
       } else {
         setSdModelList([])
-        setComfyLoraList([])
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -700,12 +606,15 @@ export default function StudioSettingsModal(props: Props) {
     const lines: string[] = []
     const scriptsProvider = effective.enabled.scripts ? effective.scripts.provider : 'none'
     const promptProvider = effective.enabled.prompt ? effective.prompt.provider : 'none'
+    const translationProvider = effective.translation?.provider || promptProvider || 'none'
     const imageProvider = effective.enabled.image ? effective.image.provider : 'none'
     lines.push(`故事分镜：${scriptsProvider}${effective.enabled.scripts && effective.scripts.model ? ` / ${effective.scripts.model}` : ''}`)
-    if (effective.scripts.provider === 'doubao' && effective.scripts.apiUrl) lines.push(`  scriptsUrl：${effective.scripts.apiUrl}`)
+    if (effective.enabled.scripts && effective.scripts.apiUrl) lines.push(`  scriptsUrl：${effective.scripts.apiUrl}`)
     lines.push(`图像提示词：${promptProvider}${effective.enabled.prompt && effective.prompt.model ? ` / ${effective.prompt.model}` : ''}`)
-    if (effective.prompt.provider === 'doubao' && effective.prompt.apiUrl) lines.push(`  promptUrl：${effective.prompt.apiUrl}`)
-    lines.push(`图像生成：${imageProvider}${effective.enabled.image && effective.image.model ? ` / ${effective.image.model}` : ''}`)
+    if (effective.enabled.prompt && effective.prompt.apiUrl) lines.push(`  promptUrl：${effective.prompt.apiUrl}`)
+    lines.push(`提示词翻译：${translationProvider}${effective.translation?.model ? ` / ${effective.translation.model}` : ''}`)
+    if (effective.translation?.apiUrl) lines.push(`  translationUrl：${effective.translation.apiUrl}`)
+    lines.push(`图像生成：${imageProvider}${effective.enabled.image && effective.image.provider !== 'comfyui' && effective.image.model ? ` / ${effective.image.model}` : ''}`)
     if (effective.image.provider === 'doubao') {
       if (effective.image.apiUrl) lines.push(`  imagesUrl：${effective.image.apiUrl}`)
     }
@@ -726,7 +635,7 @@ export default function StudioSettingsModal(props: Props) {
     }
     // When disk scan is enabled, only show real models (plus current value for visibility).
     if (!(p === 'comfyui' && sdModelsSource === 'disk')) {
-      const presets = p === 'comfyui' ? COMFYUI_MODEL_PRESETS : SDWEBUI_MODEL_PRESETS
+      const presets = SDWEBUI_MODEL_PRESETS
       for (const m of presets) {
         const x = normalizeModelOption(m, p)
         if (x) set.add(x)
@@ -735,21 +644,18 @@ export default function StudioSettingsModal(props: Props) {
     return Array.from(set).filter(Boolean)
   }, [sdModelList, draft.image?.model, draft.image?.provider, sdModelsSource])
 
-  const comfyLoraOptions = useMemo(() => {
-    const set = new Set<string>()
-    for (const x of COMFYUI_LORA_PRESETS) set.add(String(x || '').trim())
-    for (const x of comfyLoraList) set.add(String(x || '').trim())
-    for (const x of Array.isArray(draft.image?.loras) ? draft.image?.loras : []) set.add(String(x || '').trim())
-    return Array.from(set).filter(Boolean)
-  }, [comfyLoraList, draft.image?.loras])
+  const scriptsUrlMeta = useMemo(() => textProviderUrlMeta(draft.scripts?.provider), [draft.scripts?.provider])
+  const promptUrlMeta = useMemo(() => textProviderUrlMeta(draft.prompt?.provider), [draft.prompt?.provider])
+  const translationUrlMeta = useMemo(() => textProviderUrlMeta(draft.translation?.provider), [draft.translation?.provider])
 
   async function save() {
     setBusy(true)
     setErr('')
     appendLog('开始保存并应用配置')
     try {
+      const { secrets: _unusedSecrets, ...draftWithoutSecrets } = draft as StudioSettings & { secrets?: StudioSettings['secrets'] }
       const settingsOut: StudioSettings = {
-        ...draft,
+        ...draftWithoutSecrets,
         enabled: {
           scripts: String(draft.scripts?.provider || '').toLowerCase() !== 'none',
           prompt: String(draft.prompt?.provider || '').toLowerCase() !== 'none',
@@ -805,7 +711,7 @@ export default function StudioSettingsModal(props: Props) {
     }
   }
 
-  async function runServiceDiagnose(service: 'scripts' | 'prompt' | 'image') {
+  async function runServiceDiagnose(service: 'scripts' | 'prompt' | 'translation' | 'image') {
     setTestingService(service)
     setErr('')
     appendLog(`开始测试连接：${service}`)
@@ -832,7 +738,7 @@ export default function StudioSettingsModal(props: Props) {
     }
   }
 
-  function toggleFold(key: 'scripts' | 'prompt' | 'image' | 'tts') {
+  function toggleFold(key: 'scripts' | 'prompt' | 'translation' | 'image' | 'tts') {
     setFoldOpen((prev) => ({ ...prev, [key]: !prev[key] }))
   }
 
@@ -864,43 +770,6 @@ export default function StudioSettingsModal(props: Props) {
               {String(imgPreflightDiag?.checks?.reason || 'preflight_failed')}
               {imgPreflightDiag?.message ? ` - ${String(imgPreflightDiag.message)}` : ''}
             </div>
-
-            {imgPreflightDiag?.checks?.modelConfigured && imgPreflightDiag?.checks?.modelExists === false ? (
-              <div style={{ marginTop: 12 }}>
-                <div className="hint">缺少模型：{String(imgPreflightDiag.checks.modelConfigured)}</div>
-                <div className="ai-modal-actions" style={{ marginTop: 8 }}>
-                  <button className="btn secondary" onClick={() => fixMissingModelByPickingFirst()}>自动选择可用模型</button>
-                  <button
-                    className="btn secondary"
-                    onClick={() => {
-                      const u = String(draft.image?.comfyuiBaseUrl || '')
-                      void loadImageModels('comfyui', u)
-                    }}
-                  >
-                    刷新模型/LoRA列表
-                  </button>
-                </div>
-                <div className="ai-modal-hint">模型放置目录：{String(imgPreflightDiag?.checks?.hints?.comfyuiModelDir || 'ComfyUI/models/checkpoints')}</div>
-              </div>
-            ) : null}
-
-            {Array.isArray(imgPreflightDiag?.checks?.missingLoras) && imgPreflightDiag.checks.missingLoras.length ? (
-              <div style={{ marginTop: 12 }}>
-                <div className="hint">缺少 LoRA：{imgPreflightDiag.checks.missingLoras.join(', ')}</div>
-                {Array.isArray(imgPreflightDiag?.checks?.disk?.missingLorasFound) && imgPreflightDiag.checks.disk.missingLorasFound.length ? (
-                  <div className="ai-modal-hint">
-                    磁盘已存在但 ComfyUI 未识别：{imgPreflightDiag.checks.disk.missingLorasFound.join(', ')}（建议重启 ComfyUI 或刷新缓存）
-                  </div>
-                ) : null}
-                <div className="ai-modal-actions" style={{ marginTop: 8 }}>
-                  <button className="btn secondary" onClick={() => fixMissingLorasByReplacing(imgPreflightDiag.checks.missingLoras)}>按实际文件名修正</button>
-                  <button className="btn secondary" onClick={() => fixMissingLorasByRemoving(imgPreflightDiag.checks.missingLoras)}>移除缺失 LoRA</button>
-                  <button className="btn secondary" onClick={() => setDraft((d) => ({ ...d, image: { ...(d.image || {}), loras: [] } }))}>清空 LoRA</button>
-                </div>
-                <div className="ai-modal-hint">LoRA 放置目录：{String(imgPreflightDiag?.checks?.hints?.comfyuiLoraDir || 'ComfyUI/models/loras')}</div>
-                <div className="ai-modal-hint">{String(imgPreflightDiag?.checks?.hints?.restartHint || '')}</div>
-              </div>
-            ) : null}
 
             {Array.isArray(imgPreflightDiag?.checks?.missingNodes) && imgPreflightDiag.checks.missingNodes.length ? (
               <div style={{ marginTop: 12 }}>
@@ -963,11 +832,6 @@ done`}</pre>
               <button className="btn secondary" onClick={() => runImagePreflightOnly()} disabled={imgPreflightBusy}>
                 {imgPreflightBusy ? '体检中…' : '重新体检'}
               </button>
-              {Boolean(imgPreflightDiag?.checks?.ok) ? (
-                <button className="btn" onClick={() => { setImgPreflightDiagOpen(false); void runImageTest() }} disabled={imgTestBusy || imgPreflightBusy}>
-                  {imgTestBusy ? '生成中…' : '生成测试图'}
-                </button>
-              ) : null}
             </div>
           </div>
         </div>
@@ -1006,6 +870,23 @@ done`}</pre>
             <div className="ai-modal-row">
               <div>当前生效</div>
               <textarea value={effectiveSummary || '(加载中…)'} readOnly style={{ minHeight: 94, resize: 'none' }} />
+            </div>
+
+            <div className="ai-modal-row">
+              <div>网络代理</div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                <input
+                  value={String(draft.network?.proxyUrl || '')}
+                  placeholder="http://127.0.0.1:7897"
+                  onChange={(e) => setDraft((d) => ({
+                    ...d,
+                    network: { ...(d.network || {}), proxyUrl: e.target.value.trim() }
+                  }))}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <div className="hint">用于 OpenAI / 其他需要代理的文本请求。留空表示直连；常见本地代理示例：`http://127.0.0.1:7897`。</div>
+              </div>
             </div>
 
             <div className="ai-modal-row">
@@ -1212,9 +1093,12 @@ done`}</pre>
                       onChange={(e) => {
                         const nextProvider = e.target.value
                         rememberModel('scripts', draft.scripts?.provider || '', draft.scripts?.model || '')
+                        rememberUrl('scripts', draft.scripts?.provider || '', draft.scripts?.apiUrl || '')
                         const recalled = (modelMemory.scripts || {})[providerKey(nextProvider)] || ''
                         const nextModel = recalled || defaultModelBySectionProvider('scripts', nextProvider, effective)
-                        setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), provider: nextProvider, model: nextModel } }))
+                        const recalledUrl = (urlMemory.scripts || {})[providerKey(nextProvider)] || ''
+                        const nextApiUrl = recalledUrl || defaultTextProviderApiUrl(nextProvider)
+                        setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), provider: nextProvider, model: nextModel, apiUrl: nextApiUrl } }))
                       }}
                     >
                       <option value="none">none</option>
@@ -1241,10 +1125,41 @@ done`}</pre>
                         ))}
                         <option value="__custom__">自定义（手动输入）</option>
                       </select>
+                    ) : String(draft.scripts?.provider || '') === 'openai' ? (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        <select
+                          className="sel"
+                          value={isOpenAIPresetModel(draft.scripts?.model) ? String(draft.scripts?.model || '') : '__custom__'}
+                          onChange={(e) => {
+                            const next = e.target.value === '__custom__' ? String(draft.scripts?.model || '') : e.target.value
+                            setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), model: next } }))
+                            rememberModel('scripts', draft.scripts?.provider || '', next)
+                          }}
+                        >
+                          {OPENAI_MODEL_PRESETS.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                          <option value="__custom__">自定义（手动输入）</option>
+                        </select>
+                        {!isOpenAIPresetModel(draft.scripts?.model) ? (
+                          <input
+                            value={String(draft.scripts?.model || '')}
+                            placeholder={textProviderModelPlaceholder(draft.scripts?.provider)}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), model: v } }))
+                              rememberModel('scripts', draft.scripts?.provider || '', v)
+                            }}
+                          />
+                        ) : null}
+                        {isLikelyInvalidOpenAIModel(draft.scripts?.model) ? (
+                          <div className="hint" style={{ color: '#fca5a5' }}>当前 OpenAI 模型名看起来无效。请改用 `gpt-5`、`gpt-5-mini`、`gpt-5-nano` 或 `gpt-4o-mini`。</div>
+                        ) : null}
+                      </div>
                     ) : (
                       <input
                         value={String(draft.scripts?.model || '')}
-                        placeholder="如 qwen3:8b / qwen3-vl:8b / qwen3.5:27b / doubao-1-5-pro-32k-250115（可留空）"
+                        placeholder={textProviderModelPlaceholder(draft.scripts?.provider)}
                         onChange={(e) => {
                           const v = e.target.value
                           setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), model: v } }))
@@ -1256,15 +1171,16 @@ done`}</pre>
                       {testingService === 'scripts' ? '检测中…' : '测试连接'}
                     </button>
                   </div>
-                  {String(draft.scripts?.provider || '').toLowerCase() === 'doubao' ? (
+                  {scriptsUrlMeta ? (
                     <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
-                      <div>接口 URL</div>
+                      <div>{scriptsUrlMeta.label}</div>
                       <input
                         value={String(draft.scripts?.apiUrl || '')}
-                        placeholder="https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+                        placeholder={scriptsUrlMeta.placeholder}
                         onChange={(e) => {
                           const v = e.target.value
                           setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), apiUrl: v } }))
+                          rememberUrl('scripts', draft.scripts?.provider || '', v)
                         }}
                       />
                     </div>
@@ -1286,9 +1202,12 @@ done`}</pre>
                       onChange={(e) => {
                         const nextProvider = e.target.value
                         rememberModel('prompt', draft.prompt?.provider || '', draft.prompt?.model || '')
+                        rememberUrl('prompt', draft.prompt?.provider || '', draft.prompt?.apiUrl || '')
                         const recalled = (modelMemory.prompt || {})[providerKey(nextProvider)] || ''
                         const nextModel = recalled || defaultModelBySectionProvider('prompt', nextProvider, effective)
-                        setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), provider: nextProvider, model: nextModel } }))
+                        const recalledUrl = (urlMemory.prompt || {})[providerKey(nextProvider)] || ''
+                        const nextApiUrl = recalledUrl || defaultTextProviderApiUrl(nextProvider)
+                        setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), provider: nextProvider, model: nextModel, apiUrl: nextApiUrl } }))
                       }}
                     >
                       <option value="none">none</option>
@@ -1315,10 +1234,41 @@ done`}</pre>
                         ))}
                         <option value="__custom__">自定义（手动输入）</option>
                       </select>
+                    ) : String(draft.prompt?.provider || '') === 'openai' ? (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        <select
+                          className="sel"
+                          value={isOpenAIPresetModel(draft.prompt?.model) ? String(draft.prompt?.model || '') : '__custom__'}
+                          onChange={(e) => {
+                            const next = e.target.value === '__custom__' ? String(draft.prompt?.model || '') : e.target.value
+                            setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), model: next } }))
+                            rememberModel('prompt', draft.prompt?.provider || '', next)
+                          }}
+                        >
+                          {OPENAI_MODEL_PRESETS.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                          <option value="__custom__">自定义（手动输入）</option>
+                        </select>
+                        {!isOpenAIPresetModel(draft.prompt?.model) ? (
+                          <input
+                            value={String(draft.prompt?.model || '')}
+                            placeholder={textProviderModelPlaceholder(draft.prompt?.provider)}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), model: v } }))
+                              rememberModel('prompt', draft.prompt?.provider || '', v)
+                            }}
+                          />
+                        ) : null}
+                        {isLikelyInvalidOpenAIModel(draft.prompt?.model) ? (
+                          <div className="hint" style={{ color: '#fca5a5' }}>当前 OpenAI 模型名看起来无效。请改用 `gpt-5`、`gpt-5-mini`、`gpt-5-nano` 或 `gpt-4o-mini`。</div>
+                        ) : null}
+                      </div>
                     ) : (
                       <input
                         value={String(draft.prompt?.model || '')}
-                        placeholder="如 qwen3:8b / qwen3-vl:8b / qwen3.5:27b / doubao-1-5-pro-32k-250115（可留空）"
+                        placeholder={textProviderModelPlaceholder(draft.prompt?.provider)}
                         onChange={(e) => {
                           const v = e.target.value
                           setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), model: v } }))
@@ -1330,15 +1280,123 @@ done`}</pre>
                       {testingService === 'prompt' ? '检测中…' : '测试连接'}
                     </button>
                   </div>
-                  {String(draft.prompt?.provider || '').toLowerCase() === 'doubao' ? (
+                  {promptUrlMeta ? (
                     <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
-                      <div>接口 URL</div>
+                      <div>{promptUrlMeta.label}</div>
                       <input
                         value={String(draft.prompt?.apiUrl || '')}
-                        placeholder="https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+                        placeholder={promptUrlMeta.placeholder}
                         onChange={(e) => {
                           const v = e.target.value
                           setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), apiUrl: v } }))
+                          rememberUrl('prompt', draft.prompt?.provider || '', v)
+                        }}
+                      />
+                    </div>
+                  ) : null}
+                </div> : null}
+              </div>
+
+              <div className="subfold">
+                <div className="subfold-head" onClick={() => toggleFold('translation')}>
+                  <div className="subfold-title">提示词翻译</div>
+                  <div className="hint">{foldOpen.translation ? '收起' : '展开'}</div>
+                </div>
+                {foldOpen.translation ? <div className="subfold-body">
+                  <div className="hint" style={{ marginBottom: 8 }}>用于中转英翻译，以及 AI 增强提示词生成中文后自动补写英文。</div>
+                  <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
+                    <div>Provider</div>
+                    <select
+                      className="sel"
+                      value={String(draft.translation?.provider || '')}
+                      onChange={(e) => {
+                        const nextProvider = e.target.value
+                        rememberModel('translation', draft.translation?.provider || '', draft.translation?.model || '')
+                        rememberUrl('translation', draft.translation?.provider || '', draft.translation?.apiUrl || '')
+                        const recalled = (modelMemory.translation || {})[providerKey(nextProvider)] || ''
+                        const nextModel = recalled || defaultModelBySectionProvider('translation', nextProvider, effective)
+                        const recalledUrl = (urlMemory.translation || {})[providerKey(nextProvider)] || ''
+                        const nextApiUrl = recalledUrl || defaultTextProviderApiUrl(nextProvider)
+                        setDraft((d) => ({ ...d, translation: { ...(d.translation || {}), provider: nextProvider, model: nextModel, apiUrl: nextApiUrl } }))
+                      }}
+                    >
+                      <option value="none">none</option>
+                      <option value="localoxml">localoxml</option>
+                      <option value="openai">openai</option>
+                      <option value="doubao">doubao</option>
+                      <option value="ollama">ollama</option>
+                    </select>
+                  </div>
+                  <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
+                    <div>Model</div>
+                    {String(draft.translation?.provider || '') === 'ollama' ? (
+                      <select
+                        className="sel"
+                        value={isOllamaPresetModel(draft.translation?.model) ? String(draft.translation?.model || '') : '__custom__'}
+                        onChange={(e) => {
+                          const next = e.target.value === '__custom__' ? String(draft.translation?.model || '') : e.target.value
+                          setDraft((d) => ({ ...d, translation: { ...(d.translation || {}), model: next } }))
+                          rememberModel('translation', draft.translation?.provider || '', next)
+                        }}
+                      >
+                        {OLLAMA_MODEL_PRESETS.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                        <option value="__custom__">自定义（手动输入）</option>
+                      </select>
+                    ) : String(draft.translation?.provider || '') === 'openai' ? (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        <select
+                          className="sel"
+                          value={isOpenAIPresetModel(draft.translation?.model) ? String(draft.translation?.model || '') : '__custom__'}
+                          onChange={(e) => {
+                            const next = e.target.value === '__custom__' ? String(draft.translation?.model || '') : e.target.value
+                            setDraft((d) => ({ ...d, translation: { ...(d.translation || {}), model: next } }))
+                            rememberModel('translation', draft.translation?.provider || '', next)
+                          }}
+                        >
+                          {OPENAI_MODEL_PRESETS.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                          <option value="__custom__">自定义（手动输入）</option>
+                        </select>
+                        {!isOpenAIPresetModel(draft.translation?.model) ? (
+                          <input
+                            value={String(draft.translation?.model || '')}
+                            placeholder={textProviderModelPlaceholder(draft.translation?.provider)}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setDraft((d) => ({ ...d, translation: { ...(d.translation || {}), model: v } }))
+                              rememberModel('translation', draft.translation?.provider || '', v)
+                            }}
+                          />
+                        ) : null}
+                      </div>
+                    ) : (
+                      <input
+                        value={String(draft.translation?.model || '')}
+                        placeholder={textProviderModelPlaceholder(draft.translation?.provider)}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setDraft((d) => ({ ...d, translation: { ...(d.translation || {}), model: v } }))
+                          rememberModel('translation', draft.translation?.provider || '', v)
+                        }}
+                      />
+                    )}
+                    <button className="btn secondary" onClick={() => runServiceDiagnose('translation')} disabled={busy || diagBusy || Boolean(testingService)}>
+                      {testingService === 'translation' ? '检测中…' : '测试连接'}
+                    </button>
+                  </div>
+                  {translationUrlMeta ? (
+                    <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
+                      <div>{translationUrlMeta.label}</div>
+                      <input
+                        value={String(draft.translation?.apiUrl || '')}
+                        placeholder={translationUrlMeta.placeholder}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setDraft((d) => ({ ...d, translation: { ...(d.translation || {}), apiUrl: v } }))
+                          rememberUrl('translation', draft.translation?.provider || '', v)
                         }}
                       />
                     </div>
@@ -1364,9 +1422,7 @@ done`}</pre>
                         const nextModel = recalled || defaultModelBySectionProvider('image', nextProvider, effective)
                         const nextImage = withImageDefaults({ ...(draft.image || {}), provider: nextProvider, model: nextModel })
                         setDraft((d) => ({ ...d, image: nextImage }))
-                        const nextDraft = { ...draft, image: nextImage } as any
-                        if (String(nextProvider).toLowerCase() === 'sdwebui') void loadImageModels('sdwebui', String(nextImage.sdwebuiBaseUrl || ''), nextDraft)
-                        if (String(nextProvider).toLowerCase() === 'comfyui') void loadImageModels('comfyui', String(nextImage.comfyuiBaseUrl || ''), nextDraft)
+                        if (String(nextProvider).toLowerCase() === 'sdwebui') void loadImageModels('sdwebui', String(nextImage.sdwebuiBaseUrl || ''))
                       }}
                     >
                       <option value="none">none</option>
@@ -1375,50 +1431,45 @@ done`}</pre>
                       <option value="doubao">doubao</option>
                     </select>
                   </div>
-                  <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
-                    <div>Model</div>
-                    {['sdwebui', 'comfyui'].includes(String(draft.image?.provider || '').toLowerCase()) ? (
-                      <select
-                        className="sel"
-                        value={String(draft.image?.model || '')}
-                        onChange={(e) => {
-                          const p = String(draft.image?.provider || '').toLowerCase()
-                          const v = p === 'comfyui' ? normalizeComfyModelName(e.target.value) : e.target.value
-                          setDraft((d) => ({ ...d, image: { ...(d.image || {}), model: v } }))
-                          rememberModel('image', draft.image?.provider || '', v)
-                        }}
-                      >
-                        <option value="">自动/当前模型</option>
-                        {(sdModelOptions || []).map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        value={String(draft.image?.model || '')}
-                        placeholder="如 doubao-seedream-4-0-250828（可留空）"
-                        onChange={(e) => {
-                          const v = e.target.value
-                          setDraft((d) => ({ ...d, image: { ...(d.image || {}), model: v } }))
-                          rememberModel('image', draft.image?.provider || '', v)
-                        }}
-                      />
-                    )}
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? (
-                        <button className="btn secondary" onClick={() => runImagePreflightOnly()} disabled={busy || diagBusy || imgPreflightBusy}>
-                          {imgPreflightBusy ? '体检中…' : '运行体检'}
-                        </button>
+                  {String(draft.image?.provider || '').toLowerCase() !== 'comfyui' ? (
+                    <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
+                      <div>Model</div>
+                      {String(draft.image?.provider || '').toLowerCase() === 'sdwebui' ? (
+                        <select
+                          className="sel"
+                          value={String(draft.image?.model || '')}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setDraft((d) => ({ ...d, image: { ...(d.image || {}), model: v } }))
+                            rememberModel('image', draft.image?.provider || '', v)
+                          }}
+                        >
+                          <option value="">自动/当前模型</option>
+                          {(sdModelOptions || []).map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
                       ) : (
+                        <input
+                          value={String(draft.image?.model || '')}
+                          placeholder="如 doubao-seedream-4-0-250828（可留空）"
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setDraft((d) => ({ ...d, image: { ...(d.image || {}), model: v } }))
+                            rememberModel('image', draft.image?.provider || '', v)
+                          }}
+                        />
+                      )}
+                      <div style={{ display: 'flex', gap: 8 }}>
                         <button className="btn secondary" onClick={() => runServiceDiagnose('image')} disabled={busy || diagBusy || Boolean(testingService)}>
                           {testingService === 'image' ? '检测中…' : '测试连接'}
                         </button>
-                      )}
+                      </div>
                     </div>
-                  </div>
-                  {['sdwebui', 'comfyui'].includes(String(draft.image?.provider || '').toLowerCase()) ? (
+                  ) : null}
+                  {String(draft.image?.provider || '').toLowerCase() === 'sdwebui' ? (
                     <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
                       <div>模型列表</div>
                       <div className="hint" style={{ alignSelf: 'center' }}>
@@ -1426,20 +1477,12 @@ done`}</pre>
                           ? `加载失败：${sdModelsErr}`
                           : sdModelsNote === 'models_api_not_supported'
                             ? '当前 SDWebUI 版本不支持模型列表接口（可手动输入模型）'
-                            : String(draft.image?.provider || '').toLowerCase() === 'comfyui' && sdModelsSource === 'disk'
-                              ? `磁盘扫描 ${sdModelList.length} 个（以 Models Root 为准）`
-                              : `接口加载 ${sdModelList.length} 个，预置 ${
-                                  String(draft.image?.provider || '').toLowerCase() === 'comfyui'
-                                    ? COMFYUI_MODEL_PRESETS.length
-                                    : SDWEBUI_MODEL_PRESETS.length
-                                } 个`}
+                            : `接口加载 ${sdModelList.length} 个，预置 ${SDWEBUI_MODEL_PRESETS.length} 个`}
                       </div>
                       <button
                         className="btn secondary"
                         onClick={() => {
-                          const p = String(draft.image?.provider || '').toLowerCase()
-                          const u = p === 'comfyui' ? String(draft.image?.comfyuiBaseUrl || '') : String(draft.image?.sdwebuiBaseUrl || '')
-                          void loadImageModels(p, u)
+                          void loadImageModels('sdwebui', String(draft.image?.sdwebuiBaseUrl || ''))
                         }}
                         disabled={sdModelsBusy || busy || diagBusy}
                       >
@@ -1448,72 +1491,33 @@ done`}</pre>
                     </div>
                   ) : null}
                   {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? (
-                    <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
-                      <div>LoRA</div>
-                      <select
-                        className="sel"
-                        multiple
-                        value={Array.isArray(draft.image?.loras) ? draft.image?.loras : []}
-                        onChange={(e) => {
-                          const vals = Array.from(e.currentTarget.selectedOptions).map((x) => String(x.value || '').trim()).filter(Boolean)
-                          setDraft((d) => ({ ...d, image: { ...(d.image || {}), loras: vals } }))
-                        }}
-                        size={Math.min(8, Math.max(4, comfyLoraOptions.length || 4))}
-                      >
-                        {comfyLoraOptions.map((x) => (
-                          <option key={x} value={x}>{x}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : null}
-                  {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? (
-                    <div className="hint" style={{ marginTop: -4, marginBottom: 8 }}>
-                      LoRA 会注入到 ComfyUI workflow（LoraLoader 链式应用）。支持写法：`name` / `name:0.8` / `name:0.8:0.6`（最多 8 个）。
-                    </div>
-                  ) : null}
-                  {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? (
                     <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
-                      <div>推荐配置</div>
-                      <div className="hint" style={{ alignSelf: 'center' }}>应用推荐的绘本连续分镜参数（模型/LoRA/尺寸/采样）</div>
-                      <button className="btn secondary" onClick={() => applyComfyStorybookProfile()} disabled={busy || diagBusy || sdModelsBusy}>
-                        应用推荐配置
+                      <div>ComfyUI</div>
+                      <input
+                        value={String(draft.image?.comfyuiBaseUrl || '')}
+                        placeholder="http://127.0.0.1:8188（可选）"
+                        onChange={(e) => setDraft((d) => ({ ...d, image: { ...(d.image || {}), comfyuiBaseUrl: e.target.value } }))}
+                      />
+                      <button className="btn secondary" onClick={() => runImagePreflightOnly()} disabled={busy || diagBusy || imgPreflightBusy}>
+                        {imgPreflightBusy ? '体检中…' : '测试连接'}
                       </button>
                     </div>
                   ) : null}
                   {['sdwebui', 'comfyui'].includes(String(draft.image?.provider || '').toLowerCase()) ? (
                     <div className="hint" style={{ marginTop: -2, marginBottom: 8 }}>
-                      {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? 'ComfyUI' : 'SDWebUI'} 出图会自动注入风格化提示（卡通/国风/绘本）与反写实负面词；建议先点“AI 解析提示词”，优先使用英文提示词。
+                      {String(draft.image?.provider || '').toLowerCase() === 'comfyui'
+                        ? 'ComfyUI 设置页只保留地址连通与连续分镜依赖体检；模型、LoRA 与采样参数请在“AI 分镜批量生成”里按当前工作流填写。'
+                        : 'SDWebUI 出图会自动注入风格化提示（卡通/国风/绘本）与反写实负面词；建议先点“AI 解析提示词”，优先使用英文提示词。'}
                     </div>
                   ) : null}
                   {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? (
-                    <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
-                      <div>测试出图</div>
-                      <div className="hint" style={{ alignSelf: 'center' }}>
-                        {imgTestErr
-                          ? `失败：${imgTestErr}`
-                          : imgTestUrl
-                            ? '已生成预览'
-                            : imgPreflightReady
-                              ? '生成一张 512x512 测试图'
-                              : '先运行体检（连续分镜依赖）'}
-                      </div>
-                      <button className="btn secondary" onClick={() => runImageTest()} disabled={!imgPreflightReady || imgTestBusy || imgPreflightBusy || busy || diagBusy}>
-                        {imgTestBusy ? '生成中…' : '生成测试图'}
-                      </button>
+                    <div className="hint" style={{ marginTop: -2, marginBottom: 8 }}>
+                      当前仅校验 `baseUrl`、基础节点和连续分镜依赖节点是否就绪，不在这里绑定 checkpoint / LoRA。
                     </div>
                   ) : null}
                   {String(draft.image?.provider || '').toLowerCase() === 'comfyui' && imgPreflightSummary ? (
                     <div className="hint" style={{ marginTop: -2, marginBottom: 8 }}>
                       {imgPreflightSummary}
-                    </div>
-                  ) : null}
-                  {imgTestUrl ? (
-                    <div style={{ marginTop: 6, marginBottom: 8 }}>
-                      <img
-                        src={imgTestUrl}
-                        alt="image-test"
-                        style={{ width: 256, height: 256, objectFit: 'cover', borderRadius: 12, border: '1px solid rgba(148,163,184,.25)' }}
-                      />
                     </div>
                   ) : null}
                   {String(draft.image?.provider || '').toLowerCase() === 'doubao' ? (
@@ -1538,31 +1542,6 @@ done`}</pre>
                             void loadImageModels('sdwebui', String(draft.image?.sdwebuiBaseUrl || ''))
                           }
                         }}
-                      />
-                    </div>
-                  ) : null}
-                  {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? (
-                    <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
-                      <div>ComfyUI</div>
-                      <input
-                        value={String(draft.image?.comfyuiBaseUrl || '')}
-                        placeholder="http://127.0.0.1:8188（可选）"
-                        onChange={(e) => setDraft((d) => ({ ...d, image: { ...(d.image || {}), comfyuiBaseUrl: e.target.value } }))}
-                        onBlur={() => {
-                          if (String(draft.image?.provider || '').toLowerCase() === 'comfyui') {
-                            void loadImageModels('comfyui', String(draft.image?.comfyuiBaseUrl || ''))
-                          }
-                        }}
-                      />
-                    </div>
-                  ) : null}
-                  {String(draft.image?.provider || '').toLowerCase() === 'comfyui' ? (
-                    <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
-                      <div>Models Root</div>
-                      <input
-                        value={String((draft.image as any)?.comfyuiModelsRoot || '')}
-                        placeholder="/Users/vidar/works/stable-diffusion-webui/models（可选，用于目录提示/磁盘校验）"
-                        onChange={(e) => setDraft((d) => ({ ...d, image: { ...(d.image || {}), comfyuiModelsRoot: e.target.value } as any }))}
                       />
                     </div>
                   ) : null}

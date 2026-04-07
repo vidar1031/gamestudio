@@ -101,7 +101,10 @@ export async function createProjectWithAi(prompt: string, title?: string): Promi
 export type AiCreateResult = {
   project: ProjectV1
   scripts: ScriptDocV1
+  blueprint?: BlueprintDocV1
   gen: {
+    ok?: boolean
+    message?: string | null
     requestedProvider?: string
     provider: string
     model?: string | null
@@ -109,6 +112,9 @@ export type AiCreateResult = {
     durationMs?: number
     formula?: { choicePoints?: number; optionsPerChoice?: number; endings?: number; format?: string } | null
     error?: { message?: string; status?: number | null; code?: string | null; cause?: string | null } | null
+    repaired?: boolean
+    before?: { report?: any; validation?: any; issues?: any[] } | null
+    after?: { report?: any; validation?: any; issues?: any[] } | null
   }
 }
 
@@ -133,6 +139,7 @@ export async function createProjectWithAiDetailed(
   return {
     project: normalizeProjectV1(json.project),
     scripts: json.scripts as ScriptDocV1,
+    blueprint: json.blueprint as BlueprintDocV1,
     gen: (json.gen as any) || { provider: 'unknown', requestedProvider: 'unknown' }
   }
 }
@@ -158,6 +165,7 @@ export async function regenerateProjectScriptsWithAiDetailed(
   return {
     project: normalizeProjectV1(json.project),
     scripts: json.scripts as ScriptDocV1,
+    blueprint: json.blueprint as BlueprintDocV1,
     gen: (json.gen as any) || { provider: 'unknown', requestedProvider: 'unknown' }
   }
 }
@@ -174,6 +182,63 @@ export type AiScriptAnalysis = {
   proposedRules?: any
 }
 
+export type StoryPromptReview = {
+  local: {
+    ok: boolean
+    score: number
+    summary: string
+    checks: { id: string; ok: boolean; severity: string; message: string }[]
+    suggestions: string[]
+    optimizedPrompt: string
+  }
+  ai: {
+    verdict: 'ok' | 'warn' | 'error'
+    summary: string
+    strengths: string[]
+    risks: string[]
+    suggestions: string[]
+    optimizedPrompt: string
+  }
+  meta: { provider?: string; model?: string | null; api?: string | null; durationMs?: number; note?: string }
+  aiError?: { message?: string; status?: number | null; code?: string | null } | null
+}
+
+export type StoryboardPromptQualityResult = {
+  verdict: 'ok' | 'warn' | 'error'
+  score: number
+  summary: string
+  strengths: string[]
+  risks: string[]
+  suggestions: string[]
+  optimizedGlobalPromptZh: string
+  optimizedGlobalNegativePromptZh: string
+  optimizedScenePromptZh: string
+  optimizedSceneNegativePromptZh: string
+  optimizedPrompt: string
+  optimizedNegativePrompt: string
+}
+
+export type StoryboardPromptQualityReview = {
+  local: StoryboardPromptQualityResult
+  ai: StoryboardPromptQualityResult
+  meta: { provider?: string; model?: string | null; api?: string | null; durationMs?: number; note?: string }
+  aiError?: { message?: string; status?: number | null; code?: string | null } | null
+}
+
+export type StoryPromptTemplateItem = {
+  id: string
+  createdAt: string
+  title?: string | null
+  templateKey?: string | null
+  templateName?: string | null
+  templateSummary?: string | null
+  prompt: string
+  notes?: string[]
+  fields?: Record<string, any>
+  formula?: { choicePoints?: number; optionsPerChoice?: number; endings?: number }
+  meta?: { provider?: string; model?: string | null; api?: string | null; durationMs?: number; note?: string | null } | null
+}
+
 
 /**
  * 使用 AI 分析项目脚本
@@ -184,6 +249,98 @@ export type AiScriptAnalysis = {
 export async function analyzeProjectScripts(projectId: string): Promise<AiScriptAnalysis> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/analyze/scripts`, { method: 'POST' })
   return json.analysis as AiScriptAnalysis
+}
+
+export async function reviewStoryPrompt(
+  prompt: string,
+  title?: string,
+  opts?: { choicePoints?: number; optionsPerChoice?: number; endings?: number }
+): Promise<StoryPromptReview> {
+  const json = await j(`${base()}/api/ai/prompt/review`, {
+    method: 'POST',
+    body: JSON.stringify({ prompt, title, ...(opts || {}) })
+  })
+  return json.review as StoryPromptReview
+}
+
+export async function reviewStoryboardPromptAi(
+  projectId: string,
+  payload: {
+    scope?: 'global' | 'scene'
+    projectTitle?: string
+    storyBibleJson?: string
+    globalPromptZh?: string
+    globalPrompt?: string
+    globalNegativePromptZh?: string
+    globalNegativePrompt?: string
+    sceneUserInput?: string
+    scenePromptZh?: string
+    scenePrompt?: string
+    sceneNegativePromptZh?: string
+    sceneNegativePrompt?: string
+    style?: string
+    aspectRatio?: string
+  }
+): Promise<StoryboardPromptQualityReview> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/storyboard/prompt-review`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return json.review as StoryboardPromptQualityReview
+}
+
+export async function listStoryPromptTemplates(): Promise<StoryPromptTemplateItem[]> {
+  const json = await j(`${base()}/api/ai/prompt/templates`, { method: 'GET' })
+  return Array.isArray(json.items) ? (json.items as StoryPromptTemplateItem[]) : []
+}
+
+export async function saveStoryPromptTemplate(input: {
+  prompt: string
+  title?: string
+  templateKey?: string | null
+  templateName?: string | null
+  templateSummary?: string | null
+  notes?: string[]
+  fields?: Record<string, any>
+  choicePoints?: number
+  optionsPerChoice?: number
+  endings?: number
+  meta?: Record<string, any> | null
+}): Promise<StoryPromptTemplateItem> {
+  const json = await j(`${base()}/api/ai/prompt/templates`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  })
+  return json.item as StoryPromptTemplateItem
+}
+
+export async function deleteStoryPromptTemplate(id: string): Promise<{ removed: boolean; items: StoryPromptTemplateItem[] }> {
+  const json = await j(`${base()}/api/ai/prompt/templates/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  return {
+    removed: Boolean(json.removed),
+    items: Array.isArray(json.items) ? (json.items as StoryPromptTemplateItem[]) : []
+  }
+}
+
+export async function generateStoryPromptTemplateWithAi(input: {
+  title: string
+  templateKey?: string
+  templateName?: string
+  templateSummary?: string
+  fields?: Record<string, any>
+  choicePoints?: number
+  optionsPerChoice?: number
+  endings?: number
+}): Promise<{ item: StoryPromptTemplateItem; generated: { prompt: string; title?: string | null; notes?: string[] }; meta?: any }> {
+  const json = await j(`${base()}/api/ai/prompt/templates/generate`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  })
+  return {
+    item: json.item as StoryPromptTemplateItem,
+    generated: json.generated as { prompt: string; title?: string | null; notes?: string[] },
+    meta: json.meta
+  }
 }
 
 /**
@@ -543,6 +700,361 @@ export async function generateStoryBibleAi(
   return { result: (json.result as any) || null, meta: (json.meta as any) || null }
 }
 
+export type StoryAssetPlan = {
+  schemaVersion: string
+  generatedAt: string
+  worldAnchor: string
+  forbiddenSubstitutes: string[]
+  eventChain: string[]
+  assets: any[]
+  scenes: any[]
+  summary: {
+    assetCount: number
+    sceneCount: number
+    refRequiredCount: number
+    refReadyCount: number
+    refMissingCount: number
+    workflows: Record<string, number>
+  }
+}
+
+export type StoryAssetPlanAsset = {
+  id: string
+  name: string
+  category?: string
+  lockProfile?: string
+  lockWorkflow?: string
+  renderStrategy?: string
+  sceneCount?: number
+  referenceStatus?: string
+  primaryReferenceAssetId?: string
+  primaryReferenceAssetUri?: string
+  referencePromptHint?: string
+  referencePromptZh?: string
+  referencePromptEn?: string
+}
+
+export type StoryAssetGalleryEntry = {
+  assetPath: string
+  url: string
+  kind: 'reference' | 'selected_white_bg' | 'lineart_hint' | 'lineart_final' | 'unknown'
+  label: string
+  createdAt?: string
+  seed?: number
+  provider?: string
+  prompt?: string
+  negativePrompt?: string
+  isPrimary?: boolean
+  isCurrentLineart?: boolean
+  recommended?: boolean
+  inLatestBatch?: boolean
+  analysis?: any
+}
+
+export async function buildStoryAssetPlanAi(
+  projectId: string,
+  payload?: { storyBible?: any; rebuild?: boolean }
+): Promise<StoryAssetPlan> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/plan`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return json.plan as StoryAssetPlan
+}
+
+export async function generateStoryAssetReferenceAi(
+  projectId: string,
+  payload: {
+    assetId: string
+    style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+    width?: number
+    height?: number
+    steps?: number
+    cfgScale?: number
+    sampler?: string
+    scheduler?: string
+    batchSize?: number
+    prompt?: string
+    negativePrompt?: string
+    globalPrompt?: string
+    globalNegativePrompt?: string
+    assetPrompt?: string
+    assetNegativePrompt?: string
+    timeoutMs?: number
+  }
+): Promise<{ asset: any; analysis?: any; candidates?: any[]; projectAsset: any; assetPath: string; url: string; provider: string; remoteUrl?: string; prompt: string; negativePrompt: string; plan: StoryAssetPlan }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/reference`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    asset: (json.asset as any) || null,
+    analysis: (json.analysis as any) || null,
+    candidates: Array.isArray(json.candidates) ? json.candidates as any[] : [],
+    projectAsset: (json.projectAsset as any) || null,
+    assetPath: String(json.assetPath || ''),
+    url: String(json.url || ''),
+    provider: String(json.provider || ''),
+    remoteUrl: String(json.remoteUrl || '').trim() || undefined,
+    prompt: String(json.prompt || ''),
+    negativePrompt: String(json.negativePrompt || ''),
+    plan: json.plan as StoryAssetPlan
+  }
+}
+
+export async function selectStoryAssetReferenceAi(
+  projectId: string,
+  payload: { assetId: string; assetPath: string }
+): Promise<{ asset: any; plan: StoryAssetPlan }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/reference/select`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    asset: (json.asset as any) || null,
+    plan: json.plan as StoryAssetPlan
+  }
+}
+
+export async function generateStoryAssetLineartAi(
+  projectId: string,
+  payload: {
+    assetId: string
+    model?: string
+    width?: number
+    height?: number
+    steps?: number
+    cfgScale?: number
+    denoise?: number
+    seed?: number
+    timeoutMs?: number
+  }
+): Promise<{ asset: any; plan: StoryAssetPlan; hintAssetPath: string; finalAssetPath: string; hintUrl: string; finalUrl: string; meta?: any; prompt: string; negativePrompt: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/lineart`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    asset: (json.asset as any) || null,
+    plan: json.plan as StoryAssetPlan,
+    hintAssetPath: String(json.hintAssetPath || ''),
+    finalAssetPath: String(json.finalAssetPath || ''),
+    hintUrl: String(json.hintUrl || ''),
+    finalUrl: String(json.finalUrl || ''),
+    meta: (json.meta as any) || null,
+    prompt: String(json.prompt || ''),
+    negativePrompt: String(json.negativePrompt || '')
+  }
+}
+
+export async function analyzeStoryAssetReferenceAi(
+  projectId: string,
+  payload: { assetId: string }
+): Promise<{ asset: any; analysis: any; plan: StoryAssetPlan }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/reference/review`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    asset: (json.asset as any) || null,
+    analysis: (json.analysis as any) || null,
+    plan: json.plan as StoryAssetPlan
+  }
+}
+
+export async function optimizeStoryAssetReferenceAi(
+  projectId: string,
+  payload: {
+    assetId: string
+    style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+    width?: number
+    height?: number
+    steps?: number
+    cfgScale?: number
+    sampler?: string
+    scheduler?: string
+    batchSize?: number
+    globalPrompt?: string
+    globalNegativePrompt?: string
+    assetPrompt?: string
+    assetNegativePrompt?: string
+    timeoutMs?: number
+  }
+): Promise<{ asset: any; analysis: any; candidates?: any[]; projectAsset: any; assetPath: string; url: string; provider: string; remoteUrl?: string; prompt: string; negativePrompt: string; plan: StoryAssetPlan }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/reference/optimize`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    asset: (json.asset as any) || null,
+    analysis: (json.analysis as any) || null,
+    candidates: Array.isArray(json.candidates) ? json.candidates as any[] : [],
+    projectAsset: (json.projectAsset as any) || null,
+    assetPath: String(json.assetPath || ''),
+    url: String(json.url || ''),
+    provider: String(json.provider || ''),
+    remoteUrl: String(json.remoteUrl || '').trim() || undefined,
+    prompt: String(json.prompt || ''),
+    negativePrompt: String(json.negativePrompt || ''),
+    plan: json.plan as StoryAssetPlan
+  }
+}
+
+export async function listStoryAssetGalleryAi(
+  projectId: string,
+  assetId: string
+): Promise<{ asset: any; items: StoryAssetGalleryEntry[]; plan: StoryAssetPlan }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(assetId)}/gallery`, {
+    method: 'GET'
+  })
+  return {
+    asset: (json.asset as any) || null,
+    items: Array.isArray(json.items) ? json.items as StoryAssetGalleryEntry[] : [],
+    plan: json.plan as StoryAssetPlan
+  }
+}
+
+export async function enhanceStoryAssetPromptAi(
+  projectId: string,
+  assetId: string,
+  payload?: {
+    promptZh?: string
+    promptEn?: string
+    negativePromptZh?: string
+    negativePrompt?: string
+    globalPromptZh?: string
+    globalNegativePromptZh?: string
+  }
+): Promise<{
+  asset: any
+  result: { promptZh: string; promptEn: string; negativePromptZh?: string; negativePrompt: string; summary: string; context?: any }
+  meta?: { provider?: string; model?: string | null; api?: string | null; durationMs?: number; note?: string | null }
+  aiError?: { message?: string; status?: number | null; code?: string | null } | null
+}> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(assetId)}/prompt-enhance`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return {
+    asset: (json.asset as any) || null,
+    result: (json.result as any) || { promptZh: '', promptEn: '', negativePromptZh: '', negativePrompt: '', summary: '' },
+    meta: (json.meta as any) || undefined,
+    aiError: (json.aiError as any) || null
+  }
+}
+
+export async function deleteStoryAssetGalleryItemAi(
+  projectId: string,
+  payload: { assetId: string; assetPath: string }
+): Promise<{ deleted: boolean; asset: any; items: StoryAssetGalleryEntry[]; plan: StoryAssetPlan }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(payload.assetId)}/gallery/delete`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    deleted: Boolean(json.deleted),
+    asset: (json.asset as any) || null,
+    items: Array.isArray(json.items) ? json.items as StoryAssetGalleryEntry[] : [],
+    plan: json.plan as StoryAssetPlan
+  }
+}
+
+export async function translatePromptTextAi(
+  projectId: string,
+  payload: {
+    text: string
+    sourceLang?: 'auto' | 'zh' | 'en'
+    targetLang: 'zh' | 'en'
+    mode?: 'prompt' | 'plain'
+    timeoutMs?: number
+  }
+): Promise<{ result: { translatedText: string; sourceLanguage: string; targetLanguage: string }; meta: any }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/translate`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    result: (json.result as any) || { translatedText: '', sourceLanguage: 'auto', targetLanguage: payload.targetLang },
+    meta: (json.meta as any) || null
+  }
+}
+
+export async function runStoryboardLockTestAi(
+  projectId: string,
+  payload?: {
+    style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+    model?: string
+    loras?: string[]
+    width?: number
+    height?: number
+    steps?: number
+    cfgScale?: number
+    sampler?: string
+    scheduler?: string
+    maxAttempts?: number
+    timeoutMs?: number
+  }
+): Promise<{
+  passed: boolean
+  summary: string
+  testTarget: any
+  attempts: Array<{
+    attempt: number
+    assetId: string
+    assetName: string
+    prompt: string
+    negativePrompt: string
+    url: string
+    assetPath: string
+    remoteUrl?: string
+    analysis: any
+  }>
+}> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/lock/test`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return {
+    passed: Boolean(json.passed),
+    summary: String(json.summary || ''),
+    testTarget: json.testTarget || null,
+    attempts: Array.isArray(json.attempts) ? json.attempts as any[] : []
+  }
+}
+
+export async function renderStorySceneAi(
+  projectId: string,
+  sceneId: string,
+  payload?: {
+    style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+    width?: number
+    height?: number
+    steps?: number
+    cfgScale?: number
+    sampler?: string
+    scheduler?: string
+    prompt?: string
+    scenePrompt?: string
+    negativePrompt?: string
+    timeoutMs?: number
+  }
+): Promise<{ projectAsset: any; renderSpec: any; assetPath: string; url: string; provider: string; remoteUrl?: string; prompt: string; negativePrompt: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/render`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return {
+    projectAsset: (json.projectAsset as any) || null,
+    renderSpec: (json.renderSpec as any) || null,
+    assetPath: String(json.assetPath || ''),
+    url: String(json.url || ''),
+    provider: String(json.provider || ''),
+    remoteUrl: String(json.remoteUrl || '').trim() || undefined,
+    prompt: String(json.prompt || ''),
+    negativePrompt: String(json.negativePrompt || '')
+  }
+}
+
 // ===== AI 图像生成 - 角色 (AI Character) =====
 
 /**
@@ -678,6 +1190,7 @@ export type StudioSettings = {
   enabled?: { scripts?: boolean; prompt?: boolean; image?: boolean; tts?: boolean }
   scripts?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
   prompt?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
+  translation?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
   image?: {
     provider?: string | null
     model?: string | null
@@ -698,6 +1211,7 @@ export type StudioEffectiveConfig = {
   enabled: { scripts: boolean; prompt: boolean; image: boolean; tts: boolean }
   scripts: { provider: string; model: string | null; apiUrl?: string | null }
   prompt: { provider: string; model: string | null; apiUrl?: string | null }
+  translation: { provider: string; model: string | null; apiUrl?: string | null }
   image: {
     provider: string
     model: string | null
@@ -731,7 +1245,7 @@ export async function diagnoseStudio(opts?: {
   deepText?: boolean
   deepImages?: boolean
   timeoutMs?: number
-  service?: 'all' | 'scripts' | 'prompt' | 'image'
+  service?: 'all' | 'scripts' | 'prompt' | 'translation' | 'image'
   settings?: StudioSettings
 }): Promise<any> {
   const json = await j(`${base()}/api/studio/diagnose`, { method: 'POST', body: JSON.stringify(opts || {}) })
@@ -787,6 +1301,8 @@ export async function testStudioImage(payload: {
   prompt?: string
   negativePrompt?: string
   style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+  model?: string
+  loras?: string[]
   width?: number
   height?: number
   size?: string

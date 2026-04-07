@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT="/Users/zhanghongqin/work/game_studio"
+ROOT="."
 RUN_DIR="${ROOT}/.run"
 SERVER_PID_FILE="${RUN_DIR}/server.pid"
 EDITOR_PID_FILE="${RUN_DIR}/editor.pid"
@@ -29,13 +29,13 @@ print_port_state "editor" 8868
 
 echo ""
 echo "Health"
-if curl -fsS http://127.0.0.1:1999/api/health >/dev/null 2>&1; then
+if curl --noproxy '*' -fsS http://127.0.0.1:1999/api/health >/dev/null 2>&1; then
   echo "server health: ok"
 else
   echo "server health: fail"
 fi
 
-if curl -fsS http://localhost:8868 >/dev/null 2>&1; then
+if curl --noproxy '*' -fsS http://localhost:8868 >/dev/null 2>&1; then
   echo "editor http: ok"
 else
   echo "editor http: fail"

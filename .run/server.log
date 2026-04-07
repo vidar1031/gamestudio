@@ -1,350 +1,116 @@
-
-> game-studio@0.1.0 dev:server
-> npm --workspace @game-studio/server run dev
-
-
-> @game-studio/server@0.1.0 dev
-> node src/index.js
-
-[game_studio] env loaded=/Users/zhanghongqin/work/game_studio/.env.local aiProvider=localoxml localoxmlKey=set openaiKey=missing model=Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit aiInit=manual_only
+[game_studio] env loaded=(none) aiProvider=local localoxmlKey=missing openaiKey=missing aiInit=manual_only
 [game_studio] server on :1999
-[2026-03-24T05:47:08.895Z] GET /api/health -> 200 (2ms)
-[2026-03-24T05:47:10.513Z] OPTIONS /api/projects -> 204 (1ms)
-[2026-03-24T05:47:10.513Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T05:47:10.514Z] OPTIONS /api/projects -> 204 (0ms)
-[2026-03-24T05:47:10.516Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T05:47:10.517Z] GET /api/studio/settings -> 200 (2ms)
-[2026-03-24T05:47:10.518Z] GET /api/studio/settings -> 200 (0ms)
-[2026-03-24T05:47:10.528Z] GET /api/projects -> 200 (13ms)
-[2026-03-24T05:47:10.530Z] GET /api/projects -> 200 (1ms)
-[2026-03-24T05:47:22.387Z] GET /api/health -> 200 (0ms)
-[2026-03-24T05:47:22.445Z] GET /api/health -> 200 (1ms)
-[2026-03-24T05:57:03.354Z] OPTIONS /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa -> 204 (1ms)
-[2026-03-24T05:57:03.356Z] OPTIONS /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa/scripts -> 204 (0ms)
-[2026-03-24T05:57:03.358Z] OPTIONS /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa/blueprint -> 204 (0ms)
-[2026-03-24T05:57:03.361Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa/scripts -> 200 (2ms)
-[2026-03-24T05:57:03.362Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa/blueprint -> 200 (2ms)
-[2026-03-24T05:57:03.364Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa -> 200 (6ms)
-[2026-03-24T05:57:06.531Z] OPTIONS /api/projects -> 204 (1ms)
-[2026-03-24T05:57:06.536Z] GET /api/projects -> 200 (4ms)
-[2026-03-24T05:57:06.540Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa -> 200 (3ms)
-[2026-03-24T05:57:06.542Z] GET /api/projects -> 200 (4ms)
-[2026-03-24T05:57:06.544Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa -> 200 (3ms)
-[2026-03-24T05:57:06.546Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa/blueprint -> 200 (3ms)
-[2026-03-24T05:57:06.546Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa/scripts -> 200 (2ms)
-[2026-03-24T05:57:06.589Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa/scripts -> 200 (1ms)
-[2026-03-24T05:57:06.590Z] GET /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa/blueprint -> 200 (2ms)
-[2026-03-24T05:57:06.605Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317130981.jpg -> 200 (3ms)
-[2026-03-24T05:57:09.272Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317418953.jpg -> 200 (1ms)
-[2026-03-24T05:57:12.444Z] OPTIONS /api/studio/settings -> 204 (1ms)
-[2026-03-24T05:57:12.446Z] GET /api/studio/settings -> 200 (0ms)
-[2026-03-24T05:57:12.464Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317130981.jpg -> 200 (3ms)
-[2026-03-24T05:57:12.466Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317196601.jpg -> 200 (4ms)
-[2026-03-24T05:57:12.466Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317160119.jpg -> 200 (4ms)
-[2026-03-24T05:57:12.467Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317275815.jpg -> 200 (4ms)
-[2026-03-24T05:57:12.467Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317235969.jpg -> 200 (5ms)
-[2026-03-24T05:57:12.469Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317309946.jpg -> 200 (6ms)
-[2026-03-24T05:57:12.471Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317451837.jpg -> 200 (2ms)
-[2026-03-24T05:57:12.473Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317348741.jpg -> 200 (5ms)
-[2026-03-24T05:57:12.475Z] GET /project-assets/3f3f578c-dd57-4799-b840-268e58d0a0aa/assets/ai/bg_1774317382466.jpg -> 200 (6ms)
-[2026-03-24T05:59:20.968Z] OPTIONS /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa -> 204 (1ms)
-[2026-03-24T05:59:20.985Z] PUT /api/projects/3f3f578c-dd57-4799-b840-268e58d0a0aa -> 200 (14ms)
-[2026-03-24T05:59:20.989Z] OPTIONS /api/projects -> 204 (0ms)
-[2026-03-24T05:59:20.992Z] GET /api/projects -> 200 (2ms)
-[2026-03-24T05:59:21.008Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T05:59:21.009Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T05:59:21.010Z] GET /api/studio/settings -> 200 (0ms)
-[2026-03-24T05:59:21.011Z] GET /api/studio/settings -> 200 (0ms)
-[2026-03-24T05:59:21.013Z] GET /api/projects -> 200 (6ms)
-[2026-03-24T05:59:21.015Z] GET /api/projects -> 200 (1ms)
-[2026-03-24T05:59:22.948Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 204 (0ms)
-[2026-03-24T05:59:22.950Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 204 (0ms)
-[2026-03-24T05:59:22.950Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/blueprint -> 204 (0ms)
-[2026-03-24T05:59:22.954Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 200 (3ms)
-[2026-03-24T05:59:22.955Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 200 (4ms)
-[2026-03-24T05:59:22.958Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/blueprint -> 200 (6ms)
-[2026-03-24T05:59:28.313Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 204 (1ms)
-[2026-03-24T05:59:28.313Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 204 (0ms)
-[2026-03-24T05:59:28.314Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 204 (0ms)
-[2026-03-24T05:59:28.319Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 204 (0ms)
-[2026-03-24T05:59:28.322Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 200 (6ms)
-[2026-03-24T05:59:28.323Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 200 (6ms)
-[2026-03-24T05:59:28.325Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 200 (1ms)
-[2026-03-24T05:59:28.327Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 200 (2ms)
-[2026-03-24T05:59:33.661Z] OPTIONS /api/projects -> 204 (0ms)
-[2026-03-24T05:59:33.662Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T05:59:33.664Z] OPTIONS /api/projects -> 204 (0ms)
-[2026-03-24T05:59:33.664Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T05:59:33.665Z] GET /api/studio/settings -> 200 (0ms)
-[2026-03-24T05:59:33.668Z] GET /api/studio/settings -> 200 (0ms)
-[2026-03-24T05:59:33.672Z] GET /api/projects -> 200 (7ms)
-[2026-03-24T05:59:33.677Z] GET /api/projects -> 200 (2ms)
-[2026-03-24T05:59:34.712Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 204 (0ms)
-[2026-03-24T05:59:34.713Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 204 (0ms)
-[2026-03-24T05:59:34.715Z] OPTIONS /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/blueprint -> 204 (0ms)
-[2026-03-24T05:59:34.717Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 200 (2ms)
-[2026-03-24T05:59:34.718Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/blueprint -> 200 (2ms)
-[2026-03-24T05:59:34.721Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 200 (5ms)
-[2026-03-24T05:59:36.232Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 200 (1ms)
-[2026-03-24T05:59:36.233Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/blueprint -> 200 (2ms)
-[2026-03-24T05:59:36.235Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 200 (1ms)
-[2026-03-24T05:59:36.237Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/blueprint -> 200 (2ms)
-[2026-03-24T05:59:38.033Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 200 (2ms)
-[2026-03-24T05:59:38.052Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 200 (1ms)
-[2026-03-24T05:59:38.054Z] GET /api/projects -> 200 (6ms)
-[2026-03-24T05:59:38.056Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e -> 200 (2ms)
-[2026-03-24T05:59:38.058Z] GET /api/projects -> 200 (2ms)
-[2026-03-24T05:59:38.095Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/blueprint -> 200 (1ms)
-[2026-03-24T05:59:38.096Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 200 (2ms)
-[2026-03-24T05:59:38.097Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/blueprint -> 200 (1ms)
-[2026-03-24T05:59:38.098Z] GET /api/projects/dec8cb63-c71e-4a13-8383-18e6c46fb40e/scripts -> 200 (1ms)
-[2026-03-24T06:00:25.563Z] OPTIONS /api/projects -> 204 (0ms)
-[2026-03-24T06:00:25.564Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T06:00:25.565Z] OPTIONS /api/projects -> 204 (1ms)
-[2026-03-24T06:00:25.565Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T06:00:25.566Z] GET /api/studio/settings -> 200 (1ms)
-[2026-03-24T06:00:25.568Z] GET /api/studio/settings -> 200 (1ms)
-[2026-03-24T06:00:25.571Z] GET /api/projects -> 200 (6ms)
-[2026-03-24T06:00:25.574Z] GET /api/projects -> 200 (2ms)
-[2026-03-24T06:00:26.827Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 204 (1ms)
-[2026-03-24T06:00:26.829Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 204 (1ms)
-[2026-03-24T06:00:26.829Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 204 (0ms)
-[2026-03-24T06:00:26.832Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 200 (2ms)
-[2026-03-24T06:00:26.833Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 200 (3ms)
-[2026-03-24T06:00:26.835Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (5ms)
-[2026-03-24T06:00:35.804Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 204 (1ms)
-[2026-03-24T06:00:35.805Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 204 (0ms)
-[2026-03-24T06:00:35.807Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 204 (0ms)
-[2026-03-24T06:00:35.808Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 204 (0ms)
-[2026-03-24T06:00:35.809Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 200 (1ms)
-[2026-03-24T06:00:35.811Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (5ms)
-[2026-03-24T06:00:35.813Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 200 (2ms)
-[2026-03-24T06:00:35.813Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (1ms)
-[2026-03-24T06:00:41.909Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/compile/blueprint -> 204 (0ms)
-[2026-03-24T06:00:41.923Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/compile/blueprint -> 200 (11ms)
-[2026-03-24T06:00:41.928Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/review/blueprint -> 204 (0ms)
-[2026-03-24T06:00:41.931Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/review/blueprint -> 200 (1ms)
-[2026-03-24T06:00:47.148Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/fix/scripts -> 204 (0ms)
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=1650 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=10257 requestId=0217743320472807d9c2387c122bdc91a342e02a9471447975d91
-[game_studio] ai.scripts_fix project=80b20147-9335-4cae-8800-085dba125ba7 requestedProvider=doubao model=doubao-1-5-pro-32k-250115 provider=doubao model=doubao-1-5-pro-32k-250115 api=chat.completions okBefore=true okAfter=true cards=10 ms=10264
-[2026-03-24T06:00:57.419Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/fix/scripts -> 200 (10270ms)
-[2026-03-24T06:00:59.950Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 204 (0ms)
-[2026-03-24T06:00:59.951Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 204 (0ms)
-[2026-03-24T06:00:59.953Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 204 (0ms)
-[2026-03-24T06:00:59.954Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 204 (0ms)
-[2026-03-24T06:00:59.955Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 200 (1ms)
-[2026-03-24T06:00:59.956Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 200 (2ms)
-[2026-03-24T06:00:59.958Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 200 (1ms)
-[2026-03-24T06:00:59.959Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 200 (1ms)
-[2026-03-24T06:01:13.609Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 204 (1ms)
-[2026-03-24T06:01:13.612Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (1ms)
-[2026-03-24T06:01:13.617Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/compile/compose -> 204 (0ms)
-[2026-03-24T06:01:13.626Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/compile/compose -> 200 (6ms)
-[2026-03-24T06:01:13.631Z] OPTIONS /api/projects -> 204 (0ms)
-[2026-03-24T06:01:13.634Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (1ms)
-[2026-03-24T06:01:13.636Z] GET /api/projects -> 200 (4ms)
-[2026-03-24T06:01:13.638Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (1ms)
-[2026-03-24T06:01:13.641Z] GET /api/projects -> 200 (3ms)
-[2026-03-24T06:01:13.670Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 204 (0ms)
-[2026-03-24T06:01:13.671Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 204 (0ms)
-[2026-03-24T06:01:13.671Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 204 (0ms)
-[2026-03-24T06:01:13.672Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 204 (0ms)
-[2026-03-24T06:01:13.672Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 200 (1ms)
-[2026-03-24T06:01:13.673Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 200 (2ms)
-[2026-03-24T06:01:13.674Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/blueprint -> 200 (1ms)
-[2026-03-24T06:01:13.675Z] GET /api/projects/80b20147-9335-4cae-8800-085dba125ba7/scripts -> 200 (1ms)
-[2026-03-24T06:02:34.213Z] GET /api/health -> 200 (0ms)
-[2026-03-24T06:02:34.229Z] OPTIONS /api/studio/settings -> 204 (1ms)
-[2026-03-24T06:02:34.230Z] GET /api/studio/settings -> 200 (1ms)
-[2026-03-24T06:02:34.232Z] OPTIONS /api/studio/diagnose -> 204 (0ms)
-[2026-03-24T06:02:34.249Z] POST /api/studio/diagnose -> 200 (17ms)
-[2026-03-24T06:02:34.258Z] POST /api/studio/diagnose -> 200 (7ms)
-[2026-03-24T06:02:43.356Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/story/bible -> 204 (0ms)
-[game_studio] stage=story.bible event=start traceId=ab684788-3b4a-494d-bd61-63bc50325858 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=3348 proxy=off timeoutMs=0
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=39069 requestId=021774332163469ef55df386ee39c3c63d4a703f67ebe4c389b66
-[game_studio] stage=story.bible event=ok traceId=ab684788-3b4a-494d-bd61-63bc50325858 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=39074
-[2026-03-24T06:03:22.434Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/story/bible -> 200 (39076ms)
-[2026-03-24T06:03:23.647Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 204 (0ms)
-[2026-03-24T06:03:23.654Z] PUT /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (4ms)
-[2026-03-24T06:03:23.660Z] OPTIONS /api/projects -> 204 (1ms)
-[2026-03-24T06:03:23.665Z] GET /api/projects -> 200 (3ms)
-[2026-03-24T06:13:10.595Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T06:13:10.597Z] GET /api/studio/settings -> 200 (1ms)
-[2026-03-24T06:13:10.605Z] OPTIONS /api/studio/diagnose -> 204 (0ms)
-[2026-03-24T06:13:10.622Z] POST /api/studio/diagnose -> 200 (16ms)
-[game_studio] doubao.images:resize size=1280x720 -> 2560x1472 (minSides minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=2560x1472 format=url watermark=false seq=disabled refs=0 proxy=off timeoutMs=20000
-[game_studio] doubao.images:ok created=1774332808 images=1
-[2026-03-24T06:13:29.264Z] POST /api/studio/diagnose -> 200 (18639ms)
-[2026-03-24T06:13:29.269Z] OPTIONS /api/studio/image/test -> 204 (0ms)
-[game_studio] doubao.images:resize size=512x512 -> 1920x1920 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1920x1920 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=120000
-[game_studio] doubao.images:ok created=1774332838 images=1
-[2026-03-24T06:13:58.853Z] POST /api/studio/image/test -> 200 (29583ms)
-[2026-03-24T06:14:44.495Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (1ms)
-[game_studio] stage=bg.prompt event=start traceId=d0b54e69-c839-48b2-80e1-7222801fc39b project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:527
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=4190 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=16597 requestId=0217743328846180d297e7e13613f5b288cfd2cb29f624a37fdf4
-[game_studio] stage=bg.prompt event=ok traceId=d0b54e69-c839-48b2-80e1-7222801fc39b project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=16601
-[2026-03-24T06:15:01.100Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (16604ms)
-[2026-03-24T06:15:01.107Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (0ms)
-[game_studio] stage=bg.prompt event=start traceId=14e22942-d812-445b-84a6-42fd9260c08d project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:70
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2956 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=14424 requestId=0217743329012221542bc6dcdb74c46c1e1efc6be3317071f5cdb
-[game_studio] stage=bg.prompt event=ok traceId=14e22942-d812-445b-84a6-42fd9260c08d project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=14426
-[2026-03-24T06:15:15.536Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (14428ms)
-[2026-03-24T06:15:15.540Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (0ms)
-[game_studio] stage=bg.prompt event=start traceId=90bc53df-c69d-4c48-9124-fd64322ebce7 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:66
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2952 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=15481 requestId=0217743329157011759647e7543ede3d3e5e601fa3b6a5b2ef0a5
-[game_studio] stage=bg.prompt event=ok traceId=90bc53df-c69d-4c48-9124-fd64322ebce7 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=15482
-[2026-03-24T06:15:31.024Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (15483ms)
-[2026-03-24T06:15:31.030Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (1ms)
-[game_studio] stage=bg.prompt event=start traceId=b7812fa1-62ff-4805-9b60-83decc236c9f project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:34
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2920 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=14325 requestId=0217743329311473799d76546dcc4f1e7db5f4ad99e15a16bf520
-[game_studio] stage=bg.prompt event=ok traceId=b7812fa1-62ff-4805-9b60-83decc236c9f project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=14327
-[2026-03-24T06:15:45.360Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (14329ms)
-[2026-03-24T06:15:45.365Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (1ms)
-[game_studio] stage=bg.prompt event=start traceId=9610cc55-5d75-4ab3-9990-f85904f41eee project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:70
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2956 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=16512 requestId=0217743329454768879bc7da35e8629d61427f87ca0a54b19b21a
-[game_studio] stage=bg.prompt event=ok traceId=9610cc55-5d75-4ab3-9990-f85904f41eee project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=16513
-[2026-03-24T06:16:01.881Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (16515ms)
-[2026-03-24T06:16:01.884Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (0ms)
-[game_studio] stage=bg.prompt event=start traceId=5156f965-7811-44ed-8422-f95ab7c3cb7a project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:65
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2951 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=15011 requestId=0217743329619987e0f94b7e866b1b7cc6105a7c567a1e17e75f6
-[game_studio] stage=bg.prompt event=ok traceId=5156f965-7811-44ed-8422-f95ab7c3cb7a project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=15012
-[2026-03-24T06:16:16.898Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (15013ms)
-[2026-03-24T06:16:16.901Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (0ms)
-[game_studio] stage=bg.prompt event=start traceId=ebf36336-2aa9-45eb-9a1b-51f3c2734b78 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:40
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2926 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=13102 requestId=021774332977019faac109ac1f14afd29ade156833828ce7faa41
-[game_studio] stage=bg.prompt event=ok traceId=ebf36336-2aa9-45eb-9a1b-51f3c2734b78 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=13103
-[2026-03-24T06:16:30.007Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (13105ms)
-[2026-03-24T06:16:30.014Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (0ms)
-[game_studio] stage=bg.prompt event=start traceId=b4db160d-0885-4699-97b3-132b981eefd2 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:81
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2967 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=15450 requestId=02177433299013893b7aa1f5db1b5422a93dcfb04dc280f109918
-[game_studio] stage=bg.prompt event=ok traceId=b4db160d-0885-4699-97b3-132b981eefd2 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=15452
-[2026-03-24T06:16:45.468Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (15453ms)
-[2026-03-24T06:16:45.471Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (0ms)
-[game_studio] stage=bg.prompt event=start traceId=e71a9a1c-d5bf-44c2-a1a3-1abd5152fb5f project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:65
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2951 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=14248 requestId=02177433300559041ada118d7ae07c5231ef7461655b717640488
-[game_studio] stage=bg.prompt event=ok traceId=e71a9a1c-d5bf-44c2-a1a3-1abd5152fb5f project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=14249
-[2026-03-24T06:16:59.723Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (14250ms)
-[2026-03-24T06:16:59.727Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (0ms)
-[game_studio] stage=bg.prompt event=start traceId=2fac199d-8b0c-4f54-ba83-d256b3fcba8f project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:65
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2951 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=14411 requestId=021774333019849faac109ac1f14afd29ade156833828cee48e9e
-[game_studio] stage=bg.prompt event=ok traceId=2fac199d-8b0c-4f54-ba83-d256b3fcba8f project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=14412
-[2026-03-24T06:17:14.142Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (14414ms)
-[2026-03-24T06:17:14.148Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 204 (0ms)
-[game_studio] stage=bg.prompt event=start traceId=2d2d256f-055d-4c39-9fc5-0be648039b07 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 item=chars:66
-[game_studio] doubao.llm:start api=https://ark.cn-beijing.volces.com/api/v3/chat/completions model=doubao-1-5-pro-32k-250115 msgs=2 chars=2952 proxy=off timeoutMs=60000
-[game_studio] doubao.llm:ok model=doubao-1-5-pro-32k-250115 ms=15455 requestId=021774333034260d15b81097ef4f266330d7ca8118c949431a18d
-[game_studio] stage=bg.prompt event=ok traceId=2d2d256f-055d-4c39-9fc5-0be648039b07 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-1-5-pro-32k-250115 ok=true durationMs=15455
-[2026-03-24T06:17:29.605Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background/prompt -> 200 (15456ms)
-[2026-03-24T06:17:30.815Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 204 (0ms)
-[2026-03-24T06:17:30.822Z] PUT /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (5ms)
-[2026-03-24T06:17:30.827Z] OPTIONS /api/projects -> 204 (0ms)
-[2026-03-24T06:17:30.833Z] GET /api/projects -> 200 (4ms)
-[2026-03-24T06:18:19.282Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T06:18:19.284Z] GET /api/studio/settings -> 200 (1ms)
-[2026-03-24T06:18:19.299Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (1ms)
-[game_studio] stage=bg.create event=start traceId=30bf5236-8e63-4587-a6e2-679ec8cd9884 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333137 images=1
-[game_studio] stage=bg.create event=ok traceId=30bf5236-8e63-4587-a6e2-679ec8cd9884 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:372084 ok=true durationMs=38050
-[2026-03-24T06:18:57.351Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (38051ms)
-[2026-03-24T06:18:57.355Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=f10e9aa5-7a42-423b-8995-98ae8eae2038 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333179 images=1
-[game_studio] stage=bg.create event=ok traceId=f10e9aa5-7a42-423b-8995-98ae8eae2038 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:337511 ok=true durationMs=42503
-[2026-03-24T06:19:39.861Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (42505ms)
-[2026-03-24T06:19:39.865Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=a8202834-b1f3-4589-a39d-25369782bb51 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333223 images=1
-[game_studio] stage=bg.create event=ok traceId=a8202834-b1f3-4589-a39d-25369782bb51 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:333456 ok=true durationMs=43948
-[2026-03-24T06:20:23.815Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (43949ms)
-[2026-03-24T06:20:23.818Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=dcd15889-52d8-408f-9445-437df4b25510 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333255 images=1
-[game_studio] stage=bg.create event=ok traceId=dcd15889-52d8-408f-9445-437df4b25510 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:342913 ok=true durationMs=32291
-[2026-03-24T06:20:56.111Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (32292ms)
-[2026-03-24T06:20:56.114Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=3e0e9f47-c2b4-4d47-ae25-f11e5b2b6620 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333284 images=1
-[game_studio] stage=bg.create event=ok traceId=3e0e9f47-c2b4-4d47-ae25-f11e5b2b6620 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:253762 ok=true durationMs=28899
-[2026-03-24T06:21:25.014Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (28899ms)
-[2026-03-24T06:21:25.017Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=618ff979-fe1b-4430-87ca-77b2095a642f project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333313 images=1
-[game_studio] stage=bg.create event=ok traceId=618ff979-fe1b-4430-87ca-77b2095a642f project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:346194 ok=true durationMs=28369
-[2026-03-24T06:21:53.389Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (28371ms)
-[2026-03-24T06:21:53.392Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=faf12bb7-46b6-40c1-94a6-21a63143b335 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333350 images=1
-[game_studio] stage=bg.create event=ok traceId=faf12bb7-46b6-40c1-94a6-21a63143b335 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:374964 ok=true durationMs=37664
-[2026-03-24T06:22:31.059Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (37666ms)
-[2026-03-24T06:22:31.062Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=06f6c41c-396f-4d60-804f-41cbf6375134 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333384 images=1
-[game_studio] stage=bg.create event=ok traceId=06f6c41c-396f-4d60-804f-41cbf6375134 project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:400866 ok=true durationMs=33874
-[2026-03-24T06:23:04.937Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (33874ms)
-[2026-03-24T06:23:04.941Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=8ac0d374-e286-45b5-b07e-f101f3f0a8aa project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333411 images=1
-[game_studio] stage=bg.create event=ok traceId=8ac0d374-e286-45b5-b07e-f101f3f0a8aa project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:323681 ok=true durationMs=27227
-[2026-03-24T06:23:32.169Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (27227ms)
-[2026-03-24T06:23:32.172Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 204 (0ms)
-[game_studio] stage=bg.create event=start traceId=24059ec5-dc2a-402a-bc5b-ac0337c28aaf project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=w768h1024 refs:0
-[game_studio] doubao.images:resize size=768x1024 -> 1664x2240 (minLong=1280 minShort=720 minPixels=3686400)
-[game_studio] doubao.images:start api=https://ark.cn-beijing.volces.com/api/v3/images/generations model=doubao-seedream-5-0-260128 size=1664x2240 format=url watermark=false seq=auto refs=0 proxy=off timeoutMs=300000
-[game_studio] doubao.images:ok created=1774333446 images=1
-[game_studio] stage=bg.create event=ok traceId=24059ec5-dc2a-402a-bc5b-ac0337c28aaf project=80b20147-9335-4cae-8800-085dba125ba7 provider=doubao model=doubao-seedream-5-0-260128 item=jpg:279157 ok=true durationMs=34536
-[2026-03-24T06:24:06.710Z] POST /api/projects/80b20147-9335-4cae-8800-085dba125ba7/ai/background -> 200 (34538ms)
-[2026-03-24T06:24:06.723Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333137351.jpg -> 200 (1ms)
-[2026-03-24T06:24:07.921Z] OPTIONS /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 204 (1ms)
-[2026-03-24T06:24:07.928Z] PUT /api/projects/80b20147-9335-4cae-8800-085dba125ba7 -> 200 (6ms)
-[2026-03-24T06:24:07.931Z] OPTIONS /api/projects -> 204 (0ms)
-[2026-03-24T06:24:07.935Z] GET /api/projects -> 200 (3ms)
-[2026-03-24T06:25:32.426Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333179860.jpg -> 200 (1ms)
-[2026-03-24T06:25:34.391Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333223813.jpg -> 200 (2ms)
-[2026-03-24T06:25:43.561Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333256110.jpg -> 200 (3ms)
-[2026-03-24T06:25:51.030Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333313387.jpg -> 200 (1ms)
-[2026-03-24T06:25:57.715Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333351057.jpg -> 200 (2ms)
-[2026-03-24T06:26:04.108Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333384936.jpg -> 200 (2ms)
-[2026-03-24T06:26:29.636Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333285013.jpg -> 200 (2ms)
-[2026-03-24T06:26:53.993Z] OPTIONS /api/studio/settings -> 204 (0ms)
-[2026-03-24T06:26:53.997Z] GET /api/studio/settings -> 200 (1ms)
-[2026-03-24T06:26:54.011Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333256110.jpg -> 200 (2ms)
-[2026-03-24T06:26:54.012Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333223813.jpg -> 200 (3ms)
-[2026-03-24T06:26:54.013Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333137351.jpg -> 200 (5ms)
-[2026-03-24T06:26:54.014Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333179860.jpg -> 200 (6ms)
-[2026-03-24T06:26:54.015Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333285013.jpg -> 200 (6ms)
-[2026-03-24T06:26:54.017Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333351057.jpg -> 200 (8ms)
-[2026-03-24T06:26:54.021Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333412169.jpg -> 200 (3ms)
-[2026-03-24T06:26:54.021Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333446709.jpg -> 200 (3ms)
-[2026-03-24T06:26:54.022Z] GET /project-assets/80b20147-9335-4cae-8800-085dba125ba7/assets/ai/bg_1774333384936.jpg -> 200 (4ms)
+[2026-04-03T03:26:21.805Z] GET /api/health -> 200 (4ms)
+[2026-04-03T03:26:32.736Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/pr_straw_hat/gallery -> 204 (2ms)
+[2026-04-03T03:26:32.785Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/pr_straw_hat/gallery -> 200 (46ms)
+[2026-04-03T03:26:34.006Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (1ms)
+[2026-04-03T03:26:34.026Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (19ms)
+[2026-04-03T03:26:34.028Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:26:34.042Z] GET /api/projects -> 200 (13ms)
+[2026-04-03T03:26:35.554Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/pr_straw_hat/gallery/delete -> 204 (0ms)
+[2026-04-03T03:26:35.603Z] POST /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/pr_straw_hat/gallery/delete -> 200 (47ms)
+[2026-04-03T03:26:36.853Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (18ms)
+[2026-04-03T03:26:36.864Z] GET /api/projects -> 200 (6ms)
+[2026-04-03T03:26:38.115Z] POST /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/pr_straw_hat/gallery/delete -> 200 (50ms)
+[2026-04-03T03:26:40.345Z] POST /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/pr_straw_hat/gallery/delete -> 200 (13ms)
+[2026-04-03T03:26:40.364Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (0ms)
+[2026-04-03T03:26:40.374Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (9ms)
+[2026-04-03T03:26:40.410Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:26:40.414Z] GET /api/projects -> 200 (3ms)
+[2026-04-03T03:26:44.264Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/pr_straw_hat/gallery/delete -> 204 (1ms)
+[2026-04-03T03:26:44.318Z] POST /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/pr_straw_hat/gallery/delete -> 200 (53ms)
+[2026-04-03T03:26:45.530Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (1ms)
+[2026-04-03T03:26:45.544Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (12ms)
+[2026-04-03T03:26:45.547Z] OPTIONS /api/projects -> 204 (1ms)
+[2026-04-03T03:26:45.558Z] GET /api/projects -> 200 (11ms)
+[2026-04-03T03:27:05.993Z] OPTIONS /api/projects -> 204 (1ms)
+[2026-04-03T03:27:05.993Z] OPTIONS /api/studio/settings -> 204 (0ms)
+[2026-04-03T03:27:05.994Z] OPTIONS /api/ai/prompt/templates -> 204 (0ms)
+[2026-04-03T03:27:05.994Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:27:05.997Z] OPTIONS /api/studio/settings -> 204 (0ms)
+[2026-04-03T03:27:05.998Z] OPTIONS /api/ai/prompt/templates -> 204 (0ms)
+[2026-04-03T03:27:05.999Z] GET /api/studio/settings -> 200 (4ms)
+[2026-04-03T03:27:06.000Z] GET /api/ai/prompt/templates -> 200 (4ms)
+[2026-04-03T03:27:06.001Z] GET /api/studio/settings -> 200 (1ms)
+[2026-04-03T03:27:06.005Z] GET /api/ai/prompt/templates -> 200 (3ms)
+[2026-04-03T03:27:06.008Z] GET /api/projects -> 200 (12ms)
+[2026-04-03T03:27:06.014Z] GET /api/projects -> 200 (5ms)
+[2026-04-03T03:27:06.880Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (1ms)
+[2026-04-03T03:27:06.881Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/scripts -> 204 (0ms)
+[2026-04-03T03:27:06.882Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/blueprint -> 204 (0ms)
+[2026-04-03T03:27:06.888Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/scripts -> 200 (5ms)
+[2026-04-03T03:27:06.889Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/blueprint -> 200 (6ms)
+[2026-04-03T03:27:06.892Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (10ms)
+[2026-04-03T03:27:07.676Z] GET /api/projects -> 200 (12ms)
+[2026-04-03T03:27:07.679Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (13ms)
+[2026-04-03T03:27:07.687Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (8ms)
+[2026-04-03T03:27:07.689Z] GET /api/projects -> 200 (10ms)
+[2026-04-03T03:27:07.714Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/blueprint -> 200 (1ms)
+[2026-04-03T03:27:07.715Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/scripts -> 200 (1ms)
+[2026-04-03T03:27:07.716Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/blueprint -> 200 (1ms)
+[2026-04-03T03:27:07.717Z] GET /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/scripts -> 200 (1ms)
+[2026-04-03T03:27:09.022Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/plan -> 204 (0ms)
+[2026-04-03T03:27:09.040Z] POST /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/plan -> 200 (16ms)
+[2026-04-03T03:27:09.044Z] GET /api/health -> 200 (0ms)
+[2026-04-03T03:27:09.114Z] GET /api/studio/settings -> 200 (1ms)
+[2026-04-03T03:27:09.122Z] OPTIONS /api/studio/diagnose -> 204 (0ms)
+[2026-04-03T03:27:10.327Z] POST /api/studio/diagnose -> 200 (1205ms)
+[2026-04-03T03:27:10.345Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (21ms)
+[2026-04-03T03:27:10.351Z] POST /api/studio/diagnose -> 200 (17ms)
+[2026-04-03T03:27:10.356Z] GET /api/projects -> 200 (5ms)
+[2026-04-03T03:27:10.360Z] OPTIONS /api/studio/image/preflight -> 204 (0ms)
+[2026-04-03T03:27:10.382Z] POST /api/studio/image/preflight -> 200 (21ms)
+[2026-04-03T03:27:28.294Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (1ms)
+[2026-04-03T03:27:28.311Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (16ms)
+[2026-04-03T03:27:28.315Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:27:28.324Z] GET /api/projects -> 200 (8ms)
+[2026-04-03T03:27:32.179Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (21ms)
+[2026-04-03T03:27:32.190Z] GET /api/projects -> 200 (7ms)
+[2026-04-03T03:27:34.305Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (1ms)
+[2026-04-03T03:27:34.322Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (15ms)
+[2026-04-03T03:27:34.325Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:27:34.332Z] GET /api/projects -> 200 (6ms)
+[2026-04-03T03:27:46.105Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (0ms)
+[2026-04-03T03:27:46.122Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (15ms)
+[2026-04-03T03:27:46.126Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:27:46.133Z] GET /api/projects -> 200 (7ms)
+[2026-04-03T03:28:06.238Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (0ms)
+[2026-04-03T03:28:06.248Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (9ms)
+[2026-04-03T03:28:06.250Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:28:06.255Z] GET /api/projects -> 200 (4ms)
+[2026-04-03T03:28:07.298Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/translate -> 204 (0ms)
+[game_studio] stage=prompt.translate event=start traceId=3c1eb8f4-79d5-464f-b992-9ad6fd490b6e project=296d0b72-5583-47b3-bd6f-c585d159820e provider=localoxml model=Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit
+[2026-04-03T03:28:26.003Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (0ms)
+[2026-04-03T03:28:26.018Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (14ms)
+[2026-04-03T03:28:26.020Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:28:26.024Z] GET /api/projects -> 200 (4ms)
+[game_studio] stage=prompt.translate event=ok traceId=3c1eb8f4-79d5-464f-b992-9ad6fd490b6e project=296d0b72-5583-47b3-bd6f-c585d159820e provider=localoxml model=Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit ok=true durationMs=33891
+[2026-04-03T03:28:41.192Z] POST /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/translate -> 200 (33893ms)
+[2026-04-03T03:28:42.417Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (1ms)
+[2026-04-03T03:28:42.436Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (17ms)
+[2026-04-03T03:28:42.439Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-03T03:28:42.447Z] GET /api/projects -> 200 (7ms)
+[2026-04-03T03:33:29.458Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/reference -> 204 (1ms)
+[game_studio] stage=asset.reference.batch event=start traceId=facf9914-dde2-42df-837f-39ab71e82509 project=296d0b72-5583-47b3-bd6f-c585d159820e item=pr_straw_hat ok=true
+[game_studio] stage=asset.reference.batch event=ok traceId=facf9914-dde2-42df-837f-39ab71e82509 project=296d0b72-5583-47b3-bd6f-c585d159820e item=pr_straw_hat ok=true
+[2026-04-03T03:37:17.323Z] POST /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e/ai/story/assets/reference -> 200 (227864ms)
+[2026-04-03T03:37:17.352Z] GET /project-assets/296d0b72-5583-47b3-bd6f-c585d159820e/assets/ai/story_assets/prop/pr_straw_hat/2026-04-03/reference_seed_3256435201_20260403_113601.png -> 200 (2ms)
+[2026-04-03T03:37:17.353Z] GET /project-assets/296d0b72-5583-47b3-bd6f-c585d159820e/assets/ai/story_assets/prop/pr_straw_hat/2026-04-03/reference_seed_3256415255_20260403_113403.png -> 200 (4ms)
+[2026-04-03T03:37:17.353Z] GET /project-assets/296d0b72-5583-47b3-bd6f-c585d159820e/assets/ai/story_assets/prop/pr_straw_hat/2026-04-03/reference_seed_3256425228_20260403_113504.png -> 200 (3ms)
+[2026-04-03T03:37:17.386Z] GET /project-assets/296d0b72-5583-47b3-bd6f-c585d159820e/assets/ai/story_assets/prop/pr_straw_hat/2026-04-03/reference_seed_3256445174_20260403_113649.png -> 200 (1ms)
+[2026-04-03T03:37:18.644Z] OPTIONS /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 204 (1ms)
+[2026-04-03T03:37:18.666Z] PUT /api/projects/296d0b72-5583-47b3-bd6f-c585d159820e -> 200 (21ms)
+[2026-04-03T03:37:18.702Z] OPTIONS /api/projects -> 204 (1ms)
+[2026-04-03T03:37:18.708Z] GET /api/projects -> 200 (6ms)
+[2026-04-07T01:49:13.930Z] OPTIONS /api/projects -> 204 (1ms)
+[2026-04-07T01:49:13.931Z] OPTIONS /api/studio/settings -> 204 (1ms)
+[2026-04-07T01:49:13.931Z] OPTIONS /api/ai/prompt/templates -> 204 (0ms)
+[2026-04-07T01:49:13.932Z] OPTIONS /api/projects -> 204 (0ms)
+[2026-04-07T01:49:13.932Z] GET /api/studio/settings -> 200 (0ms)
+[2026-04-07T01:49:13.933Z] OPTIONS /api/studio/settings -> 204 (0ms)
+[2026-04-07T01:49:13.933Z] OPTIONS /api/ai/prompt/templates -> 204 (0ms)
+[2026-04-07T01:49:13.934Z] GET /api/studio/settings -> 200 (0ms)
+[2026-04-07T01:49:13.935Z] GET /api/ai/prompt/templates -> 200 (2ms)
+[2026-04-07T01:49:13.935Z] GET /api/ai/prompt/templates -> 200 (0ms)
+[2026-04-07T01:49:13.941Z] GET /api/projects -> 200 (10ms)
+[2026-04-07T01:49:13.946Z] GET /api/projects -> 200 (5ms)

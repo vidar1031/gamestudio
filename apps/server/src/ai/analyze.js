@@ -160,6 +160,14 @@ export function analyzeScriptsForBlueprint(scriptsDoc) {
   checks.push(makeCheck('choice_early', earlyChoiceOk, earlyChoiceOk ? 'info' : 'warn', `第 1 个选择点位置：${firstChoice ? `第 ${firstChoice} 卡` : '未发现'}`))
   if (!earlyChoiceOk) suggestions.push('把第 1 个选择点提前到第 3~5 卡，提高交互参与感。')
 
+  const escapedNewlineCards = cards
+    .map((c, i) => ({ i, text: String(c?.text || '') }))
+    .filter((x) => x.text.includes('\\n'))
+    .map((x) => x.i + 1)
+  const escapedNewlineOk = escapedNewlineCards.length === 0
+  checks.push(makeCheck('escaped_newlines', escapedNewlineOk, escapedNewlineOk ? 'info' : 'warn', escapedNewlineOk ? '换行字符：OK' : `有 ${escapedNewlineCards.length} 张卡包含字面量 \\n（第 ${escapedNewlineCards.join('、')} 卡）`))
+  if (!escapedNewlineOk) suggestions.push('不要在 text 里输出字面量 \\n，请直接使用真实换行，避免选项解析和编辑器显示异常。')
+
   // 3) option formatting (newline)
   let newlineOk = true
   let badOptionCards = 0
@@ -200,6 +208,52 @@ export function analyzeScriptsForBlueprint(scriptsDoc) {
 
   checks.push(makeCheck('consequences', consequenceOk, consequenceOk ? 'info' : 'warn', consequenceOk ? '选择点后果承接：OK' : `存在选择点缺少后果承接：第 ${consequenceIssues.join(', ')} 个选择点`))
   if (!consequenceOk) suggestions.push('每个选择点后请为每个选项提供对应后果卡（推荐命名：i后果k），保证分支可追溯。')
+
+  const branchMergeRisks = []
+  let mergeChoiceNo = 0
+  for (const idx of choiceIdx) {
+    mergeChoiceNo += 1
+    const opts = pickOptions(cards[idx]?.text || '')
+    const keys = opts.map((o) => o.key)
+    if (keys.length < 2) continue
+    const found = []
+    for (let j = idx + 1; j < Math.min(cards.length, idx + 40); j++) {
+      const k = consequenceKeyForChoice(cards[j]?.name, mergeChoiceNo)
+      if (k && keys.includes(k)) found.push(j)
+      if (found.length === keys.length) break
+      if (choiceIdx.includes(j)) break
+    }
+    if (found.length !== keys.length) continue
+    const joinIndex = Math.max(...found) + 1
+    const joinCard = joinIndex < cards.length ? cards[joinIndex] : null
+    if (!joinCard || isEndingCard(joinCard) || isChoiceCard(joinCard).ok) {
+      if (joinCard && isChoiceCard(joinCard).ok) {
+        branchMergeRisks.push({
+          choicePoint: mergeChoiceNo,
+          joinName: String(joinCard?.name || `第${joinIndex + 1}卡`)
+        })
+      }
+      continue
+    }
+    branchMergeRisks.push({
+      choicePoint: mergeChoiceNo,
+      joinName: String(joinCard?.name || `第${joinIndex + 1}卡`)
+    })
+  }
+  const branchMergeOk = branchMergeRisks.length === 0
+  checks.push(
+    makeCheck(
+      'branch_merge_common_state',
+      branchMergeOk,
+      branchMergeOk ? 'info' : 'warn',
+      branchMergeOk
+        ? '分支合流风险：未发现明显共享合流场景'
+        : `存在 ${branchMergeRisks.length} 处共享合流场景，需确认只描述共同事实`
+    )
+  )
+  if (!branchMergeOk) {
+    suggestions.push('若多个后果卡会重新进入同一场景/选择点，这个合流场景只能写所有路径都成立的共同事实；若涉及“已经拿到鱼/丢了鱼竿/受伤/获得道具”等分支专属状态，应拆成不同承接卡。')
+  }
 
   // 5) endings
   const endings = cards.filter((c) => isEndingCard(c))

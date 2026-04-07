@@ -59,7 +59,10 @@ function normalizeStoryBible(obj) {
   const charsIn = listEntriesFromMaybeMap(input.characters)
   const propsIn = listEntriesFromMaybeMap(input.props)
   const locsIn = listEntriesFromMaybeMap(input.locations)
-  const scenesIn = input.sceneRefs && typeof input.sceneRefs === 'object' ? input.sceneRefs : (input.scenes && typeof input.scenes === 'object' ? input.scenes : {})
+  const scenesRaw = input.sceneRefs != null ? input.sceneRefs : input.scenes
+  const scenesIn = Array.isArray(scenesRaw)
+    ? scenesRaw
+    : (scenesRaw && typeof scenesRaw === 'object' ? scenesRaw : {})
 
   const normChar = (x) => {
     const mapKey = clampStr(x && x.__key ? x.__key : '', 80)
@@ -111,14 +114,27 @@ function normalizeStoryBible(obj) {
   const locations = locsIn.map(normLoc).filter((x) => x.id && x.name).slice(0, 80)
 
   const sceneRefs = {}
-  for (const [k0, v0] of Object.entries(scenesIn || {})) {
-    const k = clampStr(k0, 120)
-    if (!k) continue
-    const v = v0 && typeof v0 === 'object' ? v0 : {}
-    sceneRefs[k] = {
-      characters: uniqStrings(v.characters || v.characterId || v.characterIds || v.character_id || v.character_ids, 40),
-      props: uniqStrings(v.props || v.propId || v.propIds || v.prop_id || v.prop_ids, 60),
-      locations: uniqStrings(v.locations || v.locationId || v.locationIds || v.location_id || v.location_ids, 40)
+  if (Array.isArray(scenesIn)) {
+    for (const raw of scenesIn) {
+      const v = raw && typeof raw === 'object' ? raw : {}
+      const sceneId = clampStr(v.sceneId || v.scene_id || v.id || v.key, 120)
+      if (!sceneId) continue
+      sceneRefs[sceneId] = {
+        characters: uniqStrings(v.characters || v.characterId || v.characterIds || v.character_id || v.character_ids, 40),
+        props: uniqStrings(v.props || v.propId || v.propIds || v.prop_id || v.prop_ids, 60),
+        locations: uniqStrings(v.locations || v.locationId || v.locationIds || v.location_id || v.location_ids, 40)
+      }
+    }
+  } else {
+    for (const [k0, v0] of Object.entries(scenesIn || {})) {
+      const k = clampStr(k0, 120)
+      if (!k) continue
+      const v = v0 && typeof v0 === 'object' ? v0 : {}
+      sceneRefs[k] = {
+        characters: uniqStrings(v.characters || v.characterId || v.characterIds || v.character_id || v.character_ids, 40),
+        props: uniqStrings(v.props || v.propId || v.propIds || v.prop_id || v.prop_ids, 60),
+        locations: uniqStrings(v.locations || v.locationId || v.locationIds || v.location_id || v.location_ids, 40)
+      }
     }
   }
 
@@ -168,7 +184,7 @@ function storyBibleSchema() {
             negativePrompt: { type: ['string', 'null'], maxLength: 200 },
             locked: { type: ['boolean', 'null'] }
           },
-          required: ['id', 'name', 'anchorPrompt']
+          required: ['id', 'name', 'aliases', 'anchorPrompt', 'negativePrompt', 'locked']
         }
       },
       props: {
@@ -185,7 +201,7 @@ function storyBibleSchema() {
             forbiddenSubstitutes: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 40 },
             locked: { type: ['boolean', 'null'] }
           },
-          required: ['id', 'name', 'anchorPrompt']
+          required: ['id', 'name', 'aliases', 'anchorPrompt', 'forbiddenSubstitutes', 'locked']
         }
       },
       locations: {
@@ -201,26 +217,29 @@ function storyBibleSchema() {
             anchorPrompt: { type: 'string', maxLength: 260 },
             locked: { type: ['boolean', 'null'] }
           },
-          required: ['id', 'name', 'anchorPrompt']
+          required: ['id', 'name', 'aliases', 'anchorPrompt', 'locked']
         }
       },
       eventChain: { type: 'array', items: { type: 'string', maxLength: 160 }, maxItems: 80 },
       forbiddenSubstitutes: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 120 },
       sceneRefs: {
-        type: 'object',
-        additionalProperties: {
+        type: 'array',
+        maxItems: 200,
+        items: {
           type: 'object',
           additionalProperties: false,
           properties: {
+            sceneId: { type: 'string', maxLength: 120 },
             characters: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 40 },
             props: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 60 },
             locations: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 40 }
           },
-          required: ['characters', 'props', 'locations']
+          required: ['sceneId', 'characters', 'props', 'locations']
         }
       }
     },
-    required: ['worldAnchor', 'characters', 'props', 'locations', 'eventChain', 'forbiddenSubstitutes', 'sceneRefs']
+    // Structured Outputs requires required[] to include every key in properties.
+    required: ['schemaVersion', 'worldAnchor', 'characters', 'props', 'locations', 'eventChain', 'forbiddenSubstitutes', 'sceneRefs']
   }
 }
 
@@ -286,6 +305,7 @@ function parseStoryBibleJsonText(rawText) {
 export async function generateStoryBible({
   provider,
   model,
+  apiUrl,
   proxyUrl,
   timeoutMs,
   input
@@ -302,10 +322,14 @@ export async function generateStoryBible({
     `要求：\n` +
     `- 输出必须是唯一 JSON 对象，不要解释文字。\n` +
     `- worldAnchor：一句到两句英文，包含时代/地域/建筑语言/光照色调/镜头语言。\n` +
-    `- characters：逐角色输出 anchorPrompt（英文，一行，稳定外观指纹：年龄段、脸型、发型、服装、配饰、配色）。如果输入里给了 fingerprintPrompt，优先沿用并精炼。\n` +
-    `- props：逐道具输出 anchorPrompt（英文，一行，结构级描述：部件/材质/形状/尺寸感/拿法），并列出 forbiddenSubstitutes。\n` +
+    `- characters：逐角色输出 anchorPrompt（英文，一行，稳定外观指纹：年龄段、脸型、发型、基础服装版型、配色、物种特征）。如果输入里给了 fingerprintPrompt，优先沿用并精炼。\n` +
+    `- characters 的 anchorPrompt 只写“角色本体 + 稳定基础穿着”，不要把可拆卸道具写进角色指纹。帽子、包、鱼竿、水桶、眼镜、雨伞、饰品、手持物、背负物都必须拆到 props。\n` +
+    `- props：逐道具输出 anchorPrompt（英文，一行，结构级描述：部件/材质/形状/尺寸感/连接方式/典型摆放方式），并列出 forbiddenSubstitutes。\n` +
+    `- 对可穿戴但可拆卸的道具（hat, cap, bag, shoes, glasses, scarf 等），必须把它们定义为 props，而不是角色外观的一部分；描述应以“物件本身”为中心，不要写人物佩戴状态。\n` +
+    `- 对 wearable props，anchorPrompt 必须优先描述独立物件视角：object alone, unworn, detached accessory, clear silhouette, opening/interior visible if applicable, no wearer anatomy。\n` +
     `- locations：可复用地点（市场/宫廷/街道等）输出 anchorPrompt。\n` +
-    `- sceneRefs：为每个场景输出它引用的 characterId/propId/locationId（用 id）。\n` +
+    `- sceneRefs：输出数组。每一项必须包含 sceneId、characters、props、locations；用 id 引用，不要用名字。\n` +
+    `- 如果某个场景里“角色戴着帽子/背着包/拿着鱼竿”，应在 sceneRefs 同时引用角色和道具；不要因为角色佩戴了某物，就把该物并入角色 anchorPrompt。\n` +
     `- eventChain：按场景编号列出“可见动作与状态变化”（英文短句），用于连续性对齐。\n` +
     `- forbiddenSubstitutes：汇总全局容易误画的替代物（英文短词）。\n`
 
@@ -335,7 +359,7 @@ export async function generateStoryBible({
           }
         }
       }
-      const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, proxyUrl, timeoutMs: t })
+      const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, timeoutMs: t })
       const outText = extractResponseOutputText(json)
       try {
         const parsed = parseStoryBibleJsonText(outText)

@@ -17,8 +17,11 @@ function sanitizeModel(v) {
 }
 
 function sanitizeUrl(v) {
-  const s = String(v || '').trim()
+  let s = String(v || '').trim()
   if (!s) return null
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s) && /^[a-z0-9_.-]+(?::\d{1,5})?(?:\/.*)?$/i.test(s)) {
+    s = `http://${s}`
+  }
   try {
     const u = new URL(s)
     const p = String(u.protocol || '').toLowerCase()
@@ -116,6 +119,7 @@ export async function writeStudioSettings(storageRoot, incoming) {
   const inEnabled = inObj?.enabled
   const inScripts = inObj?.scripts
   const inPrompt = inObj?.prompt
+  const inTranslation = inObj?.translation
   const inImage = inObj?.image
   const inTts = inObj?.tts
   const inNet = inObj?.network
@@ -139,6 +143,11 @@ export async function writeStudioSettings(storageRoot, incoming) {
       provider: has(inPrompt, 'provider') ? sanitizeProvider(inPrompt.provider) : sanitizeProvider(prev?.prompt?.provider),
       model: has(inPrompt, 'model') ? sanitizeModel(inPrompt.model) : sanitizeModel(prev?.prompt?.model),
       apiUrl: has(inPrompt, 'apiUrl') ? sanitizeUrl(inPrompt.apiUrl) : sanitizeUrl(prev?.prompt?.apiUrl)
+    },
+    translation: {
+      provider: has(inTranslation, 'provider') ? sanitizeProvider(inTranslation.provider) : sanitizeProvider(prev?.translation?.provider),
+      model: has(inTranslation, 'model') ? sanitizeModel(inTranslation.model) : sanitizeModel(prev?.translation?.model),
+      apiUrl: has(inTranslation, 'apiUrl') ? sanitizeUrl(inTranslation.apiUrl) : sanitizeUrl(prev?.translation?.apiUrl)
     },
     image: {
       provider: has(inImage, 'provider') ? sanitizeProvider(inImage.provider) : sanitizeProvider(prev?.image?.provider),
@@ -230,7 +239,9 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
     aiProvider: String(process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase(),
     aiModel: String(process.env.STUDIO_AI_MODEL || '').trim(),
     localoxmlModel: String(process.env.LOCALOXML_MODEL || process.env.STUDIO_AI_MODEL || '').trim(),
+    localoxmlBaseUrl: String(process.env.LOCALOXML_BASE_URL || process.env.STUDIO_AI_BASE_URL || '').trim(),
     openaiModel: String(process.env.OPENAI_MODEL || '').trim(),
+    openaiBaseUrl: String(process.env.OPENAI_BASE_URL || '').trim(),
     bgProvider: String(process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase(),
     sdwebuiBaseUrl: String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860').trim(),
     comfyuiBaseUrl: String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188').trim(),
@@ -240,6 +251,7 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
     doubaoImagesModel: String(process.env.DOUBAO_ARK_MODEL || '').trim(),
     doubaoTextModel: String(envFirst('DOUBAO_ARK_TEXT_MODEL', 'DOUBAO_ARK_LLM_MODEL', 'DOUBAO_LLM_MODEL') || '').trim(),
     doubaoImageSize: String(process.env.DOUBAO_IMAGE_SIZE || '').trim(),
+    ollamaBaseUrl: String(envFirst('STUDIO_OLLAMA_URL', 'OLLAMA_HOST', 'OLLAMA_URL') || '').trim(),
     ollamaTextModel: String(envFirst('STUDIO_OLLAMA_MODEL', 'OLLAMA_MODEL') || '').trim(),
     proxyUrl: envFirst('STUDIO_PROXY_URL', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY')
   }
@@ -278,7 +290,17 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
         : scriptsProvider === 'doubao'
           ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
           : null
-  const scriptsApiUrl = settings?.scripts?.apiUrl ? String(settings.scripts.apiUrl) : env.doubaoTextUrl
+  const scriptsApiUrl = settings?.scripts?.apiUrl
+    ? String(settings.scripts.apiUrl)
+    : scriptsProvider === 'localoxml'
+      ? env.localoxmlBaseUrl
+      : scriptsProvider === 'openai'
+        ? env.openaiBaseUrl
+        : scriptsProvider === 'ollama'
+          ? env.ollamaBaseUrl
+          : scriptsProvider === 'doubao'
+            ? env.doubaoTextUrl
+            : null
 
   const promptProvider = (settings?.prompt?.provider ? String(settings.prompt.provider) : 'none') || 'none'
   const promptModel = settings?.prompt?.model
@@ -292,7 +314,41 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
         : promptProvider === 'doubao'
           ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
           : null
-  const promptApiUrl = settings?.prompt?.apiUrl ? String(settings.prompt.apiUrl) : env.doubaoTextUrl
+  const promptApiUrl = settings?.prompt?.apiUrl
+    ? String(settings.prompt.apiUrl)
+    : promptProvider === 'localoxml'
+      ? env.localoxmlBaseUrl
+      : promptProvider === 'openai'
+        ? env.openaiBaseUrl
+        : promptProvider === 'ollama'
+          ? env.ollamaBaseUrl
+          : promptProvider === 'doubao'
+            ? env.doubaoTextUrl
+            : null
+
+  const translationProvider = (settings?.translation?.provider ? String(settings.translation.provider) : promptProvider || 'none') || 'none'
+  const translationModel = settings?.translation?.model
+    ? String(settings.translation.model)
+    : translationProvider === 'openai'
+      ? (env.openaiModel || 'gpt-4o-mini')
+      : translationProvider === 'localoxml'
+        ? env.localoxmlModel
+      : translationProvider === 'ollama'
+        ? (env.ollamaTextModel || DEFAULT_OLLAMA_TEXT_MODEL)
+        : translationProvider === 'doubao'
+          ? (env.doubaoTextModel || DEFAULT_DOUBAO_TEXT_MODEL)
+          : promptModel
+  const translationApiUrl = settings?.translation?.apiUrl
+    ? String(settings.translation.apiUrl)
+    : translationProvider === 'localoxml'
+      ? env.localoxmlBaseUrl
+      : translationProvider === 'openai'
+        ? env.openaiBaseUrl
+        : translationProvider === 'ollama'
+          ? env.ollamaBaseUrl
+          : translationProvider === 'doubao'
+            ? env.doubaoTextUrl
+            : promptApiUrl
 
   const imageProvider = (settings?.image?.provider ? String(settings.image.provider) : 'none') || 'none'
   const imageModel = settings?.image?.model ? String(settings.image.model) : env.doubaoImagesModel
@@ -309,6 +365,7 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
     enabled,
     scripts: { provider: scriptsProvider, model: scriptsModel || null, apiUrl: scriptsApiUrl || null },
     prompt: { provider: promptProvider, model: promptModel || null, apiUrl: promptApiUrl || null },
+    translation: { provider: translationProvider, model: translationModel || null, apiUrl: translationApiUrl || null },
     image: {
       provider: imageProvider,
       model: imageModel || null,

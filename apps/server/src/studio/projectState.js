@@ -11,6 +11,10 @@ function asFiniteNum(v) {
   return Number.isFinite(n) ? n : undefined
 }
 
+function asBool(v) {
+  return typeof v === 'boolean' ? v : undefined
+}
+
 export function normalizeAiBackgroundState(input) {
   // P1:state-migration
   // Why:
@@ -43,8 +47,12 @@ export function normalizeAiBackgroundState(input) {
   const draftIn = asObj(raw.storyboardBatchDraft)
   const metaIn = asObj(raw.storyboardPromptMeta)
   const storyboardEntitySpec = asStr(raw.storyboardEntitySpec).trim() || asStr(raw.entitySpec).trim()
+  const continuityIn = asObj(raw.storyboardContinuity)
+  const storyBibleIn = asObj(raw.storyBible)
+  const storyBibleJson = asStr(raw.storyBibleJson).trim() || (Object.keys(storyBibleIn).length ? JSON.stringify(storyBibleIn, null, 2) : '')
 
   return {
+    ...raw,
     schemaVersion: '1.0',
     global: {
       prompt: globalPrompt,
@@ -75,6 +83,17 @@ export function normalizeAiBackgroundState(input) {
       source: asStr(metaIn.source) || undefined
     },
     storyboardEntitySpec,
+    storyBibleJson: storyBibleJson || undefined,
+    storyBible: Object.keys(storyBibleIn).length ? storyBibleIn : undefined,
+    storyboardContinuity: Object.keys(continuityIn).length
+      ? {
+          ...continuityIn,
+          ipadapterEnabled: asBool(continuityIn.ipadapterEnabled),
+          requireCharacterRefs: asBool(continuityIn.requireCharacterRefs),
+          controlnetEnabled: asBool(continuityIn.controlnetEnabled),
+          seedMode: asStr(continuityIn.seedMode).trim() === 'fixed' ? 'fixed' : (asStr(continuityIn.seedMode).trim() === 'random' ? 'random' : undefined)
+        }
+      : undefined,
     globalPrompt,
     globalNegativePrompt
   }

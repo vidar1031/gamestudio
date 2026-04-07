@@ -21,16 +21,17 @@ P0 目标：
 
 ## 快速开始（P0）
 
-注意：不要写成 `npm --prefix -- apps/editor ...`，`--prefix` 后面必须是路径，例如 `../game_studio`。
+注意：不要写成 `npm --prefix -- apps/editor ...`，`--prefix` 后面必须是路径，例如 `..`。
 
 推荐直接使用统一启动脚本：
+- 首次启动前先在仓库根执行 `npm install`
 - `./start_project.sh`
 - 如果是 agent / 自动化 / 后台启动：`./start_project.sh --detached`
 - 查看状态：`./status_project.sh`
 - 停止后台进程：`./stop_project.sh`
 
 在 `app_system/` 目录下：
-- 安装依赖（首次）：`npm --prefix ../game_studio install`
+- 安装依赖（首次）：`npm --prefix .. install`
 - 启动 server：`npm run dev:server`（默认端口 `1999`）
 - 启动 editor：`npm run dev:editor`（默认端口 `8868`）
 
@@ -69,12 +70,11 @@ demo 手动拷贝目录：`game_studio/storage/demo_library/<demoId>/story.json`
 - agent 后台启动模式：`./start_project.sh --detached`
 - 状态检查入口：`./status_project.sh`
 - 停止入口：`./stop_project.sh`
+- 仓库只保留以上 3 个运行脚本；首次启动前需先执行 `npm install`
 - 权威端口：
   - server: `1999`
   - editor: `8868`
 - editor 健康探测优先使用：`http://localhost:8868`
-- `start.sh`、`start_all.sh`、`start_game_studio.sh`、`build_and_start.sh`、`启动.sh` 都只是弃用包装器，不应作为判断依据
-- `find_and_start.sh` 已降级为状态包装器，不是启动入口
 - 启动前建议先跑：`npm run typecheck`
 - 如果 agent 要写回项目状态，统一更新：
   - `PROJECT_PLAN.md`
