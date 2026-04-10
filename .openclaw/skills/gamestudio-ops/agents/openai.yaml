@@ -1,4 +1,4 @@
 interface:
   display_name: "GameStudio Ops"
-  short_description: "Operate and maintain the local game_studio project"
-  default_prompt: "Use $gamestudio-ops to operate, validate, and maintain the local game_studio project."
+  short_description: "Operate and maintain the local gamestudio project"
+  default_prompt: "Use $gamestudio-ops to operate, validate, and maintain the local gamestudio project."

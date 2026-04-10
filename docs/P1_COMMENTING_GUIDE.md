@@ -28,7 +28,7 @@
 
 ## 3. 日志规范（必须）
 
-日志统一前缀：`[game_studio]`
+日志统一前缀：`[gamestudio]`
 
 最小字段：
 - `stage`（如 `bg.prompt` / `bg.create`）

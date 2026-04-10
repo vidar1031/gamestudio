@@ -517,6 +517,14 @@ export type AiBackgroundRequest = {
     fingerprintPrompt?: string
     weight?: number
   }>
+  assetRefs?: Array<{
+    assetId?: string
+    assetName?: string
+    assetType?: string
+    assetPath?: string
+    assetUri?: string
+    weight?: number
+  }>
   // 请求超时（毫秒），用于本地模型较慢场景
   timeoutMs?: number
 }

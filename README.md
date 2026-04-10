@@ -1,4 +1,4 @@
-# game_studio（P0：点击交互小故事制作工具）
+# gamestudio（P0：点击交互小故事制作工具）
 
 本目录是一个独立的“制作/构建工具”子工程，用于生产超轻量的点击交互小故事小游戏（分支选择 → 结果导向）。
 
@@ -8,16 +8,16 @@ P0 目标：
 - 渲染：Pixi.js（运行时）
 - 数据：文件项目制（JSON + assets），无需数据库
 - 构建：插件化 builder（支持未来扩展更多小游戏类型）
-- 产物：统一产物协议（导出到 game_studio 内供 app_system 导入；不直接写入 online_game_resources）
+- 产物：统一产物协议（导出到 gamestudio 内供 app_system 导入；不直接写入 online_game_resources）
 
 文档：
-- 设计与协议：`game_studio/docs/DESIGN_P0.md`
-- 使用说明（工作流）：`game_studio/docs/使用说明_三层工作流.md`
-- P0 复盘（现状评估）：`game_studio/docs/P0_REVIEW_2026Q1.md`
-- 产品工具分析（现状诊断与结论）：`game_studio/docs/产品工具分析_2026-03-24.md`
-- P1 设计基线：`game_studio/docs/DESIGN_P1.md`
-- P1 注释与说明规范：`game_studio/docs/P1_COMMENTING_GUIDE.md`
-- P2 设计方向（发布优先）：`game_studio/docs/DESIGN_P2.md`
+- 设计与协议：`gamestudio/docs/DESIGN_P0.md`
+- 使用说明（工作流）：`gamestudio/docs/使用说明_三层工作流.md`
+- P0 复盘（现状评估）：`gamestudio/docs/P0_REVIEW_2026Q1.md`
+- 产品工具分析（现状诊断与结论）：`gamestudio/docs/产品工具分析_2026-03-24.md`
+- P1 设计基线：`gamestudio/docs/DESIGN_P1.md`
+- P1 注释与说明规范：`gamestudio/docs/P1_COMMENTING_GUIDE.md`
+- P2 设计方向（发布优先）：`gamestudio/docs/DESIGN_P2.md`
 
 ## 快速开始（P0）
 
@@ -36,7 +36,7 @@ P0 目标：
 - 启动 editor：`npm run dev:editor`（默认端口 `8868`）
 
 可选：将运行数据/导出物写入仓库外（推荐在长期使用/多人协作时开启）：
-- 设置环境变量 `STUDIO_STORAGE_ROOT` 指向外部目录（例如 `~/game_studio_storage`）
+- 设置环境变量 `STUDIO_STORAGE_ROOT` 指向外部目录（例如 `~/gamestudio_storage`）
 - server 将使用该目录下的 `projects/`、`demos/`、`demo_library/`
 
 AI 生成脚本（服务端调用，避免 key 暴露给浏览器）：
@@ -56,7 +56,7 @@ AI（Doubao/火山 Ark）提示：
   - 文本：`DOUBAO_ARK_TEXT_MODEL=doubao-1-5-pro-32k-250115`
   - 生图：`DOUBAO_ARK_MODEL=doubao-seedream-4-0-250828`
 
-demo 手动拷贝目录：`game_studio/storage/demo_library/<demoId>/story.json`（素材放同目录的 `assets/`）。
+demo 手动拷贝目录：`gamestudio/storage/demo_library/<demoId>/story.json`（素材放同目录的 `assets/`）。
 
 使用流程：
 1) 打开 `http://localhost:8868`
@@ -81,4 +81,4 @@ demo 手动拷贝目录：`game_studio/storage/demo_library/<demoId>/story.json`
   - `memory/STATUS.md`
   - `memory/YYYY-MM-DD.md`
 
-开发契约：`game_studio/ai/interactive_story_editor.contract.md`
+开发契约：`gamestudio/ai/interactive_story_editor.contract.md`

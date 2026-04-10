@@ -28,7 +28,11 @@ function backgroundPromptSchema() {
       'prompt',
       'negativePrompt',
       'aspectRatio',
-      'style'
+      'style',
+      'steps',
+      'cfgScale',
+      'sampler',
+      'scheduler'
     ]
   }
 }
@@ -102,7 +106,9 @@ export async function generateBackgroundPromptViaOpenAI({
   model,
   outputLanguage,
   provider,
-  apiUrl
+  apiUrl,
+  proxyUrl,
+  timeoutMs
 }) {
   const ar = normalizeAspectRatio(aspectRatio) || '9:16'
   const st = normalizeStyle(style) || 'picture_book'
@@ -160,7 +166,7 @@ export async function generateBackgroundPromptViaOpenAI({
     }
   }
 
-  const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl })
+  const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl, proxyUrl, timeoutMs })
   let outText = ''
   try {
     outText = typeof json.output_text === 'string' ? json.output_text : ''

@@ -8,8 +8,8 @@ import StudioSettingsModal from './StudioSettingsModal'
 
 type Stage = 'hub' | 'script' | 'blueprint' | 'compose'
 
-const STAGE_KEY = 'game_studio.stage'
-const PROJECT_KEY = 'game_studio.projectId'
+const STAGE_KEY = 'gamestudio.stage'
+const PROJECT_KEY = 'gamestudio.projectId'
 
 function loadPersistedStage(): { stage: Stage; projectId: string | null } {
   try {

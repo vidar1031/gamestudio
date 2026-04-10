@@ -76,7 +76,7 @@
   "7": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "game_studio_lock_test",
+      "filename_prefix": "gamestudio_lock_test",
       "images": [
         "6",
         0

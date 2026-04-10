@@ -219,11 +219,51 @@ function cleanupPropReferenceAnchorText(text) {
     .replace(/\bchild-sized\b/gi, 'small product-sized')
     .replace(/\bon\s+head\b/gi, 'as an unworn object')
     .replace(/\bwear(?:ing|er)\b/gi, 'object')
+    .replace(/\bon\s+the\s+fishing\s+line\b/gi, 'as a standalone detached object')
+    .replace(/\bsits?\s+upright\s+on\s+calm\s+water\b/gi, 'upright float shape shown as a standalone object')
+    .replace(/\bheld\s+in\s+two\s+paws\b/gi, 'shown alone without paws or hands')
+    .replace(/\bplanted\s+upright\s+in\s+soil\b/gi, 'shown alone without ground contact')
+    .replace(/\bheld\s+in\s+two\s+paws\s+or\s+planted\s+upright\s+in\s+soil\b/gi, 'shown alone without holder, ground, or scene')
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+,/g, ',')
     .replace(/,,+/g, ',')
     .trim()
   return out.replace(/^[,;\s]+|[,;\s]+$/g, '')
+}
+
+function assetSignalHay(asset) {
+  return [
+    asStr(asset && asset.name),
+    asStr(asset && asset.anchorPrompt),
+    ...asList(asset && asset.aliases)
+  ].join(' ').toLowerCase()
+}
+
+function isBobberLikeAsset(asset) {
+  return /\b(bobber|float|fishing float)\b|浮漂|漂子/.test(assetSignalHay(asset))
+}
+
+function isRodLikeAsset(asset) {
+  return /\b(bamboo fishing rod|bamboo rod|fishing rod|fishing pole|pole)\b|竹鱼竿|鱼竿|竹竿/.test(assetSignalHay(asset))
+}
+
+function isBucketLikeAsset(asset) {
+  return /\b(bucket|pail|bucket)\b|鱼桶|木桶|水桶|桶/.test(assetSignalHay(asset))
+}
+
+function isWeakProtectedPropPrompt(asset, promptText) {
+  const text = asStr(promptText).trim().toLowerCase()
+  if (!text) return true
+  if (isBobberLikeAsset(asset)) {
+    return !/\b(bobber|float|gourd|cork|red-and-white|red and white|center pin|eyelet)\b/.test(text)
+  }
+  if (isRodLikeAsset(asset)) {
+    return !/\b(bamboo|rod|pole|nodes?|no reel|without reel|line tied|hook|tip)\b/.test(text)
+  }
+  if (isBucketLikeAsset(asset)) {
+    return !/\b(bucket|pail|wood|wooden|staves|handle|strap|rim|opening)\b/.test(text)
+  }
+  return /\b(single|isolated|reference|design reference|object)\b/.test(text) && !/\b(hat|cap|bag|shoe|basket|lantern|chair|boat|box)\b/.test(text)
 }
 
 function isWearableProp(asset) {
@@ -533,6 +573,11 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       .filter((item) => asStr(item.id).trim())
       .map((item) => [asStr(item.id).trim(), item])
   )
+  const excludedAssetIds = new Set(
+    uniqStrings(prevManifest && prevManifest.excludedAssetIds, 200)
+      .map((item) => asStr(item).trim())
+      .filter(Boolean)
+  )
 
   const assetDefs = []
 
@@ -570,7 +615,7 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       generatedRefs: [],
       referencePromptHint: referenceHintForAsset({ category: 'character', lockProfile, ...entity })
     }
-    assetDefs.push(mergePrevAssetState(asset, prevAssetsById.get(id)))
+    if (!excludedAssetIds.has(id)) assetDefs.push(mergePrevAssetState(asset, prevAssetsById.get(id)))
   }
 
   for (const raw of asList(safeBible.props)) {
@@ -601,7 +646,7 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       generatedRefs: [],
       referencePromptHint: referenceHintForAsset({ category: 'prop', lockProfile, ...entity })
     }
-    assetDefs.push(mergePrevAssetState(asset, prevAssetsById.get(id)))
+    if (!excludedAssetIds.has(id)) assetDefs.push(mergePrevAssetState(asset, prevAssetsById.get(id)))
   }
 
   for (const raw of asList(safeBible.locations)) {
@@ -632,7 +677,7 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       generatedRefs: [],
       referencePromptHint: referenceHintForAsset({ category: 'location', lockProfile, ...entity })
     }
-    assetDefs.push(mergePrevAssetState(asset, prevAssetsById.get(id)))
+    if (!excludedAssetIds.has(id)) assetDefs.push(mergePrevAssetState(asset, prevAssetsById.get(id)))
   }
 
   const assetsById = new Map(assetDefs.map((asset) => [asset.id, asset]))
@@ -645,6 +690,7 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
     const propIds = uniqStrings((ref.props || []).map(resolvePropId), 60)
     const locationIds = uniqStrings((ref.locations || []).map(resolveLocationId), 40)
     const assetIds = uniqStrings([...characterIds, ...propIds, ...locationIds], 120)
+      .filter((assetId) => !excludedAssetIds.has(asStr(assetId).trim()))
     const sceneAssets = assetIds.map((assetId) => assetsById.get(assetId)).filter(Boolean)
     const workflow = buildSceneWorkflow(sceneAssets)
     return {
@@ -702,6 +748,7 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
     worldAnchor,
     forbiddenSubstitutes,
     eventChain,
+    excludedAssetIds: Array.from(excludedAssetIds),
     assets,
     scenes,
     summary: summarizePlan(assets, scenes)
@@ -713,15 +760,18 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
   const safeAsset = asObj(asset)
   const category = asStr(safeAsset.category).trim()
   const lockProfile = asStr(safeAsset.lockProfile).trim() || inferAssetLockProfile(safeAsset)
+  const protectedPropProfiles = new Set(['wearable_prop', 'slender_prop', 'rigid_prop', 'soft_prop', 'ambient_prop', 'organic_prop'])
   const hintText = asStr(safeAsset.referencePromptHint).trim()
   const assetPromptText = asStr(assetPrompt).trim()
-  const useAssetPrompt = normalizePromptFingerprint(assetPromptText) && normalizePromptFingerprint(assetPromptText) !== normalizePromptFingerprint(hintText)
+  const useAssetPrompt = normalizePromptFingerprint(assetPromptText) &&
+    normalizePromptFingerprint(assetPromptText) !== normalizePromptFingerprint(hintText) &&
+    !(protectedPropProfiles.has(lockProfile) && isWeakProtectedPropPrompt(safeAsset, assetPromptText))
     ? assetPromptText
     : ''
+  const protectedPropPromptOnly = category === 'prop' && protectedPropProfiles.has(lockProfile)
   const baseParts = []
   if (category === 'location') {
     baseParts.push(asStr(safePlan.worldAnchor).trim())
-    baseParts.push(asStr(globalPrompt).trim())
   }
   if (category === 'character' || category === 'location') {
     baseParts.push(`style lock: ${asStr(style).trim() || 'picture_book'}`)
@@ -733,15 +783,19 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
       'not a portrait'
     )
   }
-  baseParts.push(
-    category === 'character'
-      ? cleanupReferenceAnchorText(safeAsset.anchorPrompt)
-      : category === 'prop'
-        ? cleanupPropReferenceAnchorText(safeAsset.anchorPrompt)
-        : asStr(safeAsset.anchorPrompt).trim()
-  )
-  baseParts.push(hintText)
-  baseParts.push(useAssetPrompt)
+  const cleanedAnchorPrompt = category === 'character'
+    ? cleanupReferenceAnchorText(safeAsset.anchorPrompt)
+    : category === 'prop'
+      ? cleanupPropReferenceAnchorText(safeAsset.anchorPrompt)
+      : asStr(safeAsset.anchorPrompt).trim()
+  const protectedPropPrompt = useAssetPrompt || hintText || cleanedAnchorPrompt
+  if (protectedPropPromptOnly) {
+    baseParts.push(protectedPropPrompt)
+  } else {
+    baseParts.push(cleanedAnchorPrompt)
+    baseParts.push(hintText)
+    baseParts.push(useAssetPrompt)
+  }
   if (lockProfile === 'character_core') {
     baseParts.push(
       'children picture book character turnaround key art',
@@ -831,17 +885,47 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
   } else if (lockProfile === 'slender_prop') {
     baseParts.push(
       'single slender object reference',
+      'exactly one object only',
+      'show the object alone',
       'full length visible from end to end',
+      'full object fully visible in frame',
       'centered isolated object',
       'stable single view',
       'minimal foreshortening',
       'straight readable silhouette',
       'clear ends, openings, holes or joints if applicable',
       'pure white background',
+      'no duplicate objects',
+      'no collage',
+      'no multi-view layout',
+      'not in use',
+      'not attached to any character',
+      'not attached to any holder or ground',
       'no hand',
       'no person',
       'no environment'
     )
+    if (isBobberLikeAsset(safeAsset)) {
+      baseParts.push(
+        'classic small red-and-white gourd-shaped cork fishing bobber',
+        'matte cork body',
+        'thin straight dark center pin',
+        'tiny eyelet at the top and tiny eyelet at the bottom',
+        'standalone detached object, not floating on water',
+        'not attached to a fishing line scene'
+      )
+    }
+    if (isRodLikeAsset(safeAsset)) {
+      baseParts.push(
+        'single-piece green bamboo fishing pole',
+        'visible bamboo nodes',
+        'slender taper from butt to tip',
+        'no reel',
+        'plain cotton line tied directly to the tip',
+        'tiny simple hook at the end',
+        'standalone detached object, not being held'
+      )
+    }
   } else if (lockProfile === 'rigid_prop') {
     baseParts.push(
       'single rigid object design reference',
@@ -916,7 +1000,6 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
   const safeAsset = asObj(asset)
   const lockProfile = asStr(safeAsset.lockProfile).trim() || inferAssetLockProfile(safeAsset)
   const base = [
-    ...uniqStrings(splitCsvLike(asStr(globalNegativePrompt).trim()), 80),
     ...uniqStrings(splitCsvLike(asStr(assetNegativePrompt).trim()), 80),
     ...uniqStrings(safePlan.forbiddenSubstitutes, 40),
     ...uniqStrings(safeAsset.forbiddenSubstitutes, 20)
@@ -954,9 +1037,23 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
   } else if (lockProfile === 'slender_prop') {
     base.push(
       'cropped object', 'cut-off tip', 'foreshortening', 'bent object', 'curved object', 'twisted object',
-      'hand holding', 'person', 'character', 'environment', 'multiple objects', 'collage', 'multi view',
+      'hand holding', 'holding pose', 'paws holding', 'person', 'character', 'animal', 'child', 'girl', 'boy',
+      'environment', 'scene background', 'multiple objects', 'collage', 'multi view',
+      'water surface', 'shore', 'grass', 'soil', 'ground contact',
       'text', 'watermark', 'broken parts'
     )
+    if (isBobberLikeAsset(safeAsset)) {
+      base.push(
+        'glass float', 'clip-on bobber', 'ball bobber', 'plastic ball bobber', 'transparent float',
+        'float on water scene', 'attached to rod in use', 'hand holding line'
+      )
+    }
+    if (isRodLikeAsset(safeAsset)) {
+      base.push(
+        'person holding rod', 'casting pose', 'rod in use', 'fishing reel', 'telescopic rod stand',
+        'two rods', 'crossed rods', 'rod leaning on scenery'
+      )
+    }
   } else if (lockProfile === 'rigid_prop') {
     base.push(
       'deformed structure', 'warped perspective', 'melted object', 'collapsed shape', 'extra attachments',

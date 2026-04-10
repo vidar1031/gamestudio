@@ -6,7 +6,7 @@
 > 2) **占位蓝图层（Node Placeholder / Blueprint Layer）**：把脚本映射为「可执行结构」+「角色/背景/Event 占位」+「分支 choices」
 > 3) **合成作品层（Composition & Runtime Layer）**：把占位具体化为真实资源/动画/声音/时间线，并导出 H5
 >
-> 本文档只约束 `game_studio/`，不涉及 `app_system/`。
+> 本文档只约束 `gamestudio/`，不涉及 `app_system/`。
 
 ---
 

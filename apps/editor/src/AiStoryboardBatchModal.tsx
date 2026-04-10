@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { resolveUrl, type AiBackgroundRequest, type StoryboardPromptQualityReview } from './api'
 
 export type StoryboardBatchItem = {
@@ -39,29 +39,6 @@ function parseLoraList(raw: string) {
     .split(/[\n,]/)
     .map((x) => String(x || '').trim())
     .filter(Boolean)
-}
-
-function getAssetCategoryLabel(category: string) {
-  const c = String(category || '').trim()
-  if (c === 'character') return '角色'
-  if (c === 'prop') return '道具'
-  if (c === 'location') return '地点'
-  return c || '资产'
-}
-
-function getAssetStrategyLabel(strategy: string) {
-  const s = String(strategy || '').trim()
-  if (s === 'ref_required') return '必须先出参考图'
-  if (s === 'optional_ref') return '建议准备参考图'
-  if (s === 'prompt_only') return '仅提示词约束'
-  return s || '未分类'
-}
-
-function getAssetStatusLabel(status: string) {
-  const s = String(status || '').trim()
-  if (s === 'ready') return '已就绪'
-  if (s === 'missing') return '缺少参考图'
-  return s || '未检查'
 }
 
 function getPromptReviewTone(review: StoryboardPromptQualityReview | null | undefined) {
@@ -125,12 +102,21 @@ export default function AiStoryboardBatchModal(props: {
   elapsedMs: number
   generatingNodeId?: string
   generatingNodeElapsedMs?: number
+  testSceneId?: string
   error: string
   logs: string[]
+  translatingScope?: string
+  translateCountdownSec?: number
+  promptOpBusy?: boolean
   onRunOpenChecks: () => void
+  onChangeTestSceneId: (nodeId: string) => void
   onChange: (next: AiBackgroundRequest) => void
   onChangeGlobalPromptZh: (value: string) => void
+  onChangeGlobalPromptEn: (value: string) => void
+  onTranslateGlobalPrompt: () => void
   onChangeGlobalNegativePromptZh: (value: string) => void
+  onChangeGlobalNegativePromptEn: (value: string) => void
+  onTranslateGlobalNegativePrompt: () => void
   onChangeItem: (nodeId: string, patch: Partial<StoryboardBatchItem>) => void
   globalPromptReview: StoryboardPromptQualityReview | null
   globalPromptReviewBusy: boolean
@@ -165,11 +151,9 @@ export default function AiStoryboardBatchModal(props: {
   onPauseQueue: () => void
   onResumeQueue: () => void
   onCancelQueue: () => void
-  initialTab?: 'lock' | 'render'
 }) {
   const v = props.value
   const busy = props.busyGenerate || props.busyApply || props.busyEntity || props.assetPlanBusy
-  const cfg = props.continuityConfig || { ipadapterEnabled: false, requireCharacterRefs: true, controlnetEnabled: false }
   const openChecks = props.openChecks || {
     checking: false,
     checkedAt: '',
@@ -185,7 +169,6 @@ export default function AiStoryboardBatchModal(props: {
     details: []
   }
   const canGenerateEntity = !busy && props.items.length > 0 && openChecks.serverOk && openChecks.promptOk
-  const canRunContinuityTest = !busy && !props.continuityBusy && openChecks.serverOk && openChecks.imageOk && props.assetConfirmReady
   const envReady = openChecks.ok
   const imageProvider = String(openChecks.imageProvider || '').toLowerCase()
   const promptProvider = String(openChecks.promptProvider || '').toLowerCase()
@@ -197,27 +180,147 @@ export default function AiStoryboardBatchModal(props: {
   const requiredMissingAssets = planAssets.filter((asset) => String(asset?.renderStrategy || '').trim() === 'ref_required' && String(asset?.referenceStatus || '').trim() !== 'ready')
   const doubaoDefaultSize = getDoubaoDefaultSize(String(v.aspectRatio || '9:16'))
   const doubaoOrientation = getDoubaoOrientationLabel(String(v.aspectRatio || '9:16'))
-  const canGenerateAll = !busy && envReady && props.assetConfirmReady && props.items.length > 0 && props.continuityReady
-  const canRetryGenerate = !busy && envReady && props.assetConfirmReady && props.continuityReady && props.items.some((x) => x.status === 'error' || !String(x.prompt || '').trim())
+  const scenePromptReadyCount = props.items.filter((item) => Boolean(String(item.promptZh || '').trim()) && Boolean(String(item.prompt || '').trim())).length
+  const canGenerateAll = !busy && envReady && props.assetConfirmReady && props.items.length > 0
+  const canRetryGenerate = !busy && envReady && props.assetConfirmReady && props.items.some((x) => x.status === 'error' || !String(x.prompt || '').trim() || !String(x.promptZh || '').trim())
   const canApplyAll = !busy && envReady && props.assetConfirmReady && props.continuityReady && props.canApplyAll
   const canRetryApply = !busy && envReady && props.assetConfirmReady && props.continuityReady && props.items.some((x) => x.status === 'error' || x.status === 'generated')
   const imageModelLabel = isComfyuiImage
     ? String((v as any).model || '').trim() || String(openChecks.imageModel || '').trim() || '(在本面板填写)'
     : String(openChecks.imageModel || '').trim()
   const storyBibleReady = Boolean(String((v as any).storyBibleJson || '').trim())
-  const renderTabReady = envReady && props.assetConfirmReady && props.continuityReady
+  const sceneRenderOpenReady = envReady && props.assetConfirmReady
+  const sceneRenderReady = sceneRenderOpenReady && props.continuityReady
   const configuredLoras = Array.isArray((v as any).loras) ? (v as any).loras.map((x: any) => String(x || '').trim()).filter(Boolean) : []
-  const [activeTab, setActiveTab] = useState<'lock' | 'render'>(props.initialTab === 'render' ? 'render' : 'lock')
-
-  useEffect(() => {
-    if (activeTab === 'render' && !renderTabReady) setActiveTab('lock')
-  }, [activeTab, renderTabReady])
-
-  useEffect(() => {
-    if (!props.open) return
-    if (props.initialTab === 'render' && renderTabReady) setActiveTab('render')
-    else if (props.initialTab !== 'render') setActiveTab('lock')
-  }, [props.open, props.initialTab, renderTabReady])
+  const assetPlanReady = Boolean(assetPlan && planAssets.length > 0)
+  const readyAssetCount = planAssets.filter((asset) => String(asset?.referenceStatus || '').trim() === 'ready').length
+  const requiredAssetCount = planAssets.filter((asset) => String(asset?.renderStrategy || '').trim() === 'ref_required').length
+  const readyRequiredAssetCount = planAssets.filter((asset) => String(asset?.renderStrategy || '').trim() === 'ref_required' && String(asset?.referenceStatus || '').trim() === 'ready').length
+  const readySceneAssetLockCount = planAssets.filter((asset) => String(asset?.category || '').trim() !== 'character' && String(asset?.primaryReferenceAssetUri || '').trim()).length
+  const characterRefReadyCount = props.characters.filter((character) => String(character?.referenceAssetId || '').trim()).length
+  const globalPromptReady = Boolean(String(v.globalPrompt || '').trim() || String((v as any).globalPromptZh || '').trim())
+  const testSceneOptions = props.items.map((item, index) => ({
+    nodeId: String(item.nodeId || '').trim(),
+    label: `#${index + 1}`,
+    name: String(item.nodeName || item.nodeId || '').trim()
+  })).filter((item) => item.nodeId)
+  const selectedTestSceneId = String(props.testSceneId || testSceneOptions[0]?.nodeId || '').trim()
+  const selectedTestScene = testSceneOptions.find((item) => item.nodeId === selectedTestSceneId) || testSceneOptions[0] || null
+  const selectedTestSceneItem = props.items.find((item) => String(item.nodeId || '').trim() === selectedTestSceneId) || null
+  const selectedTestScenePromptReady = Boolean(String(selectedTestSceneItem?.promptZh || '').trim()) && Boolean(String(selectedTestSceneItem?.prompt || '').trim())
+  const canRunContinuityTest = !busy && !props.continuityBusy && openChecks.serverOk && openChecks.imageOk && props.assetConfirmReady && selectedTestScenePromptReady
+  const lockSteps: Array<{
+    id: string
+    kind: 'env' | 'bible' | 'assets' | 'test' | 'ready'
+    label: string
+    state: 'ok' | 'warn' | 'pending'
+    value: string
+    actionLabel?: string
+    onAction?: () => void
+    actionDisabled?: boolean
+  }> = [
+    {
+      id: 'env',
+      kind: 'env',
+      label: '环境',
+      state: envReady ? 'ok' : 'pending',
+      value: envReady ? '通过' : '未通过',
+      actionLabel: envReady ? '' : (openChecks.checking ? '检查中…' : '检查'),
+      onAction: props.onRunOpenChecks,
+      actionDisabled: busy || openChecks.checking
+    },
+    { id: 'bible', kind: 'bible', label: 'Bible', state: storyBibleReady ? 'ok' : 'pending', value: storyBibleReady ? '已生成' : '未生成' },
+    { id: 'assets', kind: 'assets', label: '资产', state: props.assetConfirmReady ? 'ok' : (assetPlanReady ? 'warn' : 'pending'), value: props.assetConfirmReady ? `${readyAssetCount}/${planAssets.length}` : (assetPlanReady ? '待确认' : '未生成') },
+    {
+      id: 'test',
+      kind: 'test',
+      label: '场景测试',
+      state: props.continuityReady ? 'ok' : (scenePromptReadyCount > 0 ? 'warn' : 'pending'),
+      value: props.continuityReady ? '通过' : (scenePromptReadyCount > 0 ? '待运行' : '先生成提示词')
+    }
+  ] as const
+  const primaryAction = (() => {
+    if (!envReady) {
+      return {
+        kind: 'env' as const,
+        label: openChecks.checking ? '检查中…' : '先修复环境体检',
+        hint: '先确保 server、文本模型、生图模型和连续性依赖可用。',
+        onClick: props.onRunOpenChecks,
+        disabled: busy || openChecks.checking
+      }
+    }
+    if (!storyBibleReady) {
+      return {
+        kind: 'bible' as const,
+        label: props.busyEntity ? '生成中…' : (isDoubaoWorkflow ? '先生成连续性 Bible' : '先生成 Story Bible'),
+        hint: '先生成角色、地点、道具的全文锚点，后面所有锁定和正式出图都依赖这一步。',
+        onClick: props.onGenerateEntity,
+        disabled: !canGenerateEntity
+      }
+    }
+    if (!assetPlanReady) {
+      return {
+        kind: 'assets' as const,
+        label: props.assetPlanBusy ? '处理中…' : '先生成资产计划',
+        hint: '把 Story Bible 映射成当前故事真正需要锁定的角色、道具和地点。',
+        onClick: props.onBuildAssetPlan,
+        disabled: busy || !storyBibleReady
+      }
+    }
+    if (!props.assetConfirmReady) {
+      if (requiredMissingAssets.length > 0) {
+        return {
+          kind: 'assets' as const,
+          label: `先补齐参考资产 (${requiredMissingAssets.length})`,
+          hint: '还有必要事物没有可用主参考，先补齐候选图并完成确认。',
+          onClick: props.onGenerateAllMissingAssetRefs,
+          disabled: busy || requiredMissingAssets.length === 0
+        }
+      }
+      return {
+        kind: 'assets' as const,
+        label: '确认锁定无误',
+        hint: '所有必要事物已具备参考，请人工确认后再运行场景测试。',
+        onClick: props.onConfirmAssetPlan,
+        disabled: busy || !assetPlanReady
+      }
+    }
+    if (scenePromptReadyCount === 0) {
+      return {
+        kind: 'test' as const,
+        label: '先生成场景提示词',
+        hint: '场景图测试之前必须先生成各场景的中英文提示词。',
+        onClick: props.onGenerateAll,
+        disabled: !canGenerateAll
+      }
+    }
+    if (!props.continuityReady) {
+      return {
+        kind: 'test' as const,
+        label: '先运行场景测试',
+        hint: selectedTestScenePromptReady ? '当前测试场景已有中英文提示词，可直接运行场景测试。' : '请先给当前测试场景生成中英文提示词，再运行场景测试。',
+        onClick: props.onRunContinuityTest,
+        disabled: !canRunContinuityTest
+      }
+    }
+    return {
+      kind: 'ready' as const,
+      label: '已可正式出图',
+      hint: '下方正式场景出图区已可直接生成提示词并批量出图。',
+      onClick: props.onGenerateAll,
+      disabled: !canGenerateAll
+    }
+  })()
+  const [lockLogsExpanded, setLockLogsExpanded] = useState(false)
+  const [baseParamsExpanded, setBaseParamsExpanded] = useState(false)
+  const [globalPromptsExpanded, setGlobalPromptsExpanded] = useState(false)
+  const [renderPanelExpanded, setRenderPanelExpanded] = useState(true)
+  const [renderLogsExpanded, setRenderLogsExpanded] = useState(false)
+  const logPreview = props.logs.length ? props.logs.slice(-3).join('\n') : '(暂无日志)'
+  const fullLogs = props.logs.length ? props.logs.join('\n') : '暂无日志'
+  const promptOpBusy = Boolean(props.promptOpBusy)
+  const translateCountdownSec = Number(props.translateCountdownSec || 0)
+  const translateCountdownLabel = translateCountdownSec > 0 ? ` ${translateCountdownSec}s` : ''
 
   if (!props.open) return null
 
@@ -225,7 +328,7 @@ export default function AiStoryboardBatchModal(props: {
     <div className="ai-modal" role="dialog" aria-modal="true">
       <div
         className="ai-modal-card ai-background-modal-card ai-storyboard-modal-card"
-        style={{ width: 'min(1440px, calc(100vw - 24px))', height: 'min(920px, calc(100vh - 24px))', maxHeight: 'calc(100vh - 24px)' }}
+        style={{ width: 'calc(100vw - 16px)', height: 'calc(100vh - 16px)', maxHeight: 'calc(100vh - 16px)' }}
       >
         <div className="ai-storyboard-head">
           <div className="ai-storyboard-titlebar">
@@ -240,119 +343,98 @@ export default function AiStoryboardBatchModal(props: {
           </button>
         </div>
 
-        <div className="ai-storyboard-tabs">
-          <button
-            type="button"
-            className={`ai-storyboard-tab ${activeTab === 'lock' ? 'active' : ''}`}
-            onClick={() => setActiveTab('lock')}
-          >
-            <span>锁定事物</span>
-            <span className={`ai-storyboard-tab-badge ${props.continuityReady ? 'ok' : (props.assetConfirmReady ? 'warn' : 'pending')}`}>
-              {props.continuityReady ? '已通过' : (props.assetConfirmReady ? '待测试' : '进行中')}
-            </span>
-          </button>
-          <button
-            type="button"
-            className={`ai-storyboard-tab ${activeTab === 'render' ? 'active' : ''}`}
-            onClick={() => {
-              if (renderTabReady) setActiveTab('render')
-            }}
-            disabled={!renderTabReady}
-            title={renderTabReady ? '进入正式场景出图' : '请先完成锁定事物标签中的前置门禁'}
-          >
-            <span>正确出图</span>
-            <span className={`ai-storyboard-tab-badge ${renderTabReady ? 'ok' : 'pending'}`}>
-              {renderTabReady ? '已开放' : '未开放'}
-            </span>
-          </button>
+        <div className="ai-storyboard-topline">
+          <div className="ai-storyboard-model-strip">
+            <div className="ai-storyboard-model-strip-title">当前模型与接口</div>
+            <div className="ai-storyboard-model-strip-chips story-lock-workspace-chip-row">
+              <span className="ai-storyboard-status ok">文本模型: {openChecks.promptProvider || 'none'}{openChecks.promptModel ? ` / ${openChecks.promptModel}` : ''}</span>
+              <span className="ai-storyboard-status ok">生图模型: {openChecks.imageProvider || 'none'}{imageModelLabel ? ` / ${imageModelLabel}` : ''}</span>
+              {isDoubaoWorkflow ? <span className="ai-storyboard-status ok">Doubao 连续模式: {String((v as any).sequentialImageGeneration || 'disabled')}</span> : null}
+            </div>
+          </div>
         </div>
 
         <div className="ai-storyboard-body">
-          {activeTab === 'lock' ? (
-            <div className="ai-storyboard-lock-shell">
-              <div className="ai-storyboard-section ai-storyboard-gates-top">
-                <div className="ai-storyboard-section-head">
-                  <div className="ai-storyboard-section-title">锁定门禁概览</div>
-                  <div className="hint">通过后才会开放“正确出图”</div>
+          <div className="ai-storyboard-lock-wrap">
+              <div className="ai-storyboard-gate-toolbar">
+                <div className="ai-storyboard-gate-toolbar-title">锁定门禁</div>
+                <div className="ai-storyboard-stepper" aria-label="锁定门禁进度">
+                {lockSteps.map((step, idx) => (
+                  <div key={step.id} className="ai-storyboard-step">
+                    <div className={`ai-storyboard-step-dot ${step.state}`}>
+                      <span>{idx + 1}</span>
+                    </div>
+                    <div className="ai-storyboard-step-text">
+                      <div className="ai-storyboard-step-label">{step.label}</div>
+                      <div className="ai-storyboard-step-value">{step.value}</div>
+                      {step.actionLabel ? (
+                        <button className="btn secondary ai-storyboard-step-action" type="button" onClick={step.onAction} disabled={step.actionDisabled}>
+                          {step.actionLabel}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
                 </div>
-                <div className="ai-storyboard-section-body">
-                  <div className="ai-storyboard-gate-strip">
-                    <div className={`ai-storyboard-gate-card small ${envReady ? 'ok' : 'pending'}`}>
-                      <div className="ai-storyboard-gate-title">1. 环境体检</div>
-                      <div className="ai-storyboard-gate-value">{envReady ? '通过' : '未通过'}</div>
-                    </div>
-                    <div className={`ai-storyboard-gate-card small ${storyBibleReady ? 'ok' : 'pending'}`}>
-                      <div className="ai-storyboard-gate-title">2. Story Bible</div>
-                      <div className="ai-storyboard-gate-value">{storyBibleReady ? '已生成' : '未生成'}</div>
-                    </div>
-                    <div className={`ai-storyboard-gate-card small ${props.assetConfirmReady ? 'ok' : 'pending'}`}>
-                      <div className="ai-storyboard-gate-title">3. 必要事物资产</div>
-                      <div className="ai-storyboard-gate-value">{props.assetConfirmReady ? '已确认' : '待确认'}</div>
-                    </div>
-                    <div className={`ai-storyboard-gate-card small ${props.continuityReady ? 'ok' : 'pending'}`}>
-                      <div className="ai-storyboard-gate-title">4. 锁定测试</div>
-                      <div className="ai-storyboard-gate-value">{props.continuityReady ? '已通过' : '未通过'}</div>
-                    </div>
-                  </div>
-                  <div className="hint" style={{ marginTop: 8 }}>
-                    当前参数摘要：{String(v.style || 'picture_book')} / {String(v.aspectRatio || '9:16')} / {String((v as any).model || imageModelLabel || '(default)')}
-                    {configuredLoras.length ? ` / LoRA ${configuredLoras.join(' | ')}` : ' / 无 LoRA'}
-                  </div>
+                <div className="ai-storyboard-lock-overview-side">
+                  <span className="hint ai-storyboard-gate-toolbar-meta">
+                    {String(v.style || 'picture_book')} / {String(v.aspectRatio || '9:16')} / {String((v as any).model || imageModelLabel || '(default)')}
+                  </span>
+                  <span className={`ai-storyboard-status ${sceneRenderReady ? 'ok' : (props.assetConfirmReady ? 'warn' : 'pending')}`}>
+                    {sceneRenderReady ? '已可正式出图' : (scenePromptReadyCount > 0 ? '待场景测试' : '待生成提示词')}
+                  </span>
+                  {assetPlanReady ? (
+                    <span className="ai-storyboard-status ok">资产 {readyAssetCount}/{planAssets.length}</span>
+                  ) : null}
+                  {primaryAction.kind !== 'test' && primaryAction.kind !== 'ready' ? (
+                    <button className="btn secondary" type="button" onClick={primaryAction.onClick} disabled={primaryAction.disabled}>
+                      {primaryAction.label}
+                    </button>
+                  ) : null}
                 </div>
               </div>
 
-              <div className="ai-storyboard-section ai-storyboard-logs-top">
-                <div className="ai-storyboard-section-head">
-                  <div className="ai-storyboard-section-title">锁定阶段日志</div>
-                  <div className="hint">用于排查锁定资产和测试门禁</div>
+              <div className="ai-storyboard-lock-shell">
+              <div className="story-lock-workspace-log-section ai-storyboard-logs-top">
+                <div className="ai-storyboard-inline-head">
+                  <div className="story-lock-workspace-log-title">日志</div>
+                  <div className="hint">{props.logs.length ? `共 ${props.logs.length} 条，展开后可完整查看。` : '暂无日志'}</div>
+                  <button className="btn secondary" type="button" onClick={() => setLockLogsExpanded((v) => !v)}>
+                    {lockLogsExpanded ? '收起' : '展开'}
+                  </button>
                 </div>
-                <div className="ai-storyboard-section-body">
-                  <textarea readOnly value={props.logs.length ? props.logs.join('\n') : '(暂无日志)'} rows={5} />
-                  {props.error ? <div className="ai-modal-err">{props.error}</div> : null}
-                </div>
+                {lockLogsExpanded ? (
+                  <div className="story-lock-workspace-log-box">
+                    {props.error ? <div className="hint" style={{ color: '#fca5a5', marginBottom: 8 }}>{props.error}</div> : null}
+                    <pre>{fullLogs}</pre>
+                  </div>
+                ) : null}
               </div>
 
               <div className="ai-storyboard-lock-main">
                 <div className="ai-storyboard-pane ai-storyboard-lock-controls">
-                  <div className="ai-storyboard-section">
-                    <div className="ai-storyboard-section-body">
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <span className="ai-storyboard-status ok">文本模型: {openChecks.promptProvider || 'none'}{openChecks.promptModel ? ` / ${openChecks.promptModel}` : ''}</span>
-                        <span className="ai-storyboard-status ok">生图模型: {openChecks.imageProvider || 'none'}{imageModelLabel ? ` / ${imageModelLabel}` : ''}</span>
-                        {isDoubaoWorkflow ? <span className="ai-storyboard-status ok">Doubao 连续模式: {String((v as any).sequentialImageGeneration || 'disabled')}</span> : null}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="ai-storyboard-section">
-                    <div className="ai-storyboard-section-head">
-                      <div className="ai-storyboard-section-title">Step 1. 打开体检（自动验证接口与生成能力）</div>
-                      <button className="btn secondary" type="button" onClick={props.onRunOpenChecks} disabled={busy || openChecks.checking}>
-                        {openChecks.checking ? '检查中…' : '重新检查'}
+                  <div className="ai-storyboard-stack-section">
+                    <div className="ai-storyboard-inline-head">
+                      <div className="ai-storyboard-section-title">基础参数</div>
+                      <div className="hint">控制正式场景出图的风格、比例、Checkpoint、LoRA 和采样参数。</div>
+                      <button className="btn secondary" type="button" onClick={() => setBaseParamsExpanded((v) => !v)}>
+                        {baseParamsExpanded ? '收起' : '展开'}
                       </button>
                     </div>
+                    {baseParamsExpanded ? (
+                    <div className="ai-storyboard-section ai-storyboard-stack-card">
                     <div className="ai-storyboard-section-body">
                       <div className="ai-storyboard-kv">
-                        <div className="hint">
-                          {openChecks.summary || (isDoubaoWorkflow
-                            ? '打开窗口时会自动检查 server、Doubao 文本模型、Doubao 生图模型，以及多场景连续生成前置条件。'
-                            : '打开窗口时会自动检查 server、提示词 provider、图像 provider、ComfyUI 体检和角色参考绑定。')}
-                        </div>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                          <span className={`ai-storyboard-status ${openChecks.serverOk ? 'ok' : 'bad'}`}>server: {openChecks.serverOk ? 'ok' : 'fail'}</span>
-                          <span className={`ai-storyboard-status ${openChecks.promptOk ? 'ok' : 'bad'}`}>prompt: {openChecks.promptProvider || 'none'} / {openChecks.promptOk ? 'ok' : 'fail'}</span>
-                          <span className={`ai-storyboard-status ${openChecks.imageOk ? 'ok' : 'bad'}`}>image: {openChecks.imageProvider || 'none'} / {openChecks.imageOk ? 'ok' : 'fail'}</span>
-                          <span className={`ai-storyboard-status ${openChecks.continuityBindingsOk ? 'ok' : 'bad'}`}>refs: {openChecks.continuityBindingsOk ? 'ok' : 'missing'}</span>
+                          <span className="ai-storyboard-status ok">风格: {String(v.style || 'picture_book')}</span>
+                          <span className="ai-storyboard-status ok">比例: {String(v.aspectRatio || '9:16')}</span>
+                          <span className="ai-storyboard-status ok">Checkpoint: {String((v as any).model || imageModelLabel || '(default)')}</span>
+                          <span className={`ai-storyboard-status ${configuredLoras.length ? 'ok' : 'pending'}`}>LoRA: {configuredLoras.length ? configuredLoras.length : 0}</span>
+                          <span className={`ai-storyboard-status ${readyRequiredAssetCount >= requiredAssetCount ? 'ok' : 'warn'}`}>必要锁定资产: {readyRequiredAssetCount}/{requiredAssetCount}</span>
+                          <span className={`ai-storyboard-status ${characterRefReadyCount >= props.characters.length ? 'ok' : 'warn'}`}>角色参考: {characterRefReadyCount}/{props.characters.length}</span>
                         </div>
+                        <div className="hint">这里只保留会直接影响正式场景出图一致性的参数，不再重复环境检查结果。</div>
                       </div>
-                    </div>
-                  </div>
-
-                  <div className="ai-storyboard-section">
-                    <div className="ai-storyboard-section-head">
-                      <div className="ai-storyboard-section-title">Step 2. 设定锁定测试参数</div>
-                    </div>
-                    <div className="ai-storyboard-section-body">
                       <div className="ai-storyboard-fields">
                       <div className="ai-storyboard-field">
                         <label>风格</label>
@@ -495,389 +577,376 @@ export default function AiStoryboardBatchModal(props: {
                     ) : null}
                     {isComfyuiImage ? (
                       <div className="hint" style={{ marginTop: 8 }}>
-                        锁定事物阶段使用这里的 checkpoint、LoRA 和采样参数。正式出图会继承这一组参数；如果要改，先回到这个标签调整后再重新运行锁定测试。
+                        锁定事物和正式场景出图共用这里的 checkpoint、LoRA 和采样参数。若此处改动，建议重新跑一次场景测试。
                       </div>
                     ) : null}
                     </div>
+                    </div>
+                    ) : null}
                   </div>
 
-                  <div className="ai-storyboard-section">
-                    <div className="ai-storyboard-section-head">
-                      <div className="ai-storyboard-section-title">{isDoubaoWorkflow ? 'Step 3. 生成连续性 Bible（世界观/角色/地点锚点）' : 'Step 3. 生成 Story Bible（角色/道具/地点锁定）'}</div>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button className="btn secondary" type="button" onClick={props.onClearStoryBible} disabled={busy || !String((v as any).storyBibleJson || '').trim()}>
-                          Clear
-                        </button>
-                        <button className="btn secondary" type="button" onClick={props.onGenerateEntity} disabled={!canGenerateEntity}>
-                          {props.busyEntity ? `生成中… ${(((props.entityElapsedMs || 0) / 1000).toFixed(1))}s` : (isDoubaoWorkflow ? 'AI 生成连续性 Bible' : 'AI 生成 Story Bible')}
-                        </button>
+                  <div className="ai-storyboard-stack-section">
+                    <div className="ai-storyboard-inline-head">
+                      <div className="ai-storyboard-section-title">全局提示词</div>
+                      <div className="hint" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', flex: '1 1 auto' }}>
+                        <span className={`ai-storyboard-status ${String((v as any).globalPromptZh || v.globalPrompt || '').trim() ? 'ok' : 'bad'}`}>正向</span>
+                        <span className={`ai-storyboard-status ${String((v as any).globalNegativePromptZh || v.globalNegativePrompt || '').trim() ? 'ok' : 'bad'}`}>负向</span>
                       </div>
-                    </div>
-                    <div className="ai-storyboard-section-body">
-                      <textarea
-                        rows={8}
-                        value={String((v as any).storyBibleJson || '')}
-                        onChange={(e) => props.onChange({ ...v, storyBibleJson: e.target.value } as any)}
-                        placeholder={isDoubaoWorkflow
-                          ? 'JSON（可手动修改）。生成后会用于多场景提示词与 Doubao 批量出图，锁定世界观、角色外观、关键道具与地点锚点。'
-                          : 'JSON（可手动修改）。生成后会用于批量提示词与出图，锁定角色/道具/地点的连续性。'}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="ai-storyboard-section">
-                    <div className="ai-storyboard-section-head">
-                      <div className="ai-storyboard-section-title">{isDoubaoWorkflow ? 'Step 5. 连续性预检（必须通过才能进入正确出图）' : 'Step 5. 连续分镜锁定测试（必须通过才能进入正确出图）'}</div>
-                      <button className="btn secondary" type="button" onClick={props.onRunContinuityTest} disabled={!canRunContinuityTest}>
-                        {props.continuityBusy ? '测试中…' : (isDoubaoWorkflow ? '运行连续性预检' : '运行锁定测试')}
+                      <button className="btn secondary" type="button" onClick={() => setGlobalPromptsExpanded((value) => !value)}>
+                        {globalPromptsExpanded ? '收起' : '展开'}
                       </button>
                     </div>
-                    <div className="ai-storyboard-section-body">
-                      <div className="hint">
-                        门禁：{props.continuityReady ? '已通过' : '未通过'}{props.continuitySummary ? `，${props.continuitySummary}` : ''}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="ai-storyboard-pane ai-storyboard-lock-assets-pane">
-                  <div className="ai-storyboard-section">
-                    <div className="ai-storyboard-section-head">
-                      <div className="ai-storyboard-section-title">Step 4. 必要事物资产确认（先生成参考资产，再继续）</div>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button className="btn secondary" type="button" onClick={props.onBuildAssetPlan} disabled={busy || !String((v as any).storyBibleJson || '').trim()}>
-                          {props.assetPlanBusy && !props.assetGeneratingId ? '生成中…' : '生成资产计划'}
-                        </button>
-                        <button className="btn secondary" type="button" onClick={props.onGenerateAllMissingAssetRefs} disabled={busy || !assetPlan || requiredMissingAssets.length === 0}>
-                          {props.assetPlanBusy && !props.assetGeneratingId ? '处理中…' : `生成全部缺失参考图 (${requiredMissingAssets.length})`}
-                        </button>
-                        <button className="btn secondary" type="button" onClick={props.onConfirmAssetPlan} disabled={busy || !assetPlan || requiredMissingAssets.length > 0}>
-                          {props.assetConfirmReady ? '已确认' : '确认资产无误'}
-                        </button>
-                      </div>
-                    </div>
-                    <div className="ai-storyboard-section-body">
-                    <div className="hint">先把故事里需要稳定复现的角色 / 道具 / 地点拆成资产计划，生成缺失参考图并由用户确认，再进入后续连续性预检与批量生图。</div>
-                    <div className="hint" style={{ marginTop: 6 }}>“生成资产计划”只负责拆解缺失项，不会调用 ComfyUI。真正调用 ComfyUI 的是下面每个资产卡片上的“生成参考图”，或“生成全部缺失参考图”。</div>
-                    <div className="hint" style={{ marginTop: 6 }}>当前状态：{props.assetConfirmSummary}</div>
-                    {!assetPlan ? (
-                      <div className="hint" style={{ marginTop: 10 }}>尚未生成资产计划。请先完成 Step 3，然后点击“生成资产计划”。</div>
-                    ) : (
-                      <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                          <span className="ai-storyboard-status ok">资产数: {assetPlan.summary?.assetCount || planAssets.length}</span>
-                          <span className={`ai-storyboard-status ${requiredMissingAssets.length ? 'bad' : 'ok'}`}>必需参考: {assetPlan.summary?.refRequiredCount || 0}</span>
-                          <span className={`ai-storyboard-status ${requiredMissingAssets.length ? 'bad' : 'ok'}`}>缺失: {requiredMissingAssets.length}</span>
-                          <span className="ai-storyboard-status ok">已就绪: {assetPlan.summary?.refReadyCount || 0}</span>
+                    {globalPromptsExpanded ? (
+                    <div className="ai-storyboard-section ai-storyboard-stack-card">
+                      <div className="ai-storyboard-section-body">
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                          <button className="btn secondary" type="button" onClick={props.onReviewGlobalPrompt} disabled={busy || props.globalPromptReviewBusy}>
+                            {props.globalPromptReviewBusy ? '评分中…' : 'AI 评分'}
+                          </button>
+                          <button className="btn secondary" type="button" onClick={props.onApplyGlobalPromptReview} disabled={busy || !props.globalPromptReview?.ai?.optimizedGlobalPromptZh}>
+                            继续强化提示词
+                          </button>
+                          <button className="btn secondary" type="button" onClick={props.onClearGlobalPrompt} disabled={busy || !String(v.globalPrompt || '').trim()}>
+                            清空正向
+                          </button>
+                          <button className="btn secondary" type="button" onClick={props.onClearGlobalNegativePrompt} disabled={busy || !String(v.globalNegativePrompt || '').trim()}>
+                            清空负向
+                          </button>
                         </div>
-                        <div style={{ border: '1px solid rgba(148,163,184,0.22)', borderRadius: 12, overflow: 'hidden' }}>
-                          <div className="ai-storyboard-asset-list">
-                            {planAssets.map((asset) => {
-                              const assetId = String(asset?.id || '').trim()
-                              const generating = props.assetGeneratingId === assetId && props.assetPlanBusy
-                              const needsRef = String(asset?.renderStrategy || '').trim() !== 'prompt_only'
-                              const generatedRefs = Array.isArray(asset?.generatedRefs) ? asset.generatedRefs : []
-                              const latestGeneratedRef = generatedRefs.length ? generatedRefs[generatedRefs.length - 1] : null
-                              const rawUri =
-                                String(asset?.primaryReferenceAssetUri || '').trim() ||
-                                String(latestGeneratedRef?.projectAssetUri || '').trim() ||
-                                String(latestGeneratedRef?.remoteUrl || '').trim()
-                              const previewSrc = rawUri
-                                ? (
-                                    /^https?:\/\//i.test(rawUri) || rawUri.startsWith('data:')
-                                      ? rawUri
-                                      : (props.projectId ? resolveUrl(`/project-assets/${encodeURIComponent(String(props.projectId))}/${rawUri.replace(/^\/+/, '')}`) : '')
-                                  )
-                                : ''
-                              const latestReview = asset?.latestReferenceReview && typeof asset.latestReferenceReview === 'object' ? asset.latestReferenceReview : null
-                              const latestReviewTarget = String(latestReview?.targetAssetUri || '').trim()
-                              const reviewMatchesPreview = latestReview && latestReviewTarget && rawUri && latestReviewTarget === rawUri
-                              const reviewScore = Number(latestReview?.score)
-                              const reviewSummary = String(latestReview?.summary || '').trim()
-                              const analyzing = props.assetAnalyzingId === assetId && props.assetPlanBusy
-                              const batch = Array.isArray(asset?.latestReferenceBatch) ? asset.latestReferenceBatch.slice(0, 4) : []
-                              const candidateItems = Array.from({ length: 4 }, (_, idx) => batch[idx] || null)
-                              return (
-                                <div key={assetId} className="ai-storyboard-asset-row">
-                                  <div className="ai-storyboard-asset-meta">
-                                    <div className={`ai-storyboard-asset-preview ${previewSrc ? 'ready' : 'missing'}`}>
-                                      {previewSrc ? (
-                                        <img src={previewSrc} alt={String(asset?.name || assetId || 'asset')} />
-                                      ) : (
-                                        <div className="ai-storyboard-asset-placeholder">
-                                          <div className="ai-storyboard-asset-placeholder-title">{String(asset?.name || assetId || '未命名资产')}</div>
-                                          <div className="hint">待生成参考图</div>
-                                        </div>
-                                      )}
-                                    </div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-                                      <div style={{ fontWeight: 800 }}>{String(asset?.name || assetId || '未命名资产')}</div>
-                                      <div className={`ai-storyboard-status ${String(asset?.referenceStatus || '').trim() === 'ready' ? 'ok' : 'bad'}`}>{getAssetStatusLabel(String(asset?.referenceStatus || ''))}</div>
-                                    </div>
-                                    <div className="hint">{getAssetCategoryLabel(String(asset?.category || ''))} / {getAssetStrategyLabel(String(asset?.renderStrategy || ''))} / 涉及 {Number(asset?.sceneCount || 0)} 个场景</div>
-                                    {reviewMatchesPreview ? (
-                                      <div className="hint" style={{ whiteSpace: 'pre-wrap', color: latestReview?.passed ? '#a7f3d0' : '#fde68a' }}>
-                                        {Number.isFinite(reviewScore) ? `最佳评分：${Math.round(reviewScore)} / 100` : '最佳评分：n/a'}
-                                        {reviewSummary ? `，${reviewSummary}` : ''}
-                                      </div>
-                                    ) : null}
-                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                      <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetRef(assetId)} disabled={busy || !needsRef || !assetId}>
-                                        {generating ? '生成中…' : (String(asset?.referenceStatus || '').trim() === 'ready' ? '重新生成参考图' : '生成参考图')}
-                                      </button>
-                                      <button className="btn secondary" type="button" onClick={() => props.onAnalyzeAssetRef(assetId)} disabled={busy || !previewSrc || !assetId}>
-                                        {analyzing ? '分析中…' : '分析准确率'}
-                                      </button>
-                                    </div>
-                                  </div>
-                                  <div className="ai-storyboard-asset-batch">
-                                    {candidateItems.map((candidate, idx) => {
-                                      const candidateUri = String(candidate?.assetPath || '').trim()
-                                      const candidateSrc = candidateUri && props.projectId ? resolveUrl(`/project-assets/${encodeURIComponent(String(props.projectId))}/${candidateUri.replace(/^\/+/, '')}`) : ''
-                                      const candidateScore = Number(candidate?.analysis?.score)
-                                      return (
-                                        <div key={`${assetId}_candidate_${idx}`} className="ai-storyboard-asset-candidate">
-                                          <div className={`ai-storyboard-asset-candidate-preview ${candidateSrc ? 'ready' : 'missing'}`}>
-                                            {candidateSrc ? <img src={candidateSrc} alt={`${String(asset?.name || assetId)}_${idx + 1}`} /> : <div className="hint">候选 {idx + 1}</div>}
-                                          </div>
-                                          <div className="hint">
-                                            {candidate
-                                              ? `#${idx + 1} ${Number.isFinite(candidateScore) ? `${Math.round(candidateScore)}/100` : 'n/a'}`
-                                              : `#${idx + 1} 等待生成`}
-                                          </div>
-                                        </div>
-                                      )
-                                    })}
-                                  </div>
-                                </div>
-                              )
-                            })}
+                        {props.globalPromptReview ? (
+                          <div style={{ border: '1px solid rgba(148,163,184,0.22)', borderRadius: 12, padding: 10, marginBottom: 10 }}>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                              <span className={`ai-storyboard-status ${getPromptReviewTone(props.globalPromptReview).cls}`}>
+                                AI 评分：{Number.isFinite(Number(props.globalPromptReview.ai.score)) ? `${Math.round(Number(props.globalPromptReview.ai.score))}/100` : 'n/a'}
+                              </span>
+                              <span className="hint" style={{ color: getPromptReviewTone(props.globalPromptReview).color }}>{props.globalPromptReview.ai.summary}</span>
+                            </div>
+                            {props.globalPromptReview.ai.suggestions?.length ? (
+                              <div className="hint" style={{ whiteSpace: 'pre-wrap' }}>建议：{props.globalPromptReview.ai.suggestions.slice(0, 3).join('；')}</div>
+                            ) : null}
+                            {props.globalPromptReview.aiError?.message ? (
+                              <div className="hint" style={{ color: '#fca5a5', marginTop: 6 }}>AI 回退：{props.globalPromptReview.aiError.message}</div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        <div className="story-lock-global-sections">
+                          <div className="story-lock-global-section">
+                            <div className="story-lock-global-subhead">
+                              <div className="story-lock-global-subtitle">全局正向提示词</div>
+                              <button className="btn secondary" type="button" onClick={props.onTranslateGlobalPrompt} disabled={promptOpBusy}>
+                                {props.translatingScope === 'globalPrompt' ? `翻译中…${translateCountdownLabel}` : (promptOpBusy ? '请等待当前任务…' : '中文转英文')}
+                              </button>
+                            </div>
+                            <div className="story-lock-prompt-grid">
+                              <label className="story-lock-prompt-field">
+                                <span>中文</span>
+                                <textarea
+                                  className="story-lock-textarea"
+                                  value={String((v as any).globalPromptZh || '')}
+                                  onChange={(e) => props.onChangeGlobalPromptZh(e.target.value)}
+                                  placeholder="在这里编辑中文全局正向提示词"
+                                />
+                              </label>
+                              <label className="story-lock-prompt-field">
+                                <span>英文</span>
+                                <textarea
+                                  className="story-lock-textarea"
+                                  value={String(v.globalPrompt || '')}
+                                  onChange={(e) => props.onChangeGlobalPromptEn(e.target.value)}
+                                  placeholder="翻译后或手工编辑英文正向提示词"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                          <div className="story-lock-global-section">
+                            <div className="story-lock-global-subhead">
+                              <div className="story-lock-global-subtitle">全局负向提示词</div>
+                              <button className="btn secondary" type="button" onClick={props.onTranslateGlobalNegativePrompt} disabled={promptOpBusy}>
+                                {props.translatingScope === 'globalNegativePrompt' ? `翻译中…${translateCountdownLabel}` : (promptOpBusy ? '请等待当前任务…' : '中文转英文')}
+                              </button>
+                            </div>
+                            <div className="story-lock-prompt-grid">
+                              <label className="story-lock-prompt-field">
+                                <span>中文</span>
+                                <textarea
+                                  className="story-lock-textarea"
+                                  value={String((v as any).globalNegativePromptZh || '')}
+                                  onChange={(e) => props.onChangeGlobalNegativePromptZh(e.target.value)}
+                                  placeholder="在这里编辑中文全局负向提示词"
+                                />
+                              </label>
+                              <label className="story-lock-prompt-field">
+                                <span>英文</span>
+                                <textarea
+                                  className="story-lock-textarea"
+                                  value={String(v.globalNegativePrompt || '')}
+                                  onChange={(e) => props.onChangeGlobalNegativePromptEn(e.target.value)}
+                                  placeholder="翻译后或手工编辑英文负向提示词"
+                                />
+                              </label>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    )}
                     </div>
+                    ) : null}
                   </div>
+
+                  <div className="ai-storyboard-stack-section">
+                    <div className="ai-storyboard-inline-head">
+                      <div className="ai-storyboard-section-title">正式场景出图</div>
+                      <div className="hint">放在全局提示词下面。先生成场景提示词，再做场景测试，最后批量出图。</div>
+                      <button className="btn secondary" type="button" onClick={() => setRenderPanelExpanded((v) => !v)}>
+                        {renderPanelExpanded ? '收起' : '展开'}
+                      </button>
+                    </div>
+                    {renderPanelExpanded ? (
+                    <div className="ai-storyboard-section ai-storyboard-stack-card">
+                    <div className="ai-storyboard-section-body">
+                      <div className="ai-storyboard-section ai-storyboard-scenes">
+                        <div className="ai-storyboard-section-head">
+                          <div className="ai-storyboard-section-title">场景提示词列表（可编辑）</div>
+                          <div className="hint">共 {props.items.length} 个场景，先补齐中英文提示词，再运行场景测试。</div>
+                        </div>
+                        <div className="ai-storyboard-section-body" style={{ minHeight: 0 }}>
+                          <div className="ai-storyboard-scenes-list">
+                            <div className="ai-storyboard-scenes-scroll">
+                        {props.items.map((it, idx) => {
+                          const promptReviewTone = getPromptReviewTone(it.promptReview)
+                          const currentStatus = String(it.status || 'idle').trim() || 'idle'
+                          const statusTone =
+                            currentStatus === 'applied' || currentStatus === 'generated'
+                              ? 'ok'
+                              : currentStatus === 'error'
+                                ? 'bad'
+                                : currentStatus === 'generating' || currentStatus === 'applying'
+                                  ? 'pending'
+                                  : 'warn'
+                          return (
+                            <div key={it.nodeId} className="story-lock-global-card ai-storyboard-scene-prompt-card">
+                              <div className="story-lock-global-head">
+                                <div style={{ display: 'grid', gap: 6, minWidth: 0 }}>
+                                  <div className="story-lock-workspace-log-title">
+                                    #{idx + 1} {it.nodeName}
+                                  </div>
+                                  <div className="story-lock-workspace-chip-row">
+                                    <span className={`ai-storyboard-status ${statusTone}`}>状态: {currentStatus}</span>
+                                    <span className={`ai-storyboard-status ${String(it.promptZh || '').trim() ? 'ok' : 'bad'}`}>正向中文</span>
+                                    <span className={`ai-storyboard-status ${String(it.prompt || '').trim() ? 'ok' : 'bad'}`}>正向英文</span>
+                                    <span className={`ai-storyboard-status ${String(it.negativePromptZh || '').trim() ? 'ok' : 'warn'}`}>负向中文</span>
+                                    <span className={`ai-storyboard-status ${String(it.negativePrompt || '').trim() ? 'ok' : 'warn'}`}>负向英文</span>
+                                    <span className="ai-storyboard-status pending">{it.nodeId}</span>
+                                    {(props.busyGenerate || props.busyApply) && (it.status === 'generating' || it.status === 'applying') && props.generatingNodeId === it.nodeId ? (
+                                      <span className="ai-storyboard-status pending">耗时 {((props.generatingNodeElapsedMs || 0) / 1000).toFixed(1)}s</span>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                  <button className="btn secondary" type="button" onClick={() => props.onReviewItemPrompt(it.nodeId)} disabled={busy || props.promptReviewingNodeId === it.nodeId || !String(it.prompt || it.userInput || '').trim()}>
+                                    {props.promptReviewingNodeId === it.nodeId ? '评分中…' : 'AI 评分'}
+                                  </button>
+                                  <button className="btn secondary" type="button" onClick={() => props.onApplyItemPromptReview(it.nodeId)} disabled={busy || !it.promptReview?.ai?.optimizedPrompt}>
+                                    继续强化提示词
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="story-lock-prompt-stack">
+                                <div className="story-lock-prompt-section">
+                                  <div className="story-lock-global-subtitle">场景原文</div>
+                                  <div className="story-lock-workspace-log-box ai-storyboard-scene-source">
+                                    <pre>{it.userInput || '(无场景文本)'}</pre>
+                                  </div>
+                                </div>
+                                {it.promptReview ? (
+                                  <div className="story-lock-prompt-section">
+                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                      <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
+                                        AI 评分：{Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
+                                      </span>
+                                      <span className="hint" style={{ color: promptReviewTone.color }}>{it.promptReview.ai.summary}</span>
+                                    </div>
+                                    {it.promptReview.ai.suggestions?.length ? (
+                                      <div className="hint" style={{ whiteSpace: 'pre-wrap' }}>建议：{it.promptReview.ai.suggestions.slice(0, 3).join('；')}</div>
+                                    ) : null}
+                                    {it.promptReview.aiError?.message ? (
+                                      <div className="hint" style={{ color: '#fca5a5' }}>AI 回退：{it.promptReview.aiError.message}</div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                <div className="story-lock-prompt-section">
+                                  <div className="story-lock-global-subhead">
+                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                      <div className="story-lock-global-subtitle">正向提示词</div>
+                                      {it.promptReview ? (
+                                        <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
+                                          评分 {Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                  <div className="story-lock-prompt-grid">
+                                    <label className="story-lock-prompt-field">
+                                      <span>中文</span>
+                                      <textarea className="story-lock-textarea compact-rows" value={it.promptZh || ''} onChange={(e) => props.onChangeItem(it.nodeId, { promptZh: e.target.value })} placeholder="AI 强化后的中文场景提示词" />
+                                    </label>
+                                    <label className="story-lock-prompt-field">
+                                      <span>英文</span>
+                                      <textarea className="story-lock-textarea compact-rows" value={it.prompt || ''} onChange={(e) => props.onChangeItem(it.nodeId, { prompt: e.target.value })} placeholder="英文场景提示词（用于出图）" />
+                                    </label>
+                                  </div>
+                                </div>
+                                <div className="story-lock-prompt-section">
+                                  <div className="story-lock-global-subhead">
+                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                      <div className="story-lock-global-subtitle">负向提示词</div>
+                                      {it.promptReview ? (
+                                        <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
+                                          评分 {Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                  <div className="story-lock-prompt-grid">
+                                    <label className="story-lock-prompt-field">
+                                      <span>中文</span>
+                                      <textarea className="story-lock-textarea compact-rows" value={it.negativePromptZh || ''} onChange={(e) => props.onChangeItem(it.nodeId, { negativePromptZh: e.target.value })} placeholder="中文场景负向提示词（可选）" />
+                                    </label>
+                                    <label className="story-lock-prompt-field">
+                                      <span>英文</span>
+                                      <textarea className="story-lock-textarea compact-rows" value={it.negativePrompt || ''} onChange={(e) => props.onChangeItem(it.nodeId, { negativePrompt: e.target.value })} placeholder="英文场景负向提示词（用于出图）" />
+                                    </label>
+                                  </div>
+                                </div>
+                                {it.note ? <div className="hint">{it.note}</div> : null}
+                              </div>
+                            </div>
+                          )
+                        })}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="ai-storyboard-section" style={{ marginTop: 10 }}>
+                        <div className="ai-storyboard-section-head">
+                          <div className="ai-storyboard-section-title">场景测试</div>
+                        </div>
+                        <div className="ai-storyboard-section-body">
+                          <div className="hint">先选一个已具备中英文提示词的场景做测试渲染，确认正式场景图会带入 Story Bible、全局锚点、角色参考和锁定事物主参考。测试通过后，再批量出图。</div>
+                          <div className="ai-storyboard-scene-chip-row" style={{ marginTop: 10 }}>
+                            {testSceneOptions.map((scene) => (
+                              <button
+                                key={scene.nodeId}
+                                type="button"
+                                className={`btn secondary ai-storyboard-scene-chip ${scene.nodeId === selectedTestSceneId ? 'active' : ''}`}
+                                onClick={() => props.onChangeTestSceneId(scene.nodeId)}
+                              >
+                                {scene.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                            <span className={`ai-storyboard-status ${props.continuityReady ? 'ok' : 'warn'}`}>测试门禁: {props.continuityReady ? '通过' : '待运行'}</span>
+                            {selectedTestScene ? <span className="ai-storyboard-status ok">测试场景: {selectedTestScene.label} {selectedTestScene.name}</span> : null}
+                            <span className={`ai-storyboard-status ${selectedTestScenePromptReady ? 'ok' : 'bad'}`}>场景提示词: {selectedTestScenePromptReady ? '已就绪' : '缺少中英文提示词'}</span>
+                            <span className={`ai-storyboard-status ${storyBibleReady ? 'ok' : 'bad'}`}>Story Bible: {storyBibleReady ? '已就绪' : '缺失'}</span>
+                            <span className={`ai-storyboard-status ${globalPromptReady ? 'ok' : 'warn'}`}>全局锚点: {globalPromptReady ? '已就绪' : '待生成'}</span>
+                            <span className={`ai-storyboard-status ${readyRequiredAssetCount >= requiredAssetCount ? 'ok' : 'warn'}`}>必要锁定资产: {readyRequiredAssetCount}/{requiredAssetCount}</span>
+                            <span className={`ai-storyboard-status ${readySceneAssetLockCount > 0 ? 'ok' : 'pending'}`}>事物主参考: {readySceneAssetLockCount}</span>
+                            <span className={`ai-storyboard-status ${characterRefReadyCount >= props.characters.length ? 'ok' : 'warn'}`}>角色参考: {characterRefReadyCount}/{props.characters.length}</span>
+                            <span className="ai-storyboard-status ok">Checkpoint: {String((v as any).model || imageModelLabel || '(default)')}</span>
+                            <span className={`ai-storyboard-status ${configuredLoras.length ? 'ok' : 'pending'}`}>LoRA: {configuredLoras.length ? configuredLoras.join(' | ') : '(none)'}</span>
+                          </div>
+                          <div className="hint" style={{ marginTop: 10 }}>
+                            场景测试会实际渲染当前选中的场景，并把该场景的中英文提示词与已锁定事物主参考一起带入请求。
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                            <button className="btn secondary" type="button" onClick={props.onRunContinuityTest} disabled={!canRunContinuityTest}>
+                              {props.continuityBusy ? '测试中…' : '运行场景测试'}
+                            </button>
+                            <span className="hint">{props.continuitySummary || '还没有测试结果。'}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="ai-storyboard-section" style={{ marginTop: 10 }}>
+                        <div className="ai-storyboard-section-head">
+                          <div className="ai-storyboard-section-title">运行日志</div>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            {busy ? (
+                              <div className="hint">
+                                计时：{(props.elapsedMs / 1000).toFixed(1)}s（{props.busyEntity ? '生成 Story Bible 中' : (props.busyGenerate ? '生成提示词中' : '批量出图中')}{props.queuePaused ? '，已暂停' : ''}）
+                              </div>
+                            ) : (
+                              <div className="hint">（仅用于排查，不影响出图）</div>
+                            )}
+                            <button className="btn secondary" type="button" onClick={() => setRenderLogsExpanded((v) => !v)}>
+                              {renderLogsExpanded ? '收起' : '展开'}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="ai-storyboard-section-body">
+                          {renderLogsExpanded ? (
+                            <textarea className="ai-storyboard-log-textarea" readOnly value={props.logs.length ? props.logs.join('\n') : '(暂无日志)'} rows={7} />
+                          ) : (
+                            <div className="ai-storyboard-log-preview"><pre>{logPreview}</pre></div>
+                          )}
+                          {props.error ? <div className="ai-modal-err">{props.error}</div> : null}
+                        </div>
+                      </div>
+                    </div>
+                    </div>
+                    ) : null}
+                  </div>
+
                 </div>
               </div>
             </div>
-          ) : (
-            <>
-              <div className="ai-storyboard-pane">
-                <div className="ai-storyboard-section">
-                  <div className="ai-storyboard-section-head">
-                    <div className="ai-storyboard-section-title">正式出图前检查</div>
-                    <button className="btn secondary" type="button" onClick={() => setActiveTab('lock')}>
-                      返回锁定事物
-                    </button>
-                  </div>
-                  <div className="ai-storyboard-section-body">
-                    <div className="hint">这一阶段只处理“正确出图”。如果需要改 checkpoint、LoRA、采样参数或重跑锁定测试，请返回“锁定事物”标签。</div>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-                      <span className="ai-storyboard-status ok">锁定门禁: 已通过</span>
-                      <span className="ai-storyboard-status ok">Checkpoint: {String((v as any).model || imageModelLabel || '(default)')}</span>
-                      <span className="ai-storyboard-status ok">LoRA: {configuredLoras.length ? configuredLoras.join(' | ') : '(none)'}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="ai-storyboard-section">
-                  <div className="ai-storyboard-section-head">
-                    <div className="ai-storyboard-section-title">{isDoubaoWorkflow ? 'Step 6. 检查全局连续锚点（全故事）' : 'Step 6. 检查全局提示词（全故事）'}</div>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <button className="btn secondary" type="button" onClick={props.onReviewGlobalPrompt} disabled={busy || props.globalPromptReviewBusy}>
-                        {props.globalPromptReviewBusy ? '评分中…' : 'AI 评分'}
-                      </button>
-                      <button className="btn secondary" type="button" onClick={props.onApplyGlobalPromptReview} disabled={busy || !props.globalPromptReview?.ai?.optimizedGlobalPromptZh}>
-                        继续强化提示词
-                      </button>
-                      <button className="btn secondary" type="button" onClick={props.onClearGlobalPrompt} disabled={busy || !String(v.globalPrompt || '').trim()}>
-                        清空正向
-                      </button>
-                      <button className="btn secondary" type="button" onClick={props.onClearGlobalNegativePrompt} disabled={busy || !String(v.globalNegativePrompt || '').trim()}>
-                        清空负向
-                      </button>
-                    </div>
-                  </div>
-                  <div className="ai-storyboard-section-body">
-                    {props.globalPromptReview ? (
-                      <div style={{ border: '1px solid rgba(148,163,184,0.22)', borderRadius: 12, padding: 10, marginBottom: 10 }}>
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
-                          <span className={`ai-storyboard-status ${getPromptReviewTone(props.globalPromptReview).cls}`}>
-                            AI 评分：{Number.isFinite(Number(props.globalPromptReview.ai.score)) ? `${Math.round(Number(props.globalPromptReview.ai.score))}/100` : 'n/a'}
-                          </span>
-                          <span className="hint" style={{ color: getPromptReviewTone(props.globalPromptReview).color }}>{props.globalPromptReview.ai.summary}</span>
-                        </div>
-                        {props.globalPromptReview.ai.suggestions?.length ? (
-                          <div className="hint" style={{ whiteSpace: 'pre-wrap' }}>建议：{props.globalPromptReview.ai.suggestions.slice(0, 3).join('；')}</div>
-                        ) : null}
-                        {props.globalPromptReview.aiError?.message ? (
-                          <div className="hint" style={{ color: '#fca5a5', marginTop: 6 }}>AI 回退：{props.globalPromptReview.aiError.message}</div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <div className="ai-storyboard-fields" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
-                      <div className="ai-storyboard-field" style={{ gridColumn: 'span 1' }}>
-                        <label>{isDoubaoWorkflow ? '全局正向（中文）' : '全局正向（中文强化版）'}</label>
-                        <textarea rows={5} value={String((v as any).globalPromptZh || '')} onChange={(e) => props.onChangeGlobalPromptZh(e.target.value)} />
-                      </div>
-                      <div className="ai-storyboard-field" style={{ gridColumn: 'span 1' }}>
-                        <label>{isDoubaoWorkflow ? '全局正向（英文）' : '全局正向（英文出图）'}</label>
-                        <textarea rows={5} value={v.globalPrompt || ''} onChange={(e) => props.onChange({ ...v, globalPrompt: e.target.value })} />
-                      </div>
-                      <div className="ai-storyboard-field" style={{ gridColumn: 'span 1' }}>
-                        <label>{isDoubaoWorkflow ? '全局负向（中文）' : '全局负向（中文强化版）'}</label>
-                        <textarea rows={4} value={String((v as any).globalNegativePromptZh || '')} onChange={(e) => props.onChangeGlobalNegativePromptZh(e.target.value)} />
-                      </div>
-                      <div className="ai-storyboard-field" style={{ gridColumn: 'span 1' }}>
-                        <label>{isDoubaoWorkflow ? '全局负向（英文）' : '全局负向（英文出图）'}</label>
-                        <textarea rows={4} value={v.globalNegativePrompt || ''} onChange={(e) => props.onChange({ ...v, globalNegativePrompt: e.target.value })} />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="ai-storyboard-pane">
-                <div className="ai-storyboard-section ai-storyboard-scenes">
-                  <div className="ai-storyboard-section-head">
-                    <div className="ai-storyboard-section-title">Step 7. 场景提示词列表（可编辑）</div>
-                    <div className="hint">共 {props.items.length} 个场景</div>
-                  </div>
-                  <div className="ai-storyboard-section-body" style={{ minHeight: 0 }}>
-                    <div className="ai-storyboard-scenes-list">
-                      <div className="ai-storyboard-scenes-scroll">
-                        {props.items.map((it, idx) => (
-                          <div key={it.nodeId} style={{ borderBottom: '1px solid rgba(148,163,184,0.12)', padding: 10 }}>
-                            <div style={{ fontWeight: 800, marginBottom: 6 }}>
-                              #{idx + 1} {it.nodeName} <span className="hint">({it.nodeId})</span> {it.status ? <span className="hint">[{it.status}]</span> : null}
-                              {(props.busyGenerate || props.busyApply) && (it.status === 'generating' || it.status === 'applying') && props.generatingNodeId === it.nodeId ? (
-                                <span className="hint">（{((props.generatingNodeElapsedMs || 0) / 1000).toFixed(1)}s）</span>
-                              ) : null}
-                            </div>
-                            <div className="hint" style={{ marginBottom: 6, whiteSpace: 'pre-wrap' }}>场景原文：{it.userInput || '(无场景文本)'}</div>
-                            {it.promptReview ? (
-                              <div style={{ border: '1px solid rgba(148,163,184,0.18)', borderRadius: 10, padding: 10, marginBottom: 8 }}>
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                                  <span className={`ai-storyboard-status ${getPromptReviewTone(it.promptReview).cls}`}>
-                                    AI 评分：{Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
-                                  </span>
-                                  <span className="hint" style={{ color: getPromptReviewTone(it.promptReview).color }}>{it.promptReview.ai.summary}</span>
-                                </div>
-                                {it.promptReview.ai.suggestions?.length ? (
-                                  <div className="hint" style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>建议：{it.promptReview.ai.suggestions.slice(0, 3).join('；')}</div>
-                                ) : null}
-                                {it.promptReview.aiError?.message ? (
-                                  <div className="hint" style={{ marginTop: 6, color: '#fca5a5' }}>AI 回退：{it.promptReview.aiError.message}</div>
-                                ) : null}
-                              </div>
-                            ) : null}
-                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                              <button className="btn secondary" type="button" onClick={() => props.onReviewItemPrompt(it.nodeId)} disabled={busy || props.promptReviewingNodeId === it.nodeId || !String(it.prompt || it.userInput || '').trim()}>
-                                {props.promptReviewingNodeId === it.nodeId ? '评分中…' : 'AI 评分'}
-                              </button>
-                              <button className="btn secondary" type="button" onClick={() => props.onApplyItemPromptReview(it.nodeId)} disabled={busy || !it.promptReview?.ai?.optimizedPrompt}>
-                                继续强化提示词
-                              </button>
-                            </div>
-                            <textarea rows={3} value={it.promptZh || ''} onChange={(e) => props.onChangeItem(it.nodeId, { promptZh: e.target.value })} placeholder="AI 强化后的中文场景提示词" />
-                            <textarea rows={3} style={{ marginTop: 6 }} value={it.prompt || ''} onChange={(e) => props.onChangeItem(it.nodeId, { prompt: e.target.value })} placeholder="英文场景提示词（用于出图）" />
-                            <input
-                              style={{ marginTop: 6 }}
-                              value={it.negativePromptZh || ''}
-                              onChange={(e) => props.onChangeItem(it.nodeId, { negativePromptZh: e.target.value })}
-                              placeholder="中文场景负向提示词（可选）"
-                            />
-                            <input
-                              style={{ marginTop: 6 }}
-                              value={it.negativePrompt || ''}
-                              onChange={(e) => props.onChangeItem(it.nodeId, { negativePrompt: e.target.value })}
-                              placeholder="英文场景负向提示词（用于出图）"
-                            />
-                            {it.note ? <div className="hint" style={{ marginTop: 4 }}>{it.note}</div> : null}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="ai-storyboard-section" style={{ marginTop: 10 }}>
-                  <div className="ai-storyboard-section-head">
-                    <div className="ai-storyboard-section-title">Step 8. 运行日志</div>
-                    {busy ? (
-                      <div className="hint">
-                        计时：{(props.elapsedMs / 1000).toFixed(1)}s（{props.busyEntity ? '生成 Story Bible 中' : (props.busyGenerate ? '生成提示词中' : '批量出图中')}{props.queuePaused ? '，已暂停' : ''}）
-                      </div>
-                    ) : (
-                      <div className="hint">（仅用于排查，不影响出图）</div>
-                    )}
-                  </div>
-                  <div className="ai-storyboard-section-body">
-                    <textarea readOnly value={props.logs.length ? props.logs.join('\n') : '(暂无日志)'} rows={7} />
-                    {props.error ? <div className="ai-modal-err">{props.error}</div> : null}
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
+          </div>
         </div>
 
         <div className="ai-storyboard-actions">
           {!envReady ? (
             <div className="hint" style={{ marginBottom: 8 }}>
-              环境检查未通过：请先完成 Step 1 的问题修复，再继续后续步骤。
+              环境检查未通过：请先通过顶部步骤 1 重新检查并修复问题，再继续后续步骤。
             </div>
           ) : null}
           {!props.assetConfirmReady ? (
             <div className="hint" style={{ marginBottom: 8 }}>
-              门禁未通过：请按 Step 3 → Step 4 先生成并确认必要事物资产，再进入 Step 5。
+              门禁未通过：请先生成并确认锁定结果，再运行场景测试。
             </div>
           ) : !props.continuityReady ? (
             <div className="hint" style={{ marginBottom: 8 }}>
-              门禁未通过：请按 Step 5 完成连续性预检后，才会开放“生成提示词/批量出图”。
+              门禁未通过：请先完成场景测试，随后才会开放“生成提示词/批量出图”。
             </div>
           ) : null}
-          {activeTab === 'lock' ? (
-            <div className="ai-storyboard-actions-row">
-              <div className="left">
-                <button onClick={() => setActiveTab('render')} disabled={!renderTabReady}>
-                  进入正确出图
-                </button>
-              </div>
-              <div className="right">
-                <span className="hint">锁定事物必须先通过门禁，正式出图标签才会开放。</span>
-              </div>
+          <div className="ai-storyboard-actions-row">
+            <div className="left">
+              <button onClick={props.onGenerateAll} disabled={!canGenerateAll}>
+                {props.busyGenerate ? '生成中…' : '批量生成场景提示词'}
+              </button>
+              <button onClick={props.onRetryPending} disabled={!canRetryGenerate}>
+                继续提示词队列
+              </button>
             </div>
-          ) : (
-            <div className="ai-storyboard-actions-row">
-              <div className="left">
-                <button onClick={props.onGenerateAll} disabled={!canGenerateAll}>
-                  {props.busyGenerate ? '生成中…' : '生成所有场景提示词'}
-                </button>
-                <button onClick={props.onRetryPending} disabled={!canRetryGenerate}>
-                  重试失败/继续未完成
-                </button>
-              </div>
-              <div className="right">
-                <button onClick={props.onApplyAll} disabled={!canApplyAll}>
-                  {props.busyApply ? '应用中…' : '校验并应用（批量出图）'}
-                </button>
-                <button onClick={props.onRetryApplyPending} disabled={!canRetryApply}>
-                  重试失败/继续未完成出图
-                </button>
-                <button onClick={props.onPauseQueue} disabled={!busy || props.queuePaused}>
-                  暂停
-                </button>
-                <button onClick={props.onResumeQueue} disabled={!busy || !props.queuePaused}>
-                  继续
-                </button>
-                <button onClick={props.onCancelQueue} disabled={!busy}>
-                  取消
-                </button>
-              </div>
+            <div className="right">
+              <button onClick={props.onApplyAll} disabled={!canApplyAll}>
+                {props.busyApply ? '应用中…' : '开始批量出图'}
+              </button>
+              <button onClick={props.onRetryApplyPending} disabled={!canRetryApply}>
+                继续出图队列
+              </button>
+              <button onClick={props.onPauseQueue} disabled={!busy || props.queuePaused}>
+                暂停
+              </button>
+              <button onClick={props.onResumeQueue} disabled={!busy || !props.queuePaused}>
+                继续
+              </button>
+              <button onClick={props.onCancelQueue} disabled={!busy}>
+                取消
+              </button>
             </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

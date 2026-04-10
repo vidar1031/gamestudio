@@ -1,6 +1,6 @@
 import { extractResponseOutputText, openaiResponsesJsonForTools } from './openai.js'
 import { generateStrictJsonViaDoubaoChat } from './doubao.js'
-import { generateStrictJsonViaOllamaChat } from './ollama.js'
+import { generateStrictJsonViaOllamaChat, generateTextViaOllamaChat } from './ollama.js'
 
 function clampInt(n, min, max, fallback) {
   const x = Number(n)
@@ -85,18 +85,42 @@ export async function translatePromptText({ provider, model, apiUrl, proxyUrl, t
   }
 
   if (p === 'ollama') {
-    const { parsed, meta } = await generateStrictJsonViaOllamaChat({
-      instructions,
-      input,
-      model: model || undefined,
-      timeoutMs: t,
-      maxRetries: 1,
-      validate: validateTranslation,
-      proxyUrl
-    })
-    const result = normalizeTranslation(parsed)
-    if (!validateTranslation(result)) throw new Error('invalid_translation_response')
-    return { result, meta }
+    try {
+      const { parsed, meta } = await generateStrictJsonViaOllamaChat({
+        instructions,
+        input,
+        model: model || undefined,
+        timeoutMs: t,
+        maxRetries: 1,
+        think: false,
+        validate: validateTranslation,
+        proxyUrl
+      })
+      const result = normalizeTranslation(parsed)
+      if (!validateTranslation(result)) throw new Error('invalid_translation_response')
+      return { result, meta }
+    } catch (err) {
+      const message = err && err.message ? String(err.message) : String(err || '')
+      if (!/invalid_json|ollama_invalid_json_output/i.test(message)) throw err
+      const fallbackInstructions =
+        `你是一个中英文翻译助手。\n` +
+        `任务：把输入文本从源语言翻译为目标语言。\n` +
+        `要求：\n` +
+        `- 只输出翻译结果本身，不要 JSON，不要解释，不要引号。\n` +
+        `- 如果 mode=prompt：保持提示词短语风格，不扩写成句子。\n` +
+        `- 保留 LoRA、模型名、尺寸、材质词和逗号分隔结构。\n`
+      const { text: translatedText, meta } = await generateTextViaOllamaChat({
+        instructions: fallbackInstructions,
+        input,
+        model: model || undefined,
+        timeoutMs: t,
+        proxyUrl,
+        think: false
+      })
+      const result = normalizeTranslation({ translatedText, sourceLanguage: src, targetLanguage: target })
+      if (!validateTranslation(result)) throw err
+      return { result, meta: { ...meta, note: 'plain_text_fallback' } }
+    }
   }
 
   const e = new Error(`unsupported_provider:${p || 'none'}`)

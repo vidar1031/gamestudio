@@ -15,14 +15,7 @@
 > vite
 
 
-  VITE v5.4.21  ready in 406 ms
+  VITE v5.4.21  ready in 152 ms
 
   ➜  Local:   http://localhost:8868/
   ➜  Network: use --host to expose
-10:02:58 AM [vite] hmr update /src/studios/ScriptStudio.tsx, /src/studios/BlueprintStudio.tsx, /src/studios/Hub.tsx, /src/StudioSettingsModal.tsx, /src/studios/ComposeStudio.tsx, /src/StoryboardLockWorkspace.tsx, /src/AiStoryboardBatchModal.tsx
-10:07:15 AM [vite] hmr update /src/StoryboardLockWorkspace.tsx
-10:09:29 AM [vite] hmr update /src/studios/ComposeStudio.tsx
-10:15:55 AM [vite] hmr update /src/studios/ComposeStudio.tsx
-10:15:55 AM [vite] hmr update /src/style.css
-10:19:10 AM [vite] hmr update /src/studios/ComposeStudio.tsx
-10:19:10 AM [vite] hmr update /src/style.css

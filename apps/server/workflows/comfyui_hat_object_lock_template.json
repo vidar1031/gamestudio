@@ -76,7 +76,7 @@
   "7": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "game_studio_story_hat_lock",
+      "filename_prefix": "gamestudio_story_hat_lock",
       "images": [
         "6",
         0

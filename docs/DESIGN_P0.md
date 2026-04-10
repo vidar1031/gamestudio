@@ -1,4 +1,4 @@
-# P0 设计文档：点击交互小故事制作工具（game_studio）
+# P0 设计文档：点击交互小故事制作工具（gamestudio）
 
 ## 1. 背景与目标
 
@@ -24,7 +24,7 @@ P0 只做一个类型：**点击交互小故事**：
 采用一个小型 monorepo，分离 schema/runtime/builder/editor/server，保证后续扩展“更多小游戏类型”时边界清晰。
 
 ```
-game_studio/
+gamestudio/
   apps/
     editor/               # React 编辑器（P0：图谱编辑 + 预览 + 导出）
     server/               # Hono 服务（P0：文件存储 + 导出 + 预览配置）

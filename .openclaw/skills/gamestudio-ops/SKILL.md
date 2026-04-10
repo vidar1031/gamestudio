@@ -1,6 +1,6 @@
 ---
 name: gamestudio-ops
-description: Use when working on the local game_studio project and you need a stable workflow for understanding the project, running it, validating changes, updating project memory, or performing recurring maintenance through OpenClaw agents and cron.
+description: Use when working on the local gamestudio project and you need a stable workflow for understanding the project, running it, validating changes, updating project memory, or performing recurring maintenance through OpenClaw agents and cron.
 ---
 
 # Gamestudio Ops
@@ -253,7 +253,7 @@ curl -sS http://127.0.0.1:1999/api/studio/comfyui/models
 2. 再做 Provider 深度诊断：`curl -sS -X POST http://127.0.0.1:1999/api/ai/diagnose`
 3. 如 diagnose 仍显示连接拒绝：
    - 等待 5~15 秒后重试一次（远程服务可能仍在初始化）
-   - 必要时重启本地 game_studio：`./restart_project.sh`（会先 stop 再 start）
+   - 必要时重启本地 gamestudio：`./restart_project.sh`（会先 stop 再 start）
 
 已核实现状（供判断优先级）：
 - 当 `POST /api/ai/diagnose` 返回 `ok:true` 后，再跑 `bash smoke_test_pipeline.sh`，通常应能覆盖 Stage 2~6 的端到端闭环

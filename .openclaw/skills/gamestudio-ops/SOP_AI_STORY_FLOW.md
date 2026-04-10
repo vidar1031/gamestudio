@@ -1,6 +1,6 @@
-# game_studio AI Story SOP v1
+# gamestudio AI Story SOP v1
 
-This SOP is the default execution contract for the "AI create story" workflow in game_studio.
+This SOP is the default execution contract for the "AI create story" workflow in gamestudio.
 
 ## Scope
 
@@ -27,7 +27,7 @@ Every run should include these fields:
 ## Operational Steps
 
 1. Open AI create story dialog
-- Precondition: game_studio workspace is loaded and interactive.
+- Precondition: gamestudio workspace is loaded and interactive.
 - Action: trigger AI create story panel.
 - Pass: dialog is visible with title, structure, prompt fields.
 - Fail handling: refresh once and retry.

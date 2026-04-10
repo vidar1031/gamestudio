@@ -27,11 +27,11 @@ import {
   type StudioEffectiveConfig
 } from '../api'
 
-const AI_PROMPT_KEY = 'game_studio.ai.prompt'
-const AI_TITLE_KEY = 'game_studio.ai.title'
-const AI_CHOICE_POINTS_KEY = 'game_studio.ai.choicePoints'
-const AI_OPTIONS_PER_CHOICE_KEY = 'game_studio.ai.optionsPerChoice'
-const AI_ENDINGS_KEY = 'game_studio.ai.endings'
+const AI_PROMPT_KEY = 'gamestudio.ai.prompt'
+const AI_TITLE_KEY = 'gamestudio.ai.title'
+const AI_CHOICE_POINTS_KEY = 'gamestudio.ai.choicePoints'
+const AI_OPTIONS_PER_CHOICE_KEY = 'gamestudio.ai.optionsPerChoice'
+const AI_ENDINGS_KEY = 'gamestudio.ai.endings'
 
 type PromptTemplate = {
   key: string
@@ -870,7 +870,7 @@ export default function Hub(props: Props) {
     <div className="app">
       <div className="topbar">
         <div className="left">
-          <div className="title">game_studio · 工作台</div>
+          <div className="title">gamestudio · 工作台</div>
           <button className="btn secondary" onClick={() => refresh()} disabled={busy}>
             刷新
           </button>

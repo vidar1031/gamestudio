@@ -1,4 +1,4 @@
-// API client for game_studio editor
+// API client for gamestudio editor
 
 import type {
   AiBackgroundRequest,
@@ -706,6 +706,7 @@ export type StoryAssetPlan = {
   worldAnchor: string
   forbiddenSubstitutes: string[]
   eventChain: string[]
+  excludedAssetIds?: string[]
   assets: any[]
   scenes: any[]
   summary: {
@@ -758,6 +759,17 @@ export async function buildStoryAssetPlanAi(
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/plan`, {
     method: 'POST',
     body: JSON.stringify(payload || {})
+  })
+  return json.plan as StoryAssetPlan
+}
+
+export async function persistStoryAssetPlanAi(
+  projectId: string,
+  payload: { plan: StoryAssetPlan }
+): Promise<StoryAssetPlan> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/plan/persist`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
   })
   return json.plan as StoryAssetPlan
 }
@@ -924,12 +936,17 @@ export async function enhanceStoryAssetPromptAi(
     negativePrompt?: string
     globalPromptZh?: string
     globalNegativePromptZh?: string
+    promptReview?: { passed?: boolean; score?: number; summary?: string; strengths?: string[]; risks?: string[]; suggestions?: string[] } | null
+    forceRegenerate?: boolean
   }
 ): Promise<{
   asset: any
   result: { promptZh: string; promptEn: string; negativePromptZh?: string; negativePrompt: string; summary: string; context?: any }
   meta?: { provider?: string; model?: string | null; api?: string | null; durationMs?: number; note?: string | null }
   aiError?: { message?: string; status?: number | null; code?: string | null } | null
+  promptReview?: { passed?: boolean; score?: number; summary?: string; strengths?: string[]; risks?: string[]; suggestions?: string[] } | null
+  promptReviewAttempts?: Array<{ attempt?: number; source?: string; passed?: boolean; score?: number; summary?: string; strengths?: string[]; risks?: string[]; suggestions?: string[] }>
+  promptReviewThreshold?: number
 }> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(assetId)}/prompt-enhance`, {
     method: 'POST',
@@ -939,7 +956,10 @@ export async function enhanceStoryAssetPromptAi(
     asset: (json.asset as any) || null,
     result: (json.result as any) || { promptZh: '', promptEn: '', negativePromptZh: '', negativePrompt: '', summary: '' },
     meta: (json.meta as any) || undefined,
-    aiError: (json.aiError as any) || null
+    aiError: (json.aiError as any) || null,
+    promptReview: (json.promptReview as any) || null,
+    promptReviewAttempts: Array.isArray(json.promptReviewAttempts) ? (json.promptReviewAttempts as any) : [],
+    promptReviewThreshold: Number.isFinite(Number(json.promptReviewThreshold)) ? Number(json.promptReviewThreshold) : undefined
   }
 }
 
@@ -1027,6 +1047,8 @@ export async function renderStorySceneAi(
   sceneId: string,
   payload?: {
     style?: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
+    model?: string
+    loras?: string[]
     width?: number
     height?: number
     steps?: number

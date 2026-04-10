@@ -23,6 +23,13 @@ function toProjectAssetUrl(projectId: string, rawUri: string) {
   return resolveUrl(`/project-assets/${encodeURIComponent(String(projectId))}/${uri.replace(/^\/+/, '')}`)
 }
 
+function toRuntimeUrl(rawUrl: string) {
+  const value = String(rawUrl || '').trim()
+  if (!value) return ''
+  if (/^https?:\/\//i.test(value) || value.startsWith('data:')) return value
+  return resolveUrl(value.startsWith('/') ? value : `/${value}`)
+}
+
 function scoreOf(candidate: any) {
   const n = Number(candidate?.analysis?.score)
   return Number.isFinite(n) ? Math.round(n) : null
@@ -40,13 +47,135 @@ function formatGalleryTime(raw: string) {
   }
 }
 
+function normalizeAssetPath(raw: string) {
+  return String(raw || '').trim().replace(/^\/+/, '')
+}
+
+function buildDisplayedReferenceCandidates(asset: any) {
+  const primaryUri = normalizeAssetPath(String(asset?.primaryReferenceAssetUri || ''))
+  const batchAll = Array.isArray(asset?.latestReferenceBatch) ? asset.latestReferenceBatch.filter((item: any) => item && typeof item === 'object') : []
+  const refsAll = Array.isArray(asset?.generatedRefs) ? asset.generatedRefs.filter((item: any) => item && typeof item === 'object') : []
+  const byPath = new Map<string, any>()
+
+  for (let i = 0; i < refsAll.length; i += 1) {
+    const ref = refsAll[i]
+    const assetPath = normalizeAssetPath(String(ref?.projectAssetUri || ''))
+    if (!assetPath) continue
+    byPath.set(assetPath, {
+      assetPath,
+      createdAt: String(ref?.createdAt || '').trim(),
+      seed: ref?.seed,
+      prompt: ref?.prompt,
+      negativePrompt: ref?.negativePrompt,
+      provider: ref?.provider,
+      _refIndex: i
+    })
+  }
+
+  for (let i = 0; i < batchAll.length; i += 1) {
+    const item = batchAll[i]
+    const assetPath = normalizeAssetPath(String(item?.assetPath || ''))
+    if (!assetPath) continue
+    const prev = byPath.get(assetPath) || {}
+    byPath.set(assetPath, {
+      ...prev,
+      ...item,
+      assetPath,
+      createdAt: String(prev?.createdAt || item?.createdAt || '').trim(),
+      _batchIndex: i
+    })
+  }
+
+  if (primaryUri && !byPath.has(primaryUri)) {
+    byPath.set(primaryUri, { assetPath: primaryUri, analysis: asset?.latestReferenceReview || null })
+  }
+
+  const all = Array.from(byPath.values())
+  const latestFirst = all.slice().sort((a: any, b: any) => {
+    const timeA = Date.parse(String(a?.createdAt || ''))
+    const timeB = Date.parse(String(b?.createdAt || ''))
+    if (Number.isFinite(timeA) && Number.isFinite(timeB) && timeA !== timeB) return timeB - timeA
+    if (Number.isFinite(timeA) && !Number.isFinite(timeB)) return -1
+    if (!Number.isFinite(timeA) && Number.isFinite(timeB)) return 1
+    const refIndexA = Number(a?._refIndex)
+    const refIndexB = Number(b?._refIndex)
+    if (Number.isFinite(refIndexA) && Number.isFinite(refIndexB) && refIndexA !== refIndexB) return refIndexB - refIndexA
+    const batchIndexA = Number(a?._batchIndex)
+    const batchIndexB = Number(b?._batchIndex)
+    if (Number.isFinite(batchIndexA) && Number.isFinite(batchIndexB) && batchIndexA !== batchIndexB) return batchIndexA - batchIndexB
+    return String(a?.assetPath || '').localeCompare(String(b?.assetPath || ''))
+  })
+
+  let display: any[] = []
+  if (primaryUri) {
+    const primary = latestFirst.find((item: any) => normalizeAssetPath(String(item?.assetPath || '')) === primaryUri) || null
+    const others = latestFirst.filter((item: any) => normalizeAssetPath(String(item?.assetPath || '')) !== primaryUri)
+    display = primary ? [primary, ...others.slice(0, 3)] : others.slice(0, 4)
+    if (all.length <= 4) {
+      display = primary ? [primary, ...others] : latestFirst.slice(0, 4)
+    }
+  } else {
+    display = latestFirst.slice(0, 4)
+  }
+
+  return {
+    all: latestFirst,
+    display,
+    overflow: Math.max(0, latestFirst.length - display.length)
+  }
+}
+
 type AssetPromptDraft = {
   promptZh?: string
   promptEn?: string
   negativePromptZh?: string
   negativePrompt?: string
+  promptReview?: {
+    passed?: boolean
+    score?: number
+    summary?: string
+    strengths?: string[]
+    risks?: string[]
+    suggestions?: string[]
+  } | null
   enhancedAt?: string
   enhanceMode?: string
+}
+
+function assetPromptReviewTone(review: AssetPromptDraft['promptReview']) {
+  const score = Number(review?.score)
+  if (Number.isFinite(score) && score >= 70) return { cls: 'ok', color: '#a7f3d0' }
+  if (Number.isFinite(score) && score >= 50) return { cls: 'pending', color: '#fde68a' }
+  return { cls: 'bad', color: '#fca5a5' }
+}
+
+function summarizeStoryBible(raw: string) {
+  const value = String(raw || '').trim()
+  if (!value) return null
+  try {
+    const parsed = JSON.parse(value)
+    const characters = Array.isArray(parsed?.characters) ? parsed.characters.length : 0
+    const props = Array.isArray(parsed?.props) ? parsed.props.length : 0
+    const locations = Array.isArray(parsed?.locations) ? parsed.locations.length : 0
+    const worldAnchor = String(parsed?.worldAnchor || '').trim()
+    return {
+      characters,
+      props,
+      locations,
+      hasWorldAnchor: Boolean(worldAnchor),
+      worldAnchorPreview: worldAnchor ? worldAnchor.slice(0, 140) : '',
+      invalid: false
+    }
+  } catch (_) {
+    return {
+      characters: 0,
+      props: 0,
+      locations: 0,
+      hasWorldAnchor: false,
+      worldAnchorPreview: '',
+      invalid: true
+    }
+  }
 }
 
 export default function StoryboardLockWorkspace(props: {
@@ -60,6 +189,8 @@ export default function StoryboardLockWorkspace(props: {
   } | null
   assetPromptDrafts?: Record<string, AssetPromptDraft>
   translatingScope?: string
+  translateCountdownSec?: number
+  promptOpBusy?: boolean
   assetPlanBusy: boolean
   assetGeneratingId?: string
   assetAnalyzingId?: string
@@ -68,7 +199,7 @@ export default function StoryboardLockWorkspace(props: {
   assetLineartId?: string
   assetGallery?: { assetId: string; assetName: string; items: StoryAssetGalleryEntry[] } | null
   assetGalleryBusy: boolean
-  assetGalleryDeletingPath?: string
+  assetGalleryDeletingPaths?: string[]
   assetConfirmReady: boolean
   assetConfirmSummary: string
   continuityReady: boolean
@@ -97,7 +228,10 @@ export default function StoryboardLockWorkspace(props: {
   onGenerateAssetLineart: (assetId: string) => void
   onOpenAssetGallery: (assetId: string) => void
   onCloseAssetGallery: () => void
+  onSelectAssetGalleryPrimary: (assetId: string, assetPath: string) => void
+  onDeleteAssetGalleryItems: (assetId: string, assetPaths: string[]) => void
   onDeleteAssetGalleryItem: (assetId: string, assetPath: string) => void
+  onDeleteAssetFromPlan: (assetId: string) => void
   onConfirmAssetPlan: () => void
   onOpenRender: () => void
   onChangeGlobalPromptZh: (value: string) => void
@@ -127,6 +261,23 @@ export default function StoryboardLockWorkspace(props: {
   const configuredLoras = Array.isArray((props.value as any)?.loras) ? (props.value as any).loras.map((x: any) => String(x || '').trim()).filter(Boolean) : []
   const [logsExpanded, setLogsExpanded] = React.useState(false)
   const [globalPromptsExpanded, setGlobalPromptsExpanded] = React.useState(false)
+  const [storyBibleExpanded, setStoryBibleExpanded] = React.useState(false)
+  const [gallerySelectedPaths, setGallerySelectedPaths] = React.useState<string[]>([])
+  const promptOpBusy = Boolean(props.promptOpBusy)
+  const translateCountdownSec = Number(props.translateCountdownSec || 0)
+  const translateCountdownLabel = translateCountdownSec > 0 ? ` ${translateCountdownSec}s` : ''
+  const storyBibleSummary = summarizeStoryBible(String((props.value as any)?.storyBibleJson || ''))
+
+  React.useEffect(() => {
+    setGallerySelectedPaths([])
+  }, [props.assetGallery?.assetId])
+
+  React.useEffect(() => {
+    const allowed = new Set((props.assetGallery?.items || []).map((item) => String(item.assetPath || '').trim()).filter(Boolean))
+    setGallerySelectedPaths((prev) => prev.filter((item) => allowed.has(item)))
+  }, [props.assetGallery?.items])
+
+  const galleryDeletingSet = React.useMemo(() => new Set((props.assetGalleryDeletingPaths || []).map((item) => String(item || '').trim()).filter(Boolean)), [props.assetGalleryDeletingPaths])
 
   return (
     <div className="ai-modal story-lock-workspace-overlay" role="dialog" aria-modal="true">
@@ -170,17 +321,59 @@ export default function StoryboardLockWorkspace(props: {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn secondary" type="button" onClick={props.onOpenRender} disabled={!props.assetConfirmReady}>进入正确出图</button>
+            <button className="btn secondary" type="button" onClick={props.onOpenRender} disabled={!props.assetConfirmReady}>进入正式场景出图</button>
             <button type="button" className="icon-btn" onClick={props.onClose} aria-label="关闭" title="关闭">✕</button>
           </div>
         </div>
 
         <div className="story-lock-workspace-controls">
           <button className="btn secondary" type="button" onClick={props.onRunOpenChecks} disabled={props.assetPlanBusy || props.busyEntity}>重新体检</button>
-          <button className="btn secondary" type="button" onClick={props.onGenerateEntity} disabled={props.assetPlanBusy || props.busyEntity}>{props.busyEntity ? '生成中…' : '生成 Story Bible'}</button>
-          <button className="btn secondary" type="button" onClick={props.onBuildAssetPlan} disabled={props.assetPlanBusy || !storyBibleReady}>{props.assetPlanBusy ? '处理中…' : '生成资产计划'}</button>
           <button className="btn secondary" type="button" onClick={props.onGenerateAllMissingAssetRefs} disabled={props.assetPlanBusy || !assetPlan || missingBatchCount === 0}>生成全部缺失参考图 ({missingBatchCount})</button>
           <button className="btn secondary" type="button" onClick={props.onConfirmAssetPlan} disabled={props.assetPlanBusy || !assetPlan || unlockedCount > 0}>{props.assetConfirmReady ? '已确认' : '确认锁定无误'}</button>
+        </div>
+
+        <div className="story-lock-global-prompts">
+          <div className="story-lock-global-card story-lock-bible-card">
+            <div className="story-lock-global-head story-lock-bible-head">
+              <div className="story-lock-bible-intro">
+                <div className="story-lock-workspace-log-title">Story Bible</div>
+                <div className="hint">这里统一处理故事锁定前置数据。先生成 Story Bible，再生成资产计划；进入 AI 分镜后只读取结果，不再重复编辑。</div>
+              </div>
+              <div className="story-lock-bible-actions">
+                <button className="btn secondary" type="button" onClick={() => setStoryBibleExpanded((v) => !v)}>{storyBibleExpanded ? '收起' : '展开'}</button>
+                <button className="btn secondary" type="button" onClick={props.onGenerateEntity} disabled={props.assetPlanBusy || props.busyEntity}>
+                  {props.busyEntity ? '生成中…' : (storyBibleReady ? '重新生成 Story Bible' : '生成 Story Bible')}
+                </button>
+                <button className="btn secondary" type="button" onClick={props.onBuildAssetPlan} disabled={props.assetPlanBusy || !storyBibleReady}>
+                  {props.assetPlanBusy ? '处理中…' : '生成资产计划'}
+                </button>
+              </div>
+            </div>
+            <div className="story-lock-bible-summary">
+              <div className="story-lock-workspace-chip-row">
+                <span className={`ai-storyboard-status ${storyBibleReady ? 'ok' : 'pending'}`}>{storyBibleReady ? '已生成' : '未生成'}</span>
+                {storyBibleSummary ? <span className={`ai-storyboard-status ${storyBibleSummary.invalid ? 'bad' : 'ok'}`}>{storyBibleSummary.invalid ? 'JSON 无法解析' : '结构可用'}</span> : null}
+                {storyBibleSummary && !storyBibleSummary.invalid ? <span className="ai-storyboard-status ok">角色 {storyBibleSummary.characters}</span> : null}
+                {storyBibleSummary && !storyBibleSummary.invalid ? <span className="ai-storyboard-status ok">道具 {storyBibleSummary.props}</span> : null}
+                {storyBibleSummary && !storyBibleSummary.invalid ? <span className="ai-storyboard-status ok">地点 {storyBibleSummary.locations}</span> : null}
+                {storyBibleSummary && !storyBibleSummary.invalid ? <span className={`ai-storyboard-status ${storyBibleSummary.hasWorldAnchor ? 'ok' : 'pending'}`}>世界锚点 {storyBibleSummary.hasWorldAnchor ? '已生成' : '缺失'}</span> : null}
+              </div>
+              {storyBibleExpanded ? (
+                storyBibleSummary ? (
+                  <div className="story-lock-bible-details">
+                    {storyBibleSummary.worldAnchorPreview ? <div className="hint">世界锚点摘要：{storyBibleSummary.worldAnchorPreview}{storyBibleSummary.worldAnchorPreview.length >= 140 ? '…' : ''}</div> : null}
+                    <div className="hint">
+                      {storyBibleSummary.invalid
+                        ? '当前 Story Bible 内容无法解析，建议重新生成。'
+                        : '这份摘要会驱动后续资产计划、事物锁定和正式场景提示词。详细锁定处理统一留在当前界面。'}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="hint">当前还没有 Story Bible。先生成它，后面的资产计划和锁定资产都会依赖这份前置数据。</div>
+                )
+              ) : null}
+            </div>
+          </div>
         </div>
 
         <div className="story-lock-workspace-log-section">
@@ -215,7 +408,7 @@ export default function StoryboardLockWorkspace(props: {
                 <div className="story-lock-global-section">
                   <div className="story-lock-global-subhead">
                     <div className="story-lock-global-subtitle">全局正向提示词</div>
-                    <button className="btn secondary" type="button" onClick={props.onTranslateGlobalPrompt} disabled={props.assetPlanBusy || props.translatingScope === 'globalPrompt'}>{props.translatingScope === 'globalPrompt' ? '翻译中…' : '中文转英文'}</button>
+                    <button className="btn secondary" type="button" onClick={props.onTranslateGlobalPrompt} disabled={promptOpBusy}>{props.translatingScope === 'globalPrompt' ? `翻译中…${translateCountdownLabel}` : (promptOpBusy ? '请等待当前任务…' : '中文转英文')}</button>
                   </div>
                   <div className="story-lock-prompt-grid">
                     <label className="story-lock-prompt-field">
@@ -231,7 +424,7 @@ export default function StoryboardLockWorkspace(props: {
                 <div className="story-lock-global-section">
                   <div className="story-lock-global-subhead">
                     <div className="story-lock-global-subtitle">全局负向提示词</div>
-                    <button className="btn secondary" type="button" onClick={props.onTranslateGlobalNegativePrompt} disabled={props.assetPlanBusy || props.translatingScope === 'globalNegativePrompt'}>{props.translatingScope === 'globalNegativePrompt' ? '翻译中…' : '中文转英文'}</button>
+                    <button className="btn secondary" type="button" onClick={props.onTranslateGlobalNegativePrompt} disabled={promptOpBusy}>{props.translatingScope === 'globalNegativePrompt' ? `翻译中…${translateCountdownLabel}` : (promptOpBusy ? '请等待当前任务…' : '中文转英文')}</button>
                   </div>
                   <div className="story-lock-prompt-grid">
                     <label className="story-lock-prompt-field">
@@ -253,18 +446,20 @@ export default function StoryboardLockWorkspace(props: {
           {planAssets.length ? planAssets.map((asset) => {
             const assetId = String(asset?.id || '').trim()
             const promptDraft = (props.assetPromptDrafts && props.assetPromptDrafts[assetId]) || {}
+            const promptReview = promptDraft.promptReview || null
+            const promptReviewTone = assetPromptReviewTone(promptReview)
             const promptEnhancedAt = String(promptDraft.enhancedAt || '').trim()
             const promptEnhanced = Boolean(promptEnhancedAt)
-            const batch = Array.isArray(asset?.latestReferenceBatch) ? asset.latestReferenceBatch.slice(0, 4) : []
             const primaryUri = String(asset?.primaryReferenceAssetUri || '').trim()
+            const { all: candidateAll, display: batch, overflow: batchOverflow } = buildDisplayedReferenceCandidates(asset)
             const lineartHintSrc = toProjectAssetUrl(String(props.projectId || ''), String(asset?.lineartHintAssetUri || '').trim())
             const lineartFinalSrc = toProjectAssetUrl(String(props.projectId || ''), String(asset?.lineartFinalAssetUri || '').trim())
-            const bestScore = batch.reduce((max: number | null, item: any) => {
+            const bestScore = candidateAll.reduce((max: number | null, item: any) => {
               const s = scoreOf(item)
               if (s == null) return max
               return max == null ? s : Math.max(max, s)
             }, null)
-            const selectedReview = (batch.find((item: any) => String(item?.assetPath || '').trim() === primaryUri)?.analysis) || asset?.latestReferenceReview || null
+            const selectedReview = (candidateAll.find((item: any) => normalizeAssetPath(String(item?.assetPath || '')) === normalizeAssetPath(primaryUri))?.analysis) || asset?.latestReferenceReview || null
             const selectedScore = Number(selectedReview?.score)
             const generating = props.assetGeneratingId === assetId
             const analyzing = props.assetAnalyzingId === assetId
@@ -278,10 +473,10 @@ export default function StoryboardLockWorkspace(props: {
             return (
               <div className="story-lock-asset-row" key={assetId}>
                 <div className="story-lock-asset-candidate-strip">
-                  {Array.from({ length: 4 }).map((_, idx) => {
-                    const candidate = batch[idx] || null
+                  {batch.length ? batch.map((candidate: any, idx: number) => {
                     const candidatePath = String(candidate?.assetPath || '').trim()
-                    const candidateSrc = toProjectAssetUrl(String(props.projectId || ''), candidatePath)
+                    const candidateUrl = String(candidate?.url || '').trim()
+                    const candidateSrc = candidateUrl ? toRuntimeUrl(candidateUrl) : toProjectAssetUrl(String(props.projectId || ''), candidatePath)
                     const candidateScore = scoreOf(candidate)
                     const selected = Boolean(candidatePath && candidatePath === primaryUri)
                     const recommended = Boolean(candidate?.recommended || (candidateScore != null && bestScore != null && candidateScore === bestScore))
@@ -301,7 +496,17 @@ export default function StoryboardLockWorkspace(props: {
                         </div>
                       </div>
                     )
-                  })}
+                  }) : (
+                    <div className="story-lock-candidate-card">
+                      <div className="story-lock-candidate-title">候选</div>
+                      <div className="ai-storyboard-asset-candidate-preview missing">
+                        <div className="hint">待生成</div>
+                      </div>
+                      <div className="story-lock-candidate-meta">
+                        <div className="hint">还没有候选图</div>
+                      </div>
+                    </div>
+                  )}
                   <div className={`story-lock-candidate-card story-lock-candidate-card-lineart ${lineartHintSrc ? 'selected' : ''}`}>
                     <div className="story-lock-candidate-title">ControlNet Hint</div>
                     <div className={`ai-storyboard-asset-candidate-preview ${lineartHintSrc ? 'ready' : 'missing'}`}>
@@ -327,6 +532,15 @@ export default function StoryboardLockWorkspace(props: {
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
                       <div style={{ fontWeight: 800, fontSize: 24 }}>{String(asset?.name || assetId || '未命名资产')}</div>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          onClick={() => props.onDeleteAssetFromPlan(assetId)}
+                          disabled={props.assetPlanBusy || !assetId}
+                          title="从当前锁定事物计划中移除该资产"
+                        >
+                          删除此事物
+                        </button>
                         <span className={`ai-storyboard-status ${String(asset?.primaryReferenceAssetUri || '').trim() ? 'ok' : 'bad'}`}>{getReferenceStatusLabel(String(asset?.referenceStatus || ''))}</span>
                         <span className={`ai-storyboard-status ${String(asset?.lineartFinalAssetUri || '').trim() ? 'ok' : 'bad'}`}>{String(asset?.lineartFinalAssetUri || '').trim() ? '线稿已生成' : '待生成线稿'}</span>
                       </div>
@@ -346,7 +560,7 @@ export default function StoryboardLockWorkspace(props: {
                       <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetRef(assetId, 4)} disabled={props.assetPlanBusy || assetBusy || !needsRef || !assetId}>{selecting ? '主参考处理中…' : (generating ? '抽卡中…' : (batch.length ? '再出 4 张' : '生成 4 张参考图'))}</button>
                       <button className="btn secondary" type="button" onClick={() => props.onAnalyzeAssetRef(assetId)} disabled={props.assetPlanBusy || assetBusy || !String(asset?.primaryReferenceAssetUri || '').trim() || !assetId}>{selecting ? '主参考处理中…' : (analyzing ? '分析当前主参考中…' : '分析当前主参考')}</button>
                       <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetLineart(assetId)} disabled={props.assetPlanBusy || assetBusy || !String(asset?.primaryReferenceAssetUri || '').trim() || !assetId}>{selecting ? '主参考处理中…' : (linearting ? '线稿生成中…' : '生成线稿')}</button>
-                      <button className="btn secondary" type="button" onClick={() => props.onOpenAssetGallery(assetId)} disabled={props.assetPlanBusy || assetBusy || !assetId}>{selecting ? '主参考处理中…' : (props.assetGalleryBusy && props.assetGallery?.assetId === assetId ? '加载管理中…' : '管理图片')}</button>
+                      <button className="btn secondary" type="button" onClick={() => props.onOpenAssetGallery(assetId)} disabled={props.assetPlanBusy || assetBusy || !assetId}>{selecting ? '主参考处理中…' : (props.assetGalleryBusy && props.assetGallery?.assetId === assetId ? '加载管理中…' : (batchOverflow > 0 ? `管理图片（更多 ${batchOverflow}）` : '管理图片'))}</button>
                     </div>
                   </div>
 
@@ -358,18 +572,47 @@ export default function StoryboardLockWorkspace(props: {
                           className="btn secondary"
                           type="button"
                           onClick={() => props.onOptimizeAssetRef(assetId)}
-                          disabled={props.assetPlanBusy || assetBusy || !assetId}
-                          title={promptEnhanced ? `上次增强时间：${formatGalleryTime(promptEnhancedAt)}。可继续再次增强。` : '调用 AI 根据当前事物重写并增强提示词'}
+                          disabled={promptOpBusy || !assetId}
+                          title={promptEnhanced ? `上次增强时间：${formatGalleryTime(promptEnhancedAt)}。再次增强会丢弃当前提示词内容，基于故事资产数据重新生成。` : '调用 AI 基于故事资产数据重新生成提示词'}
                         >
-                          {selecting ? '主参考处理中…' : (optimizing ? '增强中…' : (promptEnhanced ? '再次增强' : 'AI增强提示词'))}
+                          {optimizing ? '增强中…' : (promptOpBusy ? '请等待当前任务…' : (promptEnhanced ? '重新生成提示词' : 'AI增强提示词'))}
                         </button>
                       </div>
                     </div>
                     <div className="story-lock-prompt-stack">
+                      {promptReview ? (
+                        <div className="story-lock-prompt-section">
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+                            <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
+                              提示词评分：{Number.isFinite(Number(promptReview.score)) ? `${Math.round(Number(promptReview.score))}/100` : 'n/a'}
+                            </span>
+                            <span className="hint" style={{ color: promptReviewTone.color }}>
+                              {String(promptReview.summary || '').trim() || '暂无说明'}
+                            </span>
+                          </div>
+                          {Array.isArray(promptReview.risks) && promptReview.risks.length ? (
+                            <div className="hint" style={{ color: '#fca5a5', marginBottom: 6 }}>
+                              风险：{promptReview.risks.slice(0, 3).join('；')}
+                            </div>
+                          ) : null}
+                          {Array.isArray(promptReview.suggestions) && promptReview.suggestions.length ? (
+                            <div className="hint">
+                              建议：{promptReview.suggestions.slice(0, 3).join('；')}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <div className="story-lock-prompt-section">
                         <div className="story-lock-global-subhead">
-                          <div className="story-lock-global-subtitle">正向提示词</div>
-                          <button className="btn secondary" type="button" onClick={() => props.onTranslateAssetPromptPositive(assetId)} disabled={props.assetPlanBusy || assetBusy || translatingAssetPositive}>{selecting ? '主参考处理中…' : (translatingAssetPositive ? '翻译中…' : '中转英')}</button>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <div className="story-lock-global-subtitle">正向提示词</div>
+                            {promptReview ? (
+                              <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
+                                评分 {Number.isFinite(Number(promptReview.score)) ? `${Math.round(Number(promptReview.score))}/100` : 'n/a'}
+                              </span>
+                            ) : null}
+                          </div>
+                          <button className="btn secondary" type="button" onClick={() => props.onTranslateAssetPromptPositive(assetId)} disabled={promptOpBusy}>{translatingAssetPositive ? `翻译中…${translateCountdownLabel}` : (promptOpBusy ? '请等待当前任务…' : '中转英')}</button>
                         </div>
                         <div className="story-lock-prompt-grid">
                           <label className="story-lock-prompt-field">
@@ -384,8 +627,15 @@ export default function StoryboardLockWorkspace(props: {
                       </div>
                       <div className="story-lock-prompt-section">
                         <div className="story-lock-global-subhead">
-                          <div className="story-lock-global-subtitle">反向提示词</div>
-                          <button className="btn secondary" type="button" onClick={() => props.onTranslateAssetPromptNegative(assetId)} disabled={props.assetPlanBusy || assetBusy || translatingAssetNegative}>{selecting ? '主参考处理中…' : (translatingAssetNegative ? '翻译中…' : '中转英')}</button>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <div className="story-lock-global-subtitle">反向提示词</div>
+                            {promptReview ? (
+                              <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
+                                评分 {Number.isFinite(Number(promptReview.score)) ? `${Math.round(Number(promptReview.score))}/100` : 'n/a'}
+                              </span>
+                            ) : null}
+                          </div>
+                          <button className="btn secondary" type="button" onClick={() => props.onTranslateAssetPromptNegative(assetId)} disabled={promptOpBusy}>{translatingAssetNegative ? `翻译中…${translateCountdownLabel}` : (promptOpBusy ? '请等待当前任务…' : '中转英')}</button>
                         </div>
                         <div className="story-lock-prompt-grid">
                           <label className="story-lock-prompt-field">
@@ -416,19 +666,75 @@ export default function StoryboardLockWorkspace(props: {
                   <div className="story-lock-workspace-log-title">图片管理</div>
                   <div className="hint">{String(props.assetGallery.assetName || props.assetGallery.assetId || '未命名资产')}</div>
                 </div>
-                <button className="icon-btn" type="button" onClick={props.onCloseAssetGallery} disabled={Boolean(props.assetGalleryDeletingPath)} aria-label="关闭图片管理" title="关闭图片管理">✕</button>
+                <button className="icon-btn" type="button" onClick={props.onCloseAssetGallery} disabled={galleryDeletingSet.size > 0} aria-label="关闭图片管理" title="关闭图片管理">✕</button>
               </div>
               <div className="story-lock-gallery-summary">
                 <span className="ai-storyboard-status ok">共 {Array.isArray(props.assetGallery.items) ? props.assetGallery.items.length : 0} 张</span>
-                <span className="hint">这里只做已生成图片浏览与删除，删除时会同步清理关联。</span>
+                <span className="ai-storyboard-status">{gallerySelectedPaths.length ? `已选择 ${gallerySelectedPaths.length} 张` : '未选择'}</span>
+                <span className="hint">支持批量选择删除，也可直接在这里设为主参考。布局固定，不会因删图而拉伸。</span>
+                <div className="story-lock-gallery-toolbar">
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={() => {
+                      const items = Array.isArray(props.assetGallery?.items) ? props.assetGallery.items : []
+                      if (!items.length) return
+                      const allPaths = items.map((item) => String(item.assetPath || '').trim()).filter(Boolean)
+                      const next = gallerySelectedPaths.length === allPaths.length ? [] : allPaths
+                      setGallerySelectedPaths(next)
+                    }}
+                    disabled={galleryDeletingSet.size > 0 || !props.assetGallery?.items?.length}
+                  >
+                    {gallerySelectedPaths.length && gallerySelectedPaths.length === (props.assetGallery?.items?.length || 0) ? '取消全选' : '全选'}
+                  </button>
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={() => setGallerySelectedPaths([])}
+                    disabled={galleryDeletingSet.size > 0 || gallerySelectedPaths.length === 0}
+                  >
+                    清空选择
+                  </button>
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    onClick={() => {
+                      const paths = gallerySelectedPaths.filter(Boolean)
+                      if (!paths.length) return
+                      if (!window.confirm(`确定删除选中的 ${paths.length} 张图片吗？`)) return
+                      props.onDeleteAssetGalleryItems(props.assetGallery!.assetId, paths)
+                    }}
+                    disabled={props.assetPlanBusy || galleryDeletingSet.size > 0 || gallerySelectedPaths.length === 0}
+                  >
+                    {galleryDeletingSet.size > 1 ? `批量删除中…(${galleryDeletingSet.size})` : `删除选中 (${gallerySelectedPaths.length})`}
+                  </button>
+                </div>
               </div>
                 <div className="story-lock-gallery-grid">
                   {Array.isArray(props.assetGallery.items) && props.assetGallery.items.length ? props.assetGallery.items.map((item) => {
-                  const deleting = String(props.assetGalleryDeletingPath || '').trim() === String(item.assetPath || '').trim()
+                  const itemPath = String(item.assetPath || '').trim()
+                  const deleting = galleryDeletingSet.has(itemPath)
+                  const checked = gallerySelectedPaths.includes(itemPath)
                   const galleryItemUrl = String(item.url || '').trim()
                   const galleryItemSrc = galleryItemUrl ? resolveUrl(galleryItemUrl) : ''
                   return (
-                    <div className="story-lock-gallery-item" key={String(item.assetPath || '')}>
+                    <div className={`story-lock-gallery-item ${checked ? 'selected' : ''}`} key={itemPath}>
+                      <label className="story-lock-gallery-check">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={deleting || galleryDeletingSet.size > 0}
+                          onChange={(e) => {
+                            setGallerySelectedPaths((prev) => {
+                              const next = new Set(prev)
+                              if (e.target.checked) next.add(itemPath)
+                              else next.delete(itemPath)
+                              return Array.from(next)
+                            })
+                          }}
+                        />
+                        <span>选择</span>
+                      </label>
                       <div className={`ai-storyboard-asset-candidate-preview ${galleryItemSrc ? 'ready' : 'missing'}`}>
                         {galleryItemSrc ? <img src={galleryItemSrc} alt={String(item.label || item.assetPath || 'gallery_item')} /> : <div className="hint">图片不可用</div>}
                       </div>
@@ -449,9 +755,17 @@ export default function StoryboardLockWorkspace(props: {
                           <button
                             className="btn secondary"
                             type="button"
+                            onClick={() => props.onSelectAssetGalleryPrimary(props.assetGallery!.assetId, itemPath)}
+                            disabled={props.assetPlanBusy || galleryDeletingSet.size > 0 || !itemPath || Boolean(item.isPrimary) || Boolean(props.assetSelectingId)}
+                          >
+                            {props.assetSelectingId === props.assetGallery?.assetId && item.isPrimary ? '设置中…' : (item.isPrimary ? '当前主参考' : '设为主参考')}
+                          </button>
+                          <button
+                            className="btn secondary"
+                            type="button"
                             onClick={() => {
-                              if (!window.confirm(`确定删除这张图片吗？\n${String(item.assetPath || '')}`)) return
-                              props.onDeleteAssetGalleryItem(props.assetGallery!.assetId, String(item.assetPath || '').trim())
+                              if (!window.confirm(`确定删除这张图片吗？\n${itemPath}`)) return
+                              props.onDeleteAssetGalleryItem(props.assetGallery!.assetId, itemPath)
                             }}
                             disabled={props.assetPlanBusy || deleting}
                           >

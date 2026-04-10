@@ -49,7 +49,7 @@ try {
   const hasLocalOxmlKey = Boolean(String(process.env.LOCALOXML_API_KEY || process.env.STUDIO_AI_API_KEY || process.env.OPENAI_API_KEY || '').trim())
   const model = String(process.env.LOCALOXML_MODEL || process.env.STUDIO_AI_MODEL || process.env.OPENAI_MODEL || '')
   console.log(
-    `[game_studio] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} localoxmlKey=${hasLocalOxmlKey ? 'set' : 'missing'} openaiKey=${hasOpenAIKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''} aiInit=manual_only`
+    `[gamestudio] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} localoxmlKey=${hasLocalOxmlKey ? 'set' : 'missing'} openaiKey=${hasOpenAIKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''} aiInit=manual_only`
   )
 } catch (_) {}
 
@@ -75,7 +75,7 @@ app.use('*', async (c, next) => {
 // P0：允许本地 editor（8868）跨域调用 server（1999）
 app.use('*', cors({ origin: '*', allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }))
 
-app.get('/api/health', (c) => c.json({ ok: true, service: 'game_studio_server' }))
+app.get('/api/health', (c) => c.json({ ok: true, service: 'gamestudio_server' }))
 app.get('/favicon.ico', (c) => c.body(null, 204))
 app.get('/api/ai/status', async (c) => {
   // Non-sensitive snapshot for debugging effective config + last diagnostics.
@@ -108,7 +108,7 @@ app.get('/api/ai/models', async (c) => {
     total: ids.length
   })
 })
-// Storage root should live at repo root by default: game_studio/storage/*
+// Storage root should live at repo root by default: gamestudio/storage/*
 // For production/real usage, prefer setting STUDIO_STORAGE_ROOT to a repo-external path.
 const DEFAULT_ROOT = path.resolve(__dirname, '../../../storage')
 const ENV_ROOT = String(process.env.STUDIO_STORAGE_ROOT || '').trim()
@@ -432,7 +432,18 @@ function hasHumanSignals(text) {
 }
 
 function chooseStoryboardAssetLoras({ asset, requestedLoras }) {
-  const explicit = Array.isArray(requestedLoras) ? requestedLoras.map((x) => String(x || '').trim()).filter(Boolean) : []
+  const category = String(asset && asset.category || '').trim().toLowerCase()
+  const lockProfile = String(asset && asset.lockProfile || '').trim().toLowerCase()
+  const rawExplicit = Array.isArray(requestedLoras) ? requestedLoras.map((x) => String(x || '').trim()).filter(Boolean) : []
+  const isProtectedProp = category === 'prop' && ['wearable_prop', 'slender_prop', 'rigid_prop', 'soft_prop', 'ambient_prop', 'organic_prop'].includes(lockProfile)
+  const isSafePropReferenceLora = (entry) => {
+    const name = String(entry || '').trim().toLowerCase()
+    if (!name) return false
+    if (/(child|children|storybook|picturebook|book_illustration|genrih|furry|portrait|character|face|animal)/i.test(name)) return false
+    if (/(flat.?2d|cutout|game.?props?|game.?prop|object|asset)/i.test(name)) return true
+    return false
+  }
+  const explicit = isProtectedProp ? rawExplicit.filter(isSafePropReferenceLora) : rawExplicit
   const byKey = new Map()
   const push = (entry) => {
     const raw = String(entry || '').trim()
@@ -446,7 +457,6 @@ function chooseStoryboardAssetLoras({ asset, requestedLoras }) {
 
   const styleDefault = 'Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7'
   const furryDefault = 'Anime_Furry_Style_SDXL.safetensors:0.7'
-  const category = String(asset && asset.category || '').trim().toLowerCase()
   if (!explicit.length && category !== 'prop') push(styleDefault)
   const signalText = [
     String(asset && asset.name || '').trim(),
@@ -460,6 +470,118 @@ function chooseStoryboardAssetLoras({ asset, requestedLoras }) {
   if (isHumanCharacter && !explicit.length) push(styleDefault)
 
   return Array.from(byKey.values())
+}
+
+function normalizeComfyModelKey(raw) {
+  return normalizeComfyModelName(raw)
+    .replace(/^.*[\\/]/, '')
+    .replace(/\.(safetensors|ckpt|pt|pth)$/i, '')
+    .replace(/[^a-z0-9]+/gi, '')
+    .toLowerCase()
+}
+
+function storyAssetCheckpointCandidates(asset) {
+  const category = storyAssetStr(asset && asset.category).trim().toLowerCase()
+  const lockProfile = storyAssetStr(asset && asset.lockProfile).trim().toLowerCase()
+  const lockWorkflow = storyAssetStr(asset && asset.lockWorkflow).trim().toLowerCase()
+  const signalText = [
+    storyAssetStr(asset && asset.name),
+    storyAssetStr(asset && asset.anchorPrompt),
+    ...(Array.isArray(asset && asset.aliases) ? asset.aliases : [])
+  ].join(' ').toLowerCase()
+
+  const envCandidates = []
+  const pushEnv = (name) => {
+    const value = String(process.env[name] || '').trim()
+    if (value) envCandidates.push(value)
+  }
+  pushEnv('STUDIO_ASSET_MODEL_DEFAULT')
+  if (category === 'character') pushEnv('STUDIO_ASSET_MODEL_CHARACTER')
+  if (category === 'location') pushEnv('STUDIO_ASSET_MODEL_LOCATION')
+  if (lockProfile === 'wearable_prop') pushEnv('STUDIO_ASSET_MODEL_PROP_WEARABLE')
+  if (lockProfile === 'slender_prop') pushEnv('STUDIO_ASSET_MODEL_PROP_SLENDER')
+  if (lockProfile === 'rigid_prop') pushEnv('STUDIO_ASSET_MODEL_PROP_RIGID')
+  if (lockProfile === 'soft_prop') pushEnv('STUDIO_ASSET_MODEL_PROP_SOFT')
+  if (lockProfile === 'ambient_prop') pushEnv('STUDIO_ASSET_MODEL_PROP_AMBIENT')
+  if (lockProfile === 'organic_prop') pushEnv('STUDIO_ASSET_MODEL_PROP_ORGANIC')
+  if (category === 'prop') pushEnv('STUDIO_ASSET_MODEL_PROP_GENERIC')
+
+  const byPriority = []
+  const push = (...items) => byPriority.push(...items.filter(Boolean))
+  push(...envCandidates)
+
+  if (category === 'character' || category === 'location') {
+    push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
+    return byPriority
+  }
+  if (lockProfile === 'wearable_prop' || lockProfile === 'soft_prop' || lockProfile === 'ambient_prop' || lockProfile === 'organic_prop') {
+    push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
+    return byPriority
+  }
+  if (lockProfile === 'slender_prop') {
+    if (/\b(bobber|float)\b|浮漂|漂子/.test(signalText)) {
+      push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
+    } else {
+      push('sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0', 'ivisionIllustration_ivision10.safetensors', 'ivisionIllustration')
+    }
+    return byPriority
+  }
+  if (lockProfile === 'rigid_prop' || lockWorkflow === 'prop_product') {
+    push('sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0', 'ivisionIllustration_ivision10.safetensors', 'ivisionIllustration')
+    return byPriority
+  }
+  if (category === 'prop') {
+    push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
+    return byPriority
+  }
+  push('sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0', 'ivisionIllustration_ivision10.safetensors', 'ivisionIllustration')
+  return byPriority
+}
+
+function pickBestStoryboardAssetModel(models, asset) {
+  const list = Array.isArray(models) ? models.map((x) => String(x || '').trim()).filter(Boolean) : []
+  if (!list.length) return ''
+  const exactMap = new Map(list.map((item) => [normalizeComfyModelKey(item), item]))
+  for (const candidate of storyAssetCheckpointCandidates(asset)) {
+    const key = normalizeComfyModelKey(candidate)
+    if (key && exactMap.has(key)) return exactMap.get(key) || ''
+  }
+  for (const candidate of storyAssetCheckpointCandidates(asset)) {
+    const key = normalizeComfyModelKey(candidate)
+    if (!key) continue
+    const hit = list.find((item) => normalizeComfyModelKey(item).includes(key) || key.includes(normalizeComfyModelKey(item)))
+    if (hit) return hit
+  }
+  return list[0] || ''
+}
+
+async function resolveStoryboardAssetModel({ studio, imgProvider, requestedModel, asset }) {
+  const explicit = normalizeComfyModelName(requestedModel)
+  if (explicit || String(imgProvider || '').trim().toLowerCase() !== 'comfyui') {
+    return {
+      model: explicit || String(studio?.effective?.image?.model || '').trim(),
+      source: explicit ? 'explicit' : 'studio_default',
+      availableModels: []
+    }
+  }
+  const configured = normalizeComfyModelName(studio?.effective?.image?.model)
+  const modelsRoot = normalizeLocalPath(studio?.effective?.image?.comfyuiModelsRoot)
+  let availableModels = []
+  if (modelsRoot) {
+    const base = await resolveSdWebuiModelsBase(modelsRoot)
+    const ckptDir = await pickCheckpointDir(base)
+    availableModels = ckptDir ? await scanModelFiles(ckptDir, { exts: ['.safetensors', '.ckpt'], maxDepth: 4 }) : []
+  }
+  if (!availableModels.length) {
+    const baseUrl = normalizeComfyuiBaseUrl(studio?.effective?.image?.comfyuiBaseUrl)
+    const cap = await collectComfyCapabilities(baseUrl, 12_000, []).catch(() => null)
+    availableModels = Array.isArray(cap?.models) ? cap.models : []
+  }
+  const chosen = pickBestStoryboardAssetModel(availableModels, asset)
+  if (chosen) {
+    return { model: chosen, source: 'asset_profile_auto', availableModels }
+  }
+  return { model: configured, source: configured ? 'studio_default' : 'provider_fallback', availableModels }
 }
 
 function normalizeComfyLoraKey(raw) {
@@ -1614,6 +1736,222 @@ function uniqStoryAssetPromptParts(parts, max = 120) {
   return out
 }
 
+function sanitizeStoryAssetPromptZh({ asset, promptZh }) {
+  const category = storyAssetStr(asset && asset.category).trim().toLowerCase()
+  const lockProfile = storyAssetStr(asset && asset.lockProfile).trim().toLowerCase()
+  const raw = storyAssetStr(promptZh).trim()
+  if (!raw) return ''
+  const isPropLike = category === 'prop' || lockProfile.endsWith('_prop')
+  if (!isPropLike) return raw
+  const parts = splitStoryAssetPromptParts(raw)
+  const out = []
+  let seenRole = false
+  let seenStructure = false
+  for (const part of parts) {
+    const value = storyAssetStr(part).trim()
+    if (!value) continue
+    if (/^(关联场景|常与这些元素同场)\s*[:：]/.test(value)) continue
+    if (/^故事职责\s*[:：]/.test(value)) {
+      if (seenRole) continue
+      seenRole = true
+    }
+    if (/^结构关注点\s*[:：]/.test(value)) {
+      if (seenStructure) continue
+      seenStructure = true
+    }
+    out.push(value)
+  }
+  return uniqStoryAssetPromptParts(out, 64).join('，')
+}
+
+function limitStoryAssetText(v, max = 160) {
+  const s = storyAssetStr(v).trim()
+  if (!s) return ''
+  return s.length <= max ? s : `${s.slice(0, Math.max(0, max - 1)).trim()}…`
+}
+
+function findStoryAssetScenes(plan, asset) {
+  const wantedIds = new Set((Array.isArray(asset && asset.sceneIds) ? asset.sceneIds : []).map((item) => storyAssetStr(item).trim()).filter(Boolean))
+  const scenes = Array.isArray(plan && plan.scenes) ? plan.scenes : []
+  if (!wantedIds.size) return []
+  return scenes.filter((scene) => {
+    const sceneId = storyAssetStr(scene && scene.sceneId).trim()
+    const fallbackId = storyAssetStr(scene && scene.id).trim()
+    const sourceKey = storyAssetStr(scene && scene.sourceKey).trim()
+    return wantedIds.has(sceneId) || wantedIds.has(fallbackId) || wantedIds.has(sourceKey)
+  })
+}
+
+function storyAssetSignalHay(asset) {
+  return [
+    storyAssetStr(asset && asset.name),
+    storyAssetStr(asset && asset.anchorPrompt),
+    ...(Array.isArray(asset && asset.aliases) ? asset.aliases : [])
+  ].join(' ').toLowerCase()
+}
+
+function isStoryAssetBobberLike(asset) {
+  return /\b(bobber|float|fishing float)\b|浮漂|漂子/.test(storyAssetSignalHay(asset))
+}
+
+function isStoryAssetRodLike(asset) {
+  return /\b(bamboo fishing rod|bamboo rod|fishing rod|fishing pole|pole)\b|竹鱼竿|鱼竿|竹竿/.test(storyAssetSignalHay(asset))
+}
+
+function isStoryAssetBucketLike(asset) {
+  return /\b(bucket|pail)\b|鱼桶|木桶|水桶|桶/.test(storyAssetSignalHay(asset))
+}
+
+function isStoryAssetFishLike(asset) {
+  return /\b(minnow|fish|silver fish)\b|小银鱼|小鱼|银鱼|鱼/.test(storyAssetSignalHay(asset))
+}
+
+function isStoryAssetButterflyLike(asset) {
+  return /\b(butterfly|swallowtail)\b|蝴蝶|彩蝶/.test(storyAssetSignalHay(asset))
+}
+
+function buildStoryAssetUsageContext({ asset, plan }) {
+  const name = storyAssetStr(asset && asset.name).trim()
+  const aliases = uniqStoryAssetPromptParts(Array.isArray(asset && asset.aliases) ? asset.aliases : [], 12)
+  const sceneEntries = findStoryAssetScenes(plan, asset)
+  const eventChain = Array.isArray(plan && plan.eventChain) ? plan.eventChain : []
+  const sceneNames = uniqStoryAssetPromptParts(sceneEntries.map((scene) => storyAssetStr(scene && scene.sceneName).trim()).filter(Boolean), 8)
+  const sceneSummaries = uniqStoryAssetPromptParts(sceneEntries.map((scene) => storyAssetStr(scene && scene.summary).trim()).filter(Boolean), 8)
+  const eventMentions = uniqStoryAssetPromptParts(sceneEntries.map((scene) => {
+    const index = Number(scene && scene.sceneIndex)
+    if (!Number.isFinite(index) || index <= 0) return ''
+    return storyAssetStr(eventChain[index - 1]).trim()
+  }).filter(Boolean), 8)
+  const coAssetNames = uniqStoryAssetPromptParts(sceneEntries.flatMap((scene) => {
+    const promptAssets = Array.isArray(scene && scene.promptAssets) ? scene.promptAssets : []
+    return promptAssets
+      .map((item) => storyAssetStr(item && item.name).trim())
+      .filter((item) => item && item !== name && !aliases.includes(item))
+  }), 12)
+  const contextBlobZh = `${sceneSummaries.join('；')}；${sceneNames.join('；')}`
+  const contextBlobEn = eventMentions.join(' ; ').toLowerCase()
+  const roleHints = []
+  if (/(背着|背在|背负|携带|随身|肩带)/.test(contextBlobZh) || /\b(back-carry|carrying|carry|carried)\b/.test(contextBlobEn)) {
+    roleHints.push('是角色外出时会随身背携的道具')
+  }
+  if (/(装鱼|放进桶|放入桶|盛鱼|盛放|收纳)/.test(contextBlobZh) || /\b(place[ds]? into the bucket|fish is placed into the bucket|hold[s]? fish|carry small fish)\b/.test(contextBlobEn)) {
+    roleHints.push('承担盛放钓到的小鱼或收纳渔获的剧情职责')
+  }
+  if (/(湖边|柳树|草地|水面|钓鱼|钓竿|浮漂)/.test(contextBlobZh) || /\b(lakeside|shore|lake|willow|water|fishing|rod|bobber)\b/.test(contextBlobEn)) {
+    roleHints.push('属于乡村湖边垂钓语境中的朴素儿童道具')
+  }
+  if (/(回家|出发|回来|路上)/.test(contextBlobZh) || /\b(arrives?|walks home|path home|returns?)\b/.test(contextBlobEn)) {
+    roleHints.push('会跟随角色往返场景，适合做成轻便耐用的小型随行物件')
+  }
+  const plotCueHints = []
+  const fullNarrativeZh = `${sceneSummaries.join('；')}；${eventMentions.join('；')}`
+  const signalText = `${storyAssetStr(asset && asset.anchorPrompt)} ${storyAssetStr(asset && asset.name)} ${(Array.isArray(asset && asset.aliases) ? asset.aliases.join(' ') : '')}`.toLowerCase()
+  if (/(盯着|观察|看着|等待|远远看|远看|一眼认出|watch|waiting|watching|visible from afar|recognize at a glance)/i.test(`${fullNarrativeZh} ${contextBlobEn}`)) {
+    plotCueHints.push('在中远景里也要一眼认出主要色块和外轮廓')
+  }
+  if (/(摇晃|晃动|下沉|浮在水面|浮起来|watch the bobber|bobber|tremble|sinks?|upright on calm water)/i.test(`${fullNarrativeZh} ${signalText} ${contextBlobEn}`)) {
+    plotCueHints.push('要清楚表现直立浮姿、上下配色分区和远看可辨的顶端标记')
+  }
+  if (/(提着|背着|挂着|拿着|带着|系在|shoulder|carry|carried|hang|hung|held|tied to)/i.test(`${fullNarrativeZh} ${signalText} ${contextBlobEn}`)) {
+    plotCueHints.push('连接点、提握点、挂点或绑缚点要清楚')
+  }
+  if (/(装进|放入|收纳|盛放|开口|容量|placed into|put into|holds?|contain|storage)/i.test(`${fullNarrativeZh} ${signalText} ${contextBlobEn}`)) {
+    plotCueHints.push('开口、内部容积或收纳方式要明确')
+  }
+  if (/(戴着|戴上|佩戴|wearing|worn)/i.test(`${fullNarrativeZh} ${signalText} ${contextBlobEn}`)) {
+    plotCueHints.push('虽然会被佩戴使用，但锁定图必须保留独立物件的开口和内侧结构')
+  }
+  const structureHints = []
+  if (/(肩带|strap)/i.test(`${storyAssetStr(asset && asset.anchorPrompt)} ${contextBlobZh} ${contextBlobEn}`)) structureHints.push('肩带连接方式要清楚')
+  if (/(提梁|提手|bail|handle)/i.test(`${storyAssetStr(asset && asset.anchorPrompt)} ${contextBlobZh} ${contextBlobEn}`)) structureHints.push('提梁和挂点结构要可读')
+  if (/(开口|装鱼|盛放|bucket|pail|桶)/i.test(`${storyAssetStr(asset && asset.anchorPrompt)} ${contextBlobZh} ${contextBlobEn}`)) structureHints.push('开口、桶沿和内部容量感要明确')
+  if (/(木|wood|woven|staves|iron band|金属箍|箍)/i.test(`${storyAssetStr(asset && asset.anchorPrompt)} ${contextBlobZh} ${contextBlobEn}`)) structureHints.push('材质分区和连接关系要稳定')
+
+  if (isStoryAssetBucketLike(asset)) {
+    roleHints.length = 0
+    plotCueHints.length = 0
+    structureHints.length = 0
+    roleHints.push('是角色外出时会随身背携的小鱼桶')
+    roleHints.push('承担盛放钓到的小鱼或临时收纳渔获的剧情职责')
+    roleHints.push('属于乡村湖边垂钓语境中的朴素儿童道具')
+    plotCueHints.push('在中远景里也要一眼认出桶身轮廓、提梁和肩带连接点')
+    plotCueHints.push('要清楚表现开口、桶沿和内部容量感，避免被画成封闭盒子或普通花盆')
+    structureHints.push('肩带连接方式要清楚')
+    structureHints.push('提梁和挂点结构要可读')
+    structureHints.push('开口、桶沿和内部容量感要明确')
+    structureHints.push('材质分区和连接关系要稳定')
+  } else if (isStoryAssetRodLike(asset)) {
+    roleHints.length = 0
+    plotCueHints.length = 0
+    structureHints.length = 0
+    roleHints.push('是角色在湖边垂钓时使用的单根竹制鱼竿')
+    roleHints.push('承担抛线、等待、提竿和收鱼这些关键动作的剧情职责')
+    roleHints.push('属于乡村湖边垂钓语境中的朴素儿童渔具')
+    plotCueHints.push('在中远景里也要一眼认出细长竹竿轮廓和竹节分段')
+    plotCueHints.push('要清楚表现无渔轮单竿、竿梢绑线点、末端细线与小钩')
+    structureHints.push('竹节分段和由粗到细的渐细关系要清楚')
+    structureHints.push('竿梢绑线点、细线和小钩结构要明确')
+    structureHints.push('必须保持完整全长，不能裁切两端，不能透视缩短')
+  } else if (isStoryAssetBobberLike(asset)) {
+    roleHints.length = 0
+    plotCueHints.length = 0
+    structureHints.length = 0
+    roleHints.push('是钓线末端用来观察鱼讯的小型浮漂')
+    roleHints.push('承担轻微晃动、直立漂浮和突然下沉这些关键剧情提示职责')
+    roleHints.push('属于乡村湖边垂钓语境中的朴素儿童渔具')
+    plotCueHints.push('在中远景里也要一眼认出红白配色、葫芦形轮廓和顶部标记')
+    plotCueHints.push('要清楚表现直立浮姿、细黑中心针和上下两个小环')
+    structureHints.push('红上白下的配色分区要明确')
+    structureHints.push('葫芦形软木本体、细黑中心针和上下小环都要完整可读')
+    structureHints.push('必须是独立单个浮漂，不连水面、不连人物、不连整根鱼线场景')
+  } else if (isStoryAssetFishLike(asset)) {
+    roleHints.length = 0
+    plotCueHints.length = 0
+    structureHints.length = 0
+    roleHints.push('是故事里最终钓上来的小型银色小鱼')
+    roleHints.push('承担“提竿成功、收获成果、放进鱼桶”这些关键剧情结果展示职责')
+    roleHints.push('属于乡村湖边垂钓语境中的朴素自然小鱼，不是观赏鱼或大型鱼类')
+    plotCueHints.push('在中近景里要一眼认出银色细长鱼身、叉形尾和小黑眼')
+    plotCueHints.push('要清楚表现纺锤形身体轮廓、反光鳞片和简洁小鳍，不要夸张卡通表情')
+    structureHints.push('细长纺锤形身体、叉形尾和小黑珠眼要完整可读')
+    structureHints.push('背鳍、胸鳍和腹部轮廓要简洁明确')
+    structureHints.push('必须是单条独立小鱼，不连钓钩、桶、手、角色或水面环境')
+  } else if (isStoryAssetButterflyLike(asset)) {
+    roleHints.length = 0
+    plotCueHints.length = 0
+    structureHints.length = 0
+    roleHints.push('是故事里吸引角色分心、飞向野花丛的彩色蝴蝶')
+    roleHints.push('承担“短暂停落、绕飞、引向花丛”这些关键剧情触发职责')
+    roleHints.push('属于乡村湖边春日环境中的轻盈自然昆虫，不是飞蛾、蜻蜓或小鸟')
+    plotCueHints.push('在中近景里要一眼认出鲜艳多彩双翅、黑色翅脉和细长触角')
+    plotCueHints.push('要清楚表现停落或展翅时的蝴蝶轮廓，不要被画成鱼、叶子或标本针插展示')
+    structureHints.push('左右双翅外轮廓、翅脉分区和尾突形态要明确')
+    structureHints.push('细长身体、成对触角和翅膀配色层次要完整可读')
+    structureHints.push('必须是单只独立蝴蝶，不连花枝、不连人物、不连场景底座')
+  }
+
+  const roleLineZh = roleHints.length ? limitStoryAssetText(`故事职责：${roleHints.join('；')}`, 220) : ''
+  const sceneLineZh = sceneNames.length ? limitStoryAssetText(`关联场景：${sceneNames.join('、')}`, 120) : ''
+  const coAssetLineZh = coAssetNames.length ? limitStoryAssetText(`常与这些元素同场：${coAssetNames.join('、')}，但它们只用于校准身份，不要画进单资产参考图`, 180) : ''
+  const structureLineZh = structureHints.length ? limitStoryAssetText(`结构关注点：${structureHints.join('；')}`, 160) : ''
+  const plotCueLineZh = plotCueHints.length ? limitStoryAssetText(`叙事识别重点：${plotCueHints.join('；')}`, 180) : ''
+
+  return {
+    sceneNames,
+    sceneSummaries,
+    eventMentions,
+    coAssetNames,
+    roleHints,
+    plotCueHints,
+    structureHints,
+    roleLineZh,
+    plotCueLineZh,
+    sceneLineZh,
+    coAssetLineZh,
+    structureLineZh
+  }
+}
+
 function sanitizeProtectedAssetPrompt({ asset, promptEn, negativePrompt }) {
   const lockProfile = storyAssetStr(asset && asset.lockProfile).trim().toLowerCase()
   const lockWorkflow = storyAssetStr(asset && asset.lockWorkflow).trim().toLowerCase()
@@ -1736,7 +2074,7 @@ function buildStoryAssetFileTarget({ dir, asset, prefix, ext, seed, date = new D
 function buildStoryAssetComfyPrefix(asset, variant, date = new Date()) {
   const storage = buildStoryAssetStorageInfo(asset, date)
   const safeVariant = storyAssetStr(variant).trim().replace(/[^a-z0-9_.-]+/gi, '_') || 'asset'
-  return path.posix.join('game_studio_story_lock', storage.dateFolder, storage.category, storage.slug, safeVariant)
+  return path.posix.join('gamestudio_story_lock', storage.dateFolder, storage.category, storage.slug, safeVariant)
 }
 
 function getManagedStoryAssetPrefixes(asset) {
@@ -1932,15 +2270,33 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
   const name = storyAssetStr(asset && asset.name).trim() || '当前资产'
   const anchor = storyAssetStr(asset && asset.anchorPrompt).trim()
   const hint = storyAssetStr(asset && asset.referencePromptHint).trim()
-  const zhBase = storyAssetStr(currentPromptZh).trim()
+  const zhBase = sanitizeStoryAssetPromptZh({ asset, promptZh: currentPromptZh })
   const enBase = storyAssetStr(currentPromptEn).trim()
   const zhNegBase = storyAssetStr(currentNegativePromptZh).trim()
   const enNegBase = storyAssetStr(currentNegativePrompt).trim()
   const worldAnchor = storyAssetStr(plan && plan.worldAnchor).trim()
   const globalZh = storyAssetStr(globalPromptZh).trim()
   const globalNegZh = storyAssetStr(globalNegativePromptZh).trim()
+  const usageContext = buildStoryAssetUsageContext({ asset, plan })
+  const usageLines = [
+    usageContext.roleLineZh,
+    usageContext.plotCueLineZh,
+    usageContext.structureLineZh
+  ].filter(Boolean)
+  const propExclusionNames = usageContext.coAssetNames.slice(0, 8)
 
-  let promptZh = zhBase
+  let promptZh = ''
+  if (zhBase && category === 'prop') {
+    promptZh = uniqStoryAssetPromptParts([
+      ...splitStoryAssetPromptParts(zhBase),
+      ...usageLines,
+      '仅画物件本身',
+      '纯白背景',
+      '不把共现角色或地点画进去'
+    ], 32).join('，')
+  } else if (zhBase) {
+    promptZh = zhBase
+  }
   if (!promptZh) {
     if (lockProfile === 'character_core' || category === 'character') {
       promptZh = [
@@ -1953,39 +2309,64 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
     } else if (lockProfile === 'wearable_prop') {
       promptZh = [
         `${name}道具设计图，单一物件，居中展示，仅画物件本身`,
+        usageLines.join('，'),
         '纯白背景，无手持，无人物，无头部，无模特，无佩戴展示，无场景，无头模',
         '清楚表现材质、结构、尺寸比例、开口、边缘轮廓和独立摆放关系',
         '强调这是可穿戴但未佩戴的独立物件，必要时开口或内部结构可见',
         '中性商品参考插画，设计图表达，轮廓清晰，便于后续连续场景复用'
-      ].join('，')
+      ].filter(Boolean).join('，')
     } else if (lockProfile === 'slender_prop') {
       promptZh = [
         `${name}细长道具锁定图，单一物件，完整显示全长，居中展示`,
+        usageLines.join('，'),
         '纯白背景，无人物，无手持，无场景，不允许两端裁切，不允许透视缩短',
         '清楚表现长度比例、端头结构、孔位或节点细节，轮廓笔直可读',
         '中性设计参考图，线条干净，便于后续连续场景复用'
-      ].join('，')
+      ].filter(Boolean).join('，')
     } else if (lockProfile === 'rigid_prop') {
       promptZh = [
-        `${name}硬结构道具参考图，单一物件，稳定透视，居中展示`,
-        '纯白背景，无人物，无场景，无额外杂物',
+        `${name}硬结构道具参考图，单一物件，稳定透视，居中展示，仅画物件本身`,
+        usageLines.join('，'),
+        '纯白背景，无人物，无场景，无额外杂物，不把共现角色或地点画进去',
         '清楚表现主要结构部件、体块关系、材质和比例，不能塌陷变形',
         '中性商品参考插画，轮廓清晰，便于后续连续场景复用'
-      ].join('，')
+      ].filter(Boolean).join('，')
     } else if (lockProfile === 'ambient_prop') {
       promptZh = [
         `${name}氛围元素参考图，单一元素，居中展示`,
+        usageContext.sceneLineZh,
         '干净浅色背景，不要整张大场景，不要地平线，不要树木建筑人物',
         '清楚表现该元素自身轮廓、体积和内部层次，便于在不同场景中稳定复用',
         '中性参考插画，轮廓清晰，便于后续连续场景复用'
-      ].join('，')
+      ].filter(Boolean).join('，')
+    } else if (lockProfile === 'organic_prop') {
+      if (isStoryAssetButterflyLike(asset)) {
+        promptZh = [
+          `${name}昆虫参考图，单一物件，居中展示，仅画物件本身`,
+          usageLines.join('，'),
+          '纯白背景，无人物，无手持，无场景，无花枝，无草地，无栖息地，不把共现角色或地点画进去',
+          '清楚表现左右双翅轮廓、翅脉、尾突、细长身体、成对触角和配色分区',
+          '必须是单只独立蝴蝶，不要飞蛾，不要蜻蜓，不要小鸟，不要昆虫标本针插展示',
+          '中性设计参考图，轮廓清晰，便于后续连续场景复用'
+        ].filter(Boolean).join('，')
+      } else {
+        promptZh = [
+          `${name}自然标本道具锁定图，单一物件，居中展示，仅画物件本身`,
+          usageLines.join('，'),
+          '纯白背景，无人物，无手持，无场景，无水面，无栖息地，不把共现角色或地点画进去',
+          '清楚表现整体轮廓、头尾比例、眼睛、鳍、表面纹理和尺寸关系',
+          '必须是单个自然标本或单个小鱼，不要夸张表情，不要观赏鱼摆拍，不要生态展示缸',
+          '中性设计参考图，轮廓清晰，便于后续连续场景复用'
+        ].filter(Boolean).join('，')
+      }
     } else if (category === 'prop') {
       promptZh = [
         `${name}道具设计图，单一物件，居中展示，仅画物件本身`,
-        '纯白背景，无手持，无人物，无头部，无模特，无佩戴展示，无场景',
+        usageLines.join('，'),
+        '纯白背景，无手持，无人物，无头部，无模特，无佩戴展示，无场景，不把共现角色或地点画进去',
         '清楚表现材质、结构、尺寸比例、开口、边缘轮廓和正反面造型关系',
         '中性商品参考插画，轮廓清晰，便于后续连续场景复用'
-      ].join('，')
+      ].filter(Boolean).join('，')
     } else {
       promptZh = [
         `${name}地点参考图，稳定构图，统一环境语言`,
@@ -2007,16 +2388,24 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
   const summary = (lockProfile === 'character_core' || category === 'character')
     ? `已强化为角色锁定参考图提示词：去掉场景环境与道具干扰，保留白底、正面全身、空手和外观锁定。`
     : category === 'prop'
-      ? `已强化为道具锁定参考图提示词：突出单物件、白底和结构稳定。`
+      ? `已强化为道具锁定参考图提示词：补入故事职责、结构关注点和共现场景约束，同时保持单物件白底。`
       : `已强化为地点锁定提示词：突出环境构图和统一世界观。`
 
-  const negativePromptZh = zhNegBase || (
+  const defaultNegativePromptZh = (
     category === 'character'
       ? '多人，多主体，人物脸，真人小孩，拟人猫娘，帽子，鱼竿，水桶，场景背景，树木，草地，水面，桥，侧面，背面，三分之二侧面，投影，地面线，文字，水印'
       : category === 'prop'
-        ? '人物，角色，儿童，女孩，男孩，头部，脸部，半身像，上半身，手持，佩戴展示，戴在头上，模特，人体穿戴关系，场景背景，树木，草地，水面，文字，水印'
+        ? ['人物', '角色', '儿童', '女孩', '男孩', '头部', '脸部', '半身像', '上半身', '手持', '佩戴展示', '戴在头上', '模特', '人体穿戴关系', '场景背景', '树木', '草地', '水面', '文字', '水印', ...propExclusionNames].join('，')
         : '人物特写，人群，文字，水印'
   )
+  const negativePromptZh = (
+    zhNegBase && category === 'prop'
+      ? uniqStoryAssetPromptParts([
+        ...splitStoryAssetPromptParts(zhNegBase),
+        ...propExclusionNames
+      ], 40).join('，')
+      : zhNegBase
+  ) || defaultNegativePromptZh
 
   return {
     promptZh,
@@ -2032,15 +2421,255 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
       anchor,
       hint,
       worldAnchor,
-      globalPromptZh: globalZh
+      globalPromptZh: globalZh,
+      usageContext
     }
   }
 }
 
+function scoreStoryAssetPromptCandidate({ asset, promptZh, promptEn, negativePromptZh, negativePrompt, context }) {
+  const name = storyAssetStr(asset && asset.name).trim()
+  const category = storyAssetStr(asset && asset.category).trim().toLowerCase()
+  const lockProfile = storyAssetStr(asset && asset.lockProfile).trim().toLowerCase()
+  const promptZhText = storyAssetStr(promptZh).trim()
+  const promptEnText = storyAssetStr(promptEn).trim()
+  const negZhText = storyAssetStr(negativePromptZh).trim()
+  const negEnText = storyAssetStr(negativePrompt).trim()
+  const combinedZh = `${promptZhText}，${negZhText}`
+  const combinedEn = `${promptEnText}, ${negEnText}`.toLowerCase()
+  const strengths = []
+  const risks = []
+  const suggestions = []
+  let score = 0
+
+  const hasPositive = Boolean(promptZhText || promptEnText)
+  const hasNegative = Boolean(negZhText || negEnText)
+  if (hasPositive) {
+    score += 12
+    strengths.push('已生成正向提示词。')
+  } else {
+    risks.push('缺少正向提示词。')
+    suggestions.push('必须先明确这个事物是什么，再补白底和单物件约束。')
+  }
+  if (hasNegative) {
+    score += 8
+    strengths.push('已生成负向提示词。')
+  } else {
+    risks.push('缺少负向提示词。')
+    suggestions.push('补齐容易混淆的替代物、人物、场景和多物件排除项。')
+  }
+
+  if (/(单一物件|仅画物件本身|single object|isolated object|exactly one object)/i.test(`${promptZhText} ${promptEnText}`)) {
+    score += 8
+    strengths.push('单物件约束明确。')
+  } else if (category === 'prop') {
+    risks.push('单物件约束不足。')
+    suggestions.push('明确写“单一物件、仅画物件本身、不要重复件”。')
+  }
+
+  if (/(纯白背景|白底|pure white background)/i.test(`${promptZhText} ${promptEnText}`)) {
+    score += 6
+    strengths.push('白底参考图约束明确。')
+  } else if (category === 'prop' || category === 'character') {
+    risks.push('白底参考图约束不足。')
+    suggestions.push('补充纯白背景/无场景背景约束，避免混入故事场景。')
+  }
+
+  if (/(无人物|无人|no person|no character|no portrait|无手持|no hand|无场景|no environment)/i.test(`${combinedZh} ${combinedEn}`)) {
+    score += 8
+    strengths.push('人物和场景排除项明确。')
+  } else if (category === 'prop') {
+    risks.push('人物/场景排除项不足。')
+    suggestions.push('补充无人物、无手持、无场景、无环境杂项。')
+  }
+
+  if (context && typeof context === 'object') {
+    const roleLineZh = storyAssetStr(context.roleLineZh).trim()
+    const plotCueLineZh = storyAssetStr(context.plotCueLineZh).trim()
+    const structureLineZh = storyAssetStr(context.structureLineZh).trim()
+    if (roleLineZh && containsStoryAssetMeaning(promptZhText, roleLineZh)) {
+      score += 10
+      strengths.push('提示词吸收了故事职责。')
+    } else if (roleLineZh) {
+      risks.push('提示词没有明显吸收故事职责。')
+      suggestions.push('让提示词体现它在故事里的用途，而不是只剩通用商品图模板。')
+    }
+    if (plotCueLineZh && containsStoryAssetMeaning(promptZhText, plotCueLineZh)) {
+      score += 10
+      strengths.push('提示词体现了全文叙事识别重点。')
+    } else if (plotCueLineZh) {
+      risks.push('提示词没有体现全文情节里的识别重点。')
+      suggestions.push('把“远看可辨、浮姿/下沉、连接点、开口/容积”等叙事识别点写进正向词。')
+    }
+    if (structureLineZh && containsStoryAssetMeaning(promptZhText, structureLineZh)) {
+      score += 10
+      strengths.push('提示词体现了结构关注点。')
+    } else if (structureLineZh) {
+      risks.push('提示词缺少结构关注点。')
+      suggestions.push('把关键结构部位、连接关系、端头/孔位/节点写清楚。')
+    }
+  }
+
+  const forbidden = Array.isArray(asset && asset.forbiddenSubstitutes) ? asset.forbiddenSubstitutes.map((x) => storyAssetStr(x).trim()).filter(Boolean) : []
+  const forbiddenMentioned = forbidden.filter((item) => combinedZh.includes(item) || combinedEn.includes(item.toLowerCase()))
+  if (forbiddenMentioned.length) {
+    score += Math.min(12, forbiddenMentioned.length * 3)
+    strengths.push(`已排除 ${forbiddenMentioned.length} 个已知易混替代物。`)
+  } else if (forbidden.length) {
+    risks.push('未明显排除已知易混替代物。')
+    suggestions.push(`至少补进这些高风险替代项：${forbidden.slice(0, 4).join('、')}。`)
+  }
+
+  if (lockProfile === 'slender_prop' && /(完整显示全长|full length|end to end|两端|孔位|节点|foreshortening|透视缩短)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)) {
+    score += 10
+    strengths.push('细长道具的长度与端头约束明确。')
+  } else if (lockProfile === 'slender_prop') {
+    risks.push('细长道具缺少全长/端头/孔位约束。')
+    suggestions.push('补充“完整显示全长、两端不可裁切、孔位或节点清楚、避免透视缩短”。')
+  }
+
+  const signalText = [name, storyAssetStr(asset && asset.anchorPrompt), ...(Array.isArray(asset && asset.aliases) ? asset.aliases : [])].join(' ').toLowerCase()
+  if (/\b(bobber|float)\b|浮漂|漂子/.test(signalText)) {
+    const bobberSignals = /(红白|红色.*白色|red-and-white|gourd|葫芦|cork|软木|center pin|中心针|eyelet|小环)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
+    const badSignals = /(glass|玻璃|aquarium|rectangular box|box|beaker|plastic ball bobber|clip-on|slot|side slit|透明中段|球形)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
+    if (bobberSignals) {
+      score += 14
+      strengths.push('已经钉住浮漂的关键身份特征。')
+    } else {
+      score -= 18
+      risks.push('还没有把“红白葫芦形软木漂、中心针、上下小环”钉死。')
+      suggestions.push('明确写红上白下、葫芦形软木本体、细黑中心针、顶部和底部小环。')
+    }
+    if (badSignals) {
+      score -= 18
+      risks.push('提示词里仍保留会把浮漂引向玻璃盒、球漂或夹扣漂的风险。')
+    }
+    if (/(鱼竿|竹鱼竿|bucket|pail|开口|容积|肩带|提梁|bamboo rod|handle|strap)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)) {
+      score -= 24
+      risks.push('浮漂提示词混入了鱼竿/桶类结构语义。')
+      suggestions.push('浮漂只能保留红白葫芦形、中心针、上下小环和独立单物件约束。')
+    }
+  }
+
+  if (/\b(minnow|fish|silver fish)\b|小银鱼|银鱼/.test(signalText)) {
+    const fishSignals = /(银色|silver|细长|纺锤|torpedo|叉形尾|forked tail|鳞片|scales|黑珠眼|bead eye|小鳍|fin)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
+    const badFishSignals = /(开口|容积|桶沿|肩带|提梁|bucket|pail|strap|handle|佩戴|模特|wearing|portrait|human|手持|钓竿|鱼竿|hooked on line|aquarium|fish tank|观赏鱼|goldfish|koi|carp|trout|crab)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
+    if (fishSignals) {
+      score += 14
+      strengths.push('已经钉住小银鱼的关键形体特征。')
+    } else {
+      score -= 18
+      risks.push('还没有把“小型银色鱼身、叉形尾、鳞片、小黑眼”钉死。')
+      suggestions.push('明确写细长银色小鱼、纺锤形身体、叉形尾、反光鳞片和小黑珠眼。')
+    }
+    if (badFishSignals) {
+      score -= 24
+      risks.push('小银鱼提示词混入了鱼桶/人物/钓具/观赏鱼语义。')
+      suggestions.push('小银鱼只能保留单条自然小鱼的身体结构，不要写开口、容积、佩戴、手持、鱼竿或观赏鱼场景。')
+    }
+  }
+
+  if (/\b(butterfly|swallowtail)\b|蝴蝶|彩蝶/.test(signalText)) {
+    const butterflySignals = /(蝴蝶|butterfly|swallowtail|双翅|wings|翅脉|veins|触角|antennae|尾突|彩色|cyan|magenta|yellow)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
+    const badButterflySignals = /(鱼|小鱼|minnow|fish|叉形尾|forked tail|鳍|fin|水面|aquarium|标本针|specimen pin|蜻蜓|dragonfly|飞蛾|moth|bird|小鸟)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
+    if (butterflySignals) {
+      score += 14
+      strengths.push('已经钉住蝴蝶的关键形体特征。')
+    } else {
+      score -= 18
+      risks.push('还没有把“彩色双翅、黑色翅脉、细长触角、蝴蝶轮廓”钉死。')
+      suggestions.push('明确写单只彩色蝴蝶、双翅轮廓、黑色翅脉、细长触角和轻盈昆虫姿态。')
+    }
+    if (badButterflySignals) {
+      score -= 24
+      risks.push('蝴蝶提示词混入了小鱼/标本针/飞蛾/蜻蜓等错误语义。')
+      suggestions.push('蝴蝶只能保留双翅、翅脉、触角和配色，不要写鱼身、鱼鳍、水面、标本针或其它昆虫。')
+    }
+  }
+
+  if (/\b(bamboo fishing rod|bamboo rod|fishing rod|fishing pole|pole)\b|竹鱼竿|鱼竿|竹竿/.test(signalText)) {
+    const rodSignals = /(竹节|竹制|bamboo|nodes?|竿梢|tip|no reel|无渔轮|棉线|cotton line|hook|鱼钩)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
+    const badRodSignals = /(开口|容积|桶沿|肩带|提梁|bucket|pail|strap|handle|红白|葫芦|bobber|float|center pin|eyelet)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
+    if (rodSignals) {
+      score += 14
+      strengths.push('已经钉住竹鱼竿的关键身份特征。')
+    } else {
+      score -= 18
+      risks.push('还没有把“竹节、无渔轮、竿梢绑线点、末端细线和小钩”钉死。')
+      suggestions.push('明确写单根竹制鱼竿、清楚竹节、无渔轮、竿梢绑线、末端细线与小钩。')
+    }
+    if (badRodSignals) {
+      score -= 24
+      risks.push('竹鱼竿提示词混入了鱼桶/浮漂类结构语义。')
+      suggestions.push('竹鱼竿只能保留全长、竹节、绑线点、细线和小钩，不要写开口、容积、红白配色或浮姿。')
+    }
+  }
+
+  if (/(关联场景[:：]|常与这些元素同场[:：])/.test(promptZhText)) {
+    score -= 20
+    risks.push('正向词仍混入关联场景/共现元素文本。')
+    suggestions.push('不要把“关联场景”原样写进正向词，只把它转成结构和识别要求。')
+  }
+
+  const dangerousHumanCue =
+    /(女孩|男孩|头部|脸部|模特|佩戴展示|戴在头上|girl|boy|portrait|wearing|worn on head|model)/i.test(promptZhText)
+  const explicitPersonCue =
+    /(人物|角色)/.test(promptZhText) &&
+    !/(无人物|无人|非人物|不出现人物|仅画物件本身|无角色|不出现角色)/.test(promptZhText)
+  const childCue =
+    /儿童/.test(promptZhText) &&
+    !/(儿童道具|儿童故事|儿童绘本|storybook|picture book)/i.test(promptZhText)
+  if ((dangerousHumanCue || explicitPersonCue || childCue) && category === 'prop') {
+    score -= 18
+    risks.push('道具正向词混入人物/佩戴展示语义。')
+    suggestions.push('道具锁定词必须是独立物件，不要出现人物、佩戴、模特或头部。')
+  }
+
+  score = Math.max(0, Math.min(100, Math.round(score)))
+  const passed = score >= 50
+  const summary = passed
+    ? `提示词评分 ${score}/100，已达到保留阈值。`
+    : `提示词评分 ${score}/100，低于保留阈值，需要推倒重生。`
+  return {
+    passed,
+    score,
+    summary,
+    strengths: uniqStoryAssetPromptParts(strengths, 8),
+    risks: uniqStoryAssetPromptParts(risks, 10),
+    suggestions: uniqStoryAssetPromptParts(suggestions, 8)
+  }
+}
+
+function containsStoryAssetMeaning(promptZh, ruleLineZh) {
+  const promptParts = splitStoryAssetPromptParts(promptZh)
+  const ruleParts = splitStoryAssetPromptParts(ruleLineZh.replace(/^[^:：]+[:：]\s*/, ''))
+  if (!promptParts.length || !ruleParts.length) return false
+  const promptText = promptParts.join('，')
+  return ruleParts.some((part) => {
+    const needle = storyAssetStr(part).trim()
+    return needle && (promptText.includes(needle) || promptText.includes(needle.replace(/[；。]/g, '')))
+  })
+}
+
 async function translateStoryAssetPromptPair({ studio, promptZh, negativePromptZh, fallbackPromptEn, fallbackNegativePrompt, timeoutMs = 60_000 }) {
-  const translationCfg = studio?.effective?.translation || studio?.effective?.prompt || {}
-  const provider = storyAssetStr(translationCfg.provider).trim().toLowerCase()
-  if (!provider || provider === 'none') {
+  const translationCfg = studio?.effective?.translation || {}
+  const promptCfg = studio?.effective?.prompt || {}
+  const providers = [
+    {
+      provider: storyAssetStr(translationCfg.provider).trim().toLowerCase(),
+      model: translationCfg.model || undefined,
+      apiUrl: translationCfg.apiUrl || undefined,
+      note: null
+    },
+    {
+      provider: storyAssetStr(promptCfg.provider).trim().toLowerCase(),
+      model: promptCfg.model || undefined,
+      apiUrl: promptCfg.apiUrl || undefined,
+      note: 'translation_fallback_to_prompt_provider'
+    }
+  ].filter((item, index, list) => item.provider && item.provider !== 'none' && list.findIndex((entry) => entry.provider === item.provider && String(entry.apiUrl || '') === String(item.apiUrl || '')) === index)
+
+  if (!providers.length) {
     return {
       promptEn: storyAssetStr(fallbackPromptEn).trim(),
       negativePrompt: storyAssetStr(fallbackNegativePrompt).trim(),
@@ -2048,40 +2677,52 @@ async function translateStoryAssetPromptPair({ studio, promptZh, negativePromptZ
     }
   }
   const proxyUrl = studio?.effective?.network?.proxyUrl || undefined
-  const apiUrl = translationCfg.apiUrl || undefined
-  const model = translationCfg.model || undefined
-  const [promptRes, negativeRes] = await Promise.all([
-    translatePromptText({
-      provider,
-      model,
-      apiUrl,
-      proxyUrl,
-      timeoutMs,
-      text: storyAssetStr(promptZh).trim(),
-      sourceLang: 'zh',
-      targetLang: 'en',
-      mode: 'prompt'
-    }),
-    translatePromptText({
-      provider,
-      model,
-      apiUrl,
-      proxyUrl,
-      timeoutMs,
-      text: storyAssetStr(negativePromptZh).trim(),
-      sourceLang: 'zh',
-      targetLang: 'en',
-      mode: 'prompt'
-    })
-  ])
+  let promptRes = null
+  let negativeRes = null
+  let providerMeta = null
+  let lastError = null
+  for (const candidate of providers) {
+    try {
+      ;[promptRes, negativeRes] = await Promise.all([
+        translatePromptText({
+          provider: candidate.provider,
+          model: candidate.model,
+          apiUrl: candidate.apiUrl,
+          proxyUrl,
+          timeoutMs,
+          text: storyAssetStr(promptZh).trim(),
+          sourceLang: 'zh',
+          targetLang: 'en',
+          mode: 'prompt'
+        }),
+        translatePromptText({
+          provider: candidate.provider,
+          model: candidate.model,
+          apiUrl: candidate.apiUrl,
+          proxyUrl,
+          timeoutMs,
+          text: storyAssetStr(negativePromptZh).trim(),
+          sourceLang: 'zh',
+          targetLang: 'en',
+          mode: 'prompt'
+        })
+      ])
+      providerMeta = {
+        provider: promptRes?.meta?.provider || candidate.provider,
+        model: promptRes?.meta?.model || candidate.model || null,
+        api: promptRes?.meta?.api || candidate.apiUrl || null,
+        note: candidate.note
+      }
+      break
+    } catch (e) {
+      lastError = e
+    }
+  }
+  if (!promptRes || !negativeRes) throw lastError || new Error('translation_failed')
   return {
     promptEn: pickEnglishPrompt(storyAssetStr(promptRes?.result?.translatedText).trim(), fallbackPromptEn),
     negativePrompt: storyAssetStr(negativeRes?.result?.translatedText).trim() || storyAssetStr(fallbackNegativePrompt).trim(),
-    meta: {
-      provider: promptRes?.meta?.provider || provider,
-      model: promptRes?.meta?.model || model || null,
-      api: promptRes?.meta?.api || apiUrl || null
-    }
+    meta: providerMeta || null
   }
 }
 
@@ -2863,7 +3504,7 @@ app.post('/api/projects/ai/create', async (c) => {
   const globalRules = await readGlobalRules(ROOT)
   try {
     console.log(
-      `[game_studio] ai.create:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${formula.choicePoints} optionsPerChoice=${formula.optionsPerChoice} endings=${formula.endings}`
+      `[gamestudio] ai.create:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${formula.choicePoints} optionsPerChoice=${formula.optionsPerChoice} endings=${formula.endings}`
     )
   } catch (_) {}
   const closed = await generateClosedScriptDraft({
@@ -2948,7 +3589,7 @@ app.post('/api/projects/ai/create', async (c) => {
   const durationMs = Math.max(0, Date.now() - startedAt)
   try {
     console.log(
-      `[game_studio] ai.create project=${id} requestedProvider=${requestedProvider} provider=${closed.meta?.provider || requestedProvider} model=${closed.meta?.model || '-'} api=${closed.meta?.api || '-'} repaired=${closed.repaired ? 'true' : 'false'} cards=${Array.isArray(closed.scripts?.cards) ? closed.scripts.cards.length : 0} ms=${durationMs}`
+      `[gamestudio] ai.create project=${id} requestedProvider=${requestedProvider} provider=${closed.meta?.provider || requestedProvider} model=${closed.meta?.model || '-'} api=${closed.meta?.api || '-'} repaired=${closed.repaired ? 'true' : 'false'} cards=${Array.isArray(closed.scripts?.cards) ? closed.scripts.cards.length : 0} ms=${durationMs}`
     )
   } catch (_) {}
 
@@ -3001,7 +3642,7 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   const globalRules = await readGlobalRules(ROOT)
   try {
     console.log(
-      `[game_studio] ai.regen:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${formula.choicePoints} optionsPerChoice=${formula.optionsPerChoice} endings=${formula.endings}`
+      `[gamestudio] ai.regen:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${formula.choicePoints} optionsPerChoice=${formula.optionsPerChoice} endings=${formula.endings}`
     )
   } catch (_) {}
 
@@ -3098,7 +3739,7 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   const durationMs = Math.max(0, Date.now() - startedAt)
   try {
     console.log(
-      `[game_studio] ai.regen project=${id} requestedProvider=${requestedProvider} provider=${closed.meta?.provider || requestedProvider} model=${closed.meta?.model || '-'} api=${closed.meta?.api || '-'} repaired=${closed.repaired ? 'true' : 'false'} cards=${Array.isArray(closed.scripts?.cards) ? closed.scripts.cards.length : 0} ms=${durationMs}`
+      `[gamestudio] ai.regen project=${id} requestedProvider=${requestedProvider} provider=${closed.meta?.provider || requestedProvider} model=${closed.meta?.model || '-'} api=${closed.meta?.api || '-'} repaired=${closed.repaired ? 'true' : 'false'} cards=${Array.isArray(closed.scripts?.cards) ? closed.scripts.cards.length : 0} ms=${durationMs}`
     )
   } catch (_) {}
 
@@ -3215,7 +3856,7 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
     })
     try {
       console.log(
-        `[game_studio] ai.blueprint_review project=${id} provider=${ai?.meta?.provider || provider || 'localoxml'} model=${ai?.meta?.model || '-'} api=${ai?.meta?.api || '-'} ms=${ai?.meta?.durationMs || 0}`
+        `[gamestudio] ai.blueprint_review project=${id} provider=${ai?.meta?.provider || provider || 'localoxml'} model=${ai?.meta?.model || '-'} api=${ai?.meta?.api || '-'} ms=${ai?.meta?.durationMs || 0}`
       )
     } catch (_) {}
     try {
@@ -3232,7 +3873,7 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
     return c.json({ success: true, review: ai.review, meta: ai.meta, report: compiled.report, validation })
   } catch (e) {
     try {
-      console.error('[game_studio] ai blueprint review failed:', e instanceof Error ? e.message : String(e))
+      console.error('[gamestudio] ai blueprint review failed:', e instanceof Error ? e.message : String(e))
     } catch (_) {}
     const review = reviewBlueprintLocally({ formula: expectedFormula, report: compiled.report, validation })
     try {
@@ -3305,7 +3946,7 @@ app.post('/api/projects/:id/ai/fix/scripts', async (c) => {
       const cause = (e && typeof e === 'object' && 'cause' in e) ? e.cause : null
       const causeMsg = cause && typeof cause === 'object' && cause.message ? String(cause.message) : (cause ? String(cause) : '')
       const causeCode = cause && typeof cause === 'object' && cause.code ? String(cause.code) : ''
-      console.error('[game_studio] ai fix scripts failed:', msg, causeMsg ? `cause=${causeMsg}` : '', causeCode ? `code=${causeCode}` : '')
+      console.error('[gamestudio] ai fix scripts failed:', msg, causeMsg ? `cause=${causeMsg}` : '', causeCode ? `code=${causeCode}` : '')
     } catch (_) {}
     return c.json({ success: false, error: 'ai_failed', message: e instanceof Error ? e.message : String(e) }, 502)
   }
@@ -3344,7 +3985,7 @@ app.post('/api/projects/:id/ai/fix/scripts', async (c) => {
   const durationMs = Math.max(0, Date.now() - startedAt)
   try {
     console.log(
-      `[game_studio] ai.scripts_fix project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} provider=${fixed?.meta?.provider || 'unknown'} model=${fixed?.meta?.model || '-'} api=${fixed?.meta?.api || '-'} okBefore=${validationBefore?.ok ? 'true' : 'false'} okAfter=${validationAfter?.ok ? 'true' : 'false'} cards=${cardsOut.length} ms=${durationMs}`
+      `[gamestudio] ai.scripts_fix project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} provider=${fixed?.meta?.provider || 'unknown'} model=${fixed?.meta?.model || '-'} api=${fixed?.meta?.api || '-'} okBefore=${validationBefore?.ok ? 'true' : 'false'} okAfter=${validationAfter?.ok ? 'true' : 'false'} cards=${cardsOut.length} ms=${durationMs}`
     )
   } catch (_) {}
 
@@ -4527,7 +5168,7 @@ app.post('/api/projects/:id/ai/background', async (c) => {
         await writeFile(abs, buf)
         assetPath = String(assetPathFromAbsolute(id, abs) || '')
         if (!assetPath) throw new Error('invalid_replacement_asset_path')
-        console.log(`[game_studio] bg replace archived=${archived ? path.basename(archived) : '-'} restored=${path.basename(abs)}`)
+        console.log(`[gamestudio] bg replace archived=${archived ? path.basename(archived) : '-'} restored=${path.basename(abs)}`)
       } else {
         const fname = `bg_${Date.now()}.${ext}`
         abs = path.join(outDir, fname)
@@ -4769,32 +5410,53 @@ app.post('/api/projects/:id/ai/translate', async (c) => {
     : clampInt(body?.timeoutMs, 5_000, 180_000, clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 180_000, 60_000))
 
   const studio = await getEffectiveStudioConfig(ROOT)
-  const translationCfg = studio.effective.translation || studio.effective.prompt
-  if (!translationCfg?.provider || translationCfg.provider === 'none') {
+  const translationCfg = studio.effective.translation || {}
+  const promptCfg = studio.effective.prompt || {}
+  const providers = [
+    { provider: String(translationCfg.provider || '').trim().toLowerCase(), model: translationCfg.model, apiUrl: translationCfg.apiUrl, note: null },
+    { provider: String(promptCfg.provider || '').trim().toLowerCase(), model: promptCfg.model, apiUrl: promptCfg.apiUrl, note: 'translation_fallback_to_prompt_provider' }
+  ].filter((item, index, list) => item.provider && item.provider !== 'none' && list.findIndex((entry) => entry.provider === item.provider && String(entry.apiUrl || '') === String(item.apiUrl || '')) === index)
+
+  if (!providers.length) {
     return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中配置“提示词翻译接口”' }, 400)
   }
 
   const startedAt = Date.now()
   const traceId = createTraceId()
-  logStage({ stage: 'prompt.translate', event: 'start', traceId, project: id, provider: translationCfg.provider || 'localoxml', model: translationCfg.model || '-' })
+  const primaryProvider = providers[0]
+  logStage({ stage: 'prompt.translate', event: 'start', traceId, project: id, provider: primaryProvider.provider || 'localoxml', model: primaryProvider.model || '-' })
   try {
-    const { result, meta } = await translatePromptText({
-      provider: translationCfg.provider,
-      model: translationCfg.model,
-      apiUrl: translationCfg.apiUrl,
-      proxyUrl: studio.effective.network.proxyUrl,
-      timeoutMs,
-      text: textIn,
-      sourceLang: body?.sourceLang,
-      targetLang: body?.targetLang,
-      mode: body?.mode
-    })
-    logStage({ stage: 'prompt.translate', event: 'ok', traceId, project: id, provider: meta && meta.provider ? meta.provider : translationCfg.provider || 'localoxml', model: meta && meta.model ? meta.model : translationCfg.model || '-', ok: true, durationMs: Math.max(0, Date.now() - startedAt) })
+    let translated = null
+    let lastError = null
+    for (const candidate of providers) {
+      try {
+        translated = await translatePromptText({
+          provider: candidate.provider,
+          model: candidate.model,
+          apiUrl: candidate.apiUrl,
+          proxyUrl: studio.effective.network.proxyUrl,
+          timeoutMs,
+          text: textIn,
+          sourceLang: body?.sourceLang,
+          targetLang: body?.targetLang,
+          mode: body?.mode
+        })
+        if (translated && candidate.note) {
+          translated.meta = { ...(translated.meta || {}), note: candidate.note }
+        }
+        break
+      } catch (e) {
+        lastError = e
+      }
+    }
+    if (!translated) throw lastError || new Error('translation_failed')
+    const { result, meta } = translated
+    logStage({ stage: 'prompt.translate', event: 'ok', traceId, project: id, provider: meta && meta.provider ? meta.provider : primaryProvider.provider || 'localoxml', model: meta && meta.model ? meta.model : primaryProvider.model || '-', ok: true, durationMs: Math.max(0, Date.now() - startedAt) })
     return c.json({ success: true, result, meta, traceId })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
-    logStage({ stage: 'prompt.translate', event: 'fail', traceId, project: id, provider: translationCfg.provider || 'localoxml', model: translationCfg.model || '-', status: mapped.httpStatus, ok: false, durationMs: Math.max(0, Date.now() - startedAt), err: msg })
+    logStage({ stage: 'prompt.translate', event: 'fail', traceId, project: id, provider: primaryProvider.provider || 'localoxml', model: primaryProvider.model || '-', status: mapped.httpStatus, ok: false, durationMs: Math.max(0, Date.now() - startedAt), err: msg })
     return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
   }
 
@@ -4826,6 +5488,17 @@ app.post('/api/projects/:id/ai/story/assets/plan', async (c) => {
   return c.json({ success: true, plan })
 })
 
+app.post('/api/projects/:id/ai/story/assets/plan/persist', async (c) => {
+  const id = c.req.param('id')
+  const body = await c.req.json().catch(() => ({}))
+  const plan = body && body.plan && typeof body.plan === 'object' ? body.plan : null
+  if (!plan) {
+    return c.json({ success: false, error: 'missing_plan', message: '缺少要保存的资产计划。' }, 400)
+  }
+  await saveStoryAssetPlan(id, plan)
+  return c.json({ success: true, plan })
+})
+
 async function generateAndPersistStoryAssetReference({
   id,
   dir,
@@ -4841,6 +5514,7 @@ async function generateAndPersistStoryAssetReference({
   cfgScale,
   sampler,
   scheduler,
+  model,
   loras,
   prompt,
   negativePrompt,
@@ -4863,7 +5537,7 @@ async function generateAndPersistStoryAssetReference({
     sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
     comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
     apiUrl: studio.effective.image.apiUrl,
-    model: studio.effective.image.model,
+    model,
     loras,
     workflowMode: String(renderProfile.workflowMode || '').trim() || undefined,
     lockProfile: String(renderProfile.profile || '').trim() || undefined,
@@ -4898,6 +5572,7 @@ async function generateAndPersistStoryAssetReference({
       prompt,
       negativePrompt,
       provider: String(finalGen?.meta?.provider || imgProvider || ''),
+      model: String(finalGen?.meta?.model || model || '').trim() || undefined,
       remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
       loras: Array.isArray(loras) ? loras : undefined,
       seed: Number.isFinite(Number(seed)) ? Number(seed) : (Number.isFinite(Number(finalGen?.meta?.seed)) ? Number(finalGen.meta.seed) : undefined)
@@ -4927,6 +5602,7 @@ async function generateAndPersistStoryAssetReference({
             projectAssetUri: assetPath,
             createdAt: new Date().toISOString(),
             provider: String(finalGen?.meta?.provider || imgProvider || ''),
+            model: String(finalGen?.meta?.model || model || '').trim() || undefined,
             remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
             loras: Array.isArray(loras) ? loras : undefined,
             prompt,
@@ -4948,6 +5624,7 @@ async function generateAndPersistStoryAssetReference({
     assetPath,
     url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
     provider: String(finalGen?.meta?.provider || imgProvider || ''),
+    model: String(finalGen?.meta?.model || model || '').trim() || undefined,
     remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
     prompt,
     negativePrompt,
@@ -5308,6 +5985,17 @@ function storyAssetReviewScore(analysis) {
   return analysis && analysis.passed ? 100 : -1
 }
 
+function shouldDiscardStoryAssetReferenceCandidate(analysis) {
+  const score = storyAssetReviewScore(analysis)
+  if (score >= 0 && score < 20) return true
+  const summary = String(analysis && analysis.summary || '').trim()
+  const issues = Array.isArray(analysis && analysis.issues) ? analysis.issues.map((x) => String(x || '').trim()).join(' | ') : ''
+  const hay = `${summary} | ${issues}`.toLowerCase()
+  if (!hay) return false
+  if (/(主体类别错误|严重跑题|人形角色|人物而非|human|humanoid|android|cyborg|robot|person instead|body parts)/i.test(hay)) return true
+  return false
+}
+
 async function setPrimaryStoryAssetReference({
   id,
   plan,
@@ -5415,6 +6103,9 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
           : (Array.isArray(studio.effective.image.loras) ? studio.effective.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : [])
       )
   const effectiveLoras = chooseStoryboardAssetLoras({ asset, requestedLoras })
+  const requestedModel = String(body?.model || draft?.model || '').trim()
+  const modelResolution = await resolveStoryboardAssetModel({ studio, imgProvider, requestedModel, asset })
+  const effectiveModel = String(modelResolution.model || '').trim()
   const style = normalizeStyleEnum(body?.style || draft.style || 'picture_book')
   const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
   const width = clampInt(body?.width, 256, 2048, widthDefault)
@@ -5438,7 +6129,13 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
 
   try {
     logStage({ stage: 'asset.reference.batch', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'generate_candidates_only' })
-    let currentPlan = plan
+    let currentPlan = await persistStoryAssetReferenceBatch({
+      id,
+      plan,
+      assetId,
+      latestReferenceBatch: [],
+      recommendedReferenceAssetUri: ''
+    })
     let currentBundle = bundle
     let bestResult = null
     let bestReview = null
@@ -5446,7 +6143,8 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
     let attemptNegativePrompt = negativePrompt
     const baseSeed = Math.floor(Math.random() * 4_294_900_000)
     const rawCandidates = []
-    for (let i = 0; i < batchSize; i += 1) {
+    const maxAttempts = Math.max(batchSize, Math.min(12, batchSize + 4))
+    for (let i = 0; i < maxAttempts && rawCandidates.length < batchSize; i += 1) {
       const seed = (baseSeed + i * 9973) % 4_294_967_295
       const result = await generateAndPersistStoryAssetReference({
         id,
@@ -5463,6 +6161,7 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
         cfgScale: body?.cfgScale,
         sampler: body?.sampler,
         scheduler: body?.scheduler,
+        model: effectiveModel,
         loras: effectiveLoras,
         prompt: attemptPrompt,
         negativePrompt: attemptNegativePrompt,
@@ -5482,23 +6181,37 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
         assetPath: result.assetPath
       })
       currentPlan = reviewed.plan
-      rawCandidates.push({
-        attempt: i + 1,
-        seed,
-        assetPath: result.assetPath,
-        url: result.url,
-        analysis: reviewed.analysis
-      })
       const revisedPrompt = pickEnglishPrompt(String(reviewed.analysis?.revisedPrompt || '').trim(), attemptPrompt)
       const revisedNegativePrompt = String(reviewed.analysis?.revisedNegativePrompt || '').trim() || attemptNegativePrompt
       if (!Boolean(reviewed.analysis?.passed) && (revisedPrompt !== attemptPrompt || revisedNegativePrompt !== attemptNegativePrompt)) {
         attemptPrompt = revisedPrompt
         attemptNegativePrompt = revisedNegativePrompt
       }
+      if (!shouldDiscardStoryAssetReferenceCandidate(reviewed.analysis)) {
+        rawCandidates.push({
+          attempt: i + 1,
+          seed,
+          assetPath: result.assetPath,
+          url: result.url,
+          analysis: reviewed.analysis
+        })
+      }
       if (!bestResult || storyAssetReviewScore(reviewed.analysis) > storyAssetReviewScore(bestReview)) {
         bestResult = result
         bestReview = reviewed.analysis
       }
+      const partialRecommendedAssetPath = bestResult ? String(bestResult.assetPath || '').trim() : ''
+      const partialCandidates = rawCandidates.map((item) => ({
+        ...item,
+        recommended: Boolean(partialRecommendedAssetPath && String(item.assetPath || '').trim() === partialRecommendedAssetPath)
+      }))
+      currentPlan = await persistStoryAssetReferenceBatch({
+        id,
+        plan: currentPlan,
+        assetId,
+        latestReferenceBatch: partialCandidates,
+        recommendedReferenceAssetUri: partialRecommendedAssetPath
+      })
     }
     const recommendedAssetPath = bestResult ? String(bestResult.assetPath || '').trim() : ''
     const candidates = rawCandidates.map((item) => ({
@@ -5514,7 +6227,7 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
     })
     const currentAsset = (Array.isArray(currentPlan.assets) ? currentPlan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || null
     logStage({ stage: 'asset.reference.batch', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'generate_candidates_only', count: candidates.length })
-    return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, candidates, ...(bestResult || {}), plan: currentPlan })
+    return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, candidates, model: effectiveModel || undefined, modelSource: modelResolution.source, ...(bestResult || {}), plan: currentPlan })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
@@ -5635,11 +6348,20 @@ app.post('/api/projects/:id/ai/story/assets/reference/optimize', async (c) => {
             : (Array.isArray(studio.effective.image.loras) ? studio.effective.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : [])
         )
     const effectiveLoras = chooseStoryboardAssetLoras({ asset, requestedLoras })
+    const requestedModel = String(body?.model || draft?.model || '').trim()
+    const modelResolution = await resolveStoryboardAssetModel({ studio, imgProvider, requestedModel, asset })
+    const effectiveModel = String(modelResolution.model || '').trim()
     const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
     const width = clampInt(body?.width, 256, 2048, widthDefault)
     const height = clampInt(body?.height, 256, 2048, heightDefault)
     const batchSize = clampInt(body?.batchSize, 1, 6, 4)
-    let currentPlan = reviewed.plan
+    let currentPlan = await persistStoryAssetReferenceBatch({
+      id,
+      plan: reviewed.plan,
+      assetId,
+      latestReferenceBatch: [],
+      recommendedReferenceAssetUri: ''
+    })
     let currentBundle = bundle
     let bestResult = null
     let bestReview = effectiveAnalysis
@@ -5647,7 +6369,8 @@ app.post('/api/projects/:id/ai/story/assets/reference/optimize', async (c) => {
     let attemptNegativePrompt = String(effectiveAnalysis.revisedNegativePrompt || negativePrompt).trim() || negativePrompt
     const baseSeed = Math.floor(Math.random() * 4_294_900_000)
     const rawCandidates = []
-    for (let i = 0; i < batchSize; i += 1) {
+    const maxAttempts = Math.max(batchSize, Math.min(12, batchSize + 4))
+    for (let i = 0; i < maxAttempts && rawCandidates.length < batchSize; i += 1) {
       const seed = (baseSeed + i * 9973) % 4_294_967_295
       const result = await generateAndPersistStoryAssetReference({
         id,
@@ -5664,6 +6387,7 @@ app.post('/api/projects/:id/ai/story/assets/reference/optimize', async (c) => {
         cfgScale: body?.cfgScale,
         sampler: body?.sampler,
         scheduler: body?.scheduler,
+        model: effectiveModel,
         loras: effectiveLoras,
         prompt: attemptPrompt,
         negativePrompt: attemptNegativePrompt,
@@ -5683,23 +6407,37 @@ app.post('/api/projects/:id/ai/story/assets/reference/optimize', async (c) => {
         assetPath: result.assetPath
       })
       currentPlan = rerReviewed.plan
-      rawCandidates.push({
-        attempt: i + 1,
-        seed,
-        assetPath: result.assetPath,
-        url: result.url,
-        analysis: rerReviewed.analysis
-      })
       const revisedPrompt = pickEnglishPrompt(String(rerReviewed.analysis?.revisedPrompt || '').trim(), attemptPrompt)
       const revisedNegativePrompt = String(rerReviewed.analysis?.revisedNegativePrompt || '').trim() || attemptNegativePrompt
       if (!Boolean(rerReviewed.analysis?.passed) && (revisedPrompt !== attemptPrompt || revisedNegativePrompt !== attemptNegativePrompt)) {
         attemptPrompt = revisedPrompt
         attemptNegativePrompt = revisedNegativePrompt
       }
+      if (!shouldDiscardStoryAssetReferenceCandidate(rerReviewed.analysis)) {
+        rawCandidates.push({
+          attempt: i + 1,
+          seed,
+          assetPath: result.assetPath,
+          url: result.url,
+          analysis: rerReviewed.analysis
+        })
+      }
       if (!bestResult || storyAssetReviewScore(rerReviewed.analysis) > storyAssetReviewScore(bestReview)) {
         bestResult = result
         bestReview = rerReviewed.analysis
       }
+      const partialRecommendedAssetPath = bestResult ? String(bestResult.assetPath || '').trim() : ''
+      const partialCandidates = rawCandidates.map((item) => ({
+        ...item,
+        recommended: Boolean(partialRecommendedAssetPath && String(item.assetPath || '').trim() === partialRecommendedAssetPath)
+      }))
+      currentPlan = await persistStoryAssetReferenceBatch({
+        id,
+        plan: currentPlan,
+        assetId,
+        latestReferenceBatch: partialCandidates,
+        recommendedReferenceAssetUri: partialRecommendedAssetPath
+      })
     }
     const recommendedAssetPath = bestResult ? String(bestResult.assetPath || '').trim() : ''
     const candidates = rawCandidates.map((item) => ({
@@ -5714,7 +6452,7 @@ app.post('/api/projects/:id/ai/story/assets/reference/optimize', async (c) => {
       recommendedReferenceAssetUri: recommendedAssetPath
     })
     const currentAsset = (Array.isArray(currentPlan.assets) ? currentPlan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || null
-    return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, ...(bestResult || {}), candidates, plan: currentPlan })
+    return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, model: effectiveModel || undefined, modelSource: modelResolution.source, ...(bestResult || {}), candidates, plan: currentPlan })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
@@ -5747,6 +6485,8 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
   if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
 
   const body = await c.req.json().catch(() => ({}))
+  const rewriteFromScratch = true
+  const forceRegenerate = Boolean(body?.forceRegenerate)
   const plan = await readStoryAssetPlanIfExists(id)
   if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
   const asset = Array.isArray(plan.assets) ? plan.assets.find((item) => storyAssetStr(item && item.id).trim() === assetId) : null
@@ -5758,10 +6498,10 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
     plan,
     globalPromptZh: body?.globalPromptZh,
     globalNegativePromptZh: body?.globalNegativePromptZh,
-    currentPromptZh: body?.promptZh,
-    currentPromptEn: body?.promptEn,
-    currentNegativePromptZh: body?.negativePromptZh,
-    currentNegativePrompt: body?.negativePrompt
+    currentPromptZh: rewriteFromScratch ? '' : body?.promptZh,
+    currentPromptEn: rewriteFromScratch ? '' : body?.promptEn,
+    currentNegativePromptZh: rewriteFromScratch ? '' : body?.negativePromptZh,
+    currentNegativePrompt: rewriteFromScratch ? '' : body?.negativePrompt
   })
   const fallbackSanitized = sanitizeProtectedAssetPrompt({
     asset,
@@ -5783,37 +6523,77 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
   }
   let meta = { provider: 'local', model: null, api: null, durationMs: 0, note: 'local_template_fallback' }
   let aiError = null
+  const promptReviews = []
+  const minAcceptScore = 50
+  const maxRegenerateAttempts = 3
   try {
+    const usageContext = fallback.context && typeof fallback.context.usageContext === 'object' ? fallback.context.usageContext : undefined
+    const buildPromptReviewFeedbackZh = (review) => {
+      if (!review || typeof review !== 'object') return ''
+      const risks = Array.isArray(review.risks) ? review.risks.map((x) => storyAssetStr(x).trim()).filter(Boolean) : []
+      const suggestions = Array.isArray(review.suggestions) ? review.suggestions.map((x) => storyAssetStr(x).trim()).filter(Boolean) : []
+      const score = Number(review.score)
+      const parts = []
+      if (Number.isFinite(score)) parts.push(`上一轮提示词评分 ${Math.round(score)}/100`)
+      if (risks.length) parts.push(`主要问题：${risks.slice(0, 4).join('；')}`)
+      if (suggestions.length) parts.push(`必须修正：${suggestions.slice(0, 4).join('；')}`)
+      return parts.join('。')
+    }
+    const scoreCandidate = (candidate, source, attempt) => {
+      const review = scoreStoryAssetPromptCandidate({
+        asset,
+        promptZh: candidate.promptZh,
+        promptEn: candidate.promptEn,
+        negativePromptZh: candidate.negativePromptZh,
+        negativePrompt: candidate.negativePrompt,
+        context: usageContext
+      })
+      promptReviews.push({ attempt, source, ...review })
+      return review
+    }
+
+    const fallbackReview = scoreCandidate(result, 'fallback', 0)
+
     if (provider && provider !== 'none') {
       logStage({ stage: 'asset.prompt_enhance', event: 'start', traceId, project: id, provider: provider || 'local', model: model || '-', item: assetId })
-      const aiInput = {
-        projectTitle: String(bundle?.project?.title || '').trim(),
-        storyBibleJson: JSON.stringify(readStoryBibleFromProjectDoc(bundle.project) || {}, null, 2),
-        asset,
-        plan,
-        globalPromptZh: body?.globalPromptZh,
-        globalNegativePromptZh: body?.globalNegativePromptZh,
-        currentPromptZh: body?.promptZh,
-        currentPromptEn: body?.promptEn,
-        currentNegativePromptZh: body?.negativePromptZh,
-        currentNegativePrompt: body?.negativePrompt
+      let feedbackZh = buildPromptReviewFeedbackZh(body?.promptReview)
+      if (forceRegenerate && feedbackZh) {
+        feedbackZh = `${feedbackZh}。这是一次显式重新生成，必须优先根据这些问题重写，不要沿用原先措辞。`
       }
-      const enhanced = await Promise.race([
-        enhanceStoryAssetPromptWithAi({
-          input: aiInput,
-          provider,
-          model,
-          apiUrl,
-          proxyUrl
-        }),
-        new Promise((_, reject) => setTimeout(() => {
-          const e = new Error('asset_prompt_enhance_timeout')
-          e.status = 504
-          reject(e)
-        }, 15_000))
-      ])
-      if (enhanced && enhanced.result) {
-        const nextPromptZh = storyAssetStr(enhanced.result.promptZh).trim() || fallback.promptZh
+      let bestCandidate = { ...result }
+      let bestReview = fallbackReview
+      const priorReviewScore = Number(body?.promptReview?.score)
+      for (let attempt = 1; attempt <= maxRegenerateAttempts; attempt += 1) {
+        const aiInput = {
+          projectTitle: String(bundle?.project?.title || '').trim(),
+          storyBibleJson: JSON.stringify(readStoryBibleFromProjectDoc(bundle.project) || {}, null, 2),
+          asset,
+          plan,
+          assetUsageContext: usageContext,
+          promptReviewFeedbackZh: feedbackZh,
+          globalPromptZh: body?.globalPromptZh,
+          globalNegativePromptZh: body?.globalNegativePromptZh,
+          currentPromptZh: rewriteFromScratch ? '' : sanitizeStoryAssetPromptZh({ asset, promptZh: body?.promptZh }),
+          currentPromptEn: rewriteFromScratch ? '' : body?.promptEn,
+          currentNegativePromptZh: rewriteFromScratch ? '' : body?.negativePromptZh,
+          currentNegativePrompt: rewriteFromScratch ? '' : body?.negativePrompt
+        }
+        const enhanced = await Promise.race([
+          enhanceStoryAssetPromptWithAi({
+            input: aiInput,
+            provider,
+            model,
+            apiUrl,
+            proxyUrl
+          }),
+          new Promise((_, reject) => setTimeout(() => {
+            const e = new Error('asset_prompt_enhance_timeout')
+            e.status = 504
+            reject(e)
+          }, 15_000))
+        ])
+        if (!enhanced || !enhanced.result) continue
+        const nextPromptZh = sanitizeStoryAssetPromptZh({ asset, promptZh: enhanced.result.promptZh }) || fallback.promptZh
         const nextNegativePromptZh = storyAssetStr(enhanced.result.negativePromptZh).trim() || fallback.negativePromptZh
         const translated = await translateStoryAssetPromptPair({
           studio,
@@ -5832,7 +6612,7 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
           promptEn: translated.promptEn,
           negativePrompt: translated.negativePrompt
         })
-        result = {
+        const candidate = {
           promptZh: nextPromptZh,
           promptEn: sanitizedTranslated.promptEn || fallback.promptEn,
           negativePromptZh: nextNegativePromptZh,
@@ -5844,6 +6624,19 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
             translatedBy: translated.meta || null
           }
         }
+        const review = scoreCandidate(candidate, 'ai', attempt)
+        const shouldPreferCandidate = !bestReview ||
+          review.score > bestReview.score ||
+          (
+            forceRegenerate &&
+            Number.isFinite(priorReviewScore) &&
+            review.score >= priorReviewScore &&
+            review.score >= bestReview.score
+          )
+        if (shouldPreferCandidate) {
+          bestCandidate = candidate
+          bestReview = review
+        }
         meta = {
           ...(enhanced.meta || {}),
           provider: enhanced.meta?.provider || provider,
@@ -5851,6 +6644,15 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
           api: enhanced.meta?.api || apiUrl || null,
           durationMs: Math.max(0, Date.now() - startedAt)
         }
+        if (!forceRegenerate && (review.passed || review.score >= minAcceptScore)) {
+          result = candidate
+          break
+        }
+        feedbackZh = `${buildPromptReviewFeedbackZh(review)}。请根据这些问题完全重写，不要保留泛化模板。`
+        result = bestCandidate
+      }
+      if (!result || !storyAssetStr(result.promptZh).trim()) result = bestCandidate
+      if (meta.provider || meta.model || meta.api) {
         logStage({ stage: 'asset.prompt_enhance', event: 'ok', traceId, project: id, provider: meta.provider || provider || 'local', model: meta.model || model || '-', item: assetId, ok: true, durationMs: meta.durationMs })
       }
     }
@@ -5870,7 +6672,22 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
     }
     logStage({ stage: 'asset.prompt_enhance', event: 'fail', traceId, project: id, provider: provider || 'local', model: model || '-', item: assetId, status: aiError.status || 500, ok: false, durationMs: meta.durationMs, err: aiError.message })
   }
-  return c.json({ success: true, asset, result, meta, aiError, traceId })
+  const finalReview = scoreStoryAssetPromptCandidate({
+    asset,
+    promptZh: result.promptZh,
+    promptEn: result.promptEn,
+    negativePromptZh: result.negativePromptZh,
+    negativePrompt: result.negativePrompt,
+    context: fallback.context && typeof fallback.context.usageContext === 'object' ? fallback.context.usageContext : undefined
+  })
+  result = {
+    ...result,
+    context: {
+      ...(result.context && typeof result.context === 'object' ? result.context : {}),
+      promptReview: finalReview
+    }
+  }
+  return c.json({ success: true, asset, result, meta, aiError, traceId, promptReview: finalReview, promptReviewAttempts: promptReviews, promptReviewThreshold: minAcceptScore })
 })
 
 app.post('/api/projects/:id/ai/story/assets/:assetId/gallery/delete', async (c) => {
@@ -6112,8 +6929,10 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
   const height = clampInt(body?.height, 256, 2048, 512)
   const steps = clampInt(body?.steps, 5, 80, 20)
   const cfgScale = Number.isFinite(Number(body?.cfgScale)) ? Number(body.cfgScale) : 7
-  const sampler = mapComfySampler(body?.sampler || 'DPM++ 2M')
-  const scheduler = mapComfyScheduler(body?.scheduler || 'Automatic')
+  const samplerInput = body?.sampler || 'DPM++ 2M'
+  const schedulerInput = body?.scheduler || 'Automatic'
+  const sampler = mapComfySampler(samplerInput)
+  const scheduler = mapComfyScheduler(schedulerInput, samplerInput)
   const timeoutMs = parseComfyTimeoutMs(body?.timeoutMs)
   const maxAttempts = clampInt(body?.maxAttempts, 1, 4, 3)
   const traceId = createTraceId()
@@ -6290,6 +7109,8 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', async (c) => {
   const style = normalizeStyleEnum(body?.style || draft.style || 'picture_book')
   const width = clampInt(body?.width, 256, 2048, clampInt(draft.width, 256, 2048, 768))
   const height = clampInt(body?.height, 256, 2048, clampInt(draft.height, 256, 2048, 1024))
+  const requestedModel = String(body?.model || '').trim()
+  const requestedLoras = Array.isArray(body?.loras) ? body.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
 
   const referenceImages = []
   for (const ref of Array.isArray(renderSpec.referenceAssets) ? renderSpec.referenceAssets : []) {
@@ -6348,8 +7169,8 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', async (c) => {
       sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
       comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
       apiUrl: studio.effective.image.apiUrl,
-      model: studio.effective.image.model,
-      loras: studio.effective.image.loras,
+      model: requestedModel || studio.effective.image.model,
+      loras: requestedLoras.length ? requestedLoras : studio.effective.image.loras,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs: body?.timeoutMs
     })
@@ -6458,7 +7279,7 @@ app.post('/api/projects/:id/ai/character/fingerprint', async (c) => {
   const startedAt = Date.now()
   try {
     console.log(
-      `[game_studio] ch.fp:start project=${id} provider=${studio.effective.prompt.provider || 'localoxml'} model=${studio.effective.prompt.model || '-'} name=${characterName} storyChars=${storyTitle.length} ctxChars=${contextText.length} globalChars=${globalPrompt.length} style=${style}`
+      `[gamestudio] ch.fp:start project=${id} provider=${studio.effective.prompt.provider || 'localoxml'} model=${studio.effective.prompt.model || '-'} name=${characterName} storyChars=${storyTitle.length} ctxChars=${contextText.length} globalChars=${globalPrompt.length} style=${style}`
     )
   } catch (_) {}
 
@@ -6476,12 +7297,12 @@ app.post('/api/projects/:id/ai/character/fingerprint', async (c) => {
     })
 
     try {
-      console.log(`[game_studio] ch.fp:ok project=${id} ms=${Math.max(0, Date.now() - startedAt)} provider=${meta?.provider || '-'} model=${meta?.model || '-'}`)
+      console.log(`[gamestudio] ch.fp:ok project=${id} ms=${Math.max(0, Date.now() - startedAt)} provider=${meta?.provider || '-'} model=${meta?.model || '-'}`)
     } catch (_) {}
     return c.json({ success: true, result, meta })
   } catch (e) {
     try {
-      console.log(`[game_studio] ch.fp:fail project=${id} ms=${Math.max(0, Date.now() - startedAt)} err=${e && e.message ? String(e.message) : String(e)}`)
+      console.log(`[gamestudio] ch.fp:fail project=${id} ms=${Math.max(0, Date.now() - startedAt)} err=${e && e.message ? String(e.message) : String(e)}`)
     } catch (_) {}
     return c.json({ success: false, error: 'ai_failed', message: e && e.message ? String(e.message) : String(e) }, 502)
   }
@@ -6554,7 +7375,7 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
   const startedAt = Date.now()
   try {
     console.log(
-      `[game_studio] ch.sprite:start project=${id} provider=${imgProvider} model=${studio.effective.image.model || '-'} w=${Math.floor(width || 0)} h=${Math.floor(height || 0)} style=${style} promptChars=${prompt.length} negChars=${negativePrompt.length}`
+      `[gamestudio] ch.sprite:start project=${id} provider=${imgProvider} model=${studio.effective.image.model || '-'} w=${Math.floor(width || 0)} h=${Math.floor(height || 0)} style=${style} promptChars=${prompt.length} negChars=${negativePrompt.length}`
     )
   } catch (_) {}
 
@@ -6593,14 +7414,14 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
     const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : imgProvider
     const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
     try {
-      console.log(`[game_studio] ch.sprite:ok project=${id} provider=${provider} bytes=${buf.length} ext=${ext} ms=${Math.max(0, Date.now() - startedAt)}`)
+      console.log(`[gamestudio] ch.sprite:ok project=${id} provider=${provider} bytes=${buf.length} ext=${ext} ms=${Math.max(0, Date.now() - startedAt)}`)
     } catch (_) {}
     return c.json({ success: true, provider, assetPath, url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`, remoteUrl, prompt, negativePrompt })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const status = e && typeof e.status === 'number' ? e.status : null
     try {
-      console.log(`[game_studio] ch.sprite:fail project=${id} provider=${imgProvider} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
+      console.log(`[gamestudio] ch.sprite:fail project=${id} provider=${imgProvider} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
     } catch (_) {}
     if (status === 501) return c.json({ success: false, error: 'provider_not_configured', message: msg }, 501)
     return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
@@ -6671,7 +7492,7 @@ app.post('/api/projects/:id/ai/character/reference', async (c) => {
   const startedAt = Date.now()
   try {
     console.log(
-      `[game_studio] ch.ref:start project=${id} provider=${imgProvider} model=${studio.effective.image.model || '-'} name=${characterName} w=${width} h=${height} style=${style} promptChars=${prompt.length}`
+      `[gamestudio] ch.ref:start project=${id} provider=${imgProvider} model=${studio.effective.image.model || '-'} name=${characterName} w=${width} h=${height} style=${style} promptChars=${prompt.length}`
     )
   } catch (_) {}
 
@@ -6711,21 +7532,21 @@ app.post('/api/projects/:id/ai/character/reference', async (c) => {
     const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : imgProvider
     const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
     try {
-      console.log(`[game_studio] ch.ref:ok project=${id} provider=${provider} bytes=${buf.length} ext=${ext} ms=${Math.max(0, Date.now() - startedAt)}`)
+      console.log(`[gamestudio] ch.ref:ok project=${id} provider=${provider} bytes=${buf.length} ext=${ext} ms=${Math.max(0, Date.now() - startedAt)}`)
     } catch (_) {}
     return c.json({ success: true, provider, assetPath, url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`, remoteUrl, prompt, negativePrompt })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const status = e && typeof e.status === 'number' ? e.status : null
     try {
-      console.log(`[game_studio] ch.ref:fail project=${id} provider=${imgProvider} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
+      console.log(`[gamestudio] ch.ref:fail project=${id} provider=${imgProvider} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
     } catch (_) {}
     if (status === 501) return c.json({ success: false, error: 'provider_not_configured', message: msg }, 501)
     return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
   }
 })
 
-app.get('/', (c) => c.text('game_studio_server'))
+app.get('/', (c) => c.text('gamestudio_server'))
 
 export default app
 
@@ -6743,5 +7564,5 @@ if (isMainModule()) {
   const port = Number(process.env.PORT || 1999)
   serve({ fetch: app.fetch, port })
   // eslint-disable-next-line no-console
-  console.log(`[game_studio] server on :${port}`)
+  console.log(`[gamestudio] server on :${port}`)
 }

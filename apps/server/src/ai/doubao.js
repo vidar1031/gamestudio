@@ -379,7 +379,7 @@ async function doubaoChatCompletionsJson({ messages, model, temperature, timeout
       for (const m of payload.messages || []) chars += String(m && m.content != null ? m.content : '').length
     } catch (_) {}
     console.log(
-      `[game_studio] doubao.llm:start api=${useApiUrl} model=${useModel} msgs=${msgCount} chars=${chars} proxy=${useProxyUrl ? 'on' : 'off'} timeoutMs=${useTimeoutMs}`
+      `[gamestudio] doubao.llm:start api=${useApiUrl} model=${useModel} msgs=${msgCount} chars=${chars} proxy=${useProxyUrl ? 'on' : 'off'} timeoutMs=${useTimeoutMs}`
     )
   } catch (_) {}
 
@@ -397,7 +397,7 @@ async function doubaoChatCompletionsJson({ messages, model, temperature, timeout
         json && typeof json === 'object'
           ? String(json.request_id || json.requestId || (json.id != null ? json.id : '') || '').trim()
           : ''
-      console.log(`[game_studio] doubao.llm:ok model=${useModel} ms=${Math.max(0, Date.now() - startedAt)}${reqId ? ` requestId=${reqId}` : ''}`)
+      console.log(`[gamestudio] doubao.llm:ok model=${useModel} ms=${Math.max(0, Date.now() - startedAt)}${reqId ? ` requestId=${reqId}` : ''}`)
     } catch (_) {}
     return {
       json,
@@ -410,7 +410,7 @@ async function doubaoChatCompletionsJson({ messages, model, temperature, timeout
       const reqId = body ? String(body.request_id || body.requestId || body.id || '').trim() : ''
       const msg = e && e.message ? String(e.message) : String(e)
       console.log(
-        `[game_studio] doubao.llm:fail model=${useModel} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)}${reqId ? ` requestId=${reqId}` : ''} err=${msg}`
+        `[gamestudio] doubao.llm:fail model=${useModel} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)}${reqId ? ` requestId=${reqId}` : ''} err=${msg}`
       )
     } catch (_) {}
     throw e
@@ -948,7 +948,7 @@ export async function generateImageViaDoubaoArkImages(input) {
       })
       if (next.scaled) {
         const nextSize = `${next.w}x${next.h}`
-        console.log(`[game_studio] doubao.images:resize size=${size} -> ${nextSize} (${next.reason})`)
+        console.log(`[gamestudio] doubao.images:resize size=${size} -> ${nextSize} (${next.reason})`)
         size = nextSize
       }
     }
@@ -981,7 +981,7 @@ export async function generateImageViaDoubaoArkImages(input) {
 
   try {
     const proxyOn = Boolean(proxyUrl)
-    console.log(`[game_studio] doubao.images:start api=${apiUrl} model=${model} size=${size} format=${responseFormat} watermark=${watermark} seq=${sequential} refs=${referenceImageUrls.length} proxy=${proxyOn ? 'on' : 'off'} timeoutMs=${timeoutMs}`)
+    console.log(`[gamestudio] doubao.images:start api=${apiUrl} model=${model} size=${size} format=${responseFormat} watermark=${watermark} seq=${sequential} refs=${referenceImageUrls.length} proxy=${proxyOn ? 'on' : 'off'} timeoutMs=${timeoutMs}`)
   } catch (_) {}
 
   const json = await curlRequestJson({
@@ -996,7 +996,7 @@ export async function generateImageViaDoubaoArkImages(input) {
   try {
     const created = json && typeof json === 'object' && json.created ? String(json.created) : '-'
     const imgs = json && typeof json === 'object' && Array.isArray(json.data) ? json.data.length : 0
-    console.log(`[game_studio] doubao.images:ok created=${created} images=${imgs}`)
+    console.log(`[gamestudio] doubao.images:ok created=${created} images=${imgs}`)
   } catch (_) {}
 
   const d0 = json && typeof json === 'object' && Array.isArray(json.data) ? json.data[0] : null

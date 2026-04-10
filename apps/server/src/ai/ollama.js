@@ -188,13 +188,14 @@ function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
   })
 }
 
-async function ollamaChat({ messages, model, temperature, timeoutMs, proxyUrl, apiUrl }) {
+async function ollamaChat({ messages, model, temperature, timeoutMs, proxyUrl, apiUrl, think = false }) {
   const cfg = getOllamaTextConfigSnapshot({ apiUrl, model })
   const url = `${cfg.baseUrl}/api/chat`
 
   const payload = {
     model: cfg.model,
     stream: false,
+    think,
     messages: Array.isArray(messages) ? messages : [],
     options: {
       temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.2
@@ -213,7 +214,7 @@ async function ollamaChat({ messages, model, temperature, timeoutMs, proxyUrl, a
       for (const m of payload.messages || []) chars += String(m && m.content != null ? m.content : '').length
     } catch (_) {}
     console.log(
-      `[game_studio] ollama.llm:start api=${url} model=${cfg.model} msgs=${msgCount} chars=${chars} proxy=${useProxyUrl ? 'on' : 'off'} timeoutMs=${useTimeoutMs}`
+      `[gamestudio] ollama.llm:start api=${url} model=${cfg.model} msgs=${msgCount} chars=${chars} proxy=${useProxyUrl ? 'on' : 'off'} timeoutMs=${useTimeoutMs}`
     )
   } catch (_) {}
 
@@ -247,6 +248,23 @@ async function ollamaChat({ messages, model, temperature, timeoutMs, proxyUrl, a
   }
 }
 
+export async function generateTextViaOllamaChat({
+  instructions,
+  input,
+  model,
+  apiUrl,
+  timeoutMs,
+  proxyUrl,
+  think = false
+}) {
+  const messages = [
+    { role: 'system', content: String(instructions || '').trim() },
+    { role: 'user', content: String(input || '').trim() }
+  ]
+  const { content, meta } = await ollamaChat({ messages, model, apiUrl, timeoutMs, proxyUrl, think })
+  return { text: String(content || '').trim(), meta }
+}
+
 function validateScriptDraft(draft) {
   if (!draft || typeof draft !== 'object') return { ok: false, reason: 'not_object' }
   const titleOk = (v) => v == null || typeof v === 'string'
@@ -268,7 +286,8 @@ export async function generateStrictJsonViaOllamaChat({
   timeoutMs,
   proxyUrl,
   maxRetries,
-  validate
+  validate,
+  think = false
 }) {
   const retries = clampInt(maxRetries, 0, 4, 1)
   const useValidate = typeof validate === 'function' ? validate : (obj) => Boolean(obj && typeof obj === 'object')
@@ -292,7 +311,7 @@ export async function generateStrictJsonViaOllamaChat({
       })
     }
 
-    const { content, meta } = await ollamaChat({ messages, model, apiUrl, timeoutMs, proxyUrl })
+    const { content, meta } = await ollamaChat({ messages, model, apiUrl, timeoutMs, proxyUrl, think })
     lastMeta = meta
     lastText = content
 

@@ -77,7 +77,7 @@ function getComfyOutputDateFolder(date = new Date()) {
 
 function buildComfySavePrefix(name, date = new Date()) {
   const safeName = String(name || '').trim().replace(/[^a-z0-9_.-]+/gi, '_') || 'image'
-  return `game_studio/${getComfyOutputDateFolder(date)}/${safeName}`
+  return `gamestudio/${getComfyOutputDateFolder(date)}/${safeName}`
 }
 
 function explainRemoteError(v) {
@@ -643,23 +643,98 @@ async function generateBackgroundViaSdWebui(input) {
   }
 }
 
-function mapComfyScheduler(v) {
-  const s = String(v || '').trim().toLowerCase()
-  // ComfyUI doesn't have "Automatic"; map it to default scheduler.
-  if (!s || s === 'automatic') return 'normal'
-  const allowed = new Set(['normal', 'karras', 'exponential', 'sgm_uniform', 'simple', 'ddim_uniform', 'beta'])
-  return allowed.has(s) ? s : 'normal'
+function mapComfyScheduler(v, fallbackLabel = '') {
+  const explicit = normalizeComfySchedulerToken(v)
+  if (explicit) return explicit
+  const derived = normalizeComfySchedulerToken(
+    extractComfySchedulerFromCombinedLabel(fallbackLabel || v)
+  )
+  return derived || 'normal'
 }
 
 export { mapComfyScheduler }
 
 function mapComfySampler(v) {
-  const s = String(v || '').trim().toLowerCase()
-  if (!s || s === 'dpm++ 2m') return 'dpmpp_2m'
-  return s
+  const raw = String(v || '').trim().toLowerCase()
+  if (!raw) return 'dpmpp_2m'
+  const s = stripComfySchedulerWords(raw)
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const aliases = new Map([
+    ['dpm++ 2m', 'dpmpp_2m'],
+    ['dpmpp 2m', 'dpmpp_2m'],
+    ['dpm++ 2m sde', 'dpmpp_2m_sde'],
+    ['dpmpp 2m sde', 'dpmpp_2m_sde'],
+    ['dpm++ sde', 'dpmpp_sde'],
+    ['dpmpp sde', 'dpmpp_sde'],
+    ['dpm++ 2s ancestral', 'dpmpp_2s_ancestral'],
+    ['dpm++ 2s a', 'dpmpp_2s_ancestral'],
+    ['dpmpp 2s ancestral', 'dpmpp_2s_ancestral'],
+    ['dpmpp 2s a', 'dpmpp_2s_ancestral'],
+    ['euler a', 'euler_ancestral'],
+    ['dpm2 a', 'dpm_2_ancestral'],
+    ['uni pc', 'uni_pc'],
+    ['uni pc bh2', 'uni_pc_bh2']
+  ])
+  if (aliases.has(s)) return String(aliases.get(s))
+  return s.replace(/\s+/g, '_')
 }
 
 export { mapComfySampler }
+
+function normalizeComfySchedulerToken(v) {
+  const s = String(v || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+  if (!s || s === 'automatic') return ''
+  const aliases = new Map([
+    ['normal', 'normal'],
+    ['karras', 'karras'],
+    ['exponential', 'exponential'],
+    ['sgm uniform', 'sgm_uniform'],
+    ['simple', 'simple'],
+    ['ddim uniform', 'ddim_uniform'],
+    ['beta', 'beta'],
+    ['linear quadratic', 'linear_quadratic'],
+    ['kl optimal', 'kl_optimal']
+  ])
+  return aliases.get(s) || ''
+}
+
+function extractComfySchedulerFromCombinedLabel(v) {
+  const s = String(v || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+  if (!s) return ''
+  if (/\bkarras\b/.test(s)) return 'karras'
+  if (/\bexponential\b/.test(s)) return 'exponential'
+  if (/\bsgm uniform\b/.test(s)) return 'sgm_uniform'
+  if (/\bsimple\b/.test(s)) return 'simple'
+  if (/\bddim uniform\b/.test(s)) return 'ddim_uniform'
+  if (/\bbeta\b/.test(s)) return 'beta'
+  if (/\blinear quadratic\b/.test(s)) return 'linear_quadratic'
+  if (/\bkl optimal\b/.test(s)) return 'kl_optimal'
+  if (/\bnormal\b/.test(s)) return 'normal'
+  return ''
+}
+
+function stripComfySchedulerWords(v) {
+  return String(v || '')
+    .replace(/\bkarras\b/ig, ' ')
+    .replace(/\bexponential\b/ig, ' ')
+    .replace(/\bsgm[\s_-]*uniform\b/ig, ' ')
+    .replace(/\bsimple\b/ig, ' ')
+    .replace(/\bddim[\s_-]*uniform\b/ig, ' ')
+    .replace(/\bbeta\b/ig, ' ')
+    .replace(/\blinear[\s_-]*quadratic\b/ig, ' ')
+    .replace(/\bkl[\s_-]*optimal\b/ig, ' ')
+    .replace(/\bnormal\b/ig, ' ')
+}
 
 function parseComfyTimeoutMs(raw) {
   if (raw == null || raw === '') return clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000)
@@ -1101,6 +1176,8 @@ function comfySavePrefixFromPolicy(policy) {
 }
 
 function resolveComfySamplerAndSchedule(input, policy) {
+  const samplerInput = input.sampler || policy?.defaultSampler || 'DPM++ 2M'
+  const schedulerInput = input.scheduler || policy?.defaultScheduler || 'Automatic'
   return {
     steps: clampInt(input.steps, 5, 80, clampInt(policy?.defaultSteps, 5, 80, 20)),
     cfg: (() => {
@@ -1108,8 +1185,8 @@ function resolveComfySamplerAndSchedule(input, policy) {
       if (Number.isFinite(n)) return Math.max(1, Math.min(20, n))
       return clampFloat(policy?.defaultCfg, 1, 20, 7)
     })(),
-    samplerName: mapComfySampler(input.sampler || policy?.defaultSampler || 'DPM++ 2M'),
-    scheduler: mapComfyScheduler(input.scheduler || policy?.defaultScheduler || 'Automatic')
+    samplerName: mapComfySampler(samplerInput),
+    scheduler: mapComfyScheduler(schedulerInput, samplerInput)
   }
 }
 
@@ -1370,7 +1447,7 @@ export async function generateComfyuiWhiteBackgroundFromReference({
       background: 'Color',
       background_color: '#FFFFFFFF'
     }) },
-    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || 'game_studio_story_lock/white_bg') }) }
+    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || 'gamestudio_story_lock/white_bg') }) }
   }
 
   const result = await runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
@@ -1501,8 +1578,8 @@ export async function generateComfyuiLineartFromReference({
   const hintWorkflow = {
     '1': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(loadImageSpec, { image: uploaded.imageValue, upload: 'image' }) },
     '2': { class_type: 'ImageScale', inputs: buildInputsForComfyNode(imageScaleSpec, { image: ['1', 0], upscale_method: 'lanczos', width: w, height: h, crop: 'disabled' }) },
-    '3': { class_type: chosenPreprocessor, inputs: buildInputsForComfyNode(preprocessorSpec, { image: ['2', 0], resolution: Math.max(w, h) }) },
-    '4': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['3', 0], filename_prefix: String(hintPrefix || 'game_studio_story_lock/hint') }) }
+    '3': { class_type: chosenPreprocessor, inputs: buildInputsForComfyNode(preprocessorSpec, { image: ['2', 0], resolution: Math.max(w, h), coarse: 'disable' }) },
+    '4': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['3', 0], filename_prefix: String(hintPrefix || 'gamestudio_story_lock/hint') }) }
   }
   const hint = await runComfyuiPromptWorkflow({ workflow: hintWorkflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
 
@@ -1510,7 +1587,7 @@ export async function generateComfyuiLineartFromReference({
     '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: checkpoint } },
     '2': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(loadImageSpec, { image: uploaded.imageValue, upload: 'image' }) },
     '3': { class_type: 'ImageScale', inputs: buildInputsForComfyNode(imageScaleSpec, { image: ['2', 0], upscale_method: 'lanczos', width: w, height: h, crop: 'disabled' }) },
-    '4': { class_type: chosenPreprocessor, inputs: buildInputsForComfyNode(preprocessorSpec, { image: ['3', 0], resolution: Math.max(w, h) }) },
+    '4': { class_type: chosenPreprocessor, inputs: buildInputsForComfyNode(preprocessorSpec, { image: ['3', 0], resolution: Math.max(w, h), coarse: 'disable' }) },
     '5': { class_type: 'ControlNetLoader', inputs: buildInputsForComfyNode(controlNetLoaderSpec, { control_net_name: chosenControlnet }) },
     '6': { class_type: 'SetUnionControlNetType', inputs: buildInputsForComfyNode(unionSpec, { control_net: ['5', 0], type: chosenUnionType }) },
     '7': { class_type: 'CLIPTextEncode', inputs: buildInputsForComfyNode(clipTextSpec, { clip: ['1', 1], text: String(prompt || '').trim() }) },
@@ -1519,7 +1596,7 @@ export async function generateComfyuiLineartFromReference({
     '10': { class_type: 'ControlNetApplyAdvanced', inputs: buildInputsForComfyNode(controlApplySpec, { positive: ['7', 0], negative: ['8', 0], control_net: ['6', 0], image: ['4', 0], strength: 1.0, start_percent: 0.0, end_percent: 1.0, vae: ['1', 2] }) },
     '11': { class_type: 'KSampler', inputs: buildInputsForComfyNode(ksamplerSpec, { model: ['1', 0], positive: ['10', 0], negative: ['10', 1], latent_image: ['9', 0], seed: redrawSeed, steps: redrawSteps, cfg: redrawCfg, sampler_name: samplerName, scheduler, denoise: redrawDenoise }) },
     '12': { class_type: 'VAEDecode', inputs: buildInputsForComfyNode(vaeDecodeSpec, { samples: ['11', 0], vae: ['1', 2] }) },
-    '13': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['12', 0], filename_prefix: String(finalPrefix || 'game_studio_story_lock/final') }) }
+    '13': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['12', 0], filename_prefix: String(finalPrefix || 'gamestudio_story_lock/final') }) }
   }
   const final = await runComfyuiPromptWorkflow({ workflow: finalWorkflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
 

@@ -14,6 +14,7 @@ import {
   generateStoryAssetLineartAi,
   generateStoryBibleAi,
   buildStoryAssetPlanAi,
+  persistStoryAssetPlanAi,
   generateStoryAssetReferenceAi,
   optimizeStoryAssetReferenceAi,
   listStoryAssetGalleryAi,
@@ -35,11 +36,10 @@ import {
 	  listProjects,
   openProjectAssetFolder,
   resolveUrl,
+  renderStorySceneAi,
   reviewStoryboardPromptAi,
-  runStoryboardLockTestAi,
   saveProject,
   preflightStudioImage,
-  testStudioImage,
 	  uploadProjectImage,
   type AiBackgroundRequest,
   type AssetV1,
@@ -76,6 +76,17 @@ type Selection =
 
 type LeftTab = 'nodes' | 'characters' | 'assets'
 
+type StoryboardSceneAiBackgroundRequest = AiBackgroundRequest & {
+  assetRefs?: Array<{
+    assetId?: string
+    assetName?: string
+    assetType?: string
+    assetPath?: string
+    assetUri?: string
+    weight?: number
+  }>
+}
+
 type StoryboardBatchState = {
   entitySpec: string
   storyBibleJson: string
@@ -109,6 +120,14 @@ type StoryboardLockAssetPromptDraft = {
   promptEn: string
   negativePromptZh?: string
   negativePrompt?: string
+  promptReview?: {
+    passed?: boolean
+    score?: number
+    summary?: string
+    strengths?: string[]
+    risks?: string[]
+    suggestions?: string[]
+  } | null
   enhancedAt?: string
   enhanceMode?: string
 }
@@ -249,6 +268,7 @@ function normalizeStoryboardAssetPlan(plan: StoryAssetPlan | null | undefined): 
     worldAnchor: String((plan as any).worldAnchor || '').trim(),
     forbiddenSubstitutes: Array.isArray((plan as any).forbiddenSubstitutes) ? (plan as any).forbiddenSubstitutes.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
     eventChain: Array.isArray((plan as any).eventChain) ? (plan as any).eventChain.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
+    excludedAssetIds: Array.isArray((plan as any).excludedAssetIds) ? (plan as any).excludedAssetIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
     assets,
     scenes,
     summary: {
@@ -311,8 +331,40 @@ function getStoryboardAssetPlanSummary(plan: StoryAssetPlan | null | undefined, 
   const unlocked = getStoryboardRequiredUnlockedAssets(normalized)
   if (missingRefs.length > 0) return `仍有 ${missingRefs.length} 个必要事物尚未生成候选参考图，请先抽卡。`
   if (unlocked.length > 0) return `仍有 ${unlocked.length} 个必要事物尚未完成“手选主参考 + 线稿生成”。`
-  if (String(confirmedAt || '').trim()) return '锁定资产已确认，可进入正确出图阶段'
+  if (String(confirmedAt || '').trim()) return '锁定资产已确认，可进入正式场景出图阶段'
   return '所有必要事物已完成主参考与线稿，请确认后进入正式出图。'
+}
+
+function recomputeStoryboardAssetPlanSummary(plan: StoryAssetPlan | null | undefined) {
+  const normalized = normalizeStoryboardAssetPlan(plan)
+  if (!normalized) return null
+  const assets = Array.isArray(normalized.assets) ? normalized.assets : []
+  const scenes = Array.isArray(normalized.scenes) ? normalized.scenes : []
+  const refRequiredAssets = assets.filter((asset: any) => String(asset?.renderStrategy || '').trim() === 'ref_required')
+  const refReadyCount = refRequiredAssets.filter((asset: any) => String(asset?.primaryReferenceAssetUri || '').trim()).length
+  const refMissingCount = refRequiredAssets.filter((asset: any) => {
+    const primaryUri = String(asset?.primaryReferenceAssetUri || '').trim()
+    const batch = Array.isArray(asset?.latestReferenceBatch) ? asset.latestReferenceBatch : []
+    const refs = Array.isArray(asset?.generatedRefs) ? asset.generatedRefs : []
+    return !primaryUri && batch.length === 0 && refs.length === 0
+  }).length
+  const workflows: Record<string, number> = {}
+  for (const scene of scenes) {
+    const key = String((scene as any)?.workflow || '').trim()
+    if (!key) continue
+    workflows[key] = Number(workflows[key] || 0) + 1
+  }
+  return {
+    ...normalized,
+    summary: {
+      assetCount: assets.length,
+      sceneCount: scenes.length,
+      refRequiredCount: refRequiredAssets.length,
+      refReadyCount,
+      refMissingCount,
+      workflows
+    }
+  }
 }
 
 function hasCjkPromptText(input: string | null | undefined): boolean {
@@ -339,10 +391,17 @@ function isProtectedAssetLockProfile(asset: any): boolean {
   return ['wearable_prop', 'slender_prop', 'rigid_prop', 'soft_prop', 'ambient_prop', 'organic_prop'].includes(profile)
 }
 
-function looksContaminatedProtectedAssetPrompt(input: string | null | undefined): boolean {
+function looksContaminatedProtectedAssetPrompt(input: string | null | undefined, asset?: any): boolean {
   const value = String(input || '').trim()
   if (!value) return false
-  return /children'?s|child|girl|boy|portrait|upper body|face|head|model|wearing|worn|storybook|book illustration style|dress|shirt|under chin/i.test(value)
+  const profile = String(asset?.lockProfile || '').trim().toLowerCase()
+  const wearableLike = profile === 'wearable_prop'
+  const commonDanger = /\b(girl|boy|portrait|upper body|model|wearing|worn|dress|shirt|mannequin|bust)\b|under chin/i
+  if (commonDanger.test(value)) return true
+  if (wearableLike) {
+    return /\b(face|head|hair|ears|shoulders|neck|collarbone)\b/i.test(value)
+  }
+  return false
 }
 
 
@@ -350,6 +409,7 @@ function normalizeStoryboardLockAssetPromptDrafts(
   plan: StoryAssetPlan | null | undefined,
   draftsIn: Record<string, StoryboardLockAssetPromptDraft> | null | undefined
 ): Record<string, StoryboardLockAssetPromptDraft> {
+  const hasOwn = (obj: any, key: string) => Boolean(obj) && Object.prototype.hasOwnProperty.call(obj, key)
   function defaultAssetNegativePromptZh(asset: any) {
     const category = String(asset?.category || '').trim().toLowerCase()
     if (category === 'character') {
@@ -372,28 +432,31 @@ function normalizeStoryboardLockAssetPromptDrafts(
     if (!assetId) continue
     const prev = incoming[assetId] && typeof incoming[assetId] === 'object' ? incoming[assetId] : { promptZh: '', promptEn: '' }
     const fallbackPromptEn = String(asset?.referencePromptEn || asset?.referencePromptHint || '').trim()
-    const preferredPromptEn = chooseEnglishAssetPrompt(prev.promptEn || asset?.referencePromptEn || '', fallbackPromptEn)
-    const safePromptEn = isProtectedAssetLockProfile(asset) && looksContaminatedProtectedAssetPrompt(preferredPromptEn)
+    const preferredPromptEn = chooseEnglishAssetPrompt(hasOwn(prev, 'promptEn') ? prev.promptEn : (asset?.referencePromptEn || ''), fallbackPromptEn)
+    const safePromptEn = isProtectedAssetLockProfile(asset) && looksContaminatedProtectedAssetPrompt(preferredPromptEn, asset)
       ? fallbackPromptEn
       : preferredPromptEn
     next[assetId] = {
-      promptZh: String(prev.promptZh || asset?.referencePromptZh || '').trim(),
+      promptZh: hasOwn(prev, 'promptZh') ? String(prev.promptZh ?? '') : String(asset?.referencePromptZh || ''),
       promptEn: safePromptEn,
-      negativePromptZh: String(prev.negativePromptZh || asset?.referenceNegativePromptZh || defaultAssetNegativePromptZh(asset) || '').trim(),
-      negativePrompt: String(prev.negativePrompt || asset?.referenceNegativePrompt || asset?.negativePrompt || '').trim(),
+      negativePromptZh: hasOwn(prev, 'negativePromptZh') ? String(prev.negativePromptZh ?? '') : String(asset?.referenceNegativePromptZh || defaultAssetNegativePromptZh(asset) || ''),
+      negativePrompt: hasOwn(prev, 'negativePrompt') ? String(prev.negativePrompt ?? '') : String(asset?.referenceNegativePrompt || asset?.negativePrompt || ''),
+      promptReview: prev.promptReview && typeof prev.promptReview === 'object' ? prev.promptReview : null,
       enhancedAt: String(prev.enhancedAt || '').trim(),
       enhanceMode: String(prev.enhanceMode || '').trim()
     }
   }
-  for (const [assetId, draft] of Object.entries(incoming)) {
-    if (next[assetId]) continue
-    next[assetId] = {
-      promptZh: String((draft as any)?.promptZh || '').trim(),
-      promptEn: String((draft as any)?.promptEn || '').trim(),
-      negativePromptZh: String((draft as any)?.negativePromptZh || '').trim(),
-      negativePrompt: String((draft as any)?.negativePrompt || '').trim(),
-      enhancedAt: String((draft as any)?.enhancedAt || '').trim(),
-      enhanceMode: String((draft as any)?.enhanceMode || '').trim()
+  if (assets.length === 0) {
+    for (const [assetId, draft] of Object.entries(incoming)) {
+      if (next[assetId]) continue
+      next[assetId] = {
+        promptZh: String((draft as any)?.promptZh ?? ''),
+        promptEn: String((draft as any)?.promptEn ?? ''),
+        negativePromptZh: String((draft as any)?.negativePromptZh ?? ''),
+        negativePrompt: String((draft as any)?.negativePrompt ?? ''),
+        enhancedAt: String((draft as any)?.enhancedAt || '').trim(),
+        enhanceMode: String((draft as any)?.enhanceMode || '').trim()
+      }
     }
   }
   return next
@@ -482,7 +545,7 @@ async function loadTexture(url: string): Promise<Texture | null> {
   } catch (e) {
     textureCache.delete(key)
     try {
-      console.warn('[game_studio] loadTexture failed:', key, e instanceof Error ? e.message : String(e))
+      console.warn('[gamestudio] loadTexture failed:', key, e instanceof Error ? e.message : String(e))
     } catch {}
     return null
   }
@@ -664,7 +727,7 @@ async function renderStage(args: {
         if (isStale && isStale()) return
         if (!tex) {
           try {
-            console.warn('[game_studio] background texture missing:', url)
+            console.warn('[gamestudio] background texture missing:', url)
           } catch {}
         } else {
           const s = new Sprite(tex)
@@ -1055,9 +1118,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [aiError, setAiError] = useState('')
   const [aiImageProvider, setAiImageProvider] = useState('')
   const [aiImageModel, setAiImageModel] = useState('')
-  const HUB_TEMPLATE_FIELDS_KEY = 'game_studio.ai.templateFields'
-  const AI_BG_DRAFT_KEY = `game_studio.ai.backgroundDraft.${String(props.projectId || 'global')}`
-  const AI_BG_CONTINUITY_KEY = `game_studio.ai.storyboardContinuity.${String(props.projectId || 'global')}`
+  const HUB_TEMPLATE_FIELDS_KEY = 'gamestudio.ai.templateFields'
+  const AI_BG_DRAFT_KEY = `gamestudio.ai.backgroundDraft.${String(props.projectId || 'global')}`
+  const AI_BG_CONTINUITY_KEY = `gamestudio.ai.storyboardContinuity.${String(props.projectId || 'global')}`
   const loadAiBackgroundDraft = (key: string): Partial<AiBackgroundRequest> | null => {
     try {
       const raw = localStorage.getItem(key)
@@ -1266,6 +1329,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbGeneratingNodeStartedAt, setSbGeneratingNodeStartedAt] = useState(0)
   const [sbGeneratingNodeElapsedMs, setSbGeneratingNodeElapsedMs] = useState(0)
   const [sbItems, setSbItems] = useState<StoryboardBatchItem[]>([])
+  const [sbTestSceneId, setSbTestSceneId] = useState('')
   const [sbContinuityBusy, setSbContinuityBusy] = useState(false)
   const [sbContinuityReady, setSbContinuityReady] = useState(false)
   const [sbContinuitySummary, setSbContinuitySummary] = useState('')
@@ -1294,7 +1358,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbLineartAssetId, setSbLineartAssetId] = useState('')
   const [sbGallery, setSbGallery] = useState<StoryAssetGalleryState | null>(null)
   const [sbGalleryBusy, setSbGalleryBusy] = useState(false)
-  const [sbGalleryDeletingPath, setSbGalleryDeletingPath] = useState('')
+  const [sbGalleryDeletingPaths, setSbGalleryDeletingPaths] = useState<string[]>([])
   const [sbAssetsConfirmedAt, setSbAssetsConfirmedAt] = useState('')
   const sbAssetConfirmReady = useMemo(
     () => Boolean(String(sbAssetsConfirmedAt || '').trim()) && getStoryboardRequiredUnlockedAssets(sbAssetPlan).length === 0,
@@ -1332,6 +1396,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbGlobalPromptReviewBusy, setSbGlobalPromptReviewBusy] = useState(false)
   const [sbPromptReviewingNodeId, setSbPromptReviewingNodeId] = useState('')
   const [sbTranslatingScope, setSbTranslatingScope] = useState('')
+  const [sbTranslateDeadlineAt, setSbTranslateDeadlineAt] = useState(0)
+  const [sbTranslateCountdownSec, setSbTranslateCountdownSec] = useState(0)
   const bgFileRef = useRef<HTMLInputElement | null>(null)
   const pendingBgAssetIdRef = useRef<string>('')
   const sbQueueRef = useRef<{ paused: boolean; cancelRequested: boolean }>({ paused: false, cancelRequested: false })
@@ -1339,6 +1405,31 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   useEffect(() => {
     setSbAssetPromptDrafts((prev) => normalizeStoryboardLockAssetPromptDrafts(sbAssetPlan, prev))
   }, [sbAssetPlan])
+
+  useEffect(() => {
+    if (!sbItems.length) {
+      setSbTestSceneId('')
+      return
+    }
+    setSbTestSceneId((prev) => {
+      if (prev && sbItems.some((item) => item.nodeId === prev)) return prev
+      return String(sbItems[0]?.nodeId || '')
+    })
+  }, [sbItems])
+
+  useEffect(() => {
+    if (!sbTranslatingScope || !sbTranslateDeadlineAt) {
+      setSbTranslateCountdownSec(0)
+      return
+    }
+    const tick = () => {
+      const remainMs = Math.max(0, sbTranslateDeadlineAt - Date.now())
+      setSbTranslateCountdownSec(Math.ceil(remainMs / 1000))
+    }
+    tick()
+    const timer = window.setInterval(tick, 250)
+    return () => window.clearInterval(timer)
+  }, [sbTranslatingScope, sbTranslateDeadlineAt])
 
   const [chFpBusy, setChFpBusy] = useState(false)
   const [chFpError, setChFpError] = useState('')
@@ -1524,7 +1615,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         app = a
       } catch (e) {
         try {
-          console.error('[game_studio] pixi init failed:', e)
+          console.error('[gamestudio] pixi init failed:', e)
         } catch {}
       }
     })()
@@ -2835,7 +2926,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     setSbContinuityBusy(true)
     setSbContinuityReady(false)
     setSbContinuitySummary('')
-    appendSbLog('开始运行连续性预检/锁定测试...')
+    appendSbLog('开始运行场景测试...')
     try {
       const storyBibleObj = tryParseStoryBibleJson(sbReq.storyBibleJson)
       if (!storyBibleObj) throw new Error('Story Bible 为空或不是合法 JSON')
@@ -2845,16 +2936,6 @@ function ensureNode(n: NodeV1): NodeV1 {
       const promptProvider = String(st.effective?.prompt?.provider || '').toLowerCase()
       const imageProvider = String(st.effective?.image?.provider || '').toLowerCase()
       const isDoubaoStoryboard = promptProvider === 'doubao' && imageProvider === 'doubao'
-      const imageSettingsOverride = {
-        ...(st.settings || {}),
-        image: {
-          ...((st.settings && st.settings.image) || {}),
-          model: String(sbReq.model || '').trim() || st.settings?.image?.model || st.effective?.image?.model || '',
-          loras: Array.isArray(sbReq.loras) && sbReq.loras.length
-            ? sbReq.loras
-            : (Array.isArray(st.settings?.image?.loras) ? st.settings?.image?.loras : (Array.isArray(st.effective?.image?.loras) ? st.effective.image.loras : []))
-        }
-      }
 
       if (!promptProvider || promptProvider === 'none') throw new Error('文本模型未配置')
       if (!imageProvider || imageProvider === 'none') throw new Error('生图模型未配置')
@@ -2862,11 +2943,6 @@ function ensureNode(n: NodeV1): NodeV1 {
       const promptDiag = await diagnoseStudio({ service: 'prompt', timeoutMs: 12_000 })
       const promptSvc = promptDiag && promptDiag.services ? promptDiag.services.prompt : null
       if (!promptSvc || promptSvc.ok === false) throw new Error(`文本能力不可用：${String(promptSvc?.note || 'diagnose_failed')}`)
-
-      if (imageProvider === 'comfyui') {
-        const pf = await preflightStudioImage({ timeoutMs: 12_000, mode: 'storyboard', settings: imageSettingsOverride })
-        if (!pf.ok) throw new Error(`ComfyUI 体检失败：${String(pf.checks?.reason || 'preflight_failed')}`)
-      }
 
       const cfg = sbReq.continuity || { ipadapterEnabled: false, requireCharacterRefs: true, controlnetEnabled: false }
       const needsCharacterRefs = imageProvider === 'comfyui' && cfg.ipadapterEnabled && cfg.requireCharacterRefs
@@ -2890,71 +2966,46 @@ function ensureNode(n: NodeV1): NodeV1 {
       const imageSvc = imageDiag && imageDiag.services ? imageDiag.services.image : null
       if (!imageSvc || imageSvc.ok === false) throw new Error(`生图能力不可用：${String(imageSvc?.note || 'diagnose_failed')}`)
 
-      appendSbLog(
-        `锁定测试参数：model=${String(sbReq.model || '(default)').trim() || '(default)'} / loras=${Array.isArray(sbReq.loras) && sbReq.loras.length ? sbReq.loras.join(' | ') : '(none)'}`
-      )
-      if (imageProvider === 'comfyui') {
-        const test = await runStoryboardLockTestAi(doc.id, {
-          style: sbReq.style || 'picture_book',
-          model: String(sbReq.model || '').trim() || undefined,
-          loras: Array.isArray(sbReq.loras) && sbReq.loras.length ? sbReq.loras : undefined,
-          width: Math.max(512, Math.min(1024, Number(sbReq.width || 768))),
-          height: Math.max(512, Math.min(1536, Number(sbReq.height || 1024))),
-          steps: Math.max(10, Math.min(40, Number(sbReq.steps || 20))),
-          cfgScale: Number(sbReq.cfgScale || 6.5),
-          sampler: String(sbReq.sampler || 'DPM++ 2M'),
-          scheduler: String(sbReq.scheduler || 'Karras'),
-          maxAttempts: 3,
-          timeoutMs: 180_000
-        })
-        const targetName = String(test.testTarget?.name || test.testTarget?.id || '').trim()
-        if (targetName) appendSbLog(`锁定测试目标：${targetName}`)
-        for (const attempt of Array.isArray(test.attempts) ? test.attempts : []) {
-          const analysis = attempt && typeof attempt.analysis === 'object' ? attempt.analysis as any : {}
-          const score = Number(analysis.score)
-          const scoreText = Number.isFinite(score) ? `score=${Math.round(score)}` : 'score=n/a'
-          appendSbLog(`锁定测试第 ${Number(attempt.attempt || 0)} 轮：${scoreText} / ${String(analysis.summary || 'no_summary')}`)
-          const issues = Array.isArray(analysis.issues) ? analysis.issues.map((x: any) => String(x || '').trim()).filter(Boolean) : []
-          if (issues.length) appendSbLog(`第 ${Number(attempt.attempt || 0)} 轮问题：${issues.join('；')}`)
-        }
-        setSbContinuityReady(Boolean(test.passed))
-        setSbContinuitySummary(String(test.summary || '').trim() || (test.passed ? '锁定测试通过' : '锁定测试未通过'))
-        if (!test.passed) throw new Error(String(test.summary || '锁定测试未通过'))
-        appendSbLog('连续分镜锁定测试通过')
-      } else {
-        const test = await testStudioImage({
-          prompt: "children's picture book illustration, a simple test scene, clean outlines, warm palette",
-          negativePrompt: 'text, watermark, logo, photorealistic',
-          style: sbReq.style || 'picture_book',
-          model: String(sbReq.model || '').trim() || undefined,
-          loras: Array.isArray(sbReq.loras) && sbReq.loras.length ? sbReq.loras : undefined,
-          width: 512,
-          height: 512,
-          size: sbReq.size,
-          responseFormat: sbReq.responseFormat,
-          watermark: sbReq.watermark,
-          sequentialImageGeneration: sbReq.sequentialImageGeneration,
-          steps: Math.max(10, Math.min(30, Number(sbReq.steps || 20))),
-          cfgScale: Number(sbReq.cfgScale || 6.5),
-          sampler: String(sbReq.sampler || 'DPM++ 2M'),
-          scheduler: String(sbReq.scheduler || 'Karras'),
-          timeoutMs: 120_000
-        })
-        if (!test || !String(test.dataUrl || '').startsWith('data:image/')) throw new Error('测试出图失败：无 dataUrl')
-
-        setSbContinuityReady(true)
-        setSbContinuitySummary(
-          isDoubaoStoryboard
-            ? '通过（Story Bible 有效 + Doubao 文本/生图可用 + 测试出图成功）'
-            : '通过（生图依赖就绪 + 测试出图成功）'
-        )
-        appendSbLog(isDoubaoStoryboard ? 'Doubao 多场景连续性预检通过' : '连续分镜锁定测试通过')
+      const testSceneId = String(sbTestSceneId || '').trim()
+      const testScene = sbItems.find((item) => item.nodeId === testSceneId) || null
+      if (!testSceneId || !testScene) throw new Error('请先选择一个测试场景')
+      if (!String(testScene.promptZh || '').trim() || !String(testScene.prompt || '').trim()) {
+        throw new Error('请先为当前测试场景生成中英文提示词')
       }
+
+      appendSbLog(
+        `场景测试参数：scene=${String(testScene.nodeName || testScene.nodeId || '').trim()} / model=${String(sbReq.model || '(default)').trim() || '(default)'} / loras=${Array.isArray(sbReq.loras) && sbReq.loras.length ? sbReq.loras.join(' | ') : '(none)'}`
+      )
+      const test = await renderStorySceneAi(doc.id, testSceneId, {
+        style: sbReq.style || 'picture_book',
+        model: String(sbReq.model || '').trim() || undefined,
+        loras: Array.isArray(sbReq.loras) && sbReq.loras.length ? sbReq.loras : undefined,
+        width: Math.max(512, Math.min(1024, Number(sbReq.width || 768))),
+        height: Math.max(512, Math.min(1536, Number(sbReq.height || 1024))),
+        steps: Math.max(10, Math.min(40, Number(sbReq.steps || 20))),
+        cfgScale: Number(sbReq.cfgScale || 6.5),
+        sampler: String(sbReq.sampler || 'DPM++ 2M'),
+        scheduler: String(sbReq.scheduler || 'Karras'),
+        timeoutMs: imageProvider === 'doubao' ? 300_000 : 180_000
+      })
+      const renderSpec = test && typeof test.renderSpec === 'object' ? test.renderSpec as any : null
+      const refCount = Array.isArray(renderSpec?.referenceAssets) ? renderSpec.referenceAssets.length : 0
+      const lockCount = Array.isArray(renderSpec?.promptLocks) ? renderSpec.promptLocks.length : 0
+      const sceneLabel = String(renderSpec?.sceneName || testScene.nodeName || testScene.nodeId || '').trim() || testSceneId
+      appendSbLog(`场景测试完成：${sceneLabel}`)
+      appendSbLog(`场景测试锁定输入：references=${refCount} / locks=${lockCount} / provider=${String(test.provider || imageProvider || 'unknown')}`)
+      setSbContinuityReady(true)
+      setSbContinuitySummary(
+        isDoubaoStoryboard
+          ? `通过（测试场景 ${sceneLabel} 渲染成功，已带入 ${refCount} 个锁定参考）`
+          : `通过（测试场景 ${sceneLabel} 渲染成功，已带入 ${refCount} 个锁定参考）`
+      )
+      appendSbLog(`场景测试通过：${sceneLabel}`)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setSbContinuityReady(false)
       setSbContinuitySummary(msg)
-      appendSbLog(`连续性预检/锁定测试失败：${msg}`)
+      appendSbLog(`场景测试失败：${msg}`)
     } finally {
       setSbContinuityBusy(false)
     }
@@ -3126,9 +3177,64 @@ function ensureNode(n: NodeV1): NodeV1 {
     })
   }
 
-  function buildStoryboardLockProjectSnapshot(project: ProjectV1): ProjectV1 {
+  function sleepMs(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  function startStoryboardAssetBatchProgressPoll(assetId: string, label: string) {
+    if (doc.mode !== 'project' || !doc.project) {
+      return { stop() {}, task: Promise.resolve() }
+    }
+    let stopped = false
+    let lastSeenBatchCount = -1
+    const normalizedAssetId = String(assetId || '').trim()
+    const task = (async () => {
+      while (!stopped) {
+        try {
+          const res = await listStoryAssetGalleryAi(doc.id, normalizedAssetId)
+          if (stopped) break
+          const nextPlan = normalizeStoryboardAssetPlan(res.plan)
+          if (nextPlan) {
+            const liveAsset = (Array.isArray(nextPlan.assets) ? nextPlan.assets : []).find((item: any) => String(item?.id || '').trim() === normalizedAssetId) || null
+            const batchCount = Array.isArray((liveAsset as any)?.latestReferenceBatch) ? (liveAsset as any).latestReferenceBatch.length : 0
+            setSbAssetPlan(nextPlan)
+            persistStoryboardAssetPlan(nextPlan, '')
+            if (batchCount > 0 && batchCount !== lastSeenBatchCount) {
+              appendSbLog(`候选图已回填：${label} / 已显示 ${batchCount} 张`)
+            }
+            lastSeenBatchCount = batchCount
+          }
+        } catch (_) {
+        }
+        if (stopped) break
+        await sleepMs(1200)
+      }
+    })()
+    return {
+      stop() {
+        stopped = true
+      },
+      task
+    }
+  }
+
+  function buildStoryboardLockProjectSnapshot(
+    project: ProjectV1,
+    overrides?: {
+      assetPlan?: StoryAssetPlan | null
+      assetPlanConfirmedAt?: string
+      assetPromptDrafts?: Record<string, any>
+    }
+  ): ProjectV1 {
     const stateIn = (project && (project as any).state && typeof (project as any).state === 'object') ? (project as any).state : {}
     const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+    const nextPromptDrafts = overrides && 'assetPromptDrafts' in overrides
+      ? (overrides.assetPromptDrafts && typeof overrides.assetPromptDrafts === 'object' ? overrides.assetPromptDrafts : {})
+      : (sbAssetPromptDrafts && typeof sbAssetPromptDrafts === 'object' ? sbAssetPromptDrafts : {})
+    const nextAssetPlan = overrides && 'assetPlan' in overrides ? (overrides.assetPlan || null) : sbAssetPlan
+    const nextConfirmedAt = overrides && 'assetPlanConfirmedAt' in overrides
+      ? String(overrides.assetPlanConfirmedAt || '').trim()
+      : String(sbAssetsConfirmedAt || '').trim()
     const nextAiBg: any = {
       ...aiBgIn,
       global: {
@@ -3139,10 +3245,11 @@ function ensureNode(n: NodeV1): NodeV1 {
       globalNegativePrompt: String(sbReq.globalNegativePrompt || '').trim(),
       storyboardGlobalPromptZh: String(sbReq.globalPromptZh || '').trim(),
       storyboardGlobalNegativePromptZh: String(sbReq.globalNegativePromptZh || '').trim(),
-      storyboardLockAssetPrompts: sbAssetPromptDrafts && typeof sbAssetPromptDrafts === 'object' ? sbAssetPromptDrafts : {}
+      storyboardLockAssetPrompts: nextPromptDrafts
     }
-    if (sbAssetPlan) nextAiBg.storyAssetPlan = sbAssetPlan
-    if (String(sbAssetsConfirmedAt || '').trim()) nextAiBg.storyAssetPlanConfirmedAt = String(sbAssetsConfirmedAt || '').trim()
+    if (nextAssetPlan) nextAiBg.storyAssetPlan = nextAssetPlan
+    else delete nextAiBg.storyAssetPlan
+    if (nextConfirmedAt) nextAiBg.storyAssetPlanConfirmedAt = nextConfirmedAt
     else delete nextAiBg.storyAssetPlanConfirmedAt
     return {
       ...project,
@@ -3558,10 +3665,11 @@ function ensureNode(n: NodeV1): NodeV1 {
     const nextDrafts = normalizeStoryboardLockAssetPromptDrafts(sbAssetPlan, {
       ...sbAssetPromptDrafts,
       [key]: {
-        promptZh: String(patch.promptZh ?? prevDraft.promptZh ?? '').trim(),
-        promptEn: String(patch.promptEn ?? prevDraft.promptEn ?? '').trim(),
-        negativePromptZh: String(patch.negativePromptZh ?? prevDraft.negativePromptZh ?? '').trim(),
-        negativePrompt: String(patch.negativePrompt ?? prevDraft.negativePrompt ?? '').trim(),
+        promptZh: String(patch.promptZh ?? prevDraft.promptZh ?? ''),
+        promptEn: String(patch.promptEn ?? prevDraft.promptEn ?? ''),
+        negativePromptZh: String(patch.negativePromptZh ?? prevDraft.negativePromptZh ?? ''),
+        negativePrompt: String(patch.negativePrompt ?? prevDraft.negativePrompt ?? ''),
+        promptReview: patch.promptReview !== undefined ? (patch.promptReview || null) : (prevDraft.promptReview || null),
         enhancedAt,
         enhanceMode
       }
@@ -3573,14 +3681,14 @@ function ensureNode(n: NodeV1): NodeV1 {
         if (String(asset?.id || '').trim() !== key) return asset
         const nextAsset = {
           ...asset,
-          referencePromptZh: String(nextDrafts[key]?.promptZh || '').trim(),
-          referencePromptEn: String(nextDrafts[key]?.promptEn || '').trim(),
-          referenceNegativePromptZh: String(nextDrafts[key]?.negativePromptZh || '').trim(),
-          referenceNegativePrompt: String(nextDrafts[key]?.negativePrompt || '').trim(),
-          negativePrompt: String(nextDrafts[key]?.negativePrompt || '').trim()
+          referencePromptZh: String(nextDrafts[key]?.promptZh ?? ''),
+          referencePromptEn: String(nextDrafts[key]?.promptEn ?? ''),
+          referenceNegativePromptZh: String(nextDrafts[key]?.negativePromptZh ?? ''),
+          referenceNegativePrompt: String(nextDrafts[key]?.negativePrompt ?? ''),
+          negativePrompt: String(nextDrafts[key]?.negativePrompt ?? '')
         }
-        if (!String(nextAsset.referencePromptEn || '').trim() && String(nextAsset.referencePromptHint || '').trim()) {
-          nextAsset.referencePromptEn = String(nextAsset.referencePromptHint || '').trim()
+        if (!String(nextAsset.referencePromptEn || '') && String(nextAsset.referencePromptHint || '').trim()) {
+          nextAsset.referencePromptEn = String(nextAsset.referencePromptHint || '')
         }
         return nextAsset
       })
@@ -3597,14 +3705,94 @@ function ensureNode(n: NodeV1): NodeV1 {
     }
   }
 
+  function storyboardPromptOpsBusy() {
+    return Boolean(sbOptimizingAssetId || sbTranslatingScope)
+  }
+
+  async function removeStoryboardAssetFromPlan(assetId: string) {
+    const key = String(assetId || '').trim()
+    if (!key) return
+    if (sbAssetPlanBusy || sbBusyGenerate || sbBusyApply || sbBusyEntity || Boolean(sbSelectingAssetId) || storyboardPromptOpsBusy()) return
+    const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
+    if (!plan) {
+      setSbError('请先生成必要事物资产计划')
+      return
+    }
+    const asset = (Array.isArray(plan.assets) ? plan.assets : []).find((item: any) => String(item?.id || '').trim() === key) || null
+    if (!asset) {
+      setSbError('未找到对应的必要事物资产')
+      return
+    }
+    const label = String(asset?.name || key).trim() || key
+    const ok = typeof window !== 'undefined'
+      ? window.confirm(`确认从当前锁定事物计划中删除“${label}”？\n\n这只会从当前锁定计划里移除；如果之后重新从 Story Bible 全量生成资产计划，它仍可能再次出现。`)
+      : true
+    if (!ok) return
+
+    const nextPlan = recomputeStoryboardAssetPlanSummary({
+      ...plan,
+      excludedAssetIds: Array.from(new Set([...(Array.isArray((plan as any)?.excludedAssetIds) ? (plan as any).excludedAssetIds : []), key])),
+      assets: (Array.isArray(plan.assets) ? plan.assets : []).filter((item: any) => String(item?.id || '').trim() !== key),
+      scenes: (Array.isArray(plan.scenes) ? plan.scenes : []).map((scene: any) => {
+        const nextAssetIds = (Array.isArray(scene?.assetIds) ? scene.assetIds : []).map((item: any) => String(item || '').trim()).filter((item: string) => item && item !== key)
+        const nextPromptAssets = (Array.isArray(scene?.promptAssets) ? scene.promptAssets : []).filter((item: any) => String(item?.id || '').trim() !== key)
+        const nextMissing = (Array.isArray(scene?.missingRequiredAssetIds) ? scene.missingRequiredAssetIds : []).map((item: any) => String(item || '').trim()).filter((item: string) => item && item !== key)
+        const nextReady = (Array.isArray(scene?.readyReferenceAssetIds) ? scene.readyReferenceAssetIds : []).map((item: any) => String(item || '').trim()).filter((item: string) => item && item !== key)
+        return {
+          ...scene,
+          assetIds: nextAssetIds,
+          promptAssets: nextPromptAssets,
+          missingRequiredAssetIds: nextMissing,
+          readyReferenceAssetIds: nextReady
+        }
+      })
+    })
+    const nextDrafts = { ...(sbAssetPromptDrafts || {}) }
+    delete nextDrafts[key]
+    setSbAssetPlan(nextPlan)
+    setSbAssetsConfirmedAt('')
+    setSbContinuityReady(false)
+    setSbContinuitySummary('')
+    persistStoryboardAssetPlan(nextPlan, '')
+    setSbAssetPromptDrafts(nextDrafts)
+    if (doc.mode === 'project' && doc.project) {
+      const nextProjectSnapshot = buildStoryboardLockProjectSnapshot(doc.project, {
+        assetPlan: nextPlan,
+        assetPlanConfirmedAt: '',
+        assetPromptDrafts: nextDrafts
+      })
+      setDocProject(() => nextProjectSnapshot)
+      if (doc.story) {
+        try {
+          await persistStoryAssetPlanAi(doc.id, { plan: nextPlan as any })
+          const saved = await saveProject(doc.id, { project: nextProjectSnapshot, story: doc.story })
+          setDoc((prev) => ({ ...prev, project: saved, title: saved.title }))
+          setDirty(false)
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          setSbError(`删除后的锁定计划保存失败：${msg}`)
+          appendSbLog(`删除后的锁定计划保存失败：${msg}`)
+        }
+      }
+    }
+    if (sbGallery?.assetId === key) closeStoryboardAssetGallery()
+    appendSbLog(`已从当前锁定计划移除事物：${label}`)
+    setToast(`已移除：${label}`)
+  }
+
   async function translateStoryboardLockGlobalPrompt(kind: 'globalPrompt' | 'globalNegativePrompt') {
     if (doc.mode !== 'project' || !doc.project) return
+    if (storyboardPromptOpsBusy()) {
+      setSbError('当前已有提示词增强或翻译任务在执行，请等待完成后再操作')
+      return
+    }
     const zhText = kind === 'globalPrompt' ? String(sbReq.globalPromptZh || '').trim() : String(sbReq.globalNegativePromptZh || '').trim()
     if (!zhText) {
       setSbError('请先填写中文提示词，再执行翻译')
       return
     }
     setSbTranslatingScope(kind)
+    setSbTranslateDeadlineAt(Date.now() + 60_000)
     appendSbLog(`开始翻译${kind === 'globalPrompt' ? '全局正向' : '全局负向'}提示词`)
     try {
       const res = await translateStoryboardPromptText(doc.id, { text: zhText, sourceLang: 'zh', targetLang: 'en', mode: 'prompt', timeoutMs: 60_000 })
@@ -3618,11 +3806,16 @@ function ensureNode(n: NodeV1): NodeV1 {
       appendSbLog(`提示词翻译失败：${msg}`)
     } finally {
       setSbTranslatingScope('')
+      setSbTranslateDeadlineAt(0)
     }
   }
 
   async function translateStoryboardLockAssetPrompt(assetId: string, kind: 'positive' | 'negative') {
     if (doc.mode !== 'project' || !doc.project) return
+    if (storyboardPromptOpsBusy()) {
+      setSbError('当前已有提示词增强或翻译任务在执行，请等待完成后再操作')
+      return
+    }
     const key = String(assetId || '').trim()
     const zhText = kind === 'positive'
       ? String(sbAssetPromptDrafts[key]?.promptZh || '').trim()
@@ -3632,6 +3825,7 @@ function ensureNode(n: NodeV1): NodeV1 {
       return
     }
     setSbTranslatingScope(`asset:${kind}:${key}`)
+    setSbTranslateDeadlineAt(Date.now() + 60_000)
     appendSbLog(`开始翻译资产${kind === 'positive' ? '正向' : '反向'}提示词：${key}`)
     try {
       const res = await translateStoryboardPromptText(doc.id, { text: zhText, sourceLang: 'zh', targetLang: 'en', mode: 'prompt', timeoutMs: 60_000 })
@@ -3647,6 +3841,7 @@ function ensureNode(n: NodeV1): NodeV1 {
       appendSbLog(`资产${kind === 'positive' ? '正向' : '反向'}提示词翻译失败：${key} - ${msg}`)
     } finally {
       setSbTranslatingScope('')
+      setSbTranslateDeadlineAt(0)
     }
   }
 
@@ -3782,6 +3977,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     setSbContinuityReady(false)
     const batchSize = Math.max(1, Math.min(6, Number(batchSizeIn || 4) || 4))
     appendSbLog(`开始生成必要事物参考图：${label}（先出 ${batchSize} 张，仅抽卡，不做白底/线稿；若模型未驻留，ComfyUI 会先预热 SDXL）`)
+    const progressPoll = startStoryboardAssetBatchProgressPoll(String(assetId || '').trim(), label)
     try {
       const refSize = getStoryboardAssetRenderSize(asset)
       const res = await generateStoryAssetReferenceAi(doc.id, {
@@ -3811,6 +4007,8 @@ function ensureNode(n: NodeV1): NodeV1 {
       setSbError(msg)
       appendSbLog(`必要事物参考图生成失败：${label} - ${msg}`)
     } finally {
+      progressPoll.stop()
+      await progressPoll.task.catch(() => {})
       setSbAssetPlanBusy(false)
       setSbGeneratingAssetId('')
     }
@@ -3875,6 +4073,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     setSbAssetsConfirmedAt('')
     setSbContinuityReady(false)
     appendSbLog(`开始增强提示并重生参考图：${label}`)
+    const progressPoll = startStoryboardAssetBatchProgressPoll(String(assetId || '').trim(), label)
     try {
       const refSize = getStoryboardAssetRenderSize(asset)
       const res = await optimizeStoryAssetReferenceAi(doc.id, {
@@ -3904,6 +4103,8 @@ function ensureNode(n: NodeV1): NodeV1 {
       setSbError(msg)
       appendSbLog(`增强重生失败：${label} - ${msg}`)
     } finally {
+      progressPoll.stop()
+      await progressPoll.task.catch(() => {})
       setSbAssetPlanBusy(false)
       setSbOptimizingAssetId('')
     }
@@ -3911,7 +4112,11 @@ function ensureNode(n: NodeV1): NodeV1 {
 
   async function runStoryboardEnhanceAssetPrompt(assetId: string) {
     if (doc.mode !== 'project' || !doc.project) return
-    if (sbAssetPlanBusy || sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    if (storyboardPromptOpsBusy()) {
+      setSbError('当前已有提示词增强或翻译任务在执行，请等待完成后再操作')
+      return
+    }
+    if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
     const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
     if (!plan) {
       setSbError('请先生成必要事物资产计划')
@@ -3932,6 +4137,8 @@ function ensureNode(n: NodeV1): NodeV1 {
         promptEn: String(draft.promptEn || '').trim(),
         negativePromptZh: String(draft.negativePromptZh || '').trim(),
         negativePrompt: String(draft.negativePrompt || '').trim(),
+        promptReview: draft.promptReview || null,
+        forceRegenerate: true,
         globalPromptZh: String(sbReq.globalPromptZh || '').trim(),
         globalNegativePromptZh: String(sbReq.globalNegativePromptZh || '').trim()
       })
@@ -3939,12 +4146,15 @@ function ensureNode(n: NodeV1): NodeV1 {
         promptZh: String(res.result?.promptZh || '').trim(),
         promptEn: String(res.result?.promptEn || '').trim(),
         negativePromptZh: String(res.result?.negativePromptZh || '').trim(),
-        negativePrompt: String(res.result?.negativePrompt || '').trim()
+        negativePrompt: String(res.result?.negativePrompt || '').trim(),
+        promptReview: res.promptReview && typeof res.promptReview === 'object' ? res.promptReview : null
       }, {
         markEnhanced: true,
         enhanceMode: String(res.meta?.provider || '').trim() && String(res.meta?.provider || '').trim() !== 'local' ? 'ai' : 'fallback'
       })
-      appendSbLog(`资产提示词已增强：${label} / ${String(res.result?.summary || 'ok')}`)
+      const reviewScore = Number(res.promptReview?.score)
+      const reviewText = Number.isFinite(reviewScore) ? `${Math.round(reviewScore)}/100` : '未评分'
+      appendSbLog(`资产提示词已增强：${label} / ${reviewText} / ${String(res.promptReview?.summary || res.result?.summary || 'ok')}`)
       setToast(`已增强提示词：${label}`)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -4057,7 +4267,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     }
     const label = String(asset && asset.name ? asset.name : assetId).trim() || assetId
     setSbGalleryBusy(true)
-    setSbGalleryDeletingPath('')
+    setSbGalleryDeletingPaths([])
     setSbGallery({ assetId: String(assetId || '').trim(), assetName: label, items: [] })
     appendSbLog(`加载图片管理列表：${label}`)
     try {
@@ -4081,10 +4291,10 @@ function ensureNode(n: NodeV1): NodeV1 {
   }
 
   function closeStoryboardAssetGallery() {
-    if (sbGalleryDeletingPath) return
+    if (sbGalleryDeletingPaths.length) return
     setSbGallery(null)
     setSbGalleryBusy(false)
-    setSbGalleryDeletingPath('')
+    setSbGalleryDeletingPaths([])
   }
 
   async function runStoryboardDeleteAssetGalleryItem(assetId: string, assetPath: string) {
@@ -4098,7 +4308,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     }
     const label = String(asset && asset.name ? asset.name : assetId).trim() || assetId
     setSbAssetPlanBusy(true)
-    setSbGalleryDeletingPath(String(assetPath || '').trim())
+    setSbGalleryDeletingPaths([String(assetPath || '').trim()])
     appendSbLog(`删除图片：${label} / ${String(assetPath || '').trim()}`)
     try {
       const res = await deleteStoryAssetGalleryItemAi(doc.id, {
@@ -4126,7 +4336,81 @@ function ensureNode(n: NodeV1): NodeV1 {
       appendSbLog(`删除图片失败：${label} - ${msg}`)
     } finally {
       setSbAssetPlanBusy(false)
-      setSbGalleryDeletingPath('')
+      setSbGalleryDeletingPaths([])
+    }
+  }
+
+  async function runStoryboardDeleteAssetGalleryItems(assetId: string, assetPaths: string[]) {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbAssetPlanBusy || sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    const normalizedPaths = Array.from(new Set((Array.isArray(assetPaths) ? assetPaths : []).map((item) => String(item || '').trim()).filter(Boolean)))
+    if (!normalizedPaths.length) return
+    const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
+    const asset = (Array.isArray(plan?.assets) ? plan!.assets : []).find((x: any) => String(x && x.id ? x.id : '').trim() === String(assetId || '').trim()) || null
+    if (!asset) {
+      setSbError('未找到对应的必要事物资产')
+      return
+    }
+    const label = String(asset && asset.name ? asset.name : assetId).trim() || assetId
+    setSbAssetPlanBusy(true)
+    setSbGalleryDeletingPaths(normalizedPaths)
+    appendSbLog(`批量删除图片：${label} / ${normalizedPaths.length} 张`)
+    try {
+      let latestPlan = plan
+      let latestItems = Array.isArray(sbGallery?.items) ? sbGallery.items : []
+      let latestAsset = asset
+      for (const itemPath of normalizedPaths) {
+        const res = await deleteStoryAssetGalleryItemAi(doc.id, {
+          assetId: String(assetId || '').trim(),
+          assetPath: itemPath
+        })
+        latestPlan = normalizeStoryboardAssetPlan(res.plan)
+        latestItems = Array.isArray(res.items) ? res.items : []
+        latestAsset = (res.asset as any) || latestAsset
+      }
+      setSbAssetPlan(latestPlan)
+      persistStoryboardAssetPlan(latestPlan, '')
+      setSbAssetsConfirmedAt('')
+      setSbContinuityReady(false)
+      setSbGallery((prev) => {
+        if (!prev || prev.assetId !== String(assetId || '').trim()) return prev
+        return {
+          assetId: prev.assetId,
+          assetName: String((latestAsset as any)?.name || prev.assetName || label).trim() || label,
+          items: latestItems
+        }
+      })
+      appendSbLog(`图片已批量删除：${label} / ${normalizedPaths.length} 张`)
+      setToast(`已删除 ${normalizedPaths.length} 张图片`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`批量删除图片失败：${label} - ${msg}`)
+    } finally {
+      setSbAssetPlanBusy(false)
+      setSbGalleryDeletingPaths([])
+    }
+  }
+
+  async function runStoryboardSelectAssetGalleryPrimary(assetId: string, assetPath: string) {
+    if (doc.mode !== 'project' || !doc.project) return
+    await runStoryboardSelectAssetReference(assetId, assetPath)
+    if (!String(assetPath || '').trim()) return
+    try {
+      const res = await listStoryAssetGalleryAi(doc.id, String(assetId || '').trim())
+      const nextPlan = normalizeStoryboardAssetPlan(res.plan)
+      setSbAssetPlan(nextPlan)
+      persistStoryboardAssetPlan(nextPlan, '')
+      setSbGallery((prev) => {
+        if (!prev || prev.assetId !== String(assetId || '').trim()) return prev
+        return {
+          assetId: prev.assetId,
+          assetName: String(res.asset?.name || prev.assetName || '').trim() || prev.assetName,
+          items: Array.isArray(res.items) ? res.items : []
+        }
+      })
+    } catch (_) {
+      // Ignore gallery refresh failures; the primary selection already updated the main asset plan.
     }
   }
 
@@ -4167,7 +4451,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     setSbAssetsConfirmedAt(confirmedAt)
     persistStoryboardAssetPlan(plan, confirmedAt)
     setSbContinuityReady(false)
-    appendSbLog('锁定资产已确认，可进入正确出图阶段')
+    appendSbLog('锁定资产已确认，可进入正式场景出图阶段')
     setToast('已确认锁定资产')
   }
 
@@ -4270,18 +4554,13 @@ function ensureNode(n: NodeV1): NodeV1 {
       appendSbLog('阻止执行：必要事物资产尚未确认')
       return
     }
-    if (!sbContinuityReady) {
-      setSbError('请先运行“连续性预检/锁定测试”，通过后才能生成场景提示词')
-      appendSbLog('阻止执行：连续性预检/锁定测试未通过')
-      return
-    }
     if (!sbItems.length) {
       setSbError('没有可处理的场景节点')
       return
     }
     const onlyPending = mode === 'pending'
     const targets = onlyPending
-      ? sbItems.filter((x) => x.status === 'error' || !String(x.prompt || '').trim())
+      ? sbItems.filter((x) => x.status === 'error' || !String(x.prompt || '').trim() || !String(x.promptZh || '').trim())
       : sbItems.slice()
     if (!targets.length) {
       setSbError('')
@@ -4360,6 +4639,8 @@ function ensureNode(n: NodeV1): NodeV1 {
     }
     let okCount = 0
     let failCount = 0
+    let stoppedOnFirstError = false
+    let firstFailureMessage = ''
     try {
       for (let i = 0; i < targets.length; i++) {
         const canContinue = await waitForSbQueueGate()
@@ -4454,8 +4735,14 @@ function ensureNode(n: NodeV1): NodeV1 {
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e)
           setSbItems((prev) => prev.map((x) => (x.nodeId === it.nodeId ? { ...x, status: 'error', note: msg } : x)))
+          const fullMsg = `场景提示词生成失败：${it.nodeName} - ${msg}`
           appendSbLog(`场景生成失败：${it.nodeName} - ${msg}`)
+          setSbError(fullMsg)
+          firstFailureMessage = fullMsg
+          appendSbLog('已在当前失败场景处停止；请先修正问题，再点“继续提示词队列”恢复。')
           failCount += 1
+          stoppedOnFirstError = true
+          break
         }
       }
       setSbReq((prev) => ({
@@ -4469,14 +4756,19 @@ function ensureNode(n: NodeV1): NodeV1 {
       }))
       if (isDoubaoStoryboard) {
         const promptsReady = failCount === 0 && okCount > 0 && !sbQueueRef.current.cancelRequested
-        setSbContinuityReady(promptsReady)
+        setSbContinuityReady(false)
         setSbContinuitySummary(
           promptsReady
-            ? '通过（连续性 Bible 已建立，全部场景提示词已生成，可直接批量出图）'
-            : '提示词已更新，请重新运行连续性预检'
+            ? '场景提示词已生成，请选择一个场景运行场景测试'
+            : '提示词已更新，请重新运行场景测试'
         )
       } else {
         setSbContinuityReady(false)
+        setSbContinuitySummary(
+          failCount === 0 && okCount > 0 && !sbQueueRef.current.cancelRequested
+            ? '场景提示词已生成，请选择一个场景运行场景测试'
+            : '提示词已更新，请重新运行场景测试'
+        )
       }
       setDocProject((p) => {
         const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
@@ -4502,9 +4794,11 @@ function ensureNode(n: NodeV1): NodeV1 {
         return { ...p, state: nextState }
       })
       if (failCount > 0) {
-        const msg = `本轮完成：成功 ${okCount}，失败 ${failCount}（可点“重试失败/继续未完成”）`
-        setSbError(msg)
+        const msg = stoppedOnFirstError
+          ? `已在首个失败场景处停止：成功 ${okCount}，失败 ${failCount}（修正后可点“继续提示词队列”）`
+          : `本轮完成：成功 ${okCount}，失败 ${failCount}（可点“重试失败/继续未完成”）`
         appendSbLog(msg)
+        if (!firstFailureMessage) setSbError(msg)
       } else {
         setSbError('')
         if (sbQueueRef.current.cancelRequested) appendSbLog('提示词任务已取消，已保留已完成结果')
@@ -4532,8 +4826,8 @@ function ensureNode(n: NodeV1): NodeV1 {
       return
     }
     if (!sbContinuityReady) {
-      setSbError('请先运行“连续性预检/锁定测试”，通过后才能批量出图')
-      appendSbLog('阻止执行：连续性预检/锁定测试未通过')
+      setSbError('请先在正式场景页上半部分运行“场景测试”，通过后才能批量出图')
+      appendSbLog('阻止执行：场景测试未通过')
       return
     }
     if (!sbItems.length) {
@@ -4601,6 +4895,30 @@ function ensureNode(n: NodeV1): NodeV1 {
 
       const storyNodesById = new Map((nextStory.nodes || []).filter(Boolean).map((n) => [String((n as any).id || ''), n as any]))
       const projectCharactersById = new Map((nextProject.characters || []).filter(Boolean).map((ch) => [String((ch as any).id || ''), ch as any]))
+      const buildSceneLockedAssetRefs = (sceneId: string) => {
+        const plan = sbAssetPlan
+        if (!plan || !Array.isArray(plan.scenes) || !Array.isArray(plan.assets)) return []
+        const assetsById = new Map((plan.assets || []).filter(Boolean).map((asset: any) => [String(asset?.id || '').trim(), asset]))
+        const scene = (plan.scenes || []).find((item: any) => String(item?.sceneId || '').trim() === String(sceneId || '').trim())
+        if (!scene) return []
+        const promptAssets = Array.isArray(scene?.promptAssets) ? scene.promptAssets : []
+        return promptAssets
+          .map((item: any) => assetsById.get(String(item?.id || '').trim()) || item)
+          .filter((asset: any) => asset && String(asset?.category || '').trim() !== 'character')
+          .map((asset: any) => {
+            const assetUri = String(asset?.primaryReferenceAssetUri || '').trim()
+            if (!assetUri) return null
+            return {
+              assetId: String(asset?.primaryReferenceAssetId || asset?.id || '').trim() || undefined,
+              assetName: String(asset?.name || asset?.id || 'reference').trim(),
+              assetType: String(asset?.category || 'asset').trim() || 'asset',
+              assetPath: assetUri,
+              assetUri,
+              weight: String(asset?.category || '').trim() === 'location' ? 0.85 : 0.8
+            }
+          })
+          .filter(Boolean)
+      }
 
       const buildContinuityAnchor = () => {
         return [
@@ -4661,7 +4979,9 @@ function ensureNode(n: NodeV1): NodeV1 {
           const characterRefs = buildSelectedCharacterRefsFromChoices(
             buildNodeCharacterReferenceChoices(nodeForRefs ? ensureNode(nodeForRefs) : null)
           )
-          const payloadBase: AiBackgroundRequest = {
+          const assetRefs = buildSceneLockedAssetRefs(it.nodeId)
+          if (assetRefs.length > 0) appendSbLog(`场景锁定事物参考：${assetRefs.map((ref: any) => ref.assetName).slice(0, 6).join('、')}`)
+          const payloadBase: StoryboardSceneAiBackgroundRequest = {
             userInput: String(it.userInput || ''),
             globalPrompt: gpWithRoles,
             globalNegativePrompt: gneg,
@@ -4678,9 +4998,10 @@ function ensureNode(n: NodeV1): NodeV1 {
               seedMode: 'random'
             },
             characterRefs,
+            assetRefs,
             timeoutMs: provider === 'doubao' ? 300_000 : 0
           }
-          const payload: AiBackgroundRequest = provider === 'doubao'
+          const payload: StoryboardSceneAiBackgroundRequest = provider === 'doubao'
             ? {
                 ...payloadBase,
                 width: undefined,
@@ -7662,7 +7983,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     <div className="app">
       <div className="topbar">
         <div className="left">
-          <div className="title">game_studio · 节点式交互故事编辑器（P0）</div>
+          <div className="title">gamestudio · 节点式交互故事编辑器（P0）</div>
           {showProjectManager ? (
             <>
               <button className="btn secondary" onClick={() => refreshProjects()} disabled={busy}>
@@ -8665,6 +8986,8 @@ function ensureNode(n: NodeV1): NodeV1 {
           assetPlan={sbAssetPlan}
           assetPromptDrafts={sbAssetPromptDrafts}
           translatingScope={sbTranslatingScope}
+          translateCountdownSec={sbTranslateCountdownSec}
+          promptOpBusy={Boolean(sbOptimizingAssetId || sbTranslatingScope)}
           assetPlanBusy={sbAssetPlanBusy}
           assetGeneratingId={sbGeneratingAssetId}
           assetAnalyzingId={sbAnalyzingAssetId}
@@ -8673,7 +8996,7 @@ function ensureNode(n: NodeV1): NodeV1 {
           assetLineartId={sbLineartAssetId}
           assetGallery={sbGallery}
           assetGalleryBusy={sbGalleryBusy}
-          assetGalleryDeletingPath={sbGalleryDeletingPath}
+          assetGalleryDeletingPaths={sbGalleryDeletingPaths}
           assetConfirmReady={sbAssetConfirmReady}
           assetConfirmSummary={sbAssetConfirmSummary}
           continuityReady={sbContinuityReady}
@@ -8701,7 +9024,10 @@ function ensureNode(n: NodeV1): NodeV1 {
           onGenerateAssetLineart={(assetId) => void runStoryboardGenerateAssetLineart(assetId)}
           onOpenAssetGallery={(assetId) => void runStoryboardOpenAssetGallery(assetId)}
           onCloseAssetGallery={closeStoryboardAssetGallery}
+          onSelectAssetGalleryPrimary={(assetId, assetPath) => void runStoryboardSelectAssetGalleryPrimary(assetId, assetPath)}
+          onDeleteAssetGalleryItems={(assetId, assetPaths) => void runStoryboardDeleteAssetGalleryItems(assetId, assetPaths)}
           onDeleteAssetGalleryItem={(assetId, assetPath) => void runStoryboardDeleteAssetGalleryItem(assetId, assetPath)}
+          onDeleteAssetFromPlan={(assetId) => removeStoryboardAssetFromPlan(assetId)}
           onChangeGlobalPromptZh={(value) => updateStoryboardLockGlobalPrompts({ globalPromptZh: value })}
           onChangeGlobalPromptEn={(value) => updateStoryboardLockGlobalPrompts({ globalPrompt: value })}
           onTranslateGlobalPrompt={() => void translateStoryboardLockGlobalPrompt('globalPrompt')}
@@ -8724,7 +9050,6 @@ function ensureNode(n: NodeV1): NodeV1 {
 
         <AiStoryboardBatchModal
           open={sbRenderOpen}
-          initialTab="render"
           projectId={doc.mode === 'project' ? doc.id : ''}
           value={{
             prompt: '',
@@ -8776,11 +9101,25 @@ function ensureNode(n: NodeV1): NodeV1 {
           elapsedMs={sbElapsedMs}
           generatingNodeId={sbGeneratingNodeId}
           generatingNodeElapsedMs={sbGeneratingNodeElapsedMs}
+          testSceneId={sbTestSceneId}
           error={sbError}
           logs={sbLogs}
+          translatingScope={sbTranslatingScope}
+          translateCountdownSec={sbTranslateCountdownSec}
+          promptOpBusy={Boolean(sbOptimizingAssetId || sbTranslatingScope)}
           onRunOpenChecks={() => void runStoryboardOpenChecks()}
+          onChangeTestSceneId={(nodeId) => {
+            const nextId = String(nodeId || '').trim()
+            setSbTestSceneId(nextId)
+            setSbContinuityReady(false)
+            setSbContinuitySummary('')
+          }}
           onChangeGlobalPromptZh={(value) => updateStoryboardLockGlobalPrompts({ globalPromptZh: value })}
+          onChangeGlobalPromptEn={(value) => updateStoryboardLockGlobalPrompts({ globalPrompt: value })}
+          onTranslateGlobalPrompt={() => void translateStoryboardLockGlobalPrompt('globalPrompt')}
           onChangeGlobalNegativePromptZh={(value) => updateStoryboardLockGlobalPrompts({ globalNegativePromptZh: value })}
+          onChangeGlobalNegativePromptEn={(value) => updateStoryboardLockGlobalPrompts({ globalNegativePrompt: value })}
+          onTranslateGlobalNegativePrompt={() => void translateStoryboardLockGlobalPrompt('globalNegativePrompt')}
           onGenerateEntity={runStoryboardGenerateEntitySpec}
           onClearStoryBible={() => {
             setSbReq((prev) => ({ ...prev, storyBibleJson: '', entitySpec: '' }))

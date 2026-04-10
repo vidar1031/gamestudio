@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   diagnoseStudio,
   preflightStudioImage,
@@ -19,6 +19,7 @@ type SecretField = 'openaiApiKey' | 'localoxmlApiKey' | 'doubaoArkApiKey'
 type SecretDraft = Record<SecretField, string>
 
 type SecretDirtyState = Record<SecretField, boolean>
+type ModelMemoryEntry = string | string[]
 
 function safeBool(v: any, fallback: boolean) {
   return typeof v === 'boolean' ? v : fallback
@@ -64,10 +65,8 @@ const MODEL_MEMORY_KEY = 'studio.model.memory.v1'
 const URL_MEMORY_KEY = 'studio.url.memory.v1'
 type ModelSection = 'scripts' | 'prompt' | 'translation' | 'image'
 type TextSection = 'scripts' | 'prompt' | 'translation'
-type ModelMemory = Record<ModelSection, Record<string, string>>
+type ModelMemory = Record<ModelSection, Record<string, ModelMemoryEntry>>
 type UrlMemory = Record<TextSection, Record<string, string>>
-// Curated presets for common local Ollama models. Users can still type a custom id.
-const OLLAMA_MODEL_PRESETS = ['gemma3:12b', 'qwen3:8b', 'qwen3-vl:8b', 'qwen3.5:27b']
 const OPENAI_MODEL_PRESETS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4o-mini']
 const SDWEBUI_MODEL_PRESETS = [
   'dreamshaper_8.safetensors [879db523c3]',
@@ -215,6 +214,52 @@ function loadModelMemory(): ModelMemory {
   }
 }
 
+function normalizeRememberedModelList(v: any) {
+  const raw = Array.isArray(v) ? v : typeof v === 'string' ? [v] : []
+  const seen = new Set<string>()
+  const list: string[] = []
+  for (const item of raw) {
+    const s = String(item || '').trim()
+    if (!s || seen.has(s)) continue
+    seen.add(s)
+    list.push(s)
+  }
+  return list
+}
+
+function addRememberedModel(listLike: any, model: string | null | undefined) {
+  const current = normalizeRememberedModelList(listLike)
+  const next = String(model || '').trim()
+  if (!next) return current
+  return [next, ...current.filter((item) => item !== next)].slice(0, 12)
+}
+
+function removeRememberedModelEntry(listLike: any, model: string | null | undefined) {
+  const target = String(model || '').trim()
+  if (!target) return normalizeRememberedModelList(listLike)
+  return normalizeRememberedModelList(listLike).filter((item) => item !== target)
+}
+
+function getRememberedModelList(memory: ModelMemory, section: ModelSection, provider: string | null | undefined) {
+  return normalizeRememberedModelList((memory[section] || {})[providerKey(provider)])
+}
+
+function getRememberedModelValue(memory: ModelMemory, section: ModelSection, provider: string | null | undefined) {
+  return getRememberedModelList(memory, section, provider)[0] || ''
+}
+
+function getOllamaModelOptions(memory: ModelMemory, section: TextSection, provider: string | null | undefined, current: string | null | undefined) {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of [...getRememberedModelList(memory, section, provider), String(current || '').trim()]) {
+    const v = String(item || '').trim()
+    if (!v || seen.has(v)) continue
+    seen.add(v)
+    out.push(v)
+  }
+  return out
+}
+
 function loadUrlMemory(): UrlMemory {
   if (typeof window === 'undefined') return emptyUrlMemory()
   try {
@@ -230,12 +275,6 @@ function loadUrlMemory(): UrlMemory {
     return emptyUrlMemory()
   }
 }
-
-function isOllamaPresetModel(v: string | null | undefined) {
-  const s = String(v || '').trim()
-  return OLLAMA_MODEL_PRESETS.includes(s)
-}
-
 
 function isOpenAIPresetModel(v: string | null | undefined) {
   const s = String(v || '').trim()
@@ -346,6 +385,7 @@ export default function StudioSettingsModal(props: Props) {
   const [imgPreflightSummary, setImgPreflightSummary] = useState('')
   const [imgPreflightDiagOpen, setImgPreflightDiagOpen] = useState(false)
   const [imgPreflightDiag, setImgPreflightDiag] = useState<any>(null)
+  const suppressModelRememberRef = useRef(false)
   const [foldOpen, setFoldOpen] = useState<{ scripts: boolean; prompt: boolean; translation: boolean; image: boolean; tts: boolean }>({
     scripts: true,
     prompt: true,
@@ -434,12 +474,24 @@ export default function StudioSettingsModal(props: Props) {
 
   function rememberModel(section: ModelSection, provider: string | null | undefined, model: string | null | undefined) {
     const key = providerKey(provider)
-    const val = String(model || '')
+    const val = String(model || '').trim()
+    if (!val) return
     setModelMemory((prev) => ({
       ...prev,
       [section]: {
         ...(prev[section] || {}),
-        [key]: val
+        [key]: addRememberedModel((prev[section] || {})[key], val)
+      }
+    }))
+  }
+
+  function forgetModel(section: ModelSection, provider: string | null | undefined, model: string | null | undefined) {
+    const key = providerKey(provider)
+    setModelMemory((prev) => ({
+      ...prev,
+      [section]: {
+        ...(prev[section] || {}),
+        [key]: removeRememberedModelEntry((prev[section] || {})[key], model)
       }
     }))
   }
@@ -448,19 +500,31 @@ export default function StudioSettingsModal(props: Props) {
     setModelMemory((prev) => ({
       scripts: {
         ...(prev.scripts || {}),
-        [providerKey(nextDraft.scripts?.provider || '')]: String(nextDraft.scripts?.model || '')
+        [providerKey(nextDraft.scripts?.provider || '')]: addRememberedModel(
+          (prev.scripts || {})[providerKey(nextDraft.scripts?.provider || '')],
+          nextDraft.scripts?.model
+        )
       },
       prompt: {
         ...(prev.prompt || {}),
-        [providerKey(nextDraft.prompt?.provider || '')]: String(nextDraft.prompt?.model || '')
+        [providerKey(nextDraft.prompt?.provider || '')]: addRememberedModel(
+          (prev.prompt || {})[providerKey(nextDraft.prompt?.provider || '')],
+          nextDraft.prompt?.model
+        )
       },
       translation: {
         ...(prev.translation || {}),
-        [providerKey(nextDraft.translation?.provider || '')]: String(nextDraft.translation?.model || '')
+        [providerKey(nextDraft.translation?.provider || '')]: addRememberedModel(
+          (prev.translation || {})[providerKey(nextDraft.translation?.provider || '')],
+          nextDraft.translation?.model
+        )
       },
       image: {
         ...(prev.image || {}),
-        [providerKey(nextDraft.image?.provider || '')]: String(nextDraft.image?.model || '')
+        [providerKey(nextDraft.image?.provider || '')]: addRememberedModel(
+          (prev.image || {})[providerKey(nextDraft.image?.provider || '')],
+          nextDraft.image?.model
+        )
       }
     }))
   }
@@ -648,6 +712,112 @@ export default function StudioSettingsModal(props: Props) {
   const promptUrlMeta = useMemo(() => textProviderUrlMeta(draft.prompt?.provider), [draft.prompt?.provider])
   const translationUrlMeta = useMemo(() => textProviderUrlMeta(draft.translation?.provider), [draft.translation?.provider])
 
+  function resolveServiceDiagnoseTimeoutMs(service: 'scripts' | 'prompt' | 'translation' | 'image') {
+    if (service === 'image') return 20_000
+    const provider = service === 'scripts'
+      ? String(draft.scripts?.provider || '').trim().toLowerCase()
+      : service === 'prompt'
+        ? String(draft.prompt?.provider || '').trim().toLowerCase()
+        : String(draft.translation?.provider || '').trim().toLowerCase()
+    if (provider === 'ollama') {
+      return service === 'translation' ? 60_000 : 45_000
+    }
+    if (provider === 'localoxml') return 20_000
+    return 12_000
+  }
+
+  function renderOllamaModelEditor(
+    section: TextSection,
+    provider: string | null | undefined,
+    model: string | null | undefined,
+    onChange: (next: string) => void
+  ) {
+    const remembered = getRememberedModelList(modelMemory, section, provider)
+    const current = String(model || '')
+    const options = getOllamaModelOptions(modelMemory, section, provider, current)
+    return (
+      <div style={{ display: 'grid', gap: 8 }}>
+        <select
+          className="sel"
+          value={options.includes(current) ? current : '__custom__'}
+          onChange={(e) => {
+            const next = e.target.value === '__custom__' ? current : e.target.value
+            onChange(next)
+            if (e.target.value !== '__custom__') rememberModel(section, provider || '', next)
+          }}
+        >
+          {options.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+          <option value="__custom__">自定义（手动输入）</option>
+        </select>
+        <input
+          value={current}
+          placeholder={textProviderModelPlaceholder(provider)}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={(e) => {
+            if (suppressModelRememberRef.current) {
+              suppressModelRememberRef.current = false
+              return
+            }
+            rememberModel(section, provider || '', e.target.value)
+          }}
+        />
+        {remembered.length ? (
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div className="hint">历史模型</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {remembered.map((item) => (
+                <div
+                  key={item}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '6px 10px',
+                    borderRadius: 999,
+                    border: '1px solid rgba(148,163,184,0.28)',
+                    background: 'rgba(15,23,42,0.35)'
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    style={{ padding: 0, minWidth: 0, border: 'none', background: 'transparent' }}
+                    onMouseDown={(e) => {
+                      suppressModelRememberRef.current = true
+                      e.preventDefault()
+                    }}
+                    onClick={() => onChange(item)}
+                  >
+                    {item}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    style={{ padding: 0, minWidth: 0, border: 'none', background: 'transparent', color: '#fca5a5' }}
+                    onMouseDown={(e) => {
+                      suppressModelRememberRef.current = true
+                      e.preventDefault()
+                    }}
+                    onClick={() => {
+                      forgetModel(section, provider || '', item)
+                      if (current === item) onChange('')
+                    }}
+                    aria-label={`删除模型 ${item}`}
+                    title={`删除模型 ${item}`}
+                  >
+                    删除
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
   async function save() {
     setBusy(true)
     setErr('')
@@ -716,9 +886,10 @@ export default function StudioSettingsModal(props: Props) {
     setErr('')
     appendLog(`开始测试连接：${service}`)
     try {
+      const timeoutMs = resolveServiceDiagnoseTimeoutMs(service)
       const opts: any = {
         service,
-        timeoutMs: 12000,
+        timeoutMs,
         settings: buildSettingsWithSecrets()
       }
       if (service === 'image') opts.deepImages = true
@@ -727,8 +898,16 @@ export default function StudioSettingsModal(props: Props) {
       setDiagnostics(res)
       if (res && res.effective) setEffective(res.effective)
       const item = res && res.services ? res.services[service] : null
+      const detail = item && item.error
+        ? (() => {
+            const msg = item.error && item.error.message ? String(item.error.message) : ''
+            const code = item.error && item.error.code ? String(item.error.code) : ''
+            const extra = [msg, code].filter(Boolean).join(' ')
+            return extra ? ` error=${extra}` : ''
+          })()
+        : ''
       appendLog(
-        `测试完成：${service} ok=${item && item.ok !== false ? 'true' : 'false'} provider=${item && item.provider ? String(item.provider) : '-'} model=${item && item.model ? String(item.model) : '-'} note=${item && item.note ? String(item.note) : '-'}`
+        `测试完成：${service} ok=${item && item.ok !== false ? 'true' : 'false'} provider=${item && item.provider ? String(item.provider) : '-'} model=${item && item.model ? String(item.model) : '-'} timeoutMs=${timeoutMs} note=${item && item.note ? String(item.note) : '-'}${detail}`
       )
     } catch (e) {
       appendLog(`测试失败：${service} ${e instanceof Error ? e.message : String(e)}`)
@@ -1094,7 +1273,7 @@ done`}</pre>
                         const nextProvider = e.target.value
                         rememberModel('scripts', draft.scripts?.provider || '', draft.scripts?.model || '')
                         rememberUrl('scripts', draft.scripts?.provider || '', draft.scripts?.apiUrl || '')
-                        const recalled = (modelMemory.scripts || {})[providerKey(nextProvider)] || ''
+                        const recalled = getRememberedModelValue(modelMemory, 'scripts', nextProvider)
                         const nextModel = recalled || defaultModelBySectionProvider('scripts', nextProvider, effective)
                         const recalledUrl = (urlMemory.scripts || {})[providerKey(nextProvider)] || ''
                         const nextApiUrl = recalledUrl || defaultTextProviderApiUrl(nextProvider)
@@ -1111,20 +1290,9 @@ done`}</pre>
                   <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
                     <div>Model</div>
                     {String(draft.scripts?.provider || '') === 'ollama' ? (
-                      <select
-                        className="sel"
-                        value={isOllamaPresetModel(draft.scripts?.model) ? String(draft.scripts?.model || '') : '__custom__'}
-                        onChange={(e) => {
-                          const next = e.target.value === '__custom__' ? String(draft.scripts?.model || '') : e.target.value
-                          setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), model: next } }))
-                          rememberModel('scripts', draft.scripts?.provider || '', next)
-                        }}
-                      >
-                        {OLLAMA_MODEL_PRESETS.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                        <option value="__custom__">自定义（手动输入）</option>
-                      </select>
+                      renderOllamaModelEditor('scripts', draft.scripts?.provider, draft.scripts?.model, (next) => {
+                        setDraft((d) => ({ ...d, scripts: { ...(d.scripts || {}), model: next } }))
+                      })
                     ) : String(draft.scripts?.provider || '') === 'openai' ? (
                       <div style={{ display: 'grid', gap: 8 }}>
                         <select
@@ -1203,7 +1371,7 @@ done`}</pre>
                         const nextProvider = e.target.value
                         rememberModel('prompt', draft.prompt?.provider || '', draft.prompt?.model || '')
                         rememberUrl('prompt', draft.prompt?.provider || '', draft.prompt?.apiUrl || '')
-                        const recalled = (modelMemory.prompt || {})[providerKey(nextProvider)] || ''
+                        const recalled = getRememberedModelValue(modelMemory, 'prompt', nextProvider)
                         const nextModel = recalled || defaultModelBySectionProvider('prompt', nextProvider, effective)
                         const recalledUrl = (urlMemory.prompt || {})[providerKey(nextProvider)] || ''
                         const nextApiUrl = recalledUrl || defaultTextProviderApiUrl(nextProvider)
@@ -1220,20 +1388,9 @@ done`}</pre>
                   <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
                     <div>Model</div>
                     {String(draft.prompt?.provider || '') === 'ollama' ? (
-                      <select
-                        className="sel"
-                        value={isOllamaPresetModel(draft.prompt?.model) ? String(draft.prompt?.model || '') : '__custom__'}
-                        onChange={(e) => {
-                          const next = e.target.value === '__custom__' ? String(draft.prompt?.model || '') : e.target.value
-                          setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), model: next } }))
-                          rememberModel('prompt', draft.prompt?.provider || '', next)
-                        }}
-                      >
-                        {OLLAMA_MODEL_PRESETS.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                        <option value="__custom__">自定义（手动输入）</option>
-                      </select>
+                      renderOllamaModelEditor('prompt', draft.prompt?.provider, draft.prompt?.model, (next) => {
+                        setDraft((d) => ({ ...d, prompt: { ...(d.prompt || {}), model: next } }))
+                      })
                     ) : String(draft.prompt?.provider || '') === 'openai' ? (
                       <div style={{ display: 'grid', gap: 8 }}>
                         <select
@@ -1313,7 +1470,7 @@ done`}</pre>
                         const nextProvider = e.target.value
                         rememberModel('translation', draft.translation?.provider || '', draft.translation?.model || '')
                         rememberUrl('translation', draft.translation?.provider || '', draft.translation?.apiUrl || '')
-                        const recalled = (modelMemory.translation || {})[providerKey(nextProvider)] || ''
+                        const recalled = getRememberedModelValue(modelMemory, 'translation', nextProvider)
                         const nextModel = recalled || defaultModelBySectionProvider('translation', nextProvider, effective)
                         const recalledUrl = (urlMemory.translation || {})[providerKey(nextProvider)] || ''
                         const nextApiUrl = recalledUrl || defaultTextProviderApiUrl(nextProvider)
@@ -1330,20 +1487,9 @@ done`}</pre>
                   <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr auto' }}>
                     <div>Model</div>
                     {String(draft.translation?.provider || '') === 'ollama' ? (
-                      <select
-                        className="sel"
-                        value={isOllamaPresetModel(draft.translation?.model) ? String(draft.translation?.model || '') : '__custom__'}
-                        onChange={(e) => {
-                          const next = e.target.value === '__custom__' ? String(draft.translation?.model || '') : e.target.value
-                          setDraft((d) => ({ ...d, translation: { ...(d.translation || {}), model: next } }))
-                          rememberModel('translation', draft.translation?.provider || '', next)
-                        }}
-                      >
-                        {OLLAMA_MODEL_PRESETS.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                        <option value="__custom__">自定义（手动输入）</option>
-                      </select>
+                      renderOllamaModelEditor('translation', draft.translation?.provider, draft.translation?.model, (next) => {
+                        setDraft((d) => ({ ...d, translation: { ...(d.translation || {}), model: next } }))
+                      })
                     ) : String(draft.translation?.provider || '') === 'openai' ? (
                       <div style={{ display: 'grid', gap: 8 }}>
                         <select
@@ -1418,7 +1564,7 @@ done`}</pre>
                       onChange={(e) => {
                         const nextProvider = e.target.value
                         rememberModel('image', draft.image?.provider || '', draft.image?.model || '')
-                        const recalled = (modelMemory.image || {})[providerKey(nextProvider)] || ''
+                        const recalled = getRememberedModelValue(modelMemory, 'image', nextProvider)
                         const nextModel = recalled || defaultModelBySectionProvider('image', nextProvider, effective)
                         const nextImage = withImageDefaults({ ...(draft.image || {}), provider: nextProvider, model: nextModel })
                         setDraft((d) => ({ ...d, image: nextImage }))

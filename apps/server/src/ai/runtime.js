@@ -72,5 +72,5 @@ export function logStage(fields) {
     if (v == null || v === '') continue
     parts.push(`${key}=${String(v)}`)
   }
-  console.log(`[game_studio] ${parts.join(' ')}`)
+  console.log(`[gamestudio] ${parts.join(' ')}`)
 }
