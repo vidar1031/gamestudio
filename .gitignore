@@ -10,3 +10,10 @@ storage/_config/studio_settings.json
 .env
 .env.local
 .env.*.local
+
+# Runtime files
+.run/
+state/
+*.pid
+*.log
+monitor/

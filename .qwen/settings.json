@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(openclaw *)",
+      "Bash(chmod *)",
+      "Bash(bash *)"
+    ]
+  },
+  "$version": 3
+}

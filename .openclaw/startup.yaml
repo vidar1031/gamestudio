@@ -1,0 +1,49 @@
+# Startup Configuration
+# 此文件指导 OpenClaw 在启动工作区时执行的操作
+
+workspace:
+  path: /Volumes/ovokit2t/aiwork/gamestudio
+  
+  # 启动时自动执行的 Agent
+  startup_agents:
+    - id: reporter
+      action: report_status
+      delay_seconds: 5  # 启动后延迟 5 秒执行
+  
+  # 启动时读取的文件
+  startup_files:
+    - README.md
+    - USER.md
+    - MEMORY.md
+    - PROJECT_PLAN.md
+    - memory/TASK_QUEUE.md
+    - memory/STATUS.md
+    - memory/DECISIONS.md
+  
+  # 启动后自动执行的命令
+  startup_commands:
+    - command: bash scripts/lifecycle/reporter.sh
+      agent: reporter
+      description: "执行项目状态汇报"
+
+# Reporter Agent 启动配置
+reporter:
+  enabled: true
+  run_on_startup: true
+  run_on_schedule: false
+  schedule: null
+  
+  # 汇报内容
+  report_items:
+    - service_status  # 服务状态
+    - current_goal    # 当前目标
+    - pending_tasks   # 待办任务
+    - blockers        # 阻塞项
+    - daily_progress  # 今日进展
+    - next_action     # 建议下一步
+  
+  # 汇报格式
+  format:
+    language: zh-CN
+    max_length: 2000
+    include_emojis: true

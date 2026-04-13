@@ -7,9 +7,9 @@
 
 ## Canonical Runtime
 
-- 启动：`./start_project.sh`（agent 用 `./start_project.sh --detached`）
-- 状态：`./status_project.sh`
-- 停止：`./stop_project.sh`
+- 启动：`./scripts/lifecycle/start_project.sh`（agent 用 `./scripts/lifecycle/start_project.sh --detached`）
+- 状态：`./scripts/lifecycle/status_project.sh`
+- 停止：`./scripts/lifecycle/stop_project.sh`
 - Server：`http://127.0.0.1:1999`，健康检查 `curl http://127.0.0.1:1999/api/health`
 - Editor：`http://localhost:8868`
 

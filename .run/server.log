@@ -1,4 +1,19 @@
+
+> game-studio@0.1.0 dev:server
+> npm --workspace @game-studio/server run dev
+
+
+> @game-studio/server@0.1.0 dev
+> node src/index.js
+
 [gamestudio] env loaded=(none) aiProvider=local localoxmlKey=missing openaiKey=missing aiInit=manual_only
 [gamestudio] server on :1999
-[2026-04-09T09:22:52.468Z] GET /api/health -> 200 (2ms)
-[2026-04-09T09:23:19.653Z] GET /api/health -> 200 (0ms)
+[2026-04-11T11:50:42.999Z] GET /api/health -> 200 (3ms)
+[2026-04-11T11:50:55.058Z] GET /api/health -> 200 (1ms)
+[2026-04-11T12:00:48.684Z] GET /api/health -> 200 (4ms)
+[2026-04-11T12:00:54.756Z] GET /api/health -> 200 (1ms)
+[2026-04-11T12:02:41.807Z] GET /api/health -> 200 (3ms)
+[2026-04-11T12:02:49.287Z] GET /api/health -> 200 (0ms)
+[2026-04-11T12:04:17.862Z] GET /api/health -> 200 (1ms)
+[2026-04-11T12:04:20.932Z] GET /api/health -> 200 (3ms)
+[2026-04-11T12:04:27.039Z] POST /api/studio/diagnose -> 200 (74ms)

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/Property1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gamestudio.reporter</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>bash</string>
+        <string>/Volumes/ovokit2t/aiwork/gamestudio/scripts/lifecycle/reporter_email.sh</string>
+    </array>
+    
+    <!-- 每 3 小时执行一次 (10800 秒) -->
+    <key>StartInterval</key>
+    <integer>10800</integer>
+    
+    <!-- 或者使用 StartCalendarInterval 指定具体时间 -->
+    <!--
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>9</integer>   <!-- 每天 9:00 -->
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>12</integer>  <!-- 每天 12:00 -->
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>15</integer>  <!-- 每天 15:00 -->
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>18</integer>  <!-- 每天 18:00 -->
+        </dict>
+    </array>
+    -->
+    
+    <key>StandardOutPath</key>
+    <string>/tmp/gamestudio_reporter.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/tmp/gamestudio_reporter.err</string>
+    
+    <key>WorkingDirectory</key>
+    <string>/Volumes/ovokit2t/aiwork/gamestudio</string>
+</dict>
+</plist>

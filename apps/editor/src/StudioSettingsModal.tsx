@@ -80,7 +80,7 @@ const SDWEBUI_MODEL_PRESETS = [
 
 function textProviderModelPlaceholder(provider: string | null | undefined) {
   const p = String(provider || '').trim().toLowerCase()
-  if (p === 'localoxml') return '如 Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit'
+  if (p === 'localoxml') return '如 gemma4 / Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit'
   if (p === 'openai') return '如 gpt-5 / gpt-5-mini / gpt-5-nano / gpt-4o-mini'
   if (p === 'doubao') return '如 doubao-1-5-pro-32k-250115'
   if (p === 'ollama') return '如 qwen3:8b / qwen3.5:27b'
