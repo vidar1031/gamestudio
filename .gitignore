@@ -17,3 +17,9 @@ state/
 *.pid
 *.log
 monitor/
+
+# OpenClaw runtime state (all role folders)
+*/.openclaw/workspace-state.json
+
+# Prevent nested repository metadata from being committed
+*/.git/

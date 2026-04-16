@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-10T10:36:41.026Z",
+  "entries": {
+    "memory:memory/2026-03-25.md:1:10": {
+      "key": "memory:memory/2026-03-25.md:1:10",
+      "path": "memory/2026-03-25.md",
+      "startLine": 1,
+      "endLine": 10,
+      "source": "memory",
+      "snippet": "# 2026-03-25 ## 启动失败与入口清理 - 复现信息显示 `./start_project.sh` 在 `npm run build:packages` 阶段失败，报错 `sh: tsc: command not found`。 - 根因确认：仓库根当前不存在 `node_modules/`，未完成依赖安装；同时 `typescript` 只在 `apps/editor/package.json` 中声明，包构建对该工具链存在隐式依赖。 - 已修改 `start_project.sh`：构建前预检 `node_modules` 和本地 `tsc`，缺失时给出明确提示 `npm install`。 - 已删除冗余启动脚本：`start.sh`、`start_all.sh`、`start_gamestudio.sh`、`build_and_start.sh`、`find_and_start.sh`、`restart_project.sh`、`启动.sh`。 - 已更新 `README.md` 与 `AGENTS.md`，统一项目只保留三条权威运行脚本。",
+      "recallCount": 1,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 0.8202329414261985,
+      "maxScore": 0.8202329414261985,
+      "firstRecalledAt": "2026-04-10T10:36:41.026Z",
+      "lastRecalledAt": "2026-04-10T10:36:41.026Z",
+      "queryHashes": [
+        "c72f780084eb"
+      ],
+      "recallDays": [
+        "2026-04-10"
+      ],
+      "conceptTags": [
+        "start-project.sh",
+        "node-modules",
+        "apps/editor/package.json",
+        "start.sh",
+        "start-all.sh",
+        "start-gamestudio.sh",
+        "build-and-start.sh",
+        "find-and-start.sh"
+      ]
+    }
+  }
+}
