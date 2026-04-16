@@ -7,6 +7,8 @@
 - **omlx 模型服务**: `http://127.0.0.1:18888/v1`
 - **OpenClaw 版本**: 2026.4.12-beta.1
 
+> 注意：本指南只保留当前可执行链路。不要在仓库文档中保存真实 token。
+
 ## 配置方式
 
 ### 1. 通过 OpenClaw UI 配置（推荐）
@@ -180,3 +182,11 @@ curl -H "Authorization: Bearer omlx123" http://127.0.0.1:18888/v1/models
 - 检查 Gateway 状态
 - 检查 Agent 配置是否正确
 - 确认模型服务可用
+
+### 问题：monitor 反复 unauthorized / token mismatch
+- 说明网关 token 与 monitor 使用的 token 不一致。
+- 不要把 token 写入仓库文档；应从本机私有配置读取并保持单一来源。
+
+### 问题：launchd 任务加载了但脚本不执行（exit code 126）
+- 若日志出现 `Operation not permitted` / `Sandbox deny file-read-data`，通常是系统对外置盘路径脚本读取限制。
+- 先用手动脚本确认功能，再决定是否迁移执行位置。

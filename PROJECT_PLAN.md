@@ -12,6 +12,11 @@
   - 测试与验收
 - `memory/TASK_QUEUE.md` 是短期推进顺序的任务源；本文件保留中期计划和技术方向。
 
+## 文档定位
+
+- 本文件是中长期规划，不作为实时执行状态来源。
+- 实时状态、阻塞项、下一步动作请以 `memory/STATUS.md` 与 `memory/TASK_QUEUE.md` 为准。
+
 ## 📋 目标
 将项目从"功能可用"升级为"稳定生产可用"
 
@@ -226,4 +231,4 @@ schema/           # Shared types (@game-studio/schema)
 
 ---
 
-*Last updated: 2026-03-11 by Executor*
+*Last updated: 2026-04-14 by Copilot (plan positioning refresh)*

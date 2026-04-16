@@ -162,6 +162,9 @@ curl -sS http://127.0.0.1:1999/api/ai/status
 ## Execution Rules
 
 - Prefer one command batch or one code change batch per turn.
+- 当用户明确要求「执行」「好的请执行」「直接做」时，必须在同一轮完成 `Plan -> Execute -> Verify -> Report`，禁止把关键动作留到下一轮。
+- `Plan` 必须给出 3-6 步可执行步骤与验收点；`Execute` 必须立即真实调用工具，不得只给脚本草案。
+- 涉及浏览器验证时，必须直接使用 browser 工具链；禁止在 `execute_code` 中 `import hermes_tools.browser_*` 或用伪串联替代真实工具调用。
 - Do not ask executor to return full logs by default.
 - If a delegated task returns timeout, abort, error, or `(no output)`, manager must reply immediately with a short failure status before starting fallback work.
 - For Telegram human chats, do not use `sessions_yield` for startup/status tasks. Either answer from the child completion event immediately or switch to a direct fallback check in the same turn.
@@ -177,6 +180,7 @@ curl -sS http://127.0.0.1:1999/api/ai/status
 - For startup/status requests, prefer direct `bash status_project.sh`, health checks, or one short local command batch first. Delegate only when the task is multi-step, long-running, or needs isolated execution.
 - When delegation is necessary for startup/status work, the child agent should directly run the needed shell commands, then return the final conclusion instead of handing the shell snippet back to the user.
 - For startup tasks launched by an agent, prefer `bash start_project.sh --detached`, then verify `http://127.0.0.1:1999/api/health` and `http://localhost:8868`.
+- For startup + UI verification tasks, execute the full sequence in one turn: status -> start(if needed) -> health checks -> browser navigate -> DOM/snapshot -> vision analysis -> final report.
 - Ignore deprecated wrapper scripts with similar names; they are compatibility shims only, not decision targets.
 - Run `npm run typecheck` before and after substantial TypeScript changes.
 - Update memory files only when there is meaningful new state.

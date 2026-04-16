@@ -4,7 +4,7 @@
 
 ### OpenClaw Gateway
 - URL: `ws://127.0.0.1:18789`
-- Token: `3f065fb3fc0a7b36d090d0036c2923bc5d19b61a6a4b5f6b`
+- Token: 从本机私有配置读取（不要写入仓库文档）
 - 认证模式: token
 - 状态检查: `openclaw status`
 

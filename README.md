@@ -8,7 +8,7 @@ P0 目标：
 - 渲染：Pixi.js（运行时）
 - 数据：文件项目制（JSON + assets），无需数据库
 - 构建：插件化 builder（支持未来扩展更多小游戏类型）
-- 产物：统一产物协议（导出到 gamestudio 内供 app_system 导入；不直接写入 online_game_resources）
+- 产物：统一产物协议（导出到 gamestudio 内供 目标平台导入；不直接写入 online_game_resources）
 
 文档：
 - 设计与协议：`gamestudio/docs/DESIGN_P0.md`
@@ -30,7 +30,7 @@ P0 目标：
 - 查看状态：`./status_project.sh`
 - 停止后台进程：`./stop_project.sh`
 
-在 `app_system/` 目录下：
+在 `/` 目录下：
 - 安装依赖（首次）：`npm --prefix .. install`
 - 启动 server：`npm run dev:server`（默认端口 `1999`）
 - 启动 editor：`npm run dev:editor`（默认端口 `8868`）

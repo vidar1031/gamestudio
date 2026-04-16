@@ -7,7 +7,7 @@
 - 游戏管理（app_system）
 - 资源盘（online_game_resources）
 
-缺口是“生产工具”：缺少一个独立的制作/构建系统，用于生成小游戏 demo/产物并交由 app_system 导入管理；再由管理系统分配到资源盘（online_game_resources）形成闭环。
+缺口是“生产工具”：缺少一个独立的制作/构建系统，用于生成小游戏 demo/产物并交由 目标平台导入管理；再由管理系统分配到资源盘（online_game_resources）形成闭环。
 
 P0 只做一个类型：**点击交互小故事**：
 - 逻辑：节点（场景）+ 选项（分支）+ 结局（结果）
@@ -58,7 +58,7 @@ gamestudio/
 - 提供运行时模板（index.html + runtime 入口）
 
 ### 3.3 Artifact（产物）
-统一产物协议，便于后续由 app_system 导入管理；并由管理系统分配到 online_game_resources 进行静态托管（制作工具本身不直接写入资源盘）。
+统一产物协议，便于后续由 目标平台导入管理；并由管理系统分配到 online_game_resources 进行静态托管（制作工具本身不直接写入资源盘）。
 
 ## 4. 插件接口定义（P0 版本）
 
@@ -116,6 +116,6 @@ P0 字段（可扩展）：
 - `GET /demos/:projectId/:buildId/dist/index.html`
 
 ## 7. 后续对接（P1+）
-- 通过 app_system 的“导入 demo/产物”流程，将导出包入库并分配到 online_game_resources（制作工具不直接复制过去）
+- 通过 平台的“导入 demo/产物”流程，将导出包入库并分配到 online_game_resources（制作工具不直接复制过去）
 - 调用 `app_system` 的 API 创建/更新游戏记录与站点数据
 - AI 侧（ComfyUI/WebUI）作为“素材生成器插件”，与项目素材库对接
