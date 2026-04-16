@@ -23,3 +23,8 @@ monitor/
 
 # Prevent nested repository metadata from being committed
 */.git/
+
+# Local agent/editor machine config
+.qwen/
+.hermes/
+.openclaw/*.plist
