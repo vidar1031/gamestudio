@@ -16,6 +16,13 @@ const HERMES_RUNTIME_PID_FILE = path.join(os.tmpdir(), 'gamestudio-hermes-gatewa
 const HERMES_RUNTIME_LOG_FILE = path.join(os.tmpdir(), 'gamestudio-hermes-gateway.log')
 const HERMES_CONTROL_CONFIG_FILE = path.join(HERMES_ROOT, '.hermes_control_config.json')
 const GAMESTUDIO_ENV_FILE = path.join(GAMESTUDIO_ROOT, '.env')
+const AGENT_MEMORY_SOURCE_FILES = [
+  path.join(GAMESTUDIO_ROOT, 'AGENTS.md'),
+  path.join(GAMESTUDIO_ROOT, 'planner', 'AGENTS.md'),
+  path.join(GAMESTUDIO_ROOT, 'executor', 'AGENTS.md'),
+  path.join(GAMESTUDIO_ROOT, 'critic', 'AGENTS.md'),
+  path.join(GAMESTUDIO_ROOT, 'reporter', 'AGENTS.md')
+]
 
 const MODEL_METADATA_CATALOG = {
   'gpt-oss-20b-mxfp4-q8': {
@@ -334,18 +341,18 @@ function getHermesRuntimeState() {
       detail: 'Hermes gateway 进程正在运行',
       pid,
       logFile: HERMES_RUNTIME_LOG_FILE,
-      availableActions: ['stop', 'exit']
+      availableActions: ['pause', 'exit']
     }
   }
 
   clearHermesPid()
   return {
     state: 'stopped',
-    label: '已停止',
+    label: '已暂停',
     detail: 'Hermes 已安装，但当前没有运行中的 manager 受控进程',
     pid: null,
     logFile: HERMES_RUNTIME_LOG_FILE,
-    availableActions: ['start']
+    availableActions: ['resume']
   }
 }
 
@@ -370,6 +377,9 @@ async function startHermesRuntime(options = {}) {
     HERMES_MODEL: binding.model,
     HERMES_PROVIDER: binding.provider,
     HERMES_BASE_URL: binding.baseUrl,
+    GAMESTUDIO_AGENT_CONFIG_FILES: binding.agentMemoryFiles.join(path.delimiter),
+    GAMESTUDIO_AGENT_CONFIG_COUNT: String(binding.agentMemoryCount || 0),
+    GAMESTUDIO_AGENT_CONFIG_JSON: JSON.stringify(binding.agentMemoryAgents || []),
     ...(providerAccess.apiKey ? {
       OPENAI_API_KEY: providerAccess.apiKey,
       LOCALOXML_API_KEY: providerAccess.apiKey
@@ -449,12 +459,70 @@ function setHermesControlConfig(cfg) {
   } catch {}
 }
 
+function readMarkdownFile(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+function extractSectionList(body, sectionTitle) {
+  const escapedTitle = sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = body.match(new RegExp(`####\\s+${escapedTitle}\\s*\\n([\\s\\S]*?)(?=\\n####\\s+|$)`))
+  if (!match) return []
+  return match[1]
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.slice(2).trim())
+    .filter(Boolean)
+}
+
+function parseAgentSection(title, body) {
+  const cleanTitle = String(title || '').replace(/[*`]/g, '').trim()
+  const nameMatch = cleanTitle.match(/\b(Planner|Executor|Critic|Reporter)\b/)
+  const agentIdMatch = body.match(/\*\*角色 ID\*\*:\s*`?([^`\n]+)`?/)
+  const roleMatch = body.match(/\*\*角色定位\*\*:\s*([^\n]+)/)
+  const personalityMatch = body.match(/\*\*性格特点\*\*:\s*([^\n]+)/)
+  const responsibilities = extractSectionList(body, '职责')
+
+  return {
+    name: nameMatch ? nameMatch[1] : cleanTitle,
+    title: cleanTitle,
+    agentId: agentIdMatch ? agentIdMatch[1].trim() : '',
+    role: roleMatch ? roleMatch[1].trim() : '未定义',
+    personality: personalityMatch ? personalityMatch[1].trim() : '未定义',
+    responsibilities
+  }
+}
+
+function buildAgentMemoryConfig() {
+  const sourceFiles = AGENT_MEMORY_SOURCE_FILES.filter((filePath) => fs.existsSync(filePath))
+  const rootMarkdown = readMarkdownFile(path.join(GAMESTUDIO_ROOT, 'AGENTS.md'))
+  const agents = []
+
+  for (const match of rootMarkdown.matchAll(/^###\s+\d+\.\s+(.+)\n([\s\S]*?)(?=^###\s+\d+\.\s+|$)/gm)) {
+    const agent = parseAgentSection(match[1], match[2])
+    if (agent.role !== '未定义') {
+      agents.push(agent)
+    }
+  }
+
+  return {
+    sourceFiles,
+    agentCount: agents.length,
+    agents
+  }
+}
+
 function buildHermesBinding() {
   const cfg = getHermesControlConfig()
   const model = String(cfg.model || process.env.HERMES_MODEL || 'gpt-oss-20b-MXFP4-Q8')
   const provider = String(cfg.provider || process.env.HERMES_PROVIDER || 'custom/local')
   const baseUrl = normalizeModelBaseUrl(cfg.baseUrl || process.env.HERMES_BASE_URL || 'http://127.0.0.1:18888/v1', provider)
   const metadata = getModelMetadata(model)
+  const agentMemory = buildAgentMemoryConfig()
   return {
     runtimeId: 'hermes-local-cli',
     runtimeKind: 'local-cli',
@@ -466,7 +534,10 @@ function buildHermesBinding() {
     contextLength: Number.isFinite(Number(cfg.contextLength)) ? Number(cfg.contextLength) : metadata.contextLength,
     recommendedMaxOutputTokens: Number.isFinite(Number(cfg.recommendedMaxOutputTokens)) ? Number(cfg.recommendedMaxOutputTokens) : metadata.recommendedMaxOutputTokens,
     tokenizer: String(cfg.tokenizer || metadata.tokenizer || '') || null,
-    metadataSource: String(cfg.metadataSource || metadata.metadataSource || 'unavailable')
+    metadataSource: String(cfg.metadataSource || metadata.metadataSource || 'unavailable'),
+    agentMemoryFiles: agentMemory.sourceFiles,
+    agentMemoryCount: agentMemory.agentCount,
+    agentMemoryAgents: agentMemory.agents
   }
 }
 
@@ -660,6 +731,14 @@ async function buildHermesSelfCheck() {
         label: 'MCP Connections',
         status: 'ok',
         detail: 'Local registry validated'
+      },
+      {
+        key: 'agent-memory',
+        label: 'Agent Memory',
+        status: binding.agentMemoryCount > 0 ? 'ok' : 'error',
+        detail: binding.agentMemoryCount > 0
+          ? `Loaded ${binding.agentMemoryCount} agents from ${binding.agentMemoryFiles.length} files`
+          : 'No agent memory markdown detected'
       }
     ],
     info: {
@@ -773,6 +852,36 @@ function buildOpenClawAgentRecord() {
     startupFlow: null
   }
 }
+
+
+app.get('/api/control/agents/:agentId/logs', (c) => {
+  try {
+    if (!fs.existsSync(HERMES_RUNTIME_LOG_FILE)) return c.json({ ok: true, logs: '无运行日志' })
+    const raw = fs.readFileSync(HERMES_RUNTIME_LOG_FILE, 'utf8')
+    let lines = raw.split('\n')
+    if (lines.length > 200) lines = lines.slice(-200)
+    return c.json({ ok: true, logs: lines.join('\n') })
+  } catch(e) {
+    return c.json({ ok: true, logs: '无法读取日志: ' + e.message })
+  }
+})
+
+
+app.post('/api/control/models/:action', async (c) => {
+  const { action } = c.req.param(); // 'load' or 'unload'
+  const body = await c.req.json().catch(() => ({}));
+  
+  // Real implementation would call Ollama or OMLX load/unload API.
+  // For OMLX, we just log it. Some OMLX forks use /v1/models/{model}/load
+  // We'll write to hermes_runtime.log directly to show action in the logs.
+  const msg = `[SYS] Request ${action} model: ${body.model} on ${body.provider} at ${body.baseUrl}\n`;
+  try {
+     fs.appendFileSync(HERMES_RUNTIME_LOG_FILE, msg);
+  } catch(e){}
+  
+  // For now, return OK. If it's real OMLX we'd proxy here.
+  return c.json({ ok: true, action, model: body.model });
+});
 
 app.use('*', cors({ origin: '*', allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] }))
 
@@ -921,13 +1030,36 @@ app.post('/api/control/agents/:agentId/runtime-action', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const action = body.action
 
-  if (action !== 'start' && action !== 'stop' && action !== 'exit') {
+  if (action !== 'start' && action !== 'stop' && action !== 'pause' && action !== 'resume' && action !== 'exit') {
     return c.json({ ok: false, error: 'invalid_action' }, 400)
   }
 
-  const runtimeStatus = action === 'start'
-    ? await startHermesRuntime(body.config || {})
-    : await stopHermesRuntime()
+  
+  let runtimeStatus;
+  const current = getHermesRuntimeState();
+  if (action === 'start' || action === 'resume') {
+    runtimeStatus = await startHermesRuntime(body.config || {});
+    // Write explicit log for starting brain
+    const side = body.config?.side || 'unknown';
+    const msg = `[SYS] Started ${side} Brain binding to ${body.config?.model}\n`;
+    try { fs.appendFileSync(HERMES_RUNTIME_LOG_FILE, msg); } catch(e){}
+  } else {
+    // Check if we want to stop fully, or just logically stop one brain
+    const side = body.brainSide || 'unknown';
+    const msg = `[SYS] Stopped ${side} Brain\n`;
+    try { fs.appendFileSync(HERMES_RUNTIME_LOG_FILE, msg); } catch(e){}
+    // actually stop hermes if both are stopped? We'll rely on the UI logic.
+    if (action === 'pause' || action === 'stop') {
+      if (body.stopAll) {
+        runtimeStatus = await stopHermesRuntime();
+      } else {
+        runtimeStatus = current; // Keep it running if another brain is active
+      }
+    } else {
+      runtimeStatus = await stopHermesRuntime();
+    }
+  }
+
 
   return c.json({
     ok: true,
@@ -1007,7 +1139,12 @@ app.get('/api/control/agents/:agentId/config', async (c) => {
       contextLength: Number.isFinite(Number(config.contextLength)) ? Number(config.contextLength) : defaultBinding.contextLength,
       recommendedMaxOutputTokens: Number.isFinite(Number(config.recommendedMaxOutputTokens)) ? Number(config.recommendedMaxOutputTokens) : defaultBinding.recommendedMaxOutputTokens,
       tokenizer: config.tokenizer || defaultBinding.tokenizer,
-      metadataSource: config.metadataSource || defaultBinding.metadataSource
+      metadataSource: config.metadataSource || defaultBinding.metadataSource,
+      memory: {
+        sourceFiles: defaultBinding.agentMemoryFiles,
+        agentCount: defaultBinding.agentMemoryCount,
+        agents: defaultBinding.agentMemoryAgents
+      }
     }
   })
 })
@@ -1048,7 +1185,7 @@ app.post('/api/control/agents/:agentId/ping-model', async (c) => {
 
   try {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 10000)
+    const timeout = setTimeout(() => controller.abort(), 300000)
 
     const resp = await fetch(`${providerAccess.baseUrl}/chat/completions`, {
       method: 'POST',

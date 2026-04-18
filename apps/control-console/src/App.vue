@@ -26,7 +26,7 @@ type RuntimeState = {
   detail: string
   pid: number | null
   logFile: string
-  availableActions: Array<'start' | 'stop' | 'exit'>
+  availableActions: Array<'start' | 'stop' | 'pause' | 'resume' | 'exit'>
 }
 
 type SelfCheckResponse = {
@@ -73,6 +73,21 @@ type ModelInspection = {
   metadataSource: string
 }
 
+type MemoryConfigAgent = {
+  name: string
+  title: string
+  agentId: string
+  role: string
+  personality: string
+  responsibilities: string[]
+}
+
+type MemoryConfig = {
+  sourceFiles: string[]
+  agentCount: number
+  agents: MemoryConfigAgent[]
+}
+
 const managerHealth = ref<HealthResponse | null>(null)
 const agentOptions = ref<AgentListItem[]>([])
 const selectedAgentId = ref('')
@@ -90,8 +105,58 @@ const sandboxPrompt = ref('你好，系统控制面握手测试。')
 const sandboxReply = ref('')
 const sandboxBusy = ref(false)
 const sandboxError = ref('')
+const memoryConfig = ref<MemoryConfig | null>(null)
+const memoryConfigBusy = ref(false)
+const memoryConfigError = ref('')
 
-const engineConfig = ref({
+
+
+const leftBrainRunning = ref(false)
+const rightBrainRunning = ref(false)
+const liveLogs = ref('')
+let logInterval: any = null
+
+onMounted(() => {
+  logInterval = setInterval(fetchLogs, 1500)
+})
+
+async function fetchLogs() {
+  if (selectedAgentId.value) {
+    try {
+      const res = await fetch('/api/control/agents/' + selectedAgentId.value + '/logs')
+      const data = await res.json()
+      if (data.ok) liveLogs.value = data.logs
+    } catch(e) {}
+  }
+}
+
+async function actOnModel(side: 'left' | 'right', action: 'load'|'unload') {
+  const brain = side === 'left' ? leftBrain.value : rightBrain.value
+  if (!brain.model) return
+  const isLeft = side === 'left'
+  if (isLeft) inspectingLeft.value = true
+  else inspectingRight.value = true
+
+  try {
+     const res = await fetch('/api/control/models/' + action, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ model: brain.model, provider: brain.provider, baseUrl: brain.baseUrl })
+     })
+     // If unloaded, mark as not ready
+     if (action === 'unload') {
+       if (isLeft && leftInspection.value) leftInspection.value.accessible = false
+       if (!isLeft && rightInspection.value) rightInspection.value.accessible = false
+     } else {
+       await inspectSelectedModel(side) // Re-inspect to set it ready
+     }
+  } catch(e){}
+  if (isLeft) inspectingLeft.value = false
+  else inspectingRight.value = false
+}
+
+const leftBrain = ref({
+
   provider: 'custom/local',
   baseUrl: 'http://127.0.0.1:18888/v1',
   model: 'gpt-oss-20b-MXFP4-Q8',
@@ -100,11 +165,36 @@ const engineConfig = ref({
   tokenizer: null as string | null,
   metadataSource: 'unavailable'
 })
-const availableLocalModels = ref<any[]>([])
-const fetchingModels = ref(false)
-const modelInventoryError = ref('')
-const selectedModelInspection = ref<ModelInspection | null>(null)
-const inspectingModel = ref(false)
+const rightBrain = ref({
+  provider: 'custom/local',
+  baseUrl: 'http://127.0.0.1:18888/v1',
+  model: 'gpt-oss-20b-MXFP4-Q8',
+  contextLength: null as number | null,
+  recommendedMaxOutputTokens: null as number | null,
+  tokenizer: null as string | null,
+  metadataSource: 'unavailable'
+})
+
+const availableLeftModels = ref<any[]>([])
+const availableRightModels = ref<any[]>([])
+
+const fetchingLeft = ref(false)
+const fetchingRight = ref(false)
+
+const leftError = ref('')
+const rightError = ref('')
+
+const leftInspection = ref<ModelInspection | null>(null)
+const rightInspection = ref<ModelInspection | null>(null)
+
+const inspectingLeft = ref(false)
+const inspectingRight = ref(false)
+
+
+
+
+
+
 
 type LocalModelItem = {
   id: string
@@ -127,21 +217,30 @@ const runtimeStatus = computed(() => {
   return runtimeState.value?.label || '未选择'
 })
 
+const runtimePrimaryAction = computed<'start' | 'pause' | 'resume' | null>(() => {
+  const actions = runtimeState.value?.availableActions || []
+  if (actions.includes('pause')) return 'pause'
+  if (actions.includes('resume')) return 'resume'
+  if (actions.includes('start')) return 'start'
+  return null
+})
+
 const runtimeActionLabel = computed(() => {
-  if (!runtimeState.value) return '启动引擎'
-  if (runtimeState.value.state === 'running') return '停止运行'
-  if (runtimeState.value.state === 'stopped') return '启动引擎'
+  if (!runtimePrimaryAction.value) return '启动引擎'
+  if (runtimePrimaryAction.value === 'pause') return '暂停引擎'
+  if (runtimePrimaryAction.value === 'resume') return '恢复引擎'
+  if (runtimePrimaryAction.value === 'start') return '启动引擎'
   return '未安装'
 })
 
 const selectedModelOption = computed(() => {
-  return availableLocalModels.value.find((item: LocalModelItem) => item.id === engineConfig.value.model) || null
+  return availableLeftModels.value.find((item: LocalModelItem) => item.id === leftBrain.value.model) || null
 })
 
 const startBlockedByModelInspection = computed(() => {
   if (selectedAgent.value?.definition.runtime !== 'hermes') return false
   if (runtimeState.value?.state === 'running') return false
-  return fetchingModels.value || inspectingModel.value || !engineConfig.value.model || selectedModelInspection.value?.accessible === false
+  return fetchingLeft.value || inspectingLeft.value || !leftBrain.value.model || leftInspection.value?.accessible === false
 })
 
 // 添加中文标签映射，使机器的 key 更易读
@@ -150,7 +249,8 @@ function getChineseCheckLabel(key: string) {
     'mcp-connection': 'MCP 协议连接池',
     'python-env': 'Python 运行时环境',
     'workspace-access': '工作区读写权限',
-    'model-route': 'LLM 模型路由'
+    'model-route': 'LLM 模型路由',
+    'agent-memory': 'Agent 记忆配置'
   }
   return map[key] || key
 }
@@ -195,6 +295,8 @@ async function connectSelectedAgent() {
   if (!selectedAgentId.value) {
     selfCheck.value = null
     runtimeState.value = null
+    memoryConfig.value = null
+    memoryConfigError.value = ''
     selectedAgentLabel.value = ''
     error.value = ''
     localStorage.removeItem('hermes_control_selected_agent')
@@ -209,6 +311,8 @@ async function connectSelectedAgent() {
   if (agent?.definition.runtime !== 'hermes') {
     selfCheck.value = null
     runtimeState.value = null
+    memoryConfig.value = null
+    memoryConfigError.value = ''
     error.value = ''
     return
   }
@@ -236,142 +340,192 @@ async function refreshHermesRuntimeState() {
   runtimeState.value = payload.runtimeStatus
 }
 
+
+
 async function loadEngineConfig() {
+  memoryConfigBusy.value = true
   try {
-    const response = await fetch(`/api/control/agents/${selectedAgentId.value}/config`)
+    const response = await fetch('/api/control/agents/' + selectedAgentId.value + '/config')
     if (response.ok) {
       const payload = await response.json()
       if (payload.ok) {
-        engineConfig.value.provider = payload.config.provider
-        engineConfig.value.baseUrl = payload.config.baseUrl
-        engineConfig.value.model = payload.config.model
-        engineConfig.value.contextLength = payload.config.contextLength ?? null
-        engineConfig.value.recommendedMaxOutputTokens = payload.config.recommendedMaxOutputTokens ?? null
-        engineConfig.value.tokenizer = payload.config.tokenizer ?? null
-        engineConfig.value.metadataSource = payload.config.metadataSource ?? 'unavailable'
-        await fetchLocalModels()
+         // load into left
+         leftBrain.value.provider = payload.config.provider
+         leftBrain.value.baseUrl = payload.config.baseUrl
+         leftBrain.value.model = payload.config.model
+         memoryConfig.value = payload.config.memory || null
+         memoryConfigError.value = ''
+         // init both
+         await fetchLocalModels('left')
+         await fetchLocalModels('right')
       }
+    } else {
+      memoryConfig.value = null
+      memoryConfigError.value = `config_http_${response.status}`
     }
-  } catch (e) {
-    console.error(e)
+  } catch(e) {
+    memoryConfig.value = null
+    memoryConfigError.value = String(e)
+  } finally {
+    memoryConfigBusy.value = false
   }
 }
 
-async function fetchLocalModels() {
-  fetchingModels.value = true
-  modelInventoryError.value = ''
+
+
+
+async function fetchLocalModels(side: 'left' | 'right') {
+  const brain = side === 'left' ? leftBrain : rightBrain
+  const fetching = side === 'left' ? fetchingLeft : fetchingRight
+  const avail = side === 'left' ? availableLeftModels : availableRightModels
+  const err = side === 'left' ? leftError : rightError
+
+  fetching.value = true
+  err.value = ''
   try {
-    const backendParam = engineConfig.value.provider === 'ollama' ? 'ollama' : 'omlx'
+    const backendParam = brain.value.provider === 'ollama' ? 'ollama' : 'omlx'
     const query = new URLSearchParams({
       provider: backendParam,
-      baseUrl: engineConfig.value.baseUrl
+      baseUrl: brain.value.baseUrl
     })
-    const resp = await fetch(`/api/control/local-models?${query.toString()}`)
+    const resp = await fetch('/api/control/local-models?' + query.toString())
     if (resp.ok) {
       const data = await resp.json()
       if (data.ok) {
-        availableLocalModels.value = data.models as LocalModelItem[]
-        if (data.models.length > 0 && !data.models.find((m: LocalModelItem) => m.id === engineConfig.value.model)) {
-          engineConfig.value.model = data.models[0].id
+        avail.value = data.models as LocalModelItem[]
+        if (data.models.length > 0 && !data.models.find((m: LocalModelItem) => m.id === brain.value.model)) {
+          brain.value.model = data.models[0].id
         }
-        syncEngineMetadataFromSelection()
-        await inspectSelectedModel()
+        syncEngineMetadataFromSelection(side)
+        await inspectSelectedModel(side)
       } else {
-        availableLocalModels.value = []
-        selectedModelInspection.value = null
-        modelInventoryError.value = data.error || '模型列表获取失败'
+        avail.value = []
+        err.value = data.error || '模型列表获取失败'
       }
     } else {
-      availableLocalModels.value = []
-      selectedModelInspection.value = null
-      modelInventoryError.value = `model_inventory_http_${resp.status}`
+      avail.value = []
+      err.value = 'http_' + resp.status
     }
   } catch (e) {
-    console.error(e)
-    availableLocalModels.value = []
-    selectedModelInspection.value = null
-    modelInventoryError.value = e instanceof Error ? e.message : String(e)
+    avail.value = []
+    err.value = String(e)
   } finally {
-    fetchingModels.value = false
+    fetching.value = false
   }
 }
 
-function syncEngineMetadataFromSelection() {
-  const selected = selectedModelOption.value
+
+
+function syncEngineMetadataFromSelection(side: 'left' | 'right') {
+  const brain = side === 'left' ? leftBrain : rightBrain
+  const avail = side === 'left' ? availableLeftModels : availableRightModels
+  const selected = avail.value.find((item: LocalModelItem) => item.id === brain.value.model) || null
+  
   if (!selected) {
-    engineConfig.value.contextLength = null
-    engineConfig.value.recommendedMaxOutputTokens = null
-    engineConfig.value.tokenizer = null
-    engineConfig.value.metadataSource = 'unavailable'
+    brain.value.contextLength = null
+    brain.value.recommendedMaxOutputTokens = null
+    brain.value.tokenizer = null
+    brain.value.metadataSource = 'unavailable'
     return
   }
-
-  engineConfig.value.contextLength = selected.contextLength ?? null
-  engineConfig.value.recommendedMaxOutputTokens = selected.recommendedMaxOutputTokens ?? null
-  engineConfig.value.tokenizer = selected.tokenizer ?? null
-  engineConfig.value.metadataSource = selected.metadataSource || 'unavailable'
+  brain.value.contextLength = selected.contextLength ?? null
+  brain.value.recommendedMaxOutputTokens = selected.recommendedMaxOutputTokens ?? null
+  brain.value.tokenizer = selected.tokenizer ?? null
+  brain.value.metadataSource = selected.metadataSource || 'unavailable'
 }
 
-async function inspectSelectedModel() {
-  if (!engineConfig.value.model) {
-    selectedModelInspection.value = null
+
+
+async function inspectSelectedModel(side: 'left' | 'right') {
+  const brain = side === 'left' ? leftBrain : rightBrain
+  const inspection = side === 'left' ? leftInspection : rightInspection
+  const inspecting = side === 'left' ? inspectingLeft : inspectingRight
+
+  if (!brain.value.model) {
+    inspection.value = null
     return
   }
 
-  inspectingModel.value = true
+  inspecting.value = true
   try {
-    const backendParam = engineConfig.value.provider === 'ollama' ? 'ollama' : 'omlx'
+    const backendParam = brain.value.provider === 'ollama' ? 'ollama' : 'omlx'
     const query = new URLSearchParams({
       provider: backendParam,
-      model: engineConfig.value.model,
-      baseUrl: engineConfig.value.baseUrl
+      model: brain.value.model,
+      baseUrl: brain.value.baseUrl
     })
-    const response = await fetch(`/api/control/local-models/inspect?${query.toString()}`)
-    if (!response.ok) {
-      throw new Error(`model_inspect_http_${response.status}`)
-    }
+    const response = await fetch('/api/control/local-models/inspect?' + query.toString())
+    if (!response.ok) throw new Error('inspect_' + response.status)
     const payload = await response.json()
-    selectedModelInspection.value = payload.inspection || null
-    if (payload.inspection) {
-      engineConfig.value.contextLength = payload.inspection.contextLength ?? engineConfig.value.contextLength
-      engineConfig.value.recommendedMaxOutputTokens = payload.inspection.recommendedMaxOutputTokens ?? engineConfig.value.recommendedMaxOutputTokens
-      engineConfig.value.tokenizer = payload.inspection.tokenizer ?? engineConfig.value.tokenizer
-      engineConfig.value.metadataSource = payload.inspection.metadataSource || engineConfig.value.metadataSource
-    }
+    inspection.value = payload.inspection || null
   } catch (e) {
-    selectedModelInspection.value = {
-      model: engineConfig.value.model,
+    inspection.value = {
+      model: brain.value.model,
       accessible: false,
       status: 'error',
-      detail: e instanceof Error ? e.message : String(e),
+      detail: String(e),
       checkedAt: new Date().toISOString(),
-      usage: {
-        promptTokens: null,
-        completionTokens: null,
-        totalTokens: null
-      },
-      contextLength: engineConfig.value.contextLength,
-      recommendedMaxOutputTokens: engineConfig.value.recommendedMaxOutputTokens,
-      tokenizer: engineConfig.value.tokenizer,
-      metadataSource: engineConfig.value.metadataSource
-    }
+      usage: { promptTokens: null, completionTokens: null, totalTokens: null },
+      contextLength: brain.value.contextLength,
+      recommendedMaxOutputTokens: brain.value.recommendedMaxOutputTokens,
+      tokenizer: brain.value.tokenizer,
+      metadataSource: brain.value.metadataSource
+    } as any
   } finally {
-    inspectingModel.value = false
+    inspecting.value = false
   }
 }
 
-function handleProviderChange() {
-  engineConfig.value.baseUrl = engineConfig.value.provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : 'http://127.0.0.1:18888/v1'
-  engineConfig.value.model = ''
-  availableLocalModels.value = []
-  selectedModelInspection.value = null
-  fetchLocalModels()
+function handleProviderChange(side: 'left' | 'right') {
+  const brain = side === 'left' ? leftBrain : rightBrain
+  brain.value.baseUrl = brain.value.provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : 'http://127.0.0.1:18888/v1'
+  brain.value.model = ''
+  if(side === 'left') { availableLeftModels.value = []; leftInspection.value = null }
+  else { availableRightModels.value = []; rightInspection.value = null }
+  fetchLocalModels(side)
 }
 
-function handleModelChange() {
-  syncEngineMetadataFromSelection()
-  inspectSelectedModel()
+function handleModelChange(side: 'left' | 'right') {
+  syncEngineMetadataFromSelection(side)
+  inspectSelectedModel(side)
 }
+
+const chatHistory = ref<{role: string, content: string, tokens?: any}[]>([])
+async function sendChat() {
+  if (!sandboxPrompt.value.trim()) return
+  
+  const userText = sandboxPrompt.value
+  chatHistory.value.push({ role: 'user', content: userText })
+  sandboxPrompt.value = ''
+  sandboxBusy.value = true
+
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/ping-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: userText })
+    })
+    const payload = await response.json()
+    if (payload.ok) {
+      chatHistory.value.push({ 
+         role: 'hermes', 
+         content: payload.reply, 
+         tokens: payload.raw?.usage // capture token count here!
+      })
+    } else {
+      chatHistory.value.push({ role: 'error', content: payload.error })
+    }
+  } catch (e) {
+    chatHistory.value.push({ role: 'error', content: String(e) })
+  } finally {
+    sandboxBusy.value = false
+  }
+}
+
+
+
+
+
 
 async function loadHermesSelfCheck() {
   connecting.value = true
@@ -397,10 +551,50 @@ async function loadHermesSelfCheck() {
   }
 }
 
-async function toggleHermesRuntime() {
-  if (!selectedAgent.value || selectedAgent.value.definition.runtime !== 'hermes' || !runtimeState.value) {
-    return
+
+
+async function toggleHermesRuntime(side: 'left' | 'right') {
+  if (!selectedAgent.value || selectedAgent.value.definition.runtime !== 'hermes') return
+
+  runtimeBusy.value = true
+  error.value = ''
+
+  try {
+    const brain = side === 'left' ? leftBrain.value : rightBrain.value
+    const isRunningNow = side === 'left' ? leftBrainRunning.value : rightBrainRunning.value
+    const action = isRunningNow ? 'stop' : 'start'
+    
+    // Check if we are stopping the last brain
+    const willStopBoth = action === 'stop' && (
+      (side === 'left' && !rightBrainRunning.value) || 
+      (side === 'right' && !leftBrainRunning.value)
+    );
+
+    const payloadBody: any = { action, brainSide: side, stopAll: willStopBoth }
+    if (action === 'start') {
+       payloadBody.config = { ...brain, side }
+    }
+    const response = await fetch('/api/control/agents/hermes-manager/runtime-action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payloadBody)
+    })
+    
+    if (response.ok) {
+       const payload = await response.json()
+       runtimeState.value = payload.runtimeStatus
+       if (side === 'left') leftBrainRunning.value = !isRunningNow
+       else rightBrainRunning.value = !isRunningNow
+    }
+  } catch (caught) {
+    error.value = String(caught)
+  } finally {
+    runtimeBusy.value = false
   }
+}
+
+async function toggleGlobalRuntime() {
+  if (!selectedAgent.value || selectedAgent.value.definition.runtime !== 'hermes' || !runtimeState.value) return
 
   if (runtimeState.value.state === 'uninstalled') {
     error.value = runtimeState.value.detail
@@ -411,88 +605,51 @@ async function toggleHermesRuntime() {
   error.value = ''
 
   try {
-    const action = runtimeState.value.state === 'running' ? 'stop' : 'start'
-    const payloadBody: any = { action }
-    if (action === 'start') {
-      payloadBody.config = {
-        provider: engineConfig.value.provider,
-        baseUrl: engineConfig.value.baseUrl,
-        model: engineConfig.value.model,
-        contextLength: engineConfig.value.contextLength,
-        recommendedMaxOutputTokens: engineConfig.value.recommendedMaxOutputTokens,
-        tokenizer: engineConfig.value.tokenizer,
-        metadataSource: engineConfig.value.metadataSource
-      }
+    const action = runtimePrimaryAction.value
+    if (!action) {
+      error.value = 'runtime_action_unavailable'
+      return
+    }
+    
+    const payloadBody: any = { action, brainSide: 'left', stopAll: true }
+    if (action === 'start' || action === 'resume') {
+       payloadBody.config = { ...leftBrain.value, side: 'left' }
     }
     const response = await fetch('/api/control/agents/hermes-manager/runtime-action', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payloadBody)
     })
-
-    if (!response.ok) {
-      throw new Error(`runtime_action_http_${response.status}`)
-    }
-
-    const payload = await response.json()
-    runtimeState.value = payload.runtimeStatus
-
-    if (runtimeState.value?.state === 'running') {
-      await loadHermesSelfCheck()
-    } else {
-      selfCheck.value = null
+    
+    if (response.ok) {
+       const payload = await response.json()
+       runtimeState.value = payload.runtimeStatus
+       if (action === 'start' || action === 'resume') {
+           leftBrainRunning.value = true
+           await loadHermesSelfCheck()
+       } else {
+           leftBrainRunning.value = false
+           rightBrainRunning.value = false
+           selfCheck.value = null
+       }
     }
   } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : String(caught)
+    error.value = String(caught)
   } finally {
     runtimeBusy.value = false
   }
 }
 
-async function pingModel() {
-  if (!sandboxPrompt.value.trim()) return
-
-  sandboxBusy.value = true
-  sandboxError.value = ''
-  sandboxReply.value = ''
-
-  try {
-    const response = await fetch('/api/control/agents/hermes-manager/ping-model', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ prompt: sandboxPrompt.value })
-    })
-
-    if (!response.ok) {
-      throw new Error(`sandbox_action_http_${response.status}`)
-    }
-
-    const payload = await response.json()
-    if (payload.ok) {
-      sandboxReply.value = payload.reply
-    } else {
-      sandboxError.value = payload.error || '模型无响应或接口异常'
-    }
-  } catch (caught) {
-    sandboxError.value = caught instanceof Error ? caught.message : String(caught)
-  } finally {
-    sandboxBusy.value = false
-  }
-}
 </script>
 
 <template>
   <main class="shell">
     <header class="console-header">
-      <h1>控制网关 (Control Gateway)</h1>
+      <h1>智能体网关 (Agent Gateway)</h1>
       
       <div class="agent-controls">
         <div class="agent-selector-bar">
-          <label for="agent-select">指派调度器：</label>
+          <label for="agent-select">智能体管理器：</label>
           <div class="select-wrapper">
             <select id="agent-select" v-model="selectedAgentId" @change="connectSelectedAgent">
               <option value="">请选择要挂载的智能体</option>
@@ -513,13 +670,15 @@ async function pingModel() {
             <span class="status-dot"></span>
             {{ runtimeState?.label || '检测中...' }}
           </div>
+          
           <button
             class="action-btn"
-            :disabled="runtimeBusy || runtimeState?.state === 'uninstalled' || startBlockedByModelInspection"
-            @click="toggleHermesRuntime"
+            :disabled="runtimeBusy || runtimeState?.state === 'uninstalled' || !runtimePrimaryAction"
+            @click="toggleGlobalRuntime"
           >
             {{ runtimeBusy ? '处理中...' : runtimeActionLabel }}
           </button>
+
         </div>
         
         <div class="runtime-controls" v-else-if="selectedAgent">
@@ -550,91 +709,181 @@ async function pingModel() {
         </div>
 
         <div class="feature-panels" v-if="selectedAgent?.definition.runtime === 'hermes'">
-          <details class="panel" open>
-            <summary class="panel-header">
-              <div class="panel-title">⚙️ 模型引擎配置 (Model Engine Configuration)</div>
-            </summary>
-            <div class="panel-content">
-              <p v-if="modelInventoryError" class="text-error">{{ modelInventoryError }}</p>
-              <div style="display: flex; gap: 16px; align-items: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-                <div style="display: flex; flex-direction: column; gap: 4px;">
-                  <label style="font-size: 12px; color: #888;">推理后端平台</label>
-                  <select v-model="engineConfig.provider" :disabled="runtimeState?.state === 'running'" @change="handleProviderChange" style="padding: 4px 8px; border-radius: 4px; background: #222; color: #ddd; border: 1px solid #444;">
-                    <option value="custom/local">OMLX (Local)</option>
-                    <option value="ollama">Ollama</option>
-                  </select>
-                </div>
-                <div style="display: flex; flex-direction: column; gap: 4px; flex: 1;">
-                  <label style="font-size: 12px; color: #888;">运行模型</label>
-                  <div style="display: flex; gap: 8px;">
-                    <select v-model="engineConfig.model" :disabled="runtimeState?.state === 'running' || fetchingModels" @change="handleModelChange" style="flex: 1; padding: 4px 8px; border-radius: 4px; background: #222; color: #ddd; border: 1px solid #444;">
-                      <option v-if="availableLocalModels.length === 0" :value="engineConfig.model">{{ engineConfig.model || '未发现模型' }}</option>
-                      <option v-for="mod in availableLocalModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option>
-                    </select>
-                    <button class="action-btn" style="background: transparent; border: 1px solid #555; padding: 4px 12px;" @click="fetchLocalModels" :disabled="fetchingModels || runtimeState?.state === 'running'">
-                      {{ fetchingModels ? '...' : '刷新' }}
-                    </button>
-                  </div>
-                </div>
-                <div style="display: flex; flex-direction: column; gap: 4px;">
-                  <label style="font-size: 12px; color: #888;">服务地址</label>
-                  <input type="text" v-model="engineConfig.baseUrl" :disabled="runtimeState?.state === 'running'" style="padding: 4px 8px; border-radius: 4px; background: #222; color: #ddd; border: 1px solid #444; width: 220px;" />
-                </div>
-              </div>
-              <div style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.04); border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
-                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px;">
-                  <strong>模型控制信息</strong>
-                  <span style="font-size: 12px; color: #999;" v-if="inspectingModel">正在探测模型访问...</span>
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; font-size: 13px;">
-                  <div>
-                    <div style="color: #888; font-size: 12px;">访问状态</div>
-                    <div :style="{ color: selectedModelInspection?.accessible ? '#7CFC9A' : '#FF8A80' }">{{ selectedModelInspection ? (selectedModelInspection.accessible ? '可访问' : '不可访问') : '未检测' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">检查时间</div>
-                    <div>{{ selectedModelInspection?.checkedAt || '-' }}</div>
-                  </div>
-                  <div style="grid-column: 1 / -1;">
-                    <div style="color: #888; font-size: 12px;">访问详情</div>
-                    <div>{{ selectedModelInspection?.detail || '尚未执行模型访问探测' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">上下文窗口</div>
-                    <div>{{ selectedModelInspection?.contextLength ?? engineConfig.contextLength ?? 'unknown' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">建议单轮输出</div>
-                    <div>{{ selectedModelInspection?.recommendedMaxOutputTokens ?? engineConfig.recommendedMaxOutputTokens ?? 'unknown' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">Tokenizer</div>
-                    <div>{{ selectedModelInspection?.tokenizer || engineConfig.tokenizer || 'unknown' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">元数据来源</div>
-                    <div>{{ selectedModelInspection?.metadataSource || engineConfig.metadataSource || 'unknown' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">探测输入 Tokens</div>
-                    <div>{{ selectedModelInspection?.usage?.promptTokens ?? '-' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">探测输出 Tokens</div>
-                    <div>{{ selectedModelInspection?.usage?.completionTokens ?? '-' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">探测总 Tokens</div>
-                    <div>{{ selectedModelInspection?.usage?.totalTokens ?? '-' }}</div>
-                  </div>
-                  <div>
-                    <div style="color: #888; font-size: 12px;">提供方</div>
-                    <div>{{ selectedModelOption?.ownedBy || 'local' }}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </details>
+          
+
+        <details class="panel" open style="margin-bottom: 16px; border: 1px solid #444;">
+          <summary class="panel-header" style="background: rgba(100,100,100,0.2)">
+            <div class="panel-title">📜 后台日志与决策轨 (Real-time Logs & Trajectory)</div>
+          </summary>
+          <div class="panel-content">
+            <textarea readonly v-model="liveLogs" style="width:100%; height: 150px; background: #111; color: #00ff00; font-family: monospace; font-size: 11px; padding: 8px; border: 1px solid #333; resize: vertical; outline: none;" placeholder="等待日志回放..."></textarea>
+          </div>
+        </details>
+
+        <div class="dual-brain-container" style="display: flex; gap: 16px; margin-bottom: 16px; width: 100%;">
+  <!-- Left Brain -->
+  <details class="panel" open style="flex: 1; border: 1px solid #444;">
+    <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,200,255,0.1)">
+      
+  <div class="panel-title" style="flex: 1;">🧠 左脑配置 (Left Brain)</div>
+  <button class="action-btn" :disabled="runtimeBusy || startBlockedByModelInspection" @click="toggleHermesRuntime('left')" style="padding: 2px 10px; font-size: 12px; margin-left: auto;">
+     {{ runtimeBusy ? '处理中...' : (leftBrainRunning ? '🔴 停止左脑' : '🚀 启动左脑') }}
+  </button>
+
+    </summary>
+    <div class="panel-content">
+      <div style="display: flex; gap: 16px; align-items: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+          <label>推理平台</label>
+          <select v-model="leftBrain.provider" @change="handleProviderChange('left')">
+            <option value="custom/local">OMLX (Local)</option>
+            <option value="ollama">Ollama</option>
+          </select>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+          <label>服务地址</label>
+          <input type="text" v-model="leftBrain.baseUrl" />
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <label>运行模型</label>
+        <div style="display: flex; gap: 8px;">
+          <select v-model="leftBrain.model" @change="handleModelChange('left')" style="flex: 1;">
+            <option v-for="mod in availableLeftModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option>
+          </select>
+          
+          <button @click="fetchLocalModels('left')" :disabled="fetchingLeft">{{ fetchingLeft ? '...' : '刷新' }}</button>
+          <button @click="actOnModel('left', 'load')" style="margin-left:8px; border:1px solid #4caf50; background:transparent; color:#4caf50;">➕加载</button>
+          <button @click="actOnModel('left', 'unload')" style="border:1px solid #f44336; background:transparent; color:#f44336;">➖卸载</button>
+
+        </div>
+      </div>
+      <div v-if="leftInspection" style="margin-top: 12px; font-size: 12px; color: #aaa;">
+         状态: <span :style="{color: leftInspection.accessible ? '#7CFC9A' : '#FF8A80'}">{{ leftInspection.accessible ? '就绪' : '异常' }}</span>
+         | 窗口: {{ leftInspection.contextLength || '-' }}
+         | 探测Tokens: {{ leftInspection.usage?.totalTokens || '-' }}
+      </div>
+    </div>
+  </details>
+
+  <!-- Right Brain -->
+  <details class="panel" open style="flex: 1; border: 1px solid #444;">
+    <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,200,0,0.1)">
+      
+  <div class="panel-title" style="flex: 1;">🧠 右脑配置 (Right Brain)</div>
+  <button class="action-btn" :disabled="runtimeBusy || startBlockedByModelInspection" @click="toggleHermesRuntime('right')" style="padding: 2px 10px; font-size: 12px; margin-left: auto;">
+     {{ runtimeBusy ? '处理中...' : (rightBrainRunning ? '🔴 停止右脑' : '🚀 启动右脑') }}
+  </button>
+
+    </summary>
+    <div class="panel-content">
+      <div style="display: flex; gap: 16px; align-items: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+          <label>推理平台</label>
+          <select v-model="rightBrain.provider" @change="handleProviderChange('right')">
+            <option value="custom/local">OMLX (Local)</option>
+            <option value="ollama">Ollama</option>
+          </select>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+          <label>服务地址</label>
+          <input type="text" v-model="rightBrain.baseUrl" />
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <label>运行模型</label>
+        <div style="display: flex; gap: 8px;">
+          <select v-model="rightBrain.model" @change="handleModelChange('right')" style="flex: 1;">
+            <option v-for="mod in availableRightModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option>
+          </select>
+          
+          <button @click="fetchLocalModels('right')" :disabled="fetchingRight">{{ fetchingRight ? '...' : '刷新' }}</button>
+          <button @click="actOnModel('right', 'load')" style="margin-left:8px; border:1px solid #4caf50; background:transparent; color:#4caf50;">➕加载</button>
+          <button @click="actOnModel('right', 'unload')" style="border:1px solid #f44336; background:transparent; color:#f44336;">➖卸载</button>
+
+        </div>
+      </div>
+      <div v-if="rightInspection" style="margin-top: 12px; font-size: 12px; color: #aaa;">
+         状态: <span :style="{color: rightInspection.accessible ? '#7CFC9A' : '#FF8A80'}">{{ rightInspection.accessible ? '就绪' : '异常' }}</span>
+         | 窗口: {{ rightInspection.contextLength || '-' }}
+         | 探测Tokens: {{ rightInspection.usage?.totalTokens || '-' }}
+      </div>
+    </div>
+  </details>
+</div>
+
+<details class="panel" open style="margin-bottom: 16px; border: 1px solid #444;">
+  <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(140,255,0,0.08)">
+    <div class="panel-title">🧩 记忆配置 (Agent Memory)</div>
+    <button class="action-btn" @click.stop="loadEngineConfig" :disabled="memoryConfigBusy" style="padding: 2px 10px; font-size: 12px; margin-left: auto;">
+      {{ memoryConfigBusy ? '读取中...' : '刷新记忆' }}
+    </button>
+  </summary>
+  <div class="panel-content">
+    <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;">
+      <div style="flex: 1; min-width: 220px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <div style="font-size: 12px; color: #aaa; margin-bottom: 6px;">配置摘要</div>
+        <div style="font-size: 24px; font-weight: 700; color: #8cff00;">{{ memoryConfig?.agentCount ?? 0 }}</div>
+        <div style="font-size: 12px; color: #aaa;">已读取 Agent 数量</div>
+      </div>
+      <div style="flex: 2; min-width: 320px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <div style="font-size: 12px; color: #aaa; margin-bottom: 6px;">Hermes 读取源</div>
+        <div v-if="memoryConfig?.sourceFiles?.length" style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #ddd;">
+          <div v-for="sourceFile in memoryConfig.sourceFiles" :key="sourceFile" style="font-family: monospace; word-break: break-all;">{{ sourceFile }}</div>
+        </div>
+        <div v-else style="font-size: 12px; color: #888;">未检测到 agent 配置文件。</div>
+      </div>
+    </div>
+
+    <div v-if="memoryConfigError" class="text-error">{{ memoryConfigError }}</div>
+
+    <div v-if="memoryConfig?.agents?.length" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;">
+      <div v-for="agent in memoryConfig.agents" :key="agent.agentId || agent.name" style="padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px;">
+          <div style="font-size: 16px; font-weight: 600;">{{ agent.name }}</div>
+          <div style="font-size: 11px; color: #8cff00; font-family: monospace;">{{ agent.agentId || 'unknown' }}</div>
+        </div>
+        <div style="font-size: 12px; color: #aaa; margin-bottom: 4px;">角色</div>
+        <div style="margin-bottom: 10px; color: #f2f2f2;">{{ agent.role }}</div>
+        <div style="font-size: 12px; color: #aaa; margin-bottom: 4px;">性格</div>
+        <div style="margin-bottom: 10px; color: #f2f2f2;">{{ agent.personality }}</div>
+        <div style="font-size: 12px; color: #aaa; margin-bottom: 4px;">工作职责</div>
+        <ul style="margin: 0; padding-left: 18px; color: #ddd; display: flex; flex-direction: column; gap: 4px;">
+          <li v-for="responsibility in agent.responsibilities" :key="responsibility">{{ responsibility }}</li>
+        </ul>
+      </div>
+    </div>
+    <div v-else-if="!memoryConfigBusy && !memoryConfigError" style="font-size: 12px; color: #888;">暂无可展示的 Agent 记忆配置。</div>
+  </div>
+</details>
+
+<details class="panel" open style="margin-bottom: 24px;">
+  <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between;">
+    <div class="panel-title">💬 Hermes 直连对话 (Chat & Token Monitor)</div>
+  </summary>
+  <div class="panel-content">
+    <div class="chat-container" style="display: flex; flex-direction: column; gap: 12px; max-height: 400px; overflow-y: auto; padding: 12px; background: rgba(0,0,0,0.3); border-radius: 6px; margin-bottom: 12px;">
+       <div v-for="(msg, i) in chatHistory" :key="i" :style="{
+         padding: '8px 12px',
+         borderRadius: '6px',
+         alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+         background: msg.role === 'user' ? '#1976D2' : (msg.role === 'error' ? '#D32F2F' : '#333'),
+         maxWidth: '80%'
+       }">
+          <div style="font-weight: bold; font-size: 12px; opacity: 0.8; margin-bottom: 4px;">{{ msg.role.toUpperCase() }}</div>
+          <div>{{ msg.content }}</div>
+          <div v-if="msg.tokens" style="font-size: 11px; color: #8CFF00; margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px;">
+            Token 消耗: 提示词 {{ msg.tokens.prompt_tokens }} | 输出 {{ msg.tokens.completion_tokens }} | 总计 {{ msg.tokens.total_tokens }}
+          </div>
+       </div>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <input type="text" v-model="sandboxPrompt" @keyup.enter="sendChat" placeholder="直接发送指令给 Hermes..." style="flex: 1; padding: 8px; border-radius: 4px; background: #222; border: 1px solid #555; color: #fff;" />
+      <button class="action-btn" @click="sendChat" :disabled="sandboxBusy">{{ sandboxBusy ? '发送中...' : '发送' }}</button>
+    </div>
+  </div>
+</details>
+
         </div>
 
         <!-- 管理器功能面板区（处于运行态时全部展开展示） -->
@@ -642,7 +891,7 @@ async function pingModel() {
           
           <!-- 1. 引擎诊断与配置上下文 (可折叠) -->
           <details class="panel" open>
-            <summary class="panel-header">
+            <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between;">
               <div class="panel-title">🩺 运行时自检诊断 (Runtime Diagnostics)</div>
               <span class="indicator" v-if="connecting">🔄 自检流转中...</span>
             </summary>
@@ -689,49 +938,11 @@ async function pingModel() {
           </details>
 
           <!-- 2. 模型交互沙盒 (Interactive Playground) -->
-          <details class="panel" :open="sandboxOpen">
-            <summary class="panel-header" @click="sandboxOpen = !sandboxOpen">
-              <div class="panel-title">💬 模型基座直连测试 (Model Sandbox)</div>
-            </summary>
-            
-            <div class="panel-content">
-               <p class="sandbox-desc">发送直接测试指令验证大模型链路及当前引擎配置。由于本地大模型未开启时会报超时，可在此验证超时回滚或错误状态。</p>
-               <div class="sandbox-layout">
-                 <textarea 
-                   class="sandbox-input" 
-                   v-model="sandboxPrompt" 
-                   placeholder="输入测试提示词..." 
-                   rows="3"
-                   :disabled="sandboxBusy"
-                 ></textarea>
-                 
-                 <button 
-                  class="action-btn sandbox-send" 
-                  :disabled="sandboxBusy || !sandboxPrompt" 
-                  @click="pingModel"
-                 >
-                   {{ sandboxBusy ? '生成呼叫中...' : 'Send Prompt 📤' }}
-                 </button>
-               </div>
-
-               <div class="sandbox-result" v-if="sandboxReply || sandboxError || sandboxBusy">
-                 <div class="sandbox-spinner" v-if="sandboxBusy">
-                   <span>模型生成中，请耐心等待 (配置超时10秒) ...</span>
-                 </div>
-                 <div class="message-banner error" v-else-if="sandboxError">
-                   <span>❌</span> 请求失败或超时: {{ sandboxError }}
-                 </div>
-                 <div class="sandbox-reply" v-else>
-                   <span class="reply-badge">模型返回</span>
-                   <p>{{ sandboxReply }}</p>
-                 </div>
-               </div>
-            </div>
-          </details>
+          
 
           <!-- 3. 项目状态与任务栈看板 (占位/规划区) -->
           <details class="panel" open>
-            <summary class="panel-header">
+            <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between;">
               <div class="panel-title">📋 调度任务栈看板 (Project status & Queues)</div>
             </summary>
             <div class="panel-content placeholder-mode">
@@ -758,20 +969,7 @@ async function pingModel() {
             </div>
           </details>
 
-          <!-- 3. 底层日志及决策轨 (占位/规划区) -->
-          <details class="panel">
-            <summary class="panel-header">
-              <div class="panel-title">📜 后台日志与决策轨 (Logs & Trajectory)</div>
-            </summary>
-            <div class="panel-content placeholder-mode">
-              <p class="placeholder-desc">功能插槽：未来将追踪 <code>hermes-gateway</code> 网关流，并解析 <code>DECISIONS.md</code> 提供代理活动的审计回放。</p>
-              <div class="mock-terminal">
-                <div class="log-line">[SYS] Control gateway bounded to Hermes process...</div>
-                <div class="log-line">[SYS] Heartbeat sync established.</div>
-                <div class="log-line text-muted">Awaiting external instruction triggers...</div>
-              </div>
-            </div>
-          </details>
+          
 
         </div>
     </section>
