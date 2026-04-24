@@ -1,0 +1,62 @@
+{
+  "manager": {
+    "currentAgentId": "hermes-manager",
+    "selectionLocked": true,
+    "detail": "Hermes 作为当前全局唯一管理器"
+  },
+  "config": {
+    "saved": true,
+    "savedAt": "2026-04-24T03:14:57.597Z",
+    "savedFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gemma-4-26b-a4b\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
+    "lastSavedModel": "gemma-4-26b-a4b",
+    "detail": "已保存左脑配置"
+  },
+  "model": {
+    "status": "loaded",
+    "label": "已启动",
+    "detail": "模型可访问，最小推理探测成功",
+    "provider": "omlx",
+    "baseUrl": "http://127.0.0.1:18888/v1",
+    "model": "gemma-4-26b-a4b",
+    "inspectedAt": "2026-04-24T03:19:34.394Z",
+    "loadedAt": "2026-04-23T06:09:12.216Z",
+    "lastAction": "load",
+    "inspection": {
+      "model": "gemma-4-26b-a4b",
+      "accessible": true,
+      "status": "ok",
+      "detail": "模型可访问，最小推理探测成功",
+      "checkedAt": "2026-04-24T03:19:34.394Z",
+      "usage": {
+        "promptTokens": 16,
+        "completionTokens": 1,
+        "totalTokens": 17
+      },
+      "contextLength": 65536,
+      "recommendedMaxOutputTokens": 4096,
+      "tokenizer": "gemma",
+      "metadataSource": "catalog"
+    }
+  },
+  "preflight": {
+    "ready": false,
+    "checkedAt": null,
+    "configFingerprint": "",
+    "detail": "当前配置尚未重新自检",
+    "checks": [],
+    "inspection": null
+  },
+  "runtime": {
+    "state": "running",
+    "label": "运行中",
+    "detail": "Hermes gateway 进程正在运行",
+    "pid": 66567,
+    "updatedAt": "2026-04-24T03:19:35.001Z",
+    "lastAction": null,
+    "availableActions": [
+      "all-restart",
+      "pause",
+      "exit"
+    ]
+  }
+}

@@ -72,12 +72,12 @@ npm run dev:control-console
 当前 `startupProfile` 的目标是：
 
 1. 让 Hermes 启动后先向管理器报到。
-2. 让 Hermes 读取控制系统概览，而不是直接执行 `BOOT.md`。
-3. 让 Hermes 通过管理器来决定第一条动作，而不是继续保留 GameStudio 专项 boot 自举逻辑。
+2. 让 Hermes 读取控制系统概览与保存后的项目记忆配置。
+3. 让 Hermes 通过管理器来决定第一条动作，而不是依赖旧的仓库内自举文件。
 
 当前配置明确约束：
 
-- 不直接读取 GameStudio 的 `BOOT.md`
+- 不依赖已废弃的仓库内自举文件
 - 不从会话对话中猜项目阶段
 - 不直接写项目 memory 状态文件
 - 必须以管理器为启动控制平面
@@ -120,13 +120,13 @@ npm run dev:control-console
 2. 后续 Hermes、GameStudio Server、出图流程都通过控制系统 API/SDK 读写事实状态。
 3. 控制系统将成为唯一状态真相源，而不是另一个展示面板。
 4. Hermes 首先作为控制系统内的一级代理资源建模，再基于该代理对象扩展具体业务接口。
-5. Hermes 的 GameStudio 专项启动逻辑应逐步迁移到 manager 提供的 startup profile 中。
+5. Hermes 的项目启动行为应统一由 manager 提供的 startup profile 与保存配置驱动。
 
 ## 后续建设顺序
 
 1. 定义项目主状态模型。
 2. 定义阶段机与流转规则。
 3. 将 Hermes 动作与管理器命令绑定。
-4. 让 Hermes 消费 manager startup profile，取代 GameStudio 专项 boot 自举逻辑。
+4. 让 Hermes 消费 manager startup profile 与保存后的配置文件。
 5. 增加任务单、事件日志与恢复动作。
 6. 与 Hermes 做首个最小闭环测试。

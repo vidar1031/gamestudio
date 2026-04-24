@@ -1,1 +1,0 @@
-{"title": "聪明的杯子","prompt": "杯子能预测你什么时候要喝水","choices": [{"option": "谢谢杯子","next": "happy"}, {"option": "不看杯子","next": "distrust"}],"ending": "happy"}

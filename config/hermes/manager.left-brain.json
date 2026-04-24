@@ -1,0 +1,31 @@
+{
+  "provider": "omlx",
+  "baseUrl": "http://127.0.0.1:18888/v1",
+  "model": "gemma-4-26b-a4b",
+  "shortTerm": {
+    "minContextTokens": 65536
+  },
+  "workflow": {
+    "memoryOverlayMode": "references-only",
+    "replayWindowMessages": 24,
+    "reasoningReplayWindowMessages": 8
+  },
+  "memory": {
+    "agentDefinitionFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md",
+    "userFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md",
+    "memoryFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md",
+    "statusFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md",
+    "taskQueueFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md",
+    "decisionsFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md",
+    "dailyLogDir": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory"
+  },
+  "skills": {
+    "skillRoot": "/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills",
+    "skillFiles": [
+      "/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md"
+    ]
+  },
+  "brains": {
+    "rightBrainEnabled": false
+  }
+}

@@ -320,8 +320,8 @@ ${TOPIC}
 你的任务：
 1. 读取项目关键文件了解背景：
    - README.md
-   - memory/STATUS.md
-   - memory/TASK_QUEUE.md
+  - ai/memory/STATUS.md
+  - ai/memory/TASK_QUEUE.md
    - apps/server/src/ 目录结构
 
 2. 制定基础测试方案框架，需要包含：
@@ -331,7 +331,7 @@ ${TOPIC}
    d. 各方案的优先级排序（P0/P1/P2）
    e. 推荐工具与执行命令
 
-3. 将完整方案框架写入文件：memory/discussion/01-planner.md
+3. 将完整方案框架写入文件：ai/memory/discussion/01-planner.md
    - 格式要清晰，有章节标题
    - 包含具体的测试用例描述（至少 5 个 P0 用例）
    - 文件写完后最后一行写：<!-- DONE -->

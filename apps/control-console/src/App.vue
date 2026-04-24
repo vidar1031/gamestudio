@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
+import { Codemirror } from 'vue-codemirror'
+import { json } from '@codemirror/lang-json'
+import { markdown } from '@codemirror/lang-markdown'
+import { oneDark } from '@codemirror/theme-one-dark'
 
 type HealthResponse = {
   ok: boolean
@@ -26,7 +30,7 @@ type RuntimeState = {
   detail: string
   pid: number | null
   logFile: string
-  availableActions: Array<'start' | 'stop' | 'pause' | 'resume' | 'exit'>
+  availableActions: Array<'start' | 'stop' | 'pause' | 'resume' | 'exit' | 'all-restart'>
 }
 
 type SelfCheckResponse = {
@@ -60,6 +64,187 @@ type TokenUsage = {
   totalTokens: number | null
 }
 
+type ChatContextSource = {
+  label: string
+  filePath: string
+  exists: boolean
+  totalChars: number
+  loadedChars: number
+  truncated: boolean
+}
+
+type ChatContextInfo = {
+  runtime: {
+    provider: string
+    model: string
+    baseUrl: string
+    timeoutMs: number
+  }
+  replayedMessageCount: number
+  selectedSourceCount: number
+  loadedSourceCount: number
+  sources: ChatContextSource[]
+  contextPoolEntryCount?: number
+  confirmedContextSummary?: string
+  contextPoolEntries?: Array<{
+    entryId: string
+    title: string
+    filePath: string
+  }>
+}
+
+type ContextSourceCandidate = {
+  sourceId: string
+  kind: string
+  label: string
+  filePath: string
+  exists: boolean
+  totalChars: number
+  loadedChars: number
+  truncated: boolean
+}
+
+type ContextPoolEntrySummary = {
+  entryId: string
+  title: string
+  summary: string
+  createdAt: string
+  updatedAt: string
+  filePath: string
+}
+
+type ContextPoolEntryDetail = ContextPoolEntrySummary & {
+
+  prompt?: string
+  selectedSourceIds?: string[]
+  selectedContextPoolIds?: string[]
+}
+
+type ContextDraftResult = {
+  summary: string
+  usage?: TokenUsage | null
+  outboundPreview?: unknown
+  rawResponsePreview?: string
+  contextSources?: ChatContextInfo | null
+}
+
+type EditableFileRecord = {
+  filePath: string
+  exists: boolean
+  content: string
+  sizeChars: number
+  updatedAt: string | null
+}
+
+type ChatActiveRequest = {
+  requestId?: string
+  startedAt: string
+  activeForMs: number
+  promptChars: number
+  contextSources?: ChatContextInfo | null
+  outboundRequest?: {
+    totalMessages: number
+    systemMessageCount: number
+    replayedMessageCount: number
+    userMessageCount: number
+    userPromptChars: number
+  } | null
+}
+
+type ChatRecoveryInfo = {
+  attempted: boolean
+  ok: boolean
+  reason: string
+  durationMs?: number
+  detail?: string
+}
+
+type ChatUiStatus = {
+  kind: 'idle' | 'pending' | 'busy' | 'recovering' | 'timeout' | 'error'
+  message: string
+  activeRequest: ChatActiveRequest | null
+  recovery: ChatRecoveryInfo | null
+}
+
+type ChatMemoryFileSummary = {
+  filePath: string
+  exists: boolean
+  sizeChars: number
+  updatedAt: string | null
+}
+
+type ChatMemoryFile = ChatMemoryFileSummary & {
+  content: string
+}
+
+type ReasoningPlanStep = {
+  stepId: string
+  title: string
+  action: string
+  tool: string
+  dependsOn: string[]
+}
+
+type ReasoningPlan = {
+  planId: string
+  goal: string
+  strategy: string
+  steps: ReasoningPlanStep[]
+}
+
+type ReasoningEvent = {
+  eventId: string
+  sessionId: string
+  type: string
+  timestamp: string
+  stepId?: string
+  title: string
+  summary: string
+  data?: Record<string, unknown>
+}
+
+type ReasoningReview = {
+  status: 'pending'
+  targetType: 'plan' | 'step'
+  stepId?: string | null
+  stepIndex?: number | null
+  title: string
+  summary: string
+  correctionPrompt?: string | null
+  iteration?: number
+  evidence?: {
+    outboundPreview?: unknown
+    rawResponsePreview?: string | null
+    structuredResult?: unknown
+  } | null
+}
+
+type ReasoningStoryIndexItem = {
+  projectId: string
+  filePath: string
+  nodeCount: number
+  nodeNames: string[]
+}
+
+type ReasoningSession = {
+  sessionId: string
+  agentId: string
+  userPrompt: string
+  status: 'planning' | 'running' | 'waiting_review' | 'completed' | 'failed'
+  createdAt: string
+  updatedAt: string
+  plan: ReasoningPlan | null
+  currentStepId: string | null
+  review?: ReasoningReview | null
+  events: ReasoningEvent[]
+  artifacts: {
+    projectRoot?: string
+    storyIndex?: ReasoningStoryIndexItem[]
+    finalAnswer?: string
+  }
+  error?: string | null
+}
+
 type ModelInspection = {
   model: string
   accessible: boolean
@@ -86,11 +271,97 @@ type MemoryConfig = {
   sourceFiles: string[]
   agentCount: number
   agents: MemoryConfigAgent[]
+  agentDefinitionFile: string
+  userFile: string
+  memoryFile: string
+  statusFile: string
+  taskQueueFile: string
+  decisionsFile: string
+  dailyLogDir: string
+}
+
+type SkillConfig = {
+  skillRoot: string
+  skillFiles: string[]
+  availableSkillFiles: string[]
+  skillCount: number
+}
+
+type ConfigReadinessItem = {
+  key: string
+  label: string
+  status: string
+  detail: string
+}
+
+type ConfigReadiness = {
+  ready: boolean
+  items: ConfigReadinessItem[]
+}
+
+type PreflightCheckItem = {
+  key: string
+  label: string
+  status: string
+  detail: string
+}
+
+type PreflightResult = {
+  ready: boolean
+  checkedAt: string
+  checks: PreflightCheckItem[]
+  readiness: ConfigReadiness
+  logs: string[]
+  selectedModel: string
+  models: LocalModelItem[]
+  provider: string
+  baseUrl: string
+  inspection?: ModelInspection | null
+}
+
+type HermesControlState = {
+  config: {
+    saved: boolean
+    savedAt: string | null
+    savedFingerprint: string
+    lastSavedModel: string
+    detail: string
+  }
+  model: {
+    status: 'unknown' | 'loaded' | 'unloaded' | 'error'
+    label: string
+    detail: string
+    provider: string
+    baseUrl: string
+    model: string
+    inspectedAt: string | null
+    loadedAt: string | null
+    lastAction: string | null
+    inspection: ModelInspection | null
+  }
+  preflight: {
+    ready: boolean
+    checkedAt: string | null
+    configFingerprint: string
+    detail: string
+    checks: PreflightCheckItem[]
+    inspection: ModelInspection | null
+  }
+  runtime: {
+    state: string
+    label: string
+    detail: string
+    pid: number | null
+    updatedAt: string | null
+    lastAction: string | null
+  }
 }
 
 const managerHealth = ref<HealthResponse | null>(null)
 const agentOptions = ref<AgentListItem[]>([])
 const selectedAgentId = ref('')
+const activeAgentId = ref('hermes-manager')
+const agentSelectionLocked = ref(true)
 const selectedAgentLabel = ref('')
 const selfCheck = ref<SelfCheckResponse | null>(null)
 const connecting = ref(false)
@@ -101,23 +372,171 @@ const runtimeState = ref<RuntimeState | null>(null)
 
 // 模型交互沙盒状态
 const sandboxOpen = ref(false)
-const sandboxPrompt = ref('你好，系统控制面握手测试。')
+const sandboxPrompt = ref('')
 const sandboxReply = ref('')
 const sandboxBusy = ref(false)
 const sandboxError = ref('')
+const chatContextInfo = ref<ChatContextInfo | null>(null)
+const chatUiStatus = ref<ChatUiStatus>({
+  kind: 'idle',
+  message: '',
+  activeRequest: null,
+  recovery: null,
+})
+const chatMemoryFile = ref<ChatMemoryFileSummary | null>(null)
+const chatMemoryEditorOpen = ref(false)
+const chatMemoryDraft = ref('[]')
+const chatMemoryLoadedContent = ref('[]')
+const chatMemoryBusy = ref(false)
+const chatMemorySaveBusy = ref(false)
+const chatMemoryError = ref('')
+const chatMemorySaveMessage = ref('')
+const chatMemoryOpenBusy = ref(false)
+const chatMemoryOpenMessage = ref('')
+const activeReasoningSession = ref<ReasoningSession | null>(null)
+const reasoningBusy = ref(false)
+const reasoningError = ref('')
+const reasoningReviewBusy = ref(false)
+const reasoningReviewDraft = ref('')
 const memoryConfig = ref<MemoryConfig | null>(null)
 const memoryConfigBusy = ref(false)
 const memoryConfigError = ref('')
+const skillConfig = ref<SkillConfig | null>(null)
+const configReadiness = ref<ConfigReadiness | null>(null)
+const configSaving = ref(false)
+const configSaveMessage = ref('')
+const configSaveError = ref('')
+const skillFilesText = ref('')
+const shortTermMinContextTokens = ref(65536)
+const controlState = ref<HermesControlState | null>(null)
+const persistedLeftBrainConfigSignature = ref('')
+const loadingEngineConfig = ref(false)
+const preflightBusy = ref(false)
+const preflightResult = ref<PreflightResult | null>(null)
+const preflightError = ref('')
+const submitGateOpen = ref(false)
+const submitGateMode = ref<'chat' | 'reasoning' | null>(null)
+const submitPromptDraft = ref('')
+const contextCandidatesBusy = ref(false)
+const contextCandidatesError = ref('')
+const contextSourceCandidates = ref<ContextSourceCandidate[]>([])
+const contextPoolEntries = ref<ContextPoolEntrySummary[]>([])
+const submitSelectedSourceIds = ref<string[]>([])
+const submitSelectedContextPoolIds = ref<string[]>([])
+const submitDraftBusy = ref(false)
+const submitDraftError = ref('')
+const submitDraftResult = ref<ContextDraftResult | null>(null)
+const submitConfirmedSummary = ref('')
+const contextPoolSaveBusy = ref(false)
+const contextPoolSaveMessage = ref('')
+const contextPoolEditorBusy = ref(false)
+const contextPoolEditorError = ref('')
+const selectedContextPoolEntryId = ref('')
+const selectedContextPoolEntry = ref<ContextPoolEntryDetail | null>(null)
+const selectedContextSourceId = ref('')
+const selectedContextSource = ref<ContextSourceCandidate | null>(null)
+const sourceEditorBusy = ref(false)
+const sourceEditorError = ref('')
+const sourceEditorSaveBusy = ref(false)
+const sourceEditorSaveMessage = ref('')
+const sourceEditorFile = ref<EditableFileRecord | null>(null)
+const sourceEditorContent = ref('')
+const contextPoolFile = ref<EditableFileRecord | null>(null)
+const contextPoolFileContent = ref('')
+const contextPoolFileSaveMessage = ref('')
+const editorModalOpen = ref(false)
+const editorModalKind = ref<'source' | 'context-pool' | null>(null)
+
+const editorTheme = [oneDark]
+
+const sourceEditorExtensions = computed(() => {
+  const filePath = selectedContextSource.value?.filePath || ''
+  if (/\.json$/i.test(filePath)) {
+    return [...editorTheme, json()]
+  }
+  return [...editorTheme, markdown()]
+})
+
+const contextPoolEditorExtensions = computed(() => [...editorTheme, json()])
+
+const sourceEditorDirty = computed(() => sourceEditorContent.value !== (sourceEditorFile.value?.content || ''))
+const contextPoolFileDirty = computed(() => contextPoolFileContent.value !== (contextPoolFile.value?.content || ''))
+const editorModalTitle = computed(() => {
+  if (editorModalKind.value === 'source') {
+    return selectedContextSource.value?.label || '原始上下文文件编辑器'
+  }
+  if (editorModalKind.value === 'context-pool') {
+    return selectedContextPoolEntry.value?.title || '上下文池文件编辑器'
+  }
+  return '文件编辑器'
+})
+const activeEditorFilePath = computed(() => {
+  if (editorModalKind.value === 'source') {
+    return sourceEditorFile.value?.filePath || ''
+  }
+  if (editorModalKind.value === 'context-pool') {
+    return contextPoolFile.value?.filePath || ''
+  }
+  return ''
+})
 
 
 
 const leftBrainRunning = ref(false)
 const rightBrainRunning = ref(false)
-const liveLogs = ref('')
+const rawLiveLogs = ref('')
+const clearedLogLineCount = ref(0)
+const chatScrollContainer = ref<HTMLElement | null>(null)
 let logInterval: any = null
+let chatUiClockInterval: ReturnType<typeof setInterval> | null = null
+let chatHistoryPollTimer: ReturnType<typeof setTimeout> | null = null
+let reasoningPollTimer: ReturnType<typeof setTimeout> | null = null
+const chatUiNow = ref(Date.now())
+
+
+const visibleLogLines = computed(() => {
+  const lines = rawLiveLogs.value ? rawLiveLogs.value.split('\n') : []
+  return lines.slice(clearedLogLineCount.value).filter((line) => line.length > 0)
+})
+
+const logContainer = ref<HTMLElement | null>(null)
+watch(visibleLogLines, async () => {
+  if (logContainer.value) {
+    await nextTick()
+    logContainer.value.scrollTop = logContainer.value.scrollHeight
+  }
+
+})
 
 onMounted(() => {
   logInterval = setInterval(fetchLogs, 1500)
+  chatUiClockInterval = setInterval(() => {
+    chatUiNow.value = Date.now()
+  }, 1000)
+  window.addEventListener('keydown', handleEditorModalWindowKeydown, true)
+  void loadContextCandidates()
+})
+
+onUnmounted(() => {
+  if (logInterval) {
+    clearInterval(logInterval)
+    logInterval = null
+  }
+  if (chatUiClockInterval) {
+    clearInterval(chatUiClockInterval)
+    chatUiClockInterval = null
+  }
+  stopChatHistoryPolling()
+  stopReasoningPolling()
+  window.removeEventListener('keydown', handleEditorModalWindowKeydown, true)
+  document.body.style.overflow = ''
+})
+
+watch(editorModalOpen, (isOpen) => {
+  document.body.style.overflow = isOpen ? 'hidden' : ''
+  if (isOpen) {
+    focusActiveEditorInModal()
+  }
 })
 
 async function fetchLogs() {
@@ -125,9 +544,30 @@ async function fetchLogs() {
     try {
       const res = await fetch('/api/control/agents/' + selectedAgentId.value + '/logs')
       const data = await res.json()
-      if (data.ok) liveLogs.value = data.logs
+      if (data.ok) {
+        rawLiveLogs.value = data.logs
+        const currentLineCount = rawLiveLogs.value ? rawLiveLogs.value.split('\n').filter((line: string) => line.length > 0).length : 0
+        if (currentLineCount < clearedLogLineCount.value) {
+          clearedLogLineCount.value = 0
+        }
+      }
     } catch(e) {}
   }
+}
+
+function clearVisibleLogs() {
+  const lines = rawLiveLogs.value ? rawLiveLogs.value.split('\n').filter((line) => line.length > 0) : []
+  clearedLogLineCount.value = lines.length
+}
+
+function getLogLineColor(line: string) {
+  if (line.includes('[ERROR]') || line.includes('ERROR') || line.includes('失败') || line.includes('异常')) {
+    return '#ff8a80'
+  }
+  if (line.includes('[OK]') || line.includes('OK')) {
+    return '#9de2b0'
+  }
+  return '#d7e3d8'
 }
 
 async function actOnModel(side: 'left' | 'right', action: 'load'|'unload') {
@@ -143,6 +583,11 @@ async function actOnModel(side: 'left' | 'right', action: 'load'|'unload') {
        headers: { 'Content-Type': 'application/json' },
        body: JSON.stringify({ model: brain.model, provider: brain.provider, baseUrl: brain.baseUrl })
      })
+     const payload = await res.json().catch(() => null)
+     if (!res.ok) {
+       throw new Error(payload?.error || `model_${action}_http_${res.status}`)
+     }
+     if (isLeft) applyControlState(payload?.state || null)
      // If unloaded, mark as not ready
      if (action === 'unload') {
        if (isLeft && leftInspection.value) leftInspection.value.accessible = false
@@ -150,25 +595,30 @@ async function actOnModel(side: 'left' | 'right', action: 'load'|'unload') {
      } else {
        await inspectSelectedModel(side) // Re-inspect to set it ready
      }
-  } catch(e){}
+     await fetchLogs()
+  } catch(e) {
+    if (isLeft) leftError.value = String(e)
+    else rightError.value = String(e)
+    await fetchLogs()
+  }
   if (isLeft) inspectingLeft.value = false
   else inspectingRight.value = false
 }
 
 const leftBrain = ref({
 
-  provider: 'custom/local',
+  provider: 'omlx',
   baseUrl: 'http://127.0.0.1:18888/v1',
-  model: 'gpt-oss-20b-MXFP4-Q8',
+  model: '',
   contextLength: null as number | null,
   recommendedMaxOutputTokens: null as number | null,
   tokenizer: null as string | null,
   metadataSource: 'unavailable'
 })
 const rightBrain = ref({
-  provider: 'custom/local',
+  provider: 'omlx',
   baseUrl: 'http://127.0.0.1:18888/v1',
-  model: 'gpt-oss-20b-MXFP4-Q8',
+  model: '',
   contextLength: null as number | null,
   recommendedMaxOutputTokens: null as number | null,
   tokenizer: null as string | null,
@@ -233,27 +683,160 @@ const runtimeActionLabel = computed(() => {
   return '未安装'
 })
 
+const canAllRestartRuntime = computed(() => {
+  return Boolean(runtimeState.value?.availableActions?.includes('all-restart'))
+})
+
 const selectedModelOption = computed(() => {
   return availableLeftModels.value.find((item: LocalModelItem) => item.id === leftBrain.value.model) || null
 })
 
+const persistedModelLoaded = computed(() => {
+  return controlState.value?.model?.status === 'loaded'
+    && controlState.value.model.model === leftBrain.value.model
+    && controlState.value.model.provider === leftBrain.value.provider
+    && controlState.value.model.baseUrl === leftBrain.value.baseUrl
+})
+
+const leftSelectedModelLoaded = computed(() => {
+  return persistedModelLoaded.value || (!!leftBrain.value.model && leftInspection.value?.model === leftBrain.value.model && leftInspection.value?.accessible === true)
+})
+
+const leftBrainSummary = computed(() => {
+  const providerLabel = leftBrain.value.provider === 'ollama' ? 'Ollama' : 'OMLX (Local)'
+  return {
+    providerLabel,
+    baseUrlLabel: leftBrain.value.baseUrl || '默认',
+    modelLabel: leftBrain.value.model || '未选择模型',
+    tokenLabel: leftInspection.value?.usage?.totalTokens ?? '-',
+    statusLabel: leftSelectedModelLoaded.value ? '已启动' : '未启动'
+  }
+})
+
+function buildLeftBrainConfigPayload() {
+  return {
+    provider: leftBrain.value.provider,
+    baseUrl: leftBrain.value.baseUrl,
+    model: leftBrain.value.model,
+    shortTerm: {
+      minContextTokens: shortTermMinContextTokens.value
+    },
+    memory: memoryConfig.value ? {
+      agentDefinitionFile: memoryConfig.value.agentDefinitionFile,
+      userFile: memoryConfig.value.userFile,
+      memoryFile: memoryConfig.value.memoryFile,
+      statusFile: memoryConfig.value.statusFile,
+      taskQueueFile: memoryConfig.value.taskQueueFile,
+      decisionsFile: memoryConfig.value.decisionsFile,
+      dailyLogDir: memoryConfig.value.dailyLogDir
+    } : null,
+    skills: {
+      skillRoot: skillConfig.value?.skillRoot || '',
+      skillFiles: skillFilesText.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+    },
+    brains: {
+      rightBrainEnabled: false
+    }
+  }
+}
+
+function createLeftBrainConfigSignature(config: ReturnType<typeof buildLeftBrainConfigPayload>) {
+  return JSON.stringify(config)
+}
+
+const leftBrainConfigSignature = computed(() => createLeftBrainConfigSignature(buildLeftBrainConfigPayload()))
+
+const leftBrainConfigSaved = computed(() => {
+  return !!persistedLeftBrainConfigSignature.value
+    && leftBrainConfigSignature.value === persistedLeftBrainConfigSignature.value
+    && controlState.value?.config?.saved === true
+})
+
+const effectivePreflightReady = computed(() => {
+  if (preflightResult.value?.ready) return true
+  return controlState.value?.preflight?.ready === true
+    && controlState.value.preflight.configFingerprint === leftBrainConfigSignature.value
+})
+
 const startBlockedByModelInspection = computed(() => {
   if (selectedAgent.value?.definition.runtime !== 'hermes') return false
-  if (runtimeState.value?.state === 'running') return false
-  return fetchingLeft.value || inspectingLeft.value || !leftBrain.value.model || leftInspection.value?.accessible === false
+  return fetchingLeft.value || inspectingLeft.value || !leftSelectedModelLoaded.value
 })
+
+const leftBrainBlockedReason = computed(() => {
+  if (memoryConfigBusy.value || configSaving.value || runtimeBusy.value) return '控制面处理中，请稍候。'
+  if (!leftBrainConfigSaved.value) return '未保存左脑配置，请先保存。'
+  if (!leftSelectedModelLoaded.value) return controlState.value?.model?.detail || '模型未启动，请先加载模型。'
+  if (!configReadiness.value?.ready) return '左脑配置校验未通过，请先修复配置项。'
+  if (!effectivePreflightReady.value) return controlState.value?.preflight?.detail || '尚未完成左脑自检。'
+  return ''
+})
+
+const leftBrainStartBlocked = computed(() => {
+  if (leftBrainRunning.value) return runtimeBusy.value
+  return startBlockedByModelInspection.value || !leftBrainConfigSaved.value || !configReadiness.value?.ready || !effectivePreflightReady.value
+})
+
+const saveLeftBrainLabel = computed(() => {
+  if (configSaving.value) return '保存中...'
+  return leftBrainConfigSaved.value ? '已保存左脑配置' : '未保存左脑配置'
+})
+
+function applyControlState(state: HermesControlState | null | undefined) {
+  if (!state) return
+  controlState.value = state
+  leftBrainRunning.value = state.runtime?.state === 'running'
+  if (state.model?.inspection) {
+    leftInspection.value = state.model.inspection
+  } else if (state.preflight?.inspection) {
+    leftInspection.value = state.preflight.inspection
+  }
+}
 
 // 添加中文标签映射，使机器的 key 更易读
 function getChineseCheckLabel(key: string) {
   const map: Record<string, string> = {
+    'hermes-install': 'Hermes 安装检测',
     'mcp-connection': 'MCP 协议连接池',
     'python-env': 'Python 运行时环境',
     'workspace-access': '工作区读写权限',
     'model-route': 'LLM 模型路由',
-    'agent-memory': 'Agent 记忆配置'
+    'agent-memory': 'Agent 记忆配置',
+    'context-window': '短期记忆窗口',
+    'skill-library': '技能库配置',
+    'startup-config': '启动配置完整性',
+    'omlx-service': 'OMLX 服务检测',
+    'model-selection': '模型选择检测',
+    'active-inference': '主动推理检测',
+    'model-provider': '推理平台',
+    'model-base-url': '服务地址',
+    'model-name': '模型名称',
+    'short-term-context': '短期记忆窗口',
+    'memory-agent-definition': 'Agent 定义文件',
+    'memory-user-file': '用户记忆文件',
+    'memory-memory-file': '项目记忆文件',
+    'memory-status-file': '状态文件',
+    'memory-task-queue-file': '任务队列文件',
+    'memory-decisions-file': '决策文件',
+    'memory-daily-log-dir': '日志目录',
+    'skills-root': '技能根目录',
+    'skills-files': '技能文件'
   }
   return map[key] || key
 }
+
+function resetPreflightState() {
+  preflightResult.value = null
+  preflightError.value = ''
+}
+
+watch(leftBrainConfigSignature, (nextValue, previousValue) => {
+  if (!previousValue || loadingEngineConfig.value) return
+  if (nextValue === previousValue) return
+  configSaveMessage.value = ''
+  configSaveError.value = ''
+  resetPreflightState()
+})
 
 onMounted(async () => {
   const [healthResult, agentsResult] = await Promise.allSettled([
@@ -276,11 +859,13 @@ onMounted(async () => {
     if (agentsResult.value.ok) {
       const payload = await agentsResult.value.json()
       agentOptions.value = payload.agents || []
+      activeAgentId.value = payload.activeAgentId || 'hermes-manager'
+      agentSelectionLocked.value = payload.selectionLocked !== false
+      applyControlState(payload.state || null)
       error.value = ''
 
-      const savedChoice = localStorage.getItem('hermes_control_selected_agent')
-      if (savedChoice && agentOptions.value.find(item => item.definition.id === savedChoice)) {
-        selectedAgentId.value = savedChoice
+      if (activeAgentId.value && agentOptions.value.find(item => item.definition.id === activeAgentId.value)) {
+        selectedAgentId.value = activeAgentId.value
         await connectSelectedAgent()
       }
     } else {
@@ -292,18 +877,27 @@ onMounted(async () => {
 })
 
 async function connectSelectedAgent() {
+  if (agentSelectionLocked.value && activeAgentId.value && selectedAgentId.value !== activeAgentId.value) {
+    selectedAgentId.value = activeAgentId.value
+    error.value = '当前 control 已锁定全局管理器为 Hermes，不能在新标签页重新创建另一个管理器。'
+  }
+
   if (!selectedAgentId.value) {
     selfCheck.value = null
     runtimeState.value = null
+    controlState.value = null
     memoryConfig.value = null
+    skillConfig.value = null
+    configReadiness.value = null
     memoryConfigError.value = ''
+    configSaveMessage.value = ''
+    configSaveError.value = ''
+    skillFilesText.value = ''
+    resetPreflightState()
     selectedAgentLabel.value = ''
     error.value = ''
-    localStorage.removeItem('hermes_control_selected_agent')
     return
   }
-
-  localStorage.setItem('hermes_control_selected_agent', selectedAgentId.value)
 
   const agent = agentOptions.value.find((item) => item.definition.id === selectedAgentId.value)
   selectedAgentLabel.value = agent?.definition.name || selectedAgentId.value
@@ -311,13 +905,18 @@ async function connectSelectedAgent() {
   if (agent?.definition.runtime !== 'hermes') {
     selfCheck.value = null
     runtimeState.value = null
+    controlState.value = null
     memoryConfig.value = null
+    skillConfig.value = null
+    configReadiness.value = null
     memoryConfigError.value = ''
+    resetPreflightState()
     error.value = ''
     return
   }
 
   await loadEngineConfig()
+  await loadChatHistory()
   await loadHermesRuntimeStatus()
   if (runtimeState.value?.state === 'running') {
     await loadHermesSelfCheck()
@@ -338,12 +937,14 @@ async function refreshHermesRuntimeState() {
 
   const payload = await response.json()
   runtimeState.value = payload.runtimeStatus
+  applyControlState(payload.state)
 }
 
 
 
 async function loadEngineConfig() {
   memoryConfigBusy.value = true
+  loadingEngineConfig.value = true
   try {
     const response = await fetch('/api/control/agents/' + selectedAgentId.value + '/config')
     if (response.ok) {
@@ -354,20 +955,97 @@ async function loadEngineConfig() {
          leftBrain.value.baseUrl = payload.config.baseUrl
          leftBrain.value.model = payload.config.model
          memoryConfig.value = payload.config.memory || null
+         skillConfig.value = payload.config.skills || null
+         configReadiness.value = payload.config.readiness || null
+        applyControlState(payload.config.state || null)
+         shortTermMinContextTokens.value = payload.config.shortTerm?.minContextTokens || 65536
+         skillFilesText.value = (payload.config.skills?.skillFiles || []).join('\n')
+         persistedLeftBrainConfigSignature.value = createLeftBrainConfigSignature({
+           provider: payload.config.provider,
+           baseUrl: payload.config.baseUrl,
+           model: payload.config.model,
+           shortTerm: {
+             minContextTokens: payload.config.shortTerm?.minContextTokens || 65536
+           },
+           memory: payload.config.memory ? {
+             agentDefinitionFile: payload.config.memory.agentDefinitionFile,
+             userFile: payload.config.memory.userFile,
+             memoryFile: payload.config.memory.memoryFile,
+             statusFile: payload.config.memory.statusFile,
+             taskQueueFile: payload.config.memory.taskQueueFile,
+             decisionsFile: payload.config.memory.decisionsFile,
+             dailyLogDir: payload.config.memory.dailyLogDir
+           } : null,
+           skills: {
+             skillRoot: payload.config.skills?.skillRoot || '',
+             skillFiles: payload.config.skills?.skillFiles || []
+           },
+           brains: {
+             rightBrainEnabled: false
+           }
+         })
+         rightBrain.value.provider = payload.config.provider
+         rightBrain.value.baseUrl = payload.config.baseUrl
+         rightBrain.value.model = payload.config.model
+         rightBrainRunning.value = false
+         resetPreflightState()
          memoryConfigError.value = ''
+         configSaveMessage.value = ''
+         configSaveError.value = ''
          // init both
          await fetchLocalModels('left')
-         await fetchLocalModels('right')
       }
     } else {
+      controlState.value = null
       memoryConfig.value = null
+      skillConfig.value = null
+      configReadiness.value = null
+      persistedLeftBrainConfigSignature.value = ''
+      resetPreflightState()
       memoryConfigError.value = `config_http_${response.status}`
     }
   } catch(e) {
+    controlState.value = null
     memoryConfig.value = null
+    skillConfig.value = null
+    configReadiness.value = null
+    persistedLeftBrainConfigSignature.value = ''
+    resetPreflightState()
     memoryConfigError.value = String(e)
   } finally {
+    loadingEngineConfig.value = false
     memoryConfigBusy.value = false
+  }
+}
+
+async function saveLeftBrainConfig() {
+  if (!memoryConfig.value || !skillConfig.value || !selectedAgentId.value) return
+
+  configSaving.value = true
+  configSaveError.value = ''
+  configSaveMessage.value = ''
+
+  try {
+    const payloadBody = buildLeftBrainConfigPayload()
+    const response = await fetch('/api/control/agents/' + selectedAgentId.value + '/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payloadBody)
+    })
+
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `save_config_http_${response.status}`)
+    }
+
+    applyControlState(payload.state || null)
+    await loadEngineConfig()
+    configSaveMessage.value = '已保存左脑配置。'
+    resetPreflightState()
+  } catch (e) {
+    configSaveError.value = String(e)
+  } finally {
+    configSaving.value = false
   }
 }
 
@@ -382,6 +1060,7 @@ async function fetchLocalModels(side: 'left' | 'right') {
 
   fetching.value = true
   err.value = ''
+  if (side === 'left') resetPreflightState()
   try {
     const backendParam = brain.value.provider === 'ollama' ? 'ollama' : 'omlx'
     const query = new URLSearchParams({
@@ -395,9 +1074,17 @@ async function fetchLocalModels(side: 'left' | 'right') {
         avail.value = data.models as LocalModelItem[]
         if (data.models.length > 0 && !data.models.find((m: LocalModelItem) => m.id === brain.value.model)) {
           brain.value.model = data.models[0].id
+        } else if (data.models.length === 0) {
+          brain.value.model = ''
+          err.value = '请启动推理模型（OMLX），然后刷新模型列表。'
         }
         syncEngineMetadataFromSelection(side)
-        await inspectSelectedModel(side)
+        if (brain.value.model) {
+          await inspectSelectedModel(side)
+        } else {
+          const inspection = side === 'left' ? leftInspection : rightInspection
+          inspection.value = null
+        }
       } else {
         avail.value = []
         err.value = data.error || '模型列表获取失败'
@@ -458,6 +1145,7 @@ async function inspectSelectedModel(side: 'left' | 'right') {
     if (!response.ok) throw new Error('inspect_' + response.status)
     const payload = await response.json()
     inspection.value = payload.inspection || null
+    if (side === 'left' && payload.state) applyControlState(payload.state)
   } catch (e) {
     inspection.value = {
       model: brain.value.model,
@@ -480,52 +1168,854 @@ function handleProviderChange(side: 'left' | 'right') {
   const brain = side === 'left' ? leftBrain : rightBrain
   brain.value.baseUrl = brain.value.provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : 'http://127.0.0.1:18888/v1'
   brain.value.model = ''
+  if (side === 'left') resetPreflightState()
   if(side === 'left') { availableLeftModels.value = []; leftInspection.value = null }
   else { availableRightModels.value = []; rightInspection.value = null }
   fetchLocalModels(side)
 }
 
 function handleModelChange(side: 'left' | 'right') {
+  if (side === 'left') resetPreflightState()
   syncEngineMetadataFromSelection(side)
   inspectSelectedModel(side)
 }
 
+async function runLeftBrainPreflight() {
+  if (!selectedAgentId.value || !memoryConfig.value || !skillConfig.value) return
+
+  preflightBusy.value = true
+  preflightError.value = ''
+  error.value = ''
+
+  try {
+    const response = await fetch('/api/control/agents/' + selectedAgentId.value + '/preflight-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        config: buildLeftBrainConfigPayload()
+      })
+    })
+
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `preflight_http_${response.status}`)
+    }
+
+    applyControlState(payload.state || null)
+    preflightResult.value = payload.preflight || null
+    configReadiness.value = payload.preflight?.readiness || configReadiness.value
+    if (payload.preflight?.selectedModel) {
+      leftBrain.value.model = payload.preflight.selectedModel
+    }
+    if (Array.isArray(payload.preflight?.models)) {
+      availableLeftModels.value = payload.preflight.models
+      syncEngineMetadataFromSelection('left')
+    }
+    if (payload.preflight?.inspection) {
+      leftInspection.value = payload.preflight.inspection
+    }
+    if (!payload.preflight?.ready) {
+      preflightError.value = '左脑自检未通过，请先修复红色项后再启动。'
+    }
+    await fetchLogs()
+  } catch (caught) {
+    preflightResult.value = null
+    preflightError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    preflightBusy.value = false
+  }
+}
+
 const chatHistory = ref<{role: string, content: string, tokens?: any}[]>([])
-async function sendChat() {
-  if (!sandboxPrompt.value.trim()) return
-  
-  const userText = sandboxPrompt.value
+const chatMemoryDirty = computed(() => chatMemoryDraft.value !== chatMemoryLoadedContent.value)
+const reasoningStatusLabel = computed(() => {
+  if (!activeReasoningSession.value) return '未开始'
+  if (activeReasoningSession.value.status === 'planning') return '规划中'
+  if (activeReasoningSession.value.status === 'running') return '执行中'
+  if (activeReasoningSession.value.status === 'waiting_review') return '待审核'
+  if (activeReasoningSession.value.status === 'completed') return '已完成'
+  return '失败'
+})
+
+const reasoningPendingReview = computed(() => {
+  const review = activeReasoningSession.value?.review
+  return activeReasoningSession.value?.status === 'waiting_review' && review ? review : null
+})
+
+const reasoningReviewTargetLabel = computed(() => {
+  const review = reasoningPendingReview.value
+  if (!review) return ''
+  return review.targetType === 'plan' ? '计划审核' : `步骤审核${review.stepIndex != null ? ` #${review.stepIndex + 1}` : ''}`
+})
+
+const reasoningReviewEvidence = computed(() => reasoningPendingReview.value?.evidence || null)
+
+function formatReasoningEvidence(value: unknown) {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function validateJsonEditorContent(filePath: string, content: string) {
+  if (!/\.json$/i.test(filePath)) return
+  JSON.parse(content)
+}
+
+const chatRuntimeTimeoutSeconds = computed(() => {
+  return Math.round((chatContextInfo.value?.runtime.timeoutMs || 0) / 1000)
+})
+
+const chatActiveRequestElapsedSeconds = computed(() => {
+  const activeRequest = chatUiStatus.value.activeRequest
+  if (!activeRequest) return 0
+
+  const startedAtMs = new Date(activeRequest.startedAt).getTime()
+  if (Number.isNaN(startedAtMs)) {
+    return Math.max(0, Math.round(activeRequest.activeForMs / 1000))
+  }
+
+  return Math.max(0, Math.round((chatUiNow.value - startedAtMs) / 1000))
+})
+
+const shortTermMemoryHint = computed(() => {
+  const modelId = String(leftBrain.value.model || '').trim().toLowerCase()
+  if (modelId.includes('gemma-4-26b-a4b')) {
+    return 'Gemma-4-26B-A4B 当前 OMLX 配置应填写为：短期记忆最小窗口 65536。该项只校验上下文窗口；最大输出 token 4096 由模型服务配置控制，不在这里填写。'
+  }
+  return '这里填写的是模型最小上下文窗口要求。要通过自检，模型的上下文窗口必须大于等于该值；最大输出 token 由模型服务自身配置控制。'
+})
+
+watch(chatHistory, async () => {
+  if (chatScrollContainer.value) {
+    await nextTick()
+    chatScrollContainer.value.scrollTop = chatScrollContainer.value.scrollHeight
+  }
+}, { deep: true })
+
+function handleChatComposerKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter') return
+  if (event.metaKey || event.ctrlKey) {
+    event.preventDefault()
+    sendChat()
+  }
+}
+
+function focusActiveEditorInModal() {
+  void nextTick(() => {
+    const editor = document.querySelector('.editor-modal-shell .cm-content') as HTMLElement | null
+    if (editor) {
+      editor.focus()
+      return
+    }
+    const fallback = document.querySelector('.editor-modal-shell') as HTMLElement | null
+    fallback?.focus()
+  })
+}
+
+function openEditorModal(kind: 'source' | 'context-pool') {
+  editorModalKind.value = kind
+  editorModalOpen.value = true
+  focusActiveEditorInModal()
+}
+
+function closeEditorModal() {
+  editorModalOpen.value = false
+  editorModalKind.value = null
+}
+
+async function saveActiveEditorModal() {
+  if (editorModalKind.value === 'source') {
+    await saveContextSourceFile()
+    return
+  }
+  if (editorModalKind.value === 'context-pool') {
+    await saveContextPoolEntryEdits()
+  }
+}
+
+function handleEditorModalWindowKeydown(event: KeyboardEvent) {
+  if (!editorModalOpen.value) return
+
+  const target = event.target as HTMLElement | null
+  const inModal = Boolean(target?.closest('.editor-modal-shell'))
+  if (!inModal) return
+
+  const lowerKey = String(event.key || '').toLowerCase()
+  const metaCombo = event.metaKey || event.ctrlKey
+
+  if (event.key === 'Tab' && !target?.closest('.cm-editor')) {
+    event.preventDefault()
+    event.stopPropagation()
+    focusActiveEditorInModal()
+    return
+  }
+
+  if (!metaCombo) return
+
+  if (['s', 'w', 'p', 'l'].includes(lowerKey)) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
+  if (lowerKey === 's') {
+    void saveActiveEditorModal()
+    return
+  }
+
+  if (lowerKey === 'w') {
+    closeEditorModal()
+  }
+}
+
+function resetSubmitGateState() {
+  submitDraftBusy.value = false
+  submitDraftError.value = ''
+  submitDraftResult.value = null
+  submitConfirmedSummary.value = ''
+  contextPoolSaveBusy.value = false
+  contextPoolSaveMessage.value = ''
+}
+
+async function loadContextCandidates() {
+  contextCandidatesBusy.value = true
+  contextCandidatesError.value = ''
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/context-candidates')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `context_candidates_http_${response.status}`)
+    }
+    contextSourceCandidates.value = Array.isArray(payload.sources) ? payload.sources : []
+    contextPoolEntries.value = Array.isArray(payload.contextPoolEntries) ? payload.contextPoolEntries : []
+  } catch (caught) {
+    contextCandidatesError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    contextCandidatesBusy.value = false
+  }
+}
+
+async function openSubmitGate(mode: 'chat' | 'reasoning') {
+  const prompt = sandboxPrompt.value.trim()
+  if (!prompt) return
+
+  submitGateOpen.value = true
+  submitGateMode.value = mode
+  submitPromptDraft.value = sandboxPrompt.value
+  resetSubmitGateState()
+  await loadContextCandidates()
+  if (contextPoolEntries.value.length > 0) {
+    submitSelectedContextPoolIds.value = contextPoolEntries.value.map((entry) => entry.entryId)
+    submitSelectedSourceIds.value = []
+  } else {
+    submitSelectedSourceIds.value = contextSourceCandidates.value.filter((source) => source.exists).map((source) => source.sourceId)
+    submitSelectedContextPoolIds.value = []
+  }
+}
+
+function closeSubmitGate() {
+  submitGateOpen.value = false
+  submitGateMode.value = null
+}
+
+async function generateSubmitContextDraft() {
+  if (!submitPromptDraft.value.trim()) return
+  if (!submitGateMode.value) return
+
+  submitDraftBusy.value = true
+  submitDraftError.value = ''
+  contextPoolSaveMessage.value = ''
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/submission-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: submitGateMode.value,
+        prompt: submitPromptDraft.value,
+        selectedSourceIds: submitSelectedSourceIds.value,
+        selectedContextPoolIds: submitSelectedContextPoolIds.value,
+      })
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.preview) {
+      throw new Error(payload?.error || `submission_preview_http_${response.status}`)
+    }
+    submitDraftResult.value = payload.preview
+    submitConfirmedSummary.value = ''
+    if (payload.preview.contextSources) {
+      chatContextInfo.value = payload.preview.contextSources
+    }
+  } catch (caught) {
+    submitDraftError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    submitDraftBusy.value = false
+  }
+}
+
+async function saveConfirmedContextPoolEntry() {
+  if (!submitConfirmedSummary.value.trim()) return
+
+  contextPoolSaveBusy.value = true
+  contextPoolSaveMessage.value = ''
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/context-pool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: submitPromptDraft.value.trim().slice(0, 60) || 'Confirmed Context',
+        prompt: submitPromptDraft.value,
+        summary: submitConfirmedSummary.value,
+        selectedSourceIds: submitSelectedSourceIds.value,
+        selectedContextPoolIds: submitSelectedContextPoolIds.value,
+      })
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.entry) {
+      throw new Error(payload?.error || `context_pool_create_http_${response.status}`)
+    }
+    contextPoolSaveMessage.value = '已保存到上下文池。'
+    await loadContextCandidates()
+    submitSelectedContextPoolIds.value = Array.from(new Set([...submitSelectedContextPoolIds.value, payload.entry.entryId]))
+    selectedContextPoolEntryId.value = payload.entry.entryId
+    await loadContextPoolEntry(payload.entry.entryId)
+  } catch (caught) {
+    contextPoolSaveMessage.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    contextPoolSaveBusy.value = false
+  }
+}
+
+async function loadContextSourceFile(sourceId: string) {
+  if (!sourceId) return
+  sourceEditorBusy.value = true
+  sourceEditorError.value = ''
+  sourceEditorSaveMessage.value = ''
+  try {
+    const response = await fetch(`/api/control/agents/hermes-manager/context-source-content?sourceId=${encodeURIComponent(sourceId)}`)
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.file || !payload?.source) {
+      throw new Error(payload?.error || `context_source_get_http_${response.status}`)
+    }
+    selectedContextSourceId.value = sourceId
+    selectedContextSource.value = payload.source
+    sourceEditorFile.value = payload.file
+    sourceEditorContent.value = payload.file.content || ''
+    openEditorModal('source')
+  } catch (caught) {
+    sourceEditorError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    sourceEditorBusy.value = false
+  }
+}
+
+async function saveContextSourceFile() {
+  if (!selectedContextSourceId.value) return
+  sourceEditorSaveBusy.value = true
+  sourceEditorError.value = ''
+  sourceEditorSaveMessage.value = ''
+  try {
+    validateJsonEditorContent(sourceEditorFile.value?.filePath || '', sourceEditorContent.value)
+    const response = await fetch('/api/control/agents/hermes-manager/context-source-content', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceId: selectedContextSourceId.value,
+        content: sourceEditorContent.value,
+      })
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.file || !payload?.source) {
+      throw new Error(payload?.error || `context_source_put_http_${response.status}`)
+    }
+    selectedContextSource.value = payload.source
+    sourceEditorFile.value = payload.file
+    sourceEditorContent.value = payload.file.content || ''
+    sourceEditorSaveMessage.value = '源文件已保存。'
+    await loadContextCandidates()
+  } catch (caught) {
+    sourceEditorError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    sourceEditorSaveBusy.value = false
+  }
+}
+
+async function loadContextPoolEntry(entryId: string) {
+  if (!entryId) return
+  contextPoolEditorBusy.value = true
+  contextPoolEditorError.value = ''
+  try {
+    const response = await fetch(`/api/control/agents/hermes-manager/context-pool/${entryId}`)
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.entry) {
+      throw new Error(payload?.error || `context_pool_get_http_${response.status}`)
+    }
+    selectedContextPoolEntry.value = payload.entry
+    const fileResponse = await fetch(`/api/control/agents/hermes-manager/context-pool/${entryId}/file`)
+    const filePayload = await fileResponse.json().catch(() => null)
+    if (!fileResponse.ok || !filePayload?.ok || !filePayload?.file) {
+      throw new Error(filePayload?.error || `context_pool_file_get_http_${fileResponse.status}`)
+    }
+    contextPoolFile.value = filePayload.file
+    contextPoolFileContent.value = filePayload.file.content || ''
+    openEditorModal('context-pool')
+  } catch (caught) {
+    contextPoolEditorError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    contextPoolEditorBusy.value = false
+  }
+}
+
+async function saveContextPoolEntryEdits() {
+  if (!selectedContextPoolEntryId.value) return
+  contextPoolEditorBusy.value = true
+  contextPoolEditorError.value = ''
+  contextPoolFileSaveMessage.value = ''
+  try {
+    validateJsonEditorContent(contextPoolFile.value?.filePath || '', contextPoolFileContent.value)
+    const response = await fetch(`/api/control/agents/hermes-manager/context-pool/${selectedContextPoolEntryId.value}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: contextPoolFileContent.value,
+      })
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.file) {
+      throw new Error(payload?.error || `context_pool_file_put_http_${response.status}`)
+    }
+    contextPoolFile.value = payload.file
+    contextPoolFileContent.value = payload.file.content || ''
+    selectedContextPoolEntry.value = payload.entry || selectedContextPoolEntry.value
+    contextPoolFileSaveMessage.value = '上下文池文件已保存。'
+    await loadContextCandidates()
+  } catch (caught) {
+    contextPoolEditorError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    contextPoolEditorBusy.value = false
+  }
+}
+
+async function openContextPoolEntryInEditor() {
+  if (!selectedContextPoolEntryId.value) return
+  contextPoolEditorBusy.value = true
+  contextPoolEditorError.value = ''
+  try {
+    const response = await fetch(`/api/control/agents/hermes-manager/context-pool/${selectedContextPoolEntryId.value}/open`, {
+      method: 'POST'
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `context_pool_open_http_${response.status}`)
+    }
+  } catch (caught) {
+    contextPoolEditorError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    contextPoolEditorBusy.value = false
+  }
+}
+
+async function performReasoningSubmission(userText: string, submissionContext: Record<string, unknown>) {
+  reasoningBusy.value = true
+  reasoningError.value = ''
+  reasoningReviewDraft.value = ''
+  sandboxPrompt.value = ''
+  stopReasoningPolling()
+  chatHistory.value.push({ role: 'user', content: userText })
+  activeReasoningSession.value = null
+
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/reasoning-sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: userText, ...submissionContext })
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.session) {
+      throw new Error(payload?.details || payload?.error || `reasoning_start_http_${response.status}`)
+    }
+
+    activeReasoningSession.value = {
+      sessionId: payload.session.sessionId,
+      agentId: 'hermes-manager',
+      userPrompt: userText,
+      status: payload.session.status,
+      createdAt: payload.session.createdAt,
+      updatedAt: payload.session.createdAt,
+      plan: payload.session.plan,
+      currentStepId: null,
+      review: null,
+      events: [],
+      artifacts: {},
+      error: null,
+    }
+    await loadReasoningSession(payload.session.sessionId)
+    scheduleReasoningPolling()
+  } catch (caught) {
+    reasoningBusy.value = false
+    reasoningError.value = caught instanceof Error ? caught.message : String(caught)
+    chatHistory.value.push({ role: 'error', content: reasoningError.value })
+  }
+}
+
+async function performChatSubmission(userText: string, submissionContext: Record<string, unknown>) {
+  let shouldPollHistory = false
   chatHistory.value.push({ role: 'user', content: userText })
   sandboxPrompt.value = ''
   sandboxBusy.value = true
+  stopChatHistoryPolling()
+  chatUiStatus.value = {
+    kind: 'pending',
+    message: '请求已发出，等待 Hermes / OMLX 返回。',
+    activeRequest: {
+      startedAt: new Date().toISOString(),
+      activeForMs: 0,
+      promptChars: userText.length,
+      contextSources: chatContextInfo.value,
+      outboundRequest: null,
+    },
+    recovery: null,
+  }
+  scheduleChatHistoryPolling(500)
 
   try {
     const response = await fetch('/api/control/agents/hermes-manager/ping-model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: userText })
+      body: JSON.stringify({ prompt: userText, ...submissionContext })
     })
     const payload = await response.json()
     if (payload.ok) {
-      chatHistory.value.push({ 
-         role: 'hermes', 
-         content: payload.reply, 
-         tokens: payload.raw?.usage // capture token count here!
+      chatContextInfo.value = payload.contextSources || null
+      stopChatHistoryPolling()
+      chatUiStatus.value = {
+        kind: 'idle',
+        message: '',
+        activeRequest: null,
+        recovery: null,
+      }
+      chatHistory.value.push({
+        role: 'hermes',
+        content: payload.reply,
+        tokens: payload.raw?.usage
       })
     } else {
-      chatHistory.value.push({ role: 'error', content: payload.error })
+      chatContextInfo.value = payload.contextSources || chatContextInfo.value
+      const recovery = payload.recovery || null
+      const activeRequest = payload.activeRequest || null
+      const statusKind = payload.error === 'chat_busy'
+        ? 'busy'
+        : payload.error === 'chat_timeout'
+          ? 'timeout'
+          : recovery?.attempted
+            ? 'recovering'
+            : 'error'
+      const parts = [payload.error]
+      if (payload.details) {
+        parts.push(payload.details)
+      }
+      if (activeRequest?.activeForMs != null) {
+        parts.push(`当前请求已运行 ${Math.round(activeRequest.activeForMs / 1000)} 秒`)
+      }
+      if (recovery?.detail) {
+        parts.push(recovery.detail)
+      }
+      chatUiStatus.value = {
+        kind: statusKind,
+        message: parts.filter(Boolean).join(' | '),
+        activeRequest,
+        recovery,
+      }
+      shouldPollHistory = payload.error === 'chat_timeout' || Boolean(payload.pending)
+      if (payload.error !== 'chat_timeout') {
+        chatHistory.value.push({ role: 'error', content: parts.filter(Boolean).join('\n') })
+      }
     }
   } catch (e) {
-    chatHistory.value.push({ role: 'error', content: String(e) })
+    chatUiStatus.value = {
+      kind: 'error',
+      message: e instanceof Error ? e.message : String(e),
+      activeRequest: null,
+      recovery: null,
+    }
+    chatHistory.value.push({ role: 'error', content: chatUiStatus.value.message })
   } finally {
     sandboxBusy.value = false
+    if (!shouldPollHistory) {
+      stopChatHistoryPolling()
+    }
   }
 }
 
+async function confirmSubmitGate() {
+  if (!submitGateMode.value) return
+  if (!submitPromptDraft.value.trim()) return
 
+  const mode = submitGateMode.value
+  const prompt = submitPromptDraft.value
+  const submissionContext: Record<string, unknown> = {
+    selectedSourceIds: submitSelectedSourceIds.value,
+    selectedContextPoolIds: submitSelectedContextPoolIds.value,
+  }
+  if (submitConfirmedSummary.value.trim()) {
+    submissionContext.confirmedContextSummary = submitConfirmedSummary.value
+  }
 
+  closeSubmitGate()
+  if (mode === 'reasoning') {
+    await performReasoningSubmission(prompt, submissionContext)
+    return
+  }
+  await performChatSubmission(prompt, submissionContext)
+}
 
+function stopChatHistoryPolling() {
+  if (!chatHistoryPollTimer) return
+  clearTimeout(chatHistoryPollTimer)
+  chatHistoryPollTimer = null
+}
 
+function stopReasoningPolling() {
+  if (!reasoningPollTimer) return
+  clearTimeout(reasoningPollTimer)
+  reasoningPollTimer = null
+}
+
+function scheduleChatHistoryPolling(delayMs = 4000) {
+  stopChatHistoryPolling()
+  chatHistoryPollTimer = setTimeout(async () => {
+    const payload = await loadChatHistory()
+    if (payload?.activeRequest) {
+      if (payload.activeRequest.contextSources) {
+        chatContextInfo.value = payload.activeRequest.contextSources
+      }
+      if (chatUiStatus.value.kind === 'timeout' || chatUiStatus.value.kind === 'pending') {
+        chatUiStatus.value = {
+          kind: chatUiStatus.value.kind,
+          message: chatUiStatus.value.message,
+          activeRequest: payload.activeRequest,
+          recovery: null,
+        }
+      }
+      scheduleChatHistoryPolling(delayMs)
+      return
+    }
+
+    if (chatUiStatus.value.kind === 'timeout' || chatUiStatus.value.kind === 'pending') {
+      chatUiStatus.value = {
+        kind: 'idle',
+        message: '',
+        activeRequest: null,
+        recovery: null,
+      }
+    }
+  }, delayMs)
+}
+
+async function loadReasoningSession(sessionId: string) {
+  try {
+    const response = await fetch(`/api/control/agents/hermes-manager/reasoning-sessions/${sessionId}`)
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.session) {
+      throw new Error(payload?.error || `reasoning_session_http_${response.status}`)
+    }
+    activeReasoningSession.value = payload.session
+    return payload.session as ReasoningSession
+  } catch (caught) {
+    reasoningError.value = caught instanceof Error ? caught.message : String(caught)
+    return null
+  }
+}
+
+function scheduleReasoningPolling(delayMs = 1500) {
+  stopReasoningPolling()
+  const sessionId = activeReasoningSession.value?.sessionId
+  if (!sessionId) return
+
+  reasoningPollTimer = setTimeout(async () => {
+    const session = await loadReasoningSession(sessionId)
+    if (!session) {
+      return
+    }
+
+    if (session.status === 'planning' || session.status === 'running') {
+      scheduleReasoningPolling(delayMs)
+      return
+    }
+
+    reasoningBusy.value = false
+    if (session.status === 'waiting_review') {
+      return
+    }
+    await loadChatHistory()
+  }, delayMs)
+}
+
+async function sendObservableReasoningChat() {
+  await openSubmitGate('reasoning')
+}
+
+async function submitReasoningReview(decision: 'approve' | 'reject') {
+  const sessionId = activeReasoningSession.value?.sessionId
+  if (!sessionId || !reasoningPendingReview.value) return
+
+  reasoningReviewBusy.value = true
+  reasoningError.value = ''
+
+  try {
+    const response = await fetch(`/api/control/agents/hermes-manager/reasoning-sessions/${sessionId}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        decision,
+        correctionPrompt: reasoningReviewDraft.value.trim()
+      })
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.session) {
+      throw new Error(payload?.details || payload?.error || `reasoning_review_http_${response.status}`)
+    }
+
+    activeReasoningSession.value = payload.session
+    reasoningReviewDraft.value = ''
+    if (payload.session.status === 'planning' || payload.session.status === 'running') {
+      reasoningBusy.value = true
+      scheduleReasoningPolling(500)
+    } else {
+      reasoningBusy.value = false
+      stopReasoningPolling()
+    }
+  } catch (caught) {
+    reasoningError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    reasoningReviewBusy.value = false
+  }
+}
+
+async function sendChat() {
+  if (!sandboxPrompt.value.trim()) return
+  
+  const userText = sandboxPrompt.value
+    await openSubmitGate('chat')
+}
+
+async function loadChatHistory() {
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/chat-history')
+    if (response.ok) {
+      const payload = await response.json()
+      if (payload.ok && Array.isArray(payload.history)) {
+        chatHistory.value = payload.history.map((m: any) => ({ 
+          role: m.role, 
+          content: m.content, 
+          tokens: m.tokens 
+        }))
+        chatMemoryFile.value = payload.file || null
+        if (payload.activeRequest?.contextSources) {
+          chatContextInfo.value = payload.activeRequest.contextSources
+        }
+        return payload
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load chat history:', e)
+  }
+  return null
+}
+
+async function openChatMemoryEditor() {
+  chatMemoryEditorOpen.value = true
+  await loadChatMemoryFile()
+}
+
+async function openChatHistoryFileInEditor() {
+  chatMemoryOpenBusy.value = true
+  chatMemoryError.value = ''
+  chatMemoryOpenMessage.value = ''
+
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/chat-history-file/open', {
+      method: 'POST'
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `open_chat_history_http_${response.status}`)
+    }
+
+    chatMemoryFile.value = payload.file || chatMemoryFile.value
+    chatMemoryOpenMessage.value = `已在编辑器打开：${payload.openedWith || 'editor'}`
+  } catch (e) {
+    chatMemoryError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    chatMemoryOpenBusy.value = false
+  }
+}
+
+async function loadChatMemoryFile() {
+  chatMemoryBusy.value = true
+  chatMemoryError.value = ''
+  chatMemorySaveMessage.value = ''
+  chatMemoryOpenMessage.value = ''
+
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/chat-history-file')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.file) {
+      throw new Error(payload?.error || `chat_history_file_http_${response.status}`)
+    }
+
+    chatMemoryFile.value = {
+      filePath: payload.file.filePath,
+      exists: payload.file.exists,
+      sizeChars: payload.file.sizeChars,
+      updatedAt: payload.file.updatedAt,
+    }
+    chatMemoryDraft.value = payload.file.content || '[]'
+    chatMemoryLoadedContent.value = chatMemoryDraft.value
+  } catch (e) {
+    chatMemoryError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    chatMemoryBusy.value = false
+  }
+}
+
+async function saveChatMemoryFile() {
+  chatMemorySaveBusy.value = true
+  chatMemoryError.value = ''
+  chatMemorySaveMessage.value = ''
+  chatMemoryOpenMessage.value = ''
+
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/chat-history-file', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: chatMemoryDraft.value })
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.file) {
+      throw new Error(payload?.error || `save_chat_history_http_${response.status}`)
+    }
+
+    chatMemoryFile.value = {
+      filePath: payload.file.filePath,
+      exists: payload.file.exists,
+      sizeChars: payload.file.sizeChars,
+      updatedAt: payload.file.updatedAt,
+    }
+    chatMemoryDraft.value = payload.file.content || '[]'
+    chatMemoryLoadedContent.value = chatMemoryDraft.value
+    chatHistory.value = Array.isArray(payload.history)
+      ? payload.history.map((m: any) => ({ role: m.role, content: m.content, tokens: m.tokens }))
+      : chatHistory.value
+    chatMemorySaveMessage.value = '聊天记录文件已保存。'
+  } catch (e) {
+    chatMemoryError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    chatMemorySaveBusy.value = false
+  }
+}
 
 async function loadHermesSelfCheck() {
   connecting.value = true
@@ -555,45 +2045,70 @@ async function loadHermesSelfCheck() {
 
 async function toggleHermesRuntime(side: 'left' | 'right') {
   if (!selectedAgent.value || selectedAgent.value.definition.runtime !== 'hermes') return
+  if (side === 'right') return
+
+  if (!leftBrainRunning.value && !leftBrainConfigSaved.value) {
+    error.value = leftBrainBlockedReason.value || '请先保存左脑配置，保存生效后再启动 Hermes。'
+    return
+  }
+  if (!leftBrainRunning.value && !leftSelectedModelLoaded.value) {
+    error.value = leftBrainBlockedReason.value || '请先成功加载并探测左脑模型后再启动 Hermes。'
+    return
+  }
+  if (!leftBrainRunning.value && !effectivePreflightReady.value) {
+    error.value = leftBrainBlockedReason.value || '请先完成左脑自检，再启动 Hermes。'
+    return
+  }
 
   runtimeBusy.value = true
   error.value = ''
 
   try {
-    const brain = side === 'left' ? leftBrain.value : rightBrain.value
-    const isRunningNow = side === 'left' ? leftBrainRunning.value : rightBrainRunning.value
+    const isRunningNow = leftBrainRunning.value
     const action = isRunningNow ? 'stop' : 'start'
-    
-    // Check if we are stopping the last brain
-    const willStopBoth = action === 'stop' && (
-      (side === 'left' && !rightBrainRunning.value) || 
-      (side === 'right' && !leftBrainRunning.value)
-    );
+
+    const willStopBoth = action === 'stop'
 
     const payloadBody: any = { action, brainSide: side, stopAll: willStopBoth }
     if (action === 'start') {
-       payloadBody.config = { ...brain, side }
+       payloadBody.config = {
+         side,
+         ...buildLeftBrainConfigPayload()
+       }
     }
     const response = await fetch('/api/control/agents/hermes-manager/runtime-action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payloadBody)
     })
-    
-    if (response.ok) {
-       const payload = await response.json()
-       runtimeState.value = payload.runtimeStatus
-       if (side === 'left') leftBrainRunning.value = !isRunningNow
-       else rightBrainRunning.value = !isRunningNow
+
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+       if (payload?.preflight) preflightResult.value = payload.preflight
+       if (payload?.readiness) configReadiness.value = payload.readiness
+       if (payload?.state) applyControlState(payload.state)
+       const readinessMessage = payload?.readiness?.items
+         ?.filter((item: ConfigReadinessItem) => item.status !== 'ok')
+         .map((item: ConfigReadinessItem) => `${item.label}: ${item.detail}`)
+         .join(' | ')
+       throw new Error(readinessMessage || payload?.error || `runtime_action_http_${response.status}`)
     }
+
+    if (payload?.ok) {
+       runtimeState.value = payload.runtimeStatus
+     applyControlState(payload.state || null)
+     leftBrainRunning.value = payload.runtimeStatus?.state === 'running'
+    }
+    await fetchLogs()
   } catch (caught) {
     error.value = String(caught)
+    await fetchLogs()
   } finally {
     runtimeBusy.value = false
   }
 }
 
-async function toggleGlobalRuntime() {
+async function executeGlobalRuntimeAction(action: 'start' | 'pause' | 'resume' | 'all-restart') {
   if (!selectedAgent.value || selectedAgent.value.definition.runtime !== 'hermes' || !runtimeState.value) return
 
   if (runtimeState.value.state === 'uninstalled') {
@@ -605,25 +2120,57 @@ async function toggleGlobalRuntime() {
   error.value = ''
 
   try {
-    const action = runtimePrimaryAction.value
-    if (!action) {
-      error.value = 'runtime_action_unavailable'
+    if ((action === 'start' || action === 'resume' || action === 'all-restart') && !leftBrainConfigSaved.value) {
+      error.value = leftBrainBlockedReason.value || '请先保存左脑配置，保存生效后再启动 Hermes。'
+      return
+    }
+    if ((action === 'start' || action === 'resume' || action === 'all-restart') && !leftSelectedModelLoaded.value) {
+      error.value = leftBrainBlockedReason.value || '请先成功加载并探测左脑模型后再启动 Hermes。'
+      return
+    }
+    if ((action === 'start' || action === 'resume' || action === 'all-restart') && !effectivePreflightReady.value) {
+      error.value = leftBrainBlockedReason.value || '请先完成左脑自检，再启动 Hermes。'
       return
     }
     
     const payloadBody: any = { action, brainSide: 'left', stopAll: true }
-    if (action === 'start' || action === 'resume') {
-       payloadBody.config = { ...leftBrain.value, side: 'left' }
+    if (action === 'start' || action === 'resume' || action === 'all-restart') {
+       payloadBody.config = {
+         side: 'left',
+         ...buildLeftBrainConfigPayload()
+       }
     }
     const response = await fetch('/api/control/agents/hermes-manager/runtime-action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payloadBody)
     })
-    
-    if (response.ok) {
-       const payload = await response.json()
+
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+       if (payload?.preflight) preflightResult.value = payload.preflight
+       if (payload?.readiness) configReadiness.value = payload.readiness
+       if (payload?.state) applyControlState(payload.state)
+       const readinessMessage = payload?.readiness?.items
+         ?.filter((item: ConfigReadinessItem) => item.status !== 'ok')
+         .map((item: ConfigReadinessItem) => `${item.label}: ${item.detail}`)
+         .join(' | ')
+       throw new Error(readinessMessage || payload?.error || `runtime_action_http_${response.status}`)
+    }
+
+     if (action === 'all-restart' && payload?.ok && payload?.restartingControl) {
+       runtimeState.value = payload.runtimeStatus || runtimeState.value
+       applyControlState(payload.state || null)
+       error.value = 'Control 与 Hermes 正在整体重启，页面会短暂断开并自动恢复。'
+       globalThis.setTimeout(() => {
+        window.location.reload()
+       }, 4000)
+       return
+     }
+
+    if (payload?.ok) {
        runtimeState.value = payload.runtimeStatus
+     applyControlState(payload.state || null)
        if (action === 'start' || action === 'resume') {
            leftBrainRunning.value = true
            await loadHermesSelfCheck()
@@ -633,11 +2180,26 @@ async function toggleGlobalRuntime() {
            selfCheck.value = null
        }
     }
+    await fetchLogs()
   } catch (caught) {
     error.value = String(caught)
+    await fetchLogs()
   } finally {
     runtimeBusy.value = false
   }
+}
+
+async function toggleGlobalRuntime() {
+  const action = runtimePrimaryAction.value
+  if (!action) {
+    error.value = 'runtime_action_unavailable'
+    return
+  }
+  await executeGlobalRuntimeAction(action)
+}
+
+async function restartGlobalRuntime() {
+  await executeGlobalRuntimeAction('all-restart')
 }
 
 </script>
@@ -649,10 +2211,9 @@ async function toggleGlobalRuntime() {
       
       <div class="agent-controls">
         <div class="agent-selector-bar">
-          <label for="agent-select">智能体管理器：</label>
+          <label for="agent-select">全局管理器：</label>
           <div class="select-wrapper">
-            <select id="agent-select" v-model="selectedAgentId" @change="connectSelectedAgent">
-              <option value="">请选择要挂载的智能体</option>
+            <select id="agent-select" v-model="selectedAgentId" @change="connectSelectedAgent" :disabled="agentSelectionLocked">
               <option
                 v-for="agent in agentOptions"
                 :key="agent.definition.id"
@@ -662,6 +2223,9 @@ async function toggleGlobalRuntime() {
               </option>
             </select>
           </div>
+          <div style="font-size: 12px; color: #9fb0c3; margin-top: 4px;">
+            {{ agentSelectionLocked ? '所有标签页共享同一个 Hermes 全局管理器状态。' : '当前允许手动切换管理器。' }}
+          </div>
         </div>
         
         <!-- 仅当选择 Hermes 时显示状态与控制按钮，在一排紧凑显示 -->
@@ -670,6 +2234,15 @@ async function toggleGlobalRuntime() {
             <span class="status-dot"></span>
             {{ runtimeState?.label || '检测中...' }}
           </div>
+
+          <button
+            v-if="canAllRestartRuntime"
+            class="action-btn outline"
+            :disabled="runtimeBusy || runtimeState?.state === 'uninstalled'"
+            @click="restartGlobalRuntime"
+          >
+            {{ runtimeBusy ? '处理中...' : '重启引擎 runtime' }}
+          </button>
           
           <button
             class="action-btn"
@@ -679,6 +2252,12 @@ async function toggleGlobalRuntime() {
             {{ runtimeBusy ? '处理中...' : runtimeActionLabel }}
           </button>
 
+        </div>
+        <div
+          v-if="selectedAgent?.definition.runtime === 'hermes'"
+          style="margin-top: 6px; font-size: 12px; line-height: 1.5; color: #8fa0b2;"
+        >
+          `重启引擎 runtime` 只会重启 Hermes runtime，不会重载 control-server 代码；如果刚修改了控制台后端流程，请执行 `sh restart_control.sh`。
         </div>
         
         <div class="runtime-controls" v-else-if="selectedAgent">
@@ -707,55 +2286,100 @@ async function toggleGlobalRuntime() {
         <div class="message-banner tip" v-else-if="runtimeState?.state === 'stopped'">
           <span>💤</span> 智能体已休眠：Hermes 引擎已就绪，但受控服务未启动。请点击右上方的「启动引擎」按钮进行唤醒。
         </div>
+        <div class="message-banner tip" v-if="selectedAgent?.definition.runtime === 'hermes' && runtimePrimaryAction && (runtimePrimaryAction === 'start' || runtimePrimaryAction === 'resume') && leftBrainBlockedReason">
+          <span>ℹ️</span> 当前无法启动 Hermes：{{ leftBrainBlockedReason }}
+        </div>
 
         <div class="feature-panels" v-if="selectedAgent?.definition.runtime === 'hermes'">
           
 
-        <details class="panel" open style="margin-bottom: 16px; border: 1px solid #444;">
-          <summary class="panel-header" style="background: rgba(100,100,100,0.2)">
-            <div class="panel-title">📜 后台日志与决策轨 (Real-time Logs & Trajectory)</div>
+        <details class="panel" open style="margin-bottom: 8px; border: 1px solid #444;">
+          <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; background: rgba(100,100,100,0.2); padding: 4px 8px; min-height: 28px;">
+            <div class="panel-title" style="font-size: 13px;">📜 后台日志与决策轨 (Real-time Logs & Trajectory)</div>
+            <div style="display: flex; justify-content: flex-end;">
+              <button class="action-btn outline" @click="clearVisibleLogs" style="padding: 2px 10px; font-size: 12px;">清空窗口</button>
+            </div>
           </summary>
-          <div class="panel-content">
-            <textarea readonly v-model="liveLogs" style="width:100%; height: 150px; background: #111; color: #00ff00; font-family: monospace; font-size: 11px; padding: 8px; border: 1px solid #333; resize: vertical; outline: none;" placeholder="等待日志回放..."></textarea>
+          <div class="panel-content" style="padding: 0;">
+            <div ref="logContainer" style="width:100%; height: 350px; background: #111; font-family: monospace; font-size: 11px; padding: 4px; border-top: 1px solid #333; resize: vertical; outline: none; overflow: auto; white-space: pre-wrap; word-break: break-all;">
+              <div v-if="visibleLogLines.length === 0" style="color: #7f8c8d;">等待日志回放...</div>
+              <div v-for="(line, index) in visibleLogLines" :key="`${index}-${line}`" :style="{ color: getLogLineColor(line), marginBottom: '1px', lineHeight: '1.2' }">{{ line }}</div>
+            </div>
           </div>
         </details>
 
-        <div class="dual-brain-container" style="display: flex; gap: 16px; margin-bottom: 16px; width: 100%;">
-  <!-- Left Brain -->
-  <details class="panel" open style="flex: 1; border: 1px solid #444;">
-    <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,200,255,0.1)">
+        
+<details class="panel" open style="margin-bottom: 16px; border: 1px solid #444;">
+  <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,200,255,0.1)">
+    <div style="display: flex; flex: 1; min-width: 0; align-items: center; gap: 12px; flex-wrap: wrap;">
+      <div class="panel-title" style="flex: 0 0 auto;">🧠 引擎配置 (Brain Configuration)</div>
+      <div style="display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 12px; color: #cfe8ef; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-wrap: wrap;">
+        <span>运行模型: {{ leftBrainSummary.modelLabel }}</span>
+        <span :style="{ color: leftBrainConfigSaved ? '#9de2b0' : '#ffb3a7' }">{{ leftBrainConfigSaved ? '已保存左脑配置' : '未保存左脑配置' }}</span>
+        <span :style="{ color: leftSelectedModelLoaded ? '#9de2b0' : '#ffb3a7' }">{{ leftBrainSummary.statusLabel }}</span>
+      </div>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="action-btn outline" :disabled="preflightBusy || memoryConfigBusy || configSaving" @click.stop="runLeftBrainPreflight" style="padding: 2px 10px; font-size: 12px;">
+        {{ preflightBusy ? '自检中...' : '🔎 自检' }}
+      </button>
+      <button class="action-btn" :disabled="runtimeBusy || memoryConfigBusy || configSaving" @click.stop="toggleHermesRuntime('left')" style="padding: 2px 10px; font-size: 12px;">
+        {{ runtimeBusy ? '处理中...' : (leftBrainRunning ? '🔴 停止左脑' : '🚀 启动左脑') }}
+      </button>
+    </div>
+  </summary>
+  <div class="panel-content" style="padding: 0;">
+    <div class="dual-brain-container" style="display: flex; flex-wrap: wrap; gap: 16px; width: 100%; padding: 12px;">
       
-  <div class="panel-title" style="flex: 1;">🧠 左脑配置 (Left Brain)</div>
-  <button class="action-btn" :disabled="runtimeBusy || startBlockedByModelInspection" @click="toggleHermesRuntime('left')" style="padding: 2px 10px; font-size: 12px; margin-left: auto;">
-     {{ runtimeBusy ? '处理中...' : (leftBrainRunning ? '🔴 停止左脑' : '🚀 启动左脑') }}
-  </button>
-
-    </summary>
-    <div class="panel-content">
-      <div style="display: flex; gap: 16px; align-items: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-        <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+      <!-- Left Brain Content -->
+      <div style="flex: 1; min-width: 300px; border: 1px solid #444; border-radius: 6px; padding: 12px; background: rgba(0,0,0,0.1);">
+        <h3 style="margin-top: 0; margin-bottom: 12px; color: #cfe8ef; font-size: 14px;">左脑 (Left Brain)</h3>
+        
+      <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <div style="flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 4px;">
           <label>推理平台</label>
           <select v-model="leftBrain.provider" @change="handleProviderChange('left')">
-            <option value="custom/local">OMLX (Local)</option>
+            <option value="omlx">OMLX (Local)</option>
             <option value="ollama">Ollama</option>
           </select>
         </div>
-        <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+        <div style="flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 4px;">
           <label>服务地址</label>
           <input type="text" v-model="leftBrain.baseUrl" />
         </div>
       </div>
       <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
         <label>运行模型</label>
-        <div style="display: flex; gap: 8px;">
-          <select v-model="leftBrain.model" @change="handleModelChange('left')" style="flex: 1;">
+        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+          <select v-model="leftBrain.model" @change="handleModelChange('left')" style="flex: 1; min-width: 160px;">
+            <option value="">请选择模型</option>
             <option v-for="mod in availableLeftModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option>
           </select>
-          
-          <button @click="fetchLocalModels('left')" :disabled="fetchingLeft">{{ fetchingLeft ? '...' : '刷新' }}</button>
-          <button @click="actOnModel('left', 'load')" style="margin-left:8px; border:1px solid #4caf50; background:transparent; color:#4caf50;">➕加载</button>
-          <button @click="actOnModel('left', 'unload')" style="border:1px solid #f44336; background:transparent; color:#f44336;">➖卸载</button>
-
+          <div style="display: flex; gap: 8px;">
+            <button @click="fetchLocalModels('left')" :disabled="fetchingLeft">{{ fetchingLeft ? '...' : '刷新' }}</button>
+            <button
+              @click="actOnModel('left', 'load')"
+              :disabled="!leftBrain.model || fetchingLeft || inspectingLeft || leftSelectedModelLoaded"
+              :style="{
+                border: '1px solid #4caf50',
+                background: 'transparent',
+                color: !leftBrain.model || fetchingLeft || inspectingLeft || leftSelectedModelLoaded ? '#5d7e63' : '#4caf50',
+                opacity: !leftBrain.model || fetchingLeft || inspectingLeft || leftSelectedModelLoaded ? '0.45' : '1',
+                cursor: !leftBrain.model || fetchingLeft || inspectingLeft || leftSelectedModelLoaded ? 'not-allowed' : 'pointer'
+              }"
+            >➕加载</button>
+            <button
+              @click="actOnModel('left', 'unload')"
+              :disabled="!leftBrain.model || fetchingLeft || inspectingLeft || !leftSelectedModelLoaded"
+              :style="{
+                border: '1px solid #f44336',
+                background: 'transparent',
+                color: !leftBrain.model || fetchingLeft || inspectingLeft || !leftSelectedModelLoaded ? '#8d6767' : '#f44336',
+                opacity: !leftBrain.model || fetchingLeft || inspectingLeft || !leftSelectedModelLoaded ? '0.45' : '1',
+                cursor: !leftBrain.model || fetchingLeft || inspectingLeft || !leftSelectedModelLoaded ? 'not-allowed' : 'pointer'
+              }"
+            >➖卸载</button>
+          </div>
         </div>
       </div>
       <div v-if="leftInspection" style="margin-top: 12px; font-size: 12px; color: #aaa;">
@@ -763,97 +2387,91 @@ async function toggleGlobalRuntime() {
          | 窗口: {{ leftInspection.contextLength || '-' }}
          | 探测Tokens: {{ leftInspection.usage?.totalTokens || '-' }}
       </div>
-    </div>
-  </details>
+      <div v-if="leftBrainBlockedReason && !leftBrainRunning" style="margin-top: 12px; font-size: 12px; color: #ffb3a7;">{{ leftBrainBlockedReason }}</div>
 
-  <!-- Right Brain -->
-  <details class="panel" open style="flex: 1; border: 1px solid #444;">
-    <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,200,0,0.1)">
-      
-  <div class="panel-title" style="flex: 1;">🧠 右脑配置 (Right Brain)</div>
-  <button class="action-btn" :disabled="runtimeBusy || startBlockedByModelInspection" @click="toggleHermesRuntime('right')" style="padding: 2px 10px; font-size: 12px; margin-left: auto;">
-     {{ runtimeBusy ? '处理中...' : (rightBrainRunning ? '🔴 停止右脑' : '🚀 启动右脑') }}
-  </button>
-
-    </summary>
-    <div class="panel-content">
-      <div style="display: flex; gap: 16px; align-items: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-        <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
-          <label>推理平台</label>
-          <select v-model="rightBrain.provider" @change="handleProviderChange('right')">
-            <option value="custom/local">OMLX (Local)</option>
-            <option value="ollama">Ollama</option>
-          </select>
-        </div>
-        <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
-          <label>服务地址</label>
-          <input type="text" v-model="rightBrain.baseUrl" />
-        </div>
-      </div>
+      <template v-if="memoryConfig && skillConfig">
       <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-        <label>运行模型</label>
-        <div style="display: flex; gap: 8px;">
-          <select v-model="rightBrain.model" @change="handleModelChange('right')" style="flex: 1;">
-            <option v-for="mod in availableRightModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option>
-          </select>
-          
-          <button @click="fetchLocalModels('right')" :disabled="fetchingRight">{{ fetchingRight ? '...' : '刷新' }}</button>
-          <button @click="actOnModel('right', 'load')" style="margin-left:8px; border:1px solid #4caf50; background:transparent; color:#4caf50;">➕加载</button>
-          <button @click="actOnModel('right', 'unload')" style="border:1px solid #f44336; background:transparent; color:#f44336;">➖卸载</button>
-
+        <label>短期记忆最小窗口 Token</label>
+        <input type="number" min="65536" step="1024" v-model="shortTermMinContextTokens" />
+        <div style="font-size: 12px; line-height: 1.5; color: #aebdca;">
+          {{ shortTermMemoryHint }}
         </div>
       </div>
-      <div v-if="rightInspection" style="margin-top: 12px; font-size: 12px; color: #aaa;">
-         状态: <span :style="{color: rightInspection.accessible ? '#7CFC9A' : '#FF8A80'}">{{ rightInspection.accessible ? '就绪' : '异常' }}</span>
-         | 窗口: {{ rightInspection.contextLength || '-' }}
-         | 探测Tokens: {{ rightInspection.usage?.totalTokens || '-' }}
-      </div>
-    </div>
-  </details>
-</div>
 
-<details class="panel" open style="margin-bottom: 16px; border: 1px solid #444;">
-  <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(140,255,0,0.08)">
-    <div class="panel-title">🧩 记忆配置 (Agent Memory)</div>
-    <button class="action-btn" @click.stop="loadEngineConfig" :disabled="memoryConfigBusy" style="padding: 2px 10px; font-size: 12px; margin-left: auto;">
-      {{ memoryConfigBusy ? '读取中...' : '刷新记忆' }}
-    </button>
-  </summary>
-  <div class="panel-content">
-    <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;">
-      <div style="flex: 1; min-width: 220px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-        <div style="font-size: 12px; color: #aaa; margin-bottom: 6px;">配置摘要</div>
-        <div style="font-size: 24px; font-weight: 700; color: #8cff00;">{{ memoryConfig?.agentCount ?? 0 }}</div>
-        <div style="font-size: 12px; color: #aaa;">已读取 Agent 数量</div>
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <div style="font-size: 13px; color: #ddd; font-weight: 600;">长期记忆文件</div>
+        <label>Agent 定义文件</label>
+        <input type="text" v-model="memoryConfig.agentDefinitionFile" />
+        <label>用户记忆文件</label>
+        <input type="text" v-model="memoryConfig.userFile" />
+        <label>项目记忆文件</label>
+        <input type="text" v-model="memoryConfig.memoryFile" />
+        <label>状态文件</label>
+        <input type="text" v-model="memoryConfig.statusFile" />
+        <label>任务队列文件</label>
+        <input type="text" v-model="memoryConfig.taskQueueFile" />
+        <label>决策文件</label>
+        <input type="text" v-model="memoryConfig.decisionsFile" />
+        <label>日志目录</label>
+        <input type="text" v-model="memoryConfig.dailyLogDir" />
       </div>
-      <div style="flex: 2; min-width: 320px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-        <div style="font-size: 12px; color: #aaa; margin-bottom: 6px;">Hermes 读取源</div>
-        <div v-if="memoryConfig?.sourceFiles?.length" style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #ddd;">
-          <div v-for="sourceFile in memoryConfig.sourceFiles" :key="sourceFile" style="font-family: monospace; word-break: break-all;">{{ sourceFile }}</div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+        <div style="font-size: 13px; color: #ddd; font-weight: 600;">技能库配置</div>
+        <label>技能根目录</label>
+        <input type="text" v-model="skillConfig.skillRoot" />
+        <label>技能文件清单（每行一个 SKILL.md）</label>
+        <textarea v-model="skillFilesText" style="min-height: 96px; resize: vertical;"></textarea>
+        <div style="font-size: 12px; color: #888;">当前可用技能文件：{{ skillConfig?.skillCount ?? 0 }}</div>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px;">
+        <button class="action-btn" @click="saveLeftBrainConfig" :disabled="configSaving || memoryConfigBusy">
+          {{ saveLeftBrainLabel }}
+        </button>
+        <button class="action-btn outline" @click="loadEngineConfig" :disabled="memoryConfigBusy || configSaving">{{ memoryConfigBusy ? '读取中...' : '刷新配置' }}</button>
+        <span v-if="configSaveMessage" style="font-size: 12px; color: #7CFC9A;">{{ configSaveMessage }}</span>
+      </div>
+      </template>
+      <div v-else style="margin-top: 12px; font-size: 12px; color: #888;">左脑启动配置读取中。</div>
+      <div v-if="memoryConfigError" class="text-error" style="margin-top: 8px;">{{ memoryConfigError }}</div>
+      <div v-if="configSaveError" class="text-error" style="margin-top: 8px;">{{ configSaveError }}</div>
+      </div>
+
+      <!-- Right Brain Content -->
+      <div style="flex: 1; min-width: 300px; border: 1px solid #444; border-radius: 6px; padding: 12px; background: rgba(255,200,0,0.05); opacity: 0.6;">
+        <h3 style="margin-top: 0; margin-bottom: 12px; color: #f5d76e; font-size: 14px;">右脑 (Right Brain) <span style="font-size: 12px; color: #aaa; margin-left: 8px;">[未开放]</span></h3>
+        <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+          <div style="flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 4px;">
+            <label>推理平台</label>
+            <select v-model="rightBrain.provider" disabled>
+              <option value="omlx">OMLX (Local)</option>
+              <option value="ollama">Ollama</option>
+            </select>
+          </div>
+          <div style="flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 4px;">
+            <label>服务地址</label>
+            <input type="text" v-model="rightBrain.baseUrl" disabled />
+          </div>
         </div>
-        <div v-else style="font-size: 12px; color: #888;">未检测到 agent 配置文件。</div>
-      </div>
-    </div>
-
-    <div v-if="memoryConfigError" class="text-error">{{ memoryConfigError }}</div>
-
-    <div v-if="memoryConfig?.agents?.length" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;">
-      <div v-for="agent in memoryConfig.agents" :key="agent.agentId || agent.name" style="padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
-        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px;">
-          <div style="font-size: 16px; font-weight: 600;">{{ agent.name }}</div>
-          <div style="font-size: 11px; color: #8cff00; font-family: monospace;">{{ agent.agentId || 'unknown' }}</div>
+        <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+          <label>运行模型</label>
+          <div style="display: flex; gap: 8px;">
+            <select v-model="rightBrain.model" style="flex: 1;" disabled>
+              <option v-for="mod in availableRightModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option>
+            </select>
+            <button disabled>未开放</button>
+          </div>
         </div>
-        <div style="font-size: 12px; color: #aaa; margin-bottom: 4px;">角色</div>
-        <div style="margin-bottom: 10px; color: #f2f2f2;">{{ agent.role }}</div>
-        <div style="font-size: 12px; color: #aaa; margin-bottom: 4px;">性格</div>
-        <div style="margin-bottom: 10px; color: #f2f2f2;">{{ agent.personality }}</div>
-        <div style="font-size: 12px; color: #aaa; margin-bottom: 4px;">工作职责</div>
-        <ul style="margin: 0; padding-left: 18px; color: #ddd; display: flex; flex-direction: column; gap: 4px;">
-          <li v-for="responsibility in agent.responsibilities" :key="responsibility">{{ responsibility }}</li>
-        </ul>
+        <div style="margin-top: 12px; font-size: 12px; color: #bbb;">右脑当前保持置灰，只作为后续扩展占位，不参与 HermesManager 启动。</div>
+        <div v-if="rightInspection" style="margin-top: 12px; font-size: 12px; color: #aaa;">
+           状态: <span :style="{color: rightInspection.accessible ? '#7CFC9A' : '#FF8A80'}">{{ rightInspection.accessible ? '就绪' : '异常' }}</span>
+           | 窗口: {{ rightInspection.contextLength || '-' }}
+           | 探测Tokens: {{ rightInspection.usage?.totalTokens || '-' }}
+        </div>
       </div>
+    
     </div>
-    <div v-else-if="!memoryConfigBusy && !memoryConfigError" style="font-size: 12px; color: #888;">暂无可展示的 Agent 记忆配置。</div>
   </div>
 </details>
 
@@ -861,86 +2479,381 @@ async function toggleGlobalRuntime() {
   <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between;">
     <div class="panel-title">💬 Hermes 直连对话 (Chat & Token Monitor)</div>
   </summary>
-  <div class="panel-content">
-    <div class="chat-container" style="display: flex; flex-direction: column; gap: 12px; max-height: 400px; overflow-y: auto; padding: 12px; background: rgba(0,0,0,0.3); border-radius: 6px; margin-bottom: 12px;">
-       <div v-for="(msg, i) in chatHistory" :key="i" :style="{
-         padding: '8px 12px',
-         borderRadius: '6px',
-         alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-         background: msg.role === 'user' ? '#1976D2' : (msg.role === 'error' ? '#D32F2F' : '#333'),
-         maxWidth: '80%'
-       }">
-          <div style="font-weight: bold; font-size: 12px; opacity: 0.8; margin-bottom: 4px;">{{ msg.role.toUpperCase() }}</div>
-          <div>{{ msg.content }}</div>
-          <div v-if="msg.tokens" style="font-size: 11px; color: #8CFF00; margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px;">
+  <div class="panel-content chat-panel-shell">
+    <div v-if="chatUiStatus.kind !== 'idle'" class="message-banner" :class="chatUiStatus.kind === 'error' ? 'error' : 'tip'" style="margin-bottom: 12px; font-size: 12px; line-height: 1.5;">
+      <div>
+        <strong>
+          {{ chatUiStatus.kind === 'pending' ? '聊天请求进行中' : chatUiStatus.kind === 'busy' ? '聊天请求排队保护' : chatUiStatus.kind === 'recovering' ? '聊天超时自动恢复' : chatUiStatus.kind === 'timeout' ? '聊天等待超时，后台继续处理' : '聊天请求异常' }}
+        </strong>
+      </div>
+      <div style="margin-top: 4px; color: #c9d4de;">{{ chatUiStatus.message }}</div>
+      <div v-if="chatUiStatus.activeRequest" style="margin-top: 4px; color: #aebdca;">
+        活动请求: 已运行 {{ chatActiveRequestElapsedSeconds }} 秒 · 提示长度 {{ chatUiStatus.activeRequest.promptChars }} 字符
+      </div>
+      <div v-if="chatUiStatus.activeRequest?.outboundRequest" style="margin-top: 4px; color: #aebdca;">
+        已发送给 OMLX: 共 {{ chatUiStatus.activeRequest.outboundRequest.totalMessages }} 条消息，其中 system {{ chatUiStatus.activeRequest.outboundRequest.systemMessageCount }} 条，历史重放 {{ chatUiStatus.activeRequest.outboundRequest.replayedMessageCount }} 条，user {{ chatUiStatus.activeRequest.outboundRequest.userMessageCount }} 条
+      </div>
+      <div v-if="chatUiStatus.recovery?.attempted && chatUiStatus.recovery.durationMs != null" style="margin-top: 4px; color: #aebdca;">
+        自动恢复耗时 {{ Math.round(chatUiStatus.recovery.durationMs / 1000) }} 秒 · {{ chatUiStatus.recovery.ok ? '恢复完成，可重新发送' : '恢复失败，请检查运行时日志' }}
+      </div>
+    </div>
+    <div ref="chatScrollContainer" class="chat-thread">
+      <div v-if="chatHistory.length === 0" class="chat-empty-state">
+        <div class="chat-empty-title">Hermes 对话已就绪</div>
+        <div class="chat-empty-copy">输入消息后使用 `Cmd/Ctrl + Enter` 发送，`Enter` 可直接换行。单次最长等待 {{ chatRuntimeTimeoutSeconds || 500 }} 秒。</div>
+      </div>
+      <div v-for="(msg, i) in chatHistory" :key="i" class="chat-row" :data-role="msg.role">
+        <div class="chat-bubble" :data-role="msg.role">
+          <div class="chat-role">{{ msg.role.toUpperCase() }}</div>
+          <div class="chat-message-text">{{ msg.content }}</div>
+          <div v-if="msg.tokens" class="chat-token-usage">
             Token 消耗: 提示词 {{ msg.tokens.prompt_tokens }} | 输出 {{ msg.tokens.completion_tokens }} | 总计 {{ msg.tokens.total_tokens }}
           </div>
-       </div>
+        </div>
+      </div>
     </div>
-    <div style="display: flex; gap: 8px;">
-      <input type="text" v-model="sandboxPrompt" @keyup.enter="sendChat" placeholder="直接发送指令给 Hermes..." style="flex: 1; padding: 8px; border-radius: 4px; background: #222; border: 1px solid #555; color: #fff;" />
-      <button class="action-btn" @click="sendChat" :disabled="sandboxBusy">{{ sandboxBusy ? '发送中...' : '发送' }}</button>
+    <div class="chat-composer">
+      <textarea
+        v-model="sandboxPrompt"
+        class="chat-composer-input"
+        rows="3"
+        @keydown="handleChatComposerKeydown"
+        placeholder="直接发送指令给 Hermes..."
+      />
+      <div class="chat-composer-footer">
+        <div class="chat-composer-hint">Enter 换行，Cmd/Ctrl + Enter 发送，最长等待 {{ chatRuntimeTimeoutSeconds || 500 }} 秒</div>
+        <div class="chat-composer-actions">
+          <button class="action-btn outline" @click="sendObservableReasoningChat" :disabled="sandboxBusy || reasoningBusy || !sandboxPrompt.trim()">{{ reasoningBusy ? '推理中...' : '可观测执行' }}</button>
+          <button class="action-btn" @click="sendChat" :disabled="sandboxBusy || reasoningBusy || !sandboxPrompt.trim()">{{ sandboxBusy ? '发送中...' : '发送' }}</button>
+        </div>
+      </div>
+    </div>
+    <div v-if="submitGateOpen" class="chat-context-panel submit-gate-panel">
+      <div class="chat-context-summary-line">
+        <strong>提交前确认</strong>
+        <span>{{ submitGateMode === 'reasoning' ? '可观测执行' : '直接发送' }}</span>
+        <span>可先预览将发送给 Hermes / OMLX 的内容，再决定是否发送</span>
+      </div>
+      <div class="submit-gate-block">
+        <div class="chat-memory-title">本次问题</div>
+        <textarea v-model="submitPromptDraft" class="chat-memory-editor" rows="3" spellcheck="false" />
+      </div>
+      <div class="submit-gate-grid">
+        <div class="submit-gate-block">
+          <div class="chat-memory-title">手工附加上下文源</div>
+          <div v-if="contextCandidatesBusy" class="chat-memory-desc">读取中...</div>
+          <div v-else class="submit-source-list">
+            <label v-for="source in contextSourceCandidates" :key="source.sourceId" class="submit-source-item">
+              <div class="submit-source-item-header">
+                <label class="submit-source-checkbox-line">
+                  <input v-model="submitSelectedSourceIds" type="checkbox" :value="source.sourceId" :disabled="!source.exists" />
+                  <span>{{ source.label }}</span>
+                </label>
+                <button class="action-btn outline submit-source-open-btn" type="button" @click.stop="loadContextSourceFile(source.sourceId)" :disabled="sourceEditorBusy">{{ selectedContextSourceId === source.sourceId ? '已打开' : '查看/编辑' }}</button>
+              </div>
+              <span class="chat-context-source-path">{{ source.filePath }}</span>
+            </label>
+            <div v-if="contextSourceCandidates.length === 0" class="chat-memory-desc">当前没有需要手工附加的原始上下文源；Hermes 启动后会自行读取默认 memory 文件。</div>
+          </div>
+        </div>
+        <div class="submit-gate-block">
+          <div class="chat-memory-title">已确认上下文池</div>
+          <div v-if="contextCandidatesBusy" class="chat-memory-desc">读取中...</div>
+          <div v-else class="submit-source-list">
+            <label v-for="entry in contextPoolEntries" :key="entry.entryId" class="submit-source-item">
+              <input v-model="submitSelectedContextPoolIds" type="checkbox" :value="entry.entryId" />
+              <span>{{ entry.title }}</span>
+              <span class="chat-memory-desc">{{ entry.updatedAt }}</span>
+            </label>
+            <div v-if="contextPoolEntries.length === 0" class="chat-memory-desc">当前还没有已确认的上下文池记录。</div>
+          </div>
+        </div>
+      </div>
+      <div class="submit-gate-block" style="margin-top: 12px;">
+        <div class="chat-memory-title">原始上下文文件编辑器</div>
+        <div v-if="sourceEditorError" class="message-banner error" style="font-size: 12px;">{{ sourceEditorError }}</div>
+        <div v-if="selectedContextSource && sourceEditorFile" class="chat-memory-desc">
+          当前已选择 {{ selectedContextSource.label }}。点击上方“查看/编辑”会用弹窗打开编辑器，快捷键将锁定在编辑器内。
+        </div>
+        <div v-else class="chat-memory-desc">如有手工附加源，点击上方“查看/编辑”即可在弹窗中在线打开文件。</div>
+      </div>
+      <div class="reasoning-review-actions" style="margin-top: 12px;">
+        <button class="action-btn outline" @click="generateSubmitContextDraft" :disabled="submitDraftBusy || contextCandidatesBusy || !submitPromptDraft.trim()">{{ submitDraftBusy ? '预览中...' : '查看发送预览' }}</button>
+        <button class="action-btn outline" @click="closeSubmitGate" :disabled="submitDraftBusy || contextPoolSaveBusy">取消</button>
+        <button class="action-btn" @click="confirmSubmitGate" :disabled="submitDraftBusy || contextPoolSaveBusy || !submitPromptDraft.trim()">确认发送</button>
+      </div>
+      <div v-if="contextCandidatesError || submitDraftError" class="message-banner error" style="margin-top: 8px; font-size: 12px;">
+        {{ contextCandidatesError || submitDraftError }}
+      </div>
+      <div v-if="submitDraftResult" class="reasoning-review-box" style="margin-top: 12px;">
+        <div class="reasoning-plan-title">即将发送给 Hermes / OMLX 的内容</div>
+        <div v-if="submitDraftResult.summary" class="chat-memory-desc" style="margin-bottom: 10px; white-space: pre-wrap;">{{ submitDraftResult.summary }}</div>
+        <div v-if="submitDraftResult.outboundPreview" class="reasoning-evidence-block">
+          <div class="reasoning-evidence-title">发给 Hermes / OMLX 的内容</div>
+          <pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(submitDraftResult.outboundPreview) }}</pre>
+        </div>
+      </div>
+    </div>
+    <div v-if="chatContextInfo" class="chat-context-panel">
+      <div class="chat-context-summary-line">
+        <strong>本次上下文</strong>
+        <span>已加载 {{ chatContextInfo.loadedSourceCount }}/{{ chatContextInfo.selectedSourceCount }}</span>
+        <span v-if="chatContextInfo.contextPoolEntryCount">上下文池 {{ chatContextInfo.contextPoolEntryCount }} 条</span>
+        <span>重放历史 {{ chatContextInfo.replayedMessageCount }} 条</span>
+        <span>运行时 {{ chatContextInfo.runtime.provider }} / {{ chatContextInfo.runtime.model }}</span>
+        <span>{{ chatContextInfo.runtime.baseUrl }}</span>
+        <span>超时 {{ Math.round(chatContextInfo.runtime.timeoutMs / 1000) }} 秒</span>
+        <span v-if="chatUiStatus.kind === 'pending' && chatUiStatus.activeRequest">本次请求已运行 {{ chatActiveRequestElapsedSeconds }} 秒</span>
+      </div>
+      <div v-if="chatContextInfo.confirmedContextSummary" class="reasoning-review-summary" style="margin-bottom: 10px; white-space: pre-wrap;">{{ chatContextInfo.confirmedContextSummary }}</div>
+      <div class="chat-context-sources-list">
+        <div v-for="source in chatContextInfo.sources" :key="source.label + source.filePath" class="chat-context-source-line">
+          <strong class="chat-context-source-label">{{ source.label }}</strong>
+          <span :class="source.exists ? 'chat-context-source-ok' : 'chat-context-source-missing'">{{ source.exists ? '已加载' : '缺失' }}</span>
+          <span class="chat-context-source-path">{{ source.filePath }}</span>
+          <span v-if="source.exists" class="chat-context-source-meta">载入 {{ source.loadedChars }} / {{ source.totalChars }} 字符<span v-if="source.truncated"> · 已截断</span></span>
+        </div>
+      </div>
+      <div v-if="chatContextInfo.contextPoolEntries?.length" class="chat-context-sources-list" style="margin-top: 8px;">
+        <div v-for="entry in chatContextInfo.contextPoolEntries" :key="entry.entryId" class="chat-context-source-line">
+          <strong class="chat-context-source-label">确认上下文</strong>
+          <span class="chat-context-source-ok">已注入</span>
+          <span>{{ entry.title }}</span>
+          <span class="chat-context-source-path">{{ entry.filePath }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="chat-memory-panel">
+      <div class="chat-memory-header-row">
+        <div>
+          <div class="chat-memory-title">上下文池</div>
+          <div class="chat-memory-desc">这里只保存人工确认后的上下文理解；未确认内容不会落盘，也不会复用。</div>
+        </div>
+        <div class="chat-memory-actions">
+          <button class="action-btn outline" @click="loadContextCandidates" :disabled="contextCandidatesBusy || contextPoolEditorBusy">{{ contextCandidatesBusy ? '刷新中...' : '刷新列表' }}</button>
+        </div>
+      </div>
+      <div class="chat-memory-meta">
+        <span>记录数 {{ contextPoolEntries.length }}</span>
+      </div>
+      <div class="submit-gate-grid" style="margin-top: 10px;">
+        <div class="submit-gate-block">
+          <div class="chat-memory-title">已保存记录</div>
+          <div class="submit-source-list">
+            <button
+              v-for="entry in contextPoolEntries"
+              :key="entry.entryId"
+              class="action-btn outline context-pool-list-btn"
+              @click="selectedContextPoolEntryId = entry.entryId; loadContextPoolEntry(entry.entryId)"
+            >{{ entry.title }}</button>
+            <div v-if="contextPoolEntries.length === 0" class="chat-memory-desc">还没有上下文池文件。</div>
+          </div>
+        </div>
+        <div class="submit-gate-block">
+          <div class="chat-memory-title">记录内容</div>
+          <div v-if="contextPoolEditorError" class="message-banner error" style="margin-bottom: 8px; font-size: 12px;">{{ contextPoolEditorError }}</div>
+          <div v-if="selectedContextPoolEntry && contextPoolFile" class="chat-memory-desc">
+            当前已选择 {{ selectedContextPoolEntry.title }}。点击左侧记录会用弹窗打开 JSON 编辑器，`Ctrl/Cmd+S` 会保存到文件。
+          </div>
+          <div v-else class="chat-memory-desc">选择左侧记录后会在弹窗中查看和编辑。</div>
+        </div>
+      </div>
+    </div>
+    <div v-if="editorModalOpen" class="editor-modal-backdrop" @click.self="closeEditorModal">
+      <div class="editor-modal-shell" tabindex="-1" role="dialog" aria-modal="true" :aria-label="editorModalTitle">
+        <div class="editor-modal-header">
+          <div>
+            <div class="chat-memory-title">{{ editorModalTitle }}</div>
+            <div class="chat-memory-desc">{{ activeEditorFilePath }}</div>
+          </div>
+          <div class="editor-modal-actions">
+            <button v-if="editorModalKind === 'context-pool'" class="action-btn outline" @click="openContextPoolEntryInEditor" :disabled="contextPoolEditorBusy">{{ contextPoolEditorBusy ? '处理中...' : '在编辑器打开' }}</button>
+            <button class="action-btn outline" @click="closeEditorModal">关闭</button>
+          </div>
+        </div>
+        <div v-if="editorModalKind === 'source' && selectedContextSource && sourceEditorFile" class="context-file-editor-shell">
+          <div class="chat-memory-meta">
+            <span>{{ selectedContextSource.label }}</span>
+            <span>字符数 {{ sourceEditorFile.sizeChars }}</span>
+            <span>更新时间 {{ sourceEditorFile.updatedAt || '未写入' }}</span>
+            <span>快捷键已锁定：Tab / Ctrl+S / Ctrl+W</span>
+          </div>
+          <Codemirror v-model="sourceEditorContent" class="context-file-codemirror" :extensions="sourceEditorExtensions" :style="{ height: '60vh' }" />
+          <div class="reasoning-review-actions" style="margin-top: 8px;">
+            <button class="action-btn" @click="saveContextSourceFile" :disabled="sourceEditorSaveBusy || !sourceEditorDirty">{{ sourceEditorSaveBusy ? '保存中...' : '保存源文件' }}</button>
+          </div>
+          <div v-if="sourceEditorSaveMessage" class="chat-memory-desc">{{ sourceEditorSaveMessage }}</div>
+        </div>
+        <div v-else-if="editorModalKind === 'context-pool' && selectedContextPoolEntry && contextPoolFile" class="context-file-editor-shell">
+          <div class="chat-memory-meta">
+            <span>{{ selectedContextPoolEntry.title }}</span>
+            <span>字符数 {{ contextPoolFile.sizeChars }}</span>
+            <span>更新时间 {{ contextPoolFile.updatedAt || '未写入' }}</span>
+            <span>快捷键已锁定：Tab / Ctrl+S / Ctrl+W</span>
+          </div>
+          <Codemirror v-model="contextPoolFileContent" class="context-file-codemirror" :extensions="contextPoolEditorExtensions" :style="{ height: '60vh' }" />
+          <div class="reasoning-review-actions" style="margin-top: 8px;">
+            <button class="action-btn" @click="saveContextPoolEntryEdits" :disabled="contextPoolEditorBusy || !contextPoolFileDirty">{{ contextPoolEditorBusy ? '保存中...' : '保存修改' }}</button>
+          </div>
+          <div v-if="contextPoolFileSaveMessage" class="chat-memory-desc">{{ contextPoolFileSaveMessage }}</div>
+        </div>
+      </div>
+    </div>
+    <div v-if="activeReasoningSession || reasoningError" class="reasoning-panel">
+      <div class="reasoning-panel-header">
+        <div>
+          <div class="chat-memory-title">可观测推理链</div>
+          <div class="reasoning-subtitle">状态 {{ reasoningStatusLabel }}<span v-if="activeReasoningSession"> · Session {{ activeReasoningSession.sessionId }}</span></div>
+        </div>
+      </div>
+      <div v-if="activeReasoningSession?.plan" class="reasoning-plan-box">
+        <div class="reasoning-plan-title">PLAN</div>
+        <div class="reasoning-plan-goal">{{ activeReasoningSession.plan.goal }}</div>
+        <div class="reasoning-plan-steps">
+          <div v-for="step in activeReasoningSession.plan.steps" :key="step.stepId" class="reasoning-plan-step" :class="{ active: activeReasoningSession.currentStepId === step.stepId, review: activeReasoningSession.review?.stepId === step.stepId }">
+            <strong>{{ step.title }}</strong>
+            <span>{{ step.tool }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-if="reasoningPendingReview" class="reasoning-review-box">
+        <div class="reasoning-plan-title">{{ reasoningReviewTargetLabel }}</div>
+        <div class="reasoning-review-title">{{ reasoningPendingReview.title }}</div>
+        <div class="reasoning-review-summary">{{ reasoningPendingReview.summary }}</div>
+        <div v-if="reasoningReviewEvidence?.outboundPreview" class="reasoning-evidence-block">
+          <div class="reasoning-evidence-title">提交给 Hermes / OMLX 的内容</div>
+          <pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(reasoningReviewEvidence.outboundPreview) }}</pre>
+        </div>
+        <div v-if="reasoningReviewEvidence?.rawResponsePreview" class="reasoning-evidence-block">
+          <div class="reasoning-evidence-title">模型首先返回的结果</div>
+          <pre class="reasoning-evidence-pre">{{ reasoningReviewEvidence.rawResponsePreview }}</pre>
+        </div>
+        <div v-if="reasoningReviewEvidence?.structuredResult" class="reasoning-evidence-block">
+          <div class="reasoning-evidence-title">结构化结果摘要</div>
+          <pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(reasoningReviewEvidence.structuredResult) }}</pre>
+        </div>
+        <textarea
+          v-model="reasoningReviewDraft"
+          class="chat-memory-editor reasoning-review-editor"
+          rows="4"
+          spellcheck="false"
+          placeholder="驳回时填写修正条件，例如：必须调用 project.listStories，不要猜数据库。"
+        />
+        <div class="reasoning-review-actions">
+          <button class="action-btn outline" @click="submitReasoningReview('reject')" :disabled="reasoningReviewBusy">{{ reasoningReviewBusy ? '提交中...' : '驳回并重跑当前目标' }}</button>
+          <button class="action-btn" @click="submitReasoningReview('approve')" :disabled="reasoningReviewBusy">{{ reasoningReviewBusy ? '提交中...' : '通过并继续' }}</button>
+        </div>
+      </div>
+      <div v-if="activeReasoningSession?.artifacts?.storyIndex?.length" class="reasoning-artifact-box">
+        <div class="reasoning-plan-title">RESULT</div>
+        <div v-for="story in activeReasoningSession.artifacts.storyIndex" :key="story.projectId + story.filePath" class="reasoning-artifact-item">
+          <strong>{{ story.projectId }}</strong>
+          <span>{{ story.nodeCount }} 个节点</span>
+          <span class="reasoning-artifact-path">{{ story.filePath }}</span>
+        </div>
+      </div>
+      <div v-if="activeReasoningSession?.events?.length" class="reasoning-timeline">
+        <div v-for="event in activeReasoningSession.events" :key="event.eventId" class="reasoning-event-row">
+          <div class="reasoning-event-type">{{ event.type }}</div>
+          <div class="reasoning-event-body">
+            <div class="reasoning-event-title">{{ event.title }}</div>
+            <div class="reasoning-event-summary">{{ event.summary }}</div>
+          </div>
+          <div class="reasoning-event-time">{{ event.timestamp }}</div>
+        </div>
+      </div>
+      <div v-if="activeReasoningSession?.error || reasoningError" class="message-banner error" style="font-size: 12px; line-height: 1.5;">
+        {{ activeReasoningSession?.error || reasoningError }}
+      </div>
+    </div>
+    <div class="chat-memory-panel">
+      <div class="chat-memory-header-row">
+        <div>
+          <div class="chat-memory-title">聊天记录文件</div>
+          <div v-if="chatMemoryFile" class="chat-memory-path">{{ chatMemoryFile.filePath }}</div>
+          <div v-else class="chat-memory-path">正在读取今日聊天记录文件路径...</div>
+          <div class="chat-memory-desc">按日期持续写入的长期聊天记录，用于回看、整理和人工提取信息；它不等同于 Agent 记忆文件。</div>
+        </div>
+        <div class="chat-memory-actions">
+          <button class="action-btn outline" @click="openChatHistoryFileInEditor" :disabled="chatMemoryOpenBusy || chatMemoryBusy || chatMemorySaveBusy">{{ chatMemoryOpenBusy ? '打开中...' : '在编辑器打开' }}</button>
+          <button class="action-btn outline" @click="openChatMemoryEditor" :disabled="chatMemoryBusy || chatMemorySaveBusy || chatMemoryOpenBusy">{{ chatMemoryBusy ? '读取中...' : '内嵌查看' }}</button>
+          <button class="action-btn outline" @click="loadChatHistory" :disabled="chatMemoryBusy || chatMemorySaveBusy || chatMemoryOpenBusy">刷新路径</button>
+        </div>
+      </div>
+      <div v-if="chatMemoryFile" class="chat-memory-meta">
+        <span :style="{ color: chatMemoryFile.exists ? '#9de2b0' : '#ffb3a7' }">{{ chatMemoryFile.exists ? '文件已存在' : '今日文件尚未生成，保存后会创建' }}</span>
+        <span>字符数 {{ chatMemoryFile.sizeChars }}</span>
+        <span>更新时间 {{ chatMemoryFile.updatedAt || '未写入' }}</span>
+      </div>
+      <div v-if="chatMemoryEditorOpen" class="chat-memory-editor-shell">
+        <textarea
+          v-model="chatMemoryDraft"
+          class="chat-memory-editor"
+          spellcheck="false"
+          placeholder="这里显示 ai/chat 下当天聊天记录 JSON，可直接编辑后保存。"
+        />
+        <div class="chat-memory-editor-footer">
+          <div class="chat-memory-editor-hint">服务端保存前会校验 JSON 数组结构，避免写坏聊天历史。</div>
+          <div class="chat-memory-actions">
+            <button class="action-btn outline" @click="loadChatMemoryFile" :disabled="chatMemoryBusy || chatMemorySaveBusy">{{ chatMemoryBusy ? '刷新中...' : '重新加载' }}</button>
+            <button class="action-btn" @click="saveChatMemoryFile" :disabled="chatMemorySaveBusy || chatMemoryBusy || !chatMemoryDirty">{{ chatMemorySaveBusy ? '保存中...' : '保存文件' }}</button>
+          </div>
+        </div>
+      </div>
+      <div v-if="chatMemoryOpenMessage" class="message-banner tip" style="font-size: 12px; line-height: 1.5;">{{ chatMemoryOpenMessage }}</div>
+      <div v-if="chatMemorySaveMessage" class="message-banner tip" style="font-size: 12px; line-height: 1.5;">{{ chatMemorySaveMessage }}</div>
+      <div v-if="chatMemoryError" class="message-banner error" style="font-size: 12px; line-height: 1.5;">{{ chatMemoryError }}</div>
     </div>
   </div>
 </details>
-
+<details class="panel" open v-if="runtimeState?.state === 'running'" style="margin-bottom: 24px;">
+  <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between;">
+    <div class="panel-title">🩺 运行时自检诊断 (Runtime Diagnostics)</div>
+    <span class="indicator" v-if="connecting">🔄 自检流转中...</span>
+  </summary>
+  <div class="panel-content">
+    <p v-if="error" class="text-error">{{ error }}</p>
+    <p v-else-if="!selfCheck && !connecting" class="text-muted">未能获取诊断快照，请重新启动引擎拉取。</p>
+    <div v-else-if="selfCheck" class="diagnostics-grid">
+      <div class="diagnostics-summary">
+        <strong>诊断综合汇报:</strong> {{ selfCheck.summary }}
+      </div>
+      <div class="info-columns">
+        <div class="info-block">
+          <h3>💡 核心配置追踪 (Context Setup)</h3>
+          <dl class="prop-list">
+            <dt>驱动模型</dt><dd>{{ selfCheck.info.model }}</dd>
+            <dt>接口路由</dt><dd>{{ selfCheck.info.provider }}</dd>
+            <dt>服务地址</dt><dd class="code">{{ selfCheck.info.baseUrl }}</dd>
+            <dt>上下文窗口</dt><dd>{{ selfCheck.info.contextLength ?? 'unknown' }}</dd>
+            <dt>建议单轮输出</dt><dd>{{ selfCheck.info.recommendedMaxOutputTokens ?? 'unknown' }}</dd>
+            <dt>Tokenizer</dt><dd>{{ selfCheck.info.tokenizer || 'unknown' }}</dd>
+            <dt>持载区(CWD)</dt><dd class="code">{{ selfCheck.info.workspace }}</dd>
+            <dt>交互策略</dt><dd>{{ selfCheck.info.interactionMode }}</dd>
+            <dt>时间戳</dt><dd>{{ selfCheck.checkedAt }}</dd>
+          </dl>
+        </div>
+        <div class="info-block">
+          <h3>🔌 能力校验钩子 (Capabilities Check)</h3>
+          <ul class="capability-list">
+            <li v-for="item in selfCheck.checks" :key="item.key">
+              <span class="status-icon">{{ item.status === 'ok' ? '✅' : '⚠️' }}</span>
+              <div class="cap-text">
+                <strong>{{ getChineseCheckLabel(item.key) }}</strong>
+                <span class="cap-detail">{{ item.detail }}</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</details>
         </div>
 
         <!-- 管理器功能面板区（处于运行态时全部展开展示） -->
         <div class="feature-panels" v-if="runtimeState?.state === 'running'">
-          
-          <!-- 1. 引擎诊断与配置上下文 (可折叠) -->
-          <details class="panel" open>
-            <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between;">
-              <div class="panel-title">🩺 运行时自检诊断 (Runtime Diagnostics)</div>
-              <span class="indicator" v-if="connecting">🔄 自检流转中...</span>
-            </summary>
-            
-            <div class="panel-content">
-               <p v-if="error" class="text-error">{{ error }}</p>
-               <p v-else-if="!selfCheck && !connecting" class="text-muted">未能获取诊断快照，请重新启动引擎拉取。</p>
-               <div v-else-if="selfCheck" class="diagnostics-grid">
-                  <div class="diagnostics-summary">
-                    <strong>诊断综合汇报:</strong> {{ selfCheck.summary }}
-                  </div>
-                  
-                  <div class="info-columns">
-                    <div class="info-block">
-                      <h3>💡 核心配置追踪 (Context Setup)</h3>
-                      <dl class="prop-list">
-                        <dt>驱动模型</dt><dd>{{ selfCheck.info.model }}</dd>
-                        <dt>接口路由</dt><dd>{{ selfCheck.info.provider }}</dd>
-                        <dt>服务地址</dt><dd class="code">{{ selfCheck.info.baseUrl }}</dd>
-                        <dt>上下文窗口</dt><dd>{{ selfCheck.info.contextLength ?? 'unknown' }}</dd>
-                        <dt>建议单轮输出</dt><dd>{{ selfCheck.info.recommendedMaxOutputTokens ?? 'unknown' }}</dd>
-                        <dt>Tokenizer</dt><dd>{{ selfCheck.info.tokenizer || 'unknown' }}</dd>
-                        <dt>持载区(CWD)</dt><dd class="code">{{ selfCheck.info.workspace }}</dd>
-                        <dt>交互策略</dt><dd>{{ selfCheck.info.interactionMode }}</dd>
-                        <dt>时间戳</dt><dd>{{ selfCheck.checkedAt }}</dd>
-                      </dl>
-                    </div>
-
-                    <div class="info-block">
-                      <h3>🔌 能力校验钩子 (Capabilities Check)</h3>
-                      <ul class="capability-list">
-                        <li v-for="item in selfCheck.checks" :key="item.key">
-                          <span class="status-icon">{{ item.status === 'ok' ? '✅' : '⚠️' }}</span>
-                          <div class="cap-text">
-                            <strong>{{ getChineseCheckLabel(item.key) }}</strong>
-                            <span class="cap-detail">{{ item.detail }}</span>
-                          </div>
-                        </li>
-                      </ul>
-                    </div>
-                  </div>
-               </div>
-            </div>
-          </details>
-
-          <!-- 2. 模型交互沙盒 (Interactive Playground) -->
-          
-
-          <!-- 3. 项目状态与任务栈看板 (占位/规划区) -->
+          <!-- 项目状态与任务栈看板 (占位/规划区) -->
           <details class="panel" open>
             <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between;">
               <div class="panel-title">📋 调度任务栈看板 (Project status & Queues)</div>
@@ -974,4 +2887,630 @@ async function toggleGlobalRuntime() {
         </div>
     </section>
   </main>
+
 </template>
+
+<style scoped>
+.chat-panel-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 280px;
+  max-height: min(52vh, 560px);
+  overflow-y: auto;
+  padding: 16px;
+  background:
+    linear-gradient(180deg, rgba(18, 22, 28, 0.96) 0%, rgba(26, 31, 38, 0.92) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+.chat-empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: auto 0;
+  color: #c7d2dd;
+}
+
+.chat-empty-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f5f7fb;
+}
+
+.chat-empty-copy {
+  font-size: 13px;
+  color: #a9b7c6;
+}
+
+.chat-row {
+  display: flex;
+}
+
+.chat-row[data-role='user'] {
+  justify-content: flex-end;
+}
+
+.chat-row[data-role='hermes'],
+.chat-row[data-role='error'] {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  width: fit-content;
+  max-width: min(78ch, 82%);
+  padding: 12px 14px;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+}
+
+.chat-bubble[data-role='user'] {
+  background: linear-gradient(135deg, #2a7dd6 0%, #1f5ea8 100%);
+  color: #f5fbff;
+  border-bottom-right-radius: 6px;
+}
+
+.chat-bubble[data-role='hermes'] {
+  background: linear-gradient(135deg, #222a33 0%, #161d26 100%);
+  color: #f3f7fb;
+  border: 1px solid rgba(142, 196, 255, 0.18);
+  border-bottom-left-radius: 6px;
+}
+
+.chat-bubble[data-role='error'] {
+  background: linear-gradient(135deg, #6d1f28 0%, #54161d 100%);
+  color: #fff1f1;
+  border: 1px solid rgba(255, 160, 160, 0.22);
+  border-bottom-left-radius: 6px;
+}
+
+.chat-role {
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  opacity: 0.72;
+}
+
+.chat-message-text {
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-token-usage {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  color: #95e62b;
+}
+
+.chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(15, 18, 23, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+.chat-composer-input {
+  width: 100%;
+  min-height: 88px;
+  max-height: 220px;
+  padding: 12px 14px;
+  resize: vertical;
+  border-radius: 10px;
+  background: #12161c;
+  border: 1px solid #45515f;
+  color: #f5f7fb;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.chat-composer-input:focus {
+  outline: none;
+  border-color: #59a7ff;
+  box-shadow: 0 0 0 3px rgba(89, 167, 255, 0.16);
+}
+
+.chat-composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-composer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-composer-hint {
+  font-size: 12px;
+  color: #8fa0b2;
+}
+
+.chat-context-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(15, 18, 23, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+.chat-context-summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c9d4de;
+}
+
+.chat-context-sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-context-source-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #aebdca;
+}
+
+.chat-context-source-line:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.chat-context-source-label {
+  color: #f5f7fb;
+}
+
+.chat-context-source-ok {
+  color: #7cfc9a;
+}
+
+.chat-context-source-missing {
+  color: #ff8a80;
+}
+
+.chat-context-source-path {
+  word-break: break-all;
+}
+
+.chat-context-source-meta {
+  color: #8ea1b3;
+}
+
+.chat-memory-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: rgba(15, 18, 23, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+.submit-gate-panel {
+  border-color: rgba(89, 167, 255, 0.24);
+}
+
+.submit-gate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.submit-gate-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.submit-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.submit-source-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: rgba(9, 12, 18, 0.56);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  font-size: 12px;
+  color: #d7e1ea;
+}
+
+.submit-source-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.submit-source-checkbox-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.submit-source-open-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.context-pool-list-btn {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.context-file-editor-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editor-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(5, 8, 12, 0.76);
+  backdrop-filter: blur(4px);
+}
+
+.editor-modal-shell {
+  width: min(1120px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: #10151c;
+  border: 1px solid rgba(89, 167, 255, 0.24);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.editor-modal-shell:focus {
+  outline: none;
+}
+
+.editor-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.editor-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.context-file-codemirror {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.context-file-codemirror :deep(.cm-editor) {
+  height: 100%;
+  font-size: 12px;
+}
+
+.context-file-codemirror :deep(.cm-scroller) {
+  font-family: 'SFMono-Regular', 'Menlo', 'Monaco', monospace;
+}
+
+.reasoning-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: rgba(15, 18, 23, 0.72);
+  border: 1px solid rgba(89, 167, 255, 0.22);
+  border-radius: 12px;
+}
+
+.reasoning-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reasoning-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8fa0b2;
+  word-break: break-all;
+}
+
+.reasoning-plan-box,
+.reasoning-artifact-box,
+.reasoning-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(9, 12, 18, 0.56);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+}
+
+.reasoning-plan-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #8fbfff;
+}
+
+.reasoning-plan-goal {
+  font-size: 13px;
+  color: #f5f7fb;
+}
+
+.reasoning-plan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reasoning-plan-step,
+.reasoning-artifact-item,
+.reasoning-event-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: flex-start;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #aebdca;
+}
+
+.reasoning-plan-step:first-child,
+.reasoning-artifact-item:first-child,
+.reasoning-event-row:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.reasoning-plan-step.active {
+  color: #f5f7fb;
+}
+
+.reasoning-plan-step.review {
+  color: #f6e7aa;
+}
+
+.reasoning-review-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(56, 46, 14, 0.26);
+  border: 1px solid rgba(255, 214, 102, 0.28);
+  border-radius: 10px;
+}
+
+.reasoning-review-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f6e7aa;
+}
+
+.reasoning-review-summary {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d7dee6;
+}
+
+.reasoning-evidence-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reasoning-evidence-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f5f7fb;
+}
+
+.reasoning-evidence-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(9, 12, 18, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #cfd8e3;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.reasoning-review-editor {
+  min-height: 96px;
+}
+
+.reasoning-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.reasoning-artifact-path {
+  word-break: break-all;
+  color: #8fa0b2;
+}
+
+.reasoning-event-type {
+  min-width: 118px;
+  color: #8fbfff;
+  text-transform: uppercase;
+}
+
+.reasoning-event-body {
+  flex: 1;
+  min-width: 180px;
+}
+
+.reasoning-event-title {
+  color: #f5f7fb;
+}
+
+.reasoning-event-summary {
+  color: #aebdca;
+}
+
+.reasoning-event-time {
+  color: #7f91a2;
+}
+
+.chat-memory-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-memory-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f5f7fb;
+}
+
+.chat-memory-path {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #a9b7c6;
+  word-break: break-all;
+}
+
+.chat-memory-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8fa0b2;
+}
+
+.chat-memory-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 12px;
+  color: #8fa0b2;
+}
+
+.chat-memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-memory-editor-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-memory-editor {
+  width: 100%;
+  min-height: 220px;
+  padding: 12px 14px;
+  resize: vertical;
+  border-radius: 10px;
+  background: #12161c;
+  border: 1px solid #45515f;
+  color: #f5f7fb;
+  font: 12px/1.6 SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+}
+
+.chat-memory-editor:focus {
+  outline: none;
+  border-color: #59a7ff;
+  box-shadow: 0 0 0 3px rgba(89, 167, 255, 0.16);
+}
+
+.chat-memory-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-memory-editor-hint {
+  font-size: 12px;
+  color: #8fa0b2;
+}
+
+@media (max-width: 820px) {
+  .chat-thread {
+    min-height: 220px;
+    max-height: 48vh;
+    padding: 12px;
+  }
+
+  .chat-bubble {
+    max-width: 92%;
+  }
+
+  .chat-composer {
+    padding: 10px;
+  }
+
+  .chat-composer-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chat-composer-hint {
+    text-align: left;
+  }
+
+  .chat-memory-header-row,
+  .chat-memory-editor-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+</style>

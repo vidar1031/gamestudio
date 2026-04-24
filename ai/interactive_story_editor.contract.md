@@ -1,6 +1,7 @@
 # 交互故事编辑器（节点式）开发契约 / AI Prompt Contract
 
-> 本文件是 **AI 专用的稳定开发契约**。后续任何 UI/代码/接口改动必须以本契约为准。
+> 本文件只在任务明确涉及 `apps/editor`、故事节点 schema、角色/资源结构或编辑器 UI 契约时使用。
+> 它不是 control 运行时的状态源，也不能替代 `ai/MEMORY.md`、`ai/memory/STATUS.md` 与 `ai/memory/TASK_QUEUE.md`。
 >
 > 你正在开发的是一个【节点式交互故事编辑器】：
 > - 不是 Demo

@@ -6,6 +6,7 @@ set -euo pipefail
 
 # 项目根目录
 PROJECT_DIR="/Volumes/ovokit2t/aiwork/gamestudio"
+AI_MEMORY_DIR="$PROJECT_DIR/ai/memory"
 cd "$PROJECT_DIR"
 
 # 加载邮件配置
@@ -55,13 +56,13 @@ REPORT_FILE="/tmp/gamestudio_report_$(date +%Y%m%d_%H%M%S).txt"
     
     # 4. 任务进度
     echo "📋 任务进度"
-    if [ -f "memory/TASK_QUEUE.md" ]; then
-        DONE=$(grep -c "\[x\]" memory/TASK_QUEUE.md 2>/dev/null || echo "0")
-        TODO=$(grep -c "\[ \]" memory/TASK_QUEUE.md 2>/dev/null || echo "0")
+    if [ -f "$AI_MEMORY_DIR/TASK_QUEUE.md" ]; then
+        DONE=$(grep -c "\[x\]" "$AI_MEMORY_DIR/TASK_QUEUE.md" 2>/dev/null || echo "0")
+        TODO=$(grep -c "\[ \]" "$AI_MEMORY_DIR/TASK_QUEUE.md" 2>/dev/null || echo "0")
         echo "- 已完成: $DONE 项 | 待办: $TODO 项"
         echo ""
         echo "待办任务列表:"
-        grep "^\- \[ \]" memory/TASK_QUEUE.md | head -5 | sed 's/^- //'
+        grep "^\- \[ \]" "$AI_MEMORY_DIR/TASK_QUEUE.md" | head -5 | sed 's/^- //'
     else
         echo "- 无任务队列文件"
     fi
@@ -70,8 +71,8 @@ REPORT_FILE="/tmp/gamestudio_report_$(date +%Y%m%d_%H%M%S).txt"
     # 5. 今日进展
     echo "📈 今日进展"
     TODAY=$(date +%Y-%m-%d)
-    if [ -f "memory/${TODAY}.md" ]; then
-        tail -15 "memory/${TODAY}.md"
+    if [ -f "$AI_MEMORY_DIR/${TODAY}.md" ]; then
+        tail -15 "$AI_MEMORY_DIR/${TODAY}.md"
     else
         echo "- 今日暂无日志"
     fi
