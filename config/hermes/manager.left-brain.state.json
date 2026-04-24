@@ -18,7 +18,7 @@
     "provider": "omlx",
     "baseUrl": "http://127.0.0.1:18888/v1",
     "model": "gemma-4-26b-a4b",
-    "inspectedAt": "2026-04-24T03:19:34.394Z",
+    "inspectedAt": "2026-04-24T10:43:08.587Z",
     "loadedAt": "2026-04-23T06:09:12.216Z",
     "lastAction": "load",
     "inspection": {
@@ -26,7 +26,7 @@
       "accessible": true,
       "status": "ok",
       "detail": "模型可访问，最小推理探测成功",
-      "checkedAt": "2026-04-24T03:19:34.394Z",
+      "checkedAt": "2026-04-24T10:43:08.587Z",
       "usage": {
         "promptTokens": 16,
         "completionTokens": 1,
@@ -51,7 +51,7 @@
     "label": "运行中",
     "detail": "Hermes gateway 进程正在运行",
     "pid": 66567,
-    "updatedAt": "2026-04-24T03:19:35.001Z",
+    "updatedAt": "2026-04-24T10:43:09.399Z",
     "lastAction": null,
     "availableActions": [
       "all-restart",

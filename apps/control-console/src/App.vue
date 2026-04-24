@@ -128,6 +128,91 @@ type ContextDraftResult = {
   contextSources?: ChatContextInfo | null
 }
 
+type OutboundPreviewMessage = {
+  index: number
+  role: string
+  content: string
+}
+
+type StructuredOutboundPreview = {
+  provider: string
+  model: string
+  baseUrl: string
+  messages?: OutboundPreviewMessage[]
+  controllerRequest?: {
+    purpose: string
+    mode: string
+    target: string
+    model: string
+    totalMessages: number
+    systemMessageCount: number
+    replayedMessageCount: number
+    userMessageCount: number
+    messages: OutboundPreviewMessage[]
+  }
+  runtimeRoute?: {
+    provider: string
+    model: string
+    baseUrl: string
+    note?: string
+  }
+  plannerHints?: {
+    selectedSkills?: Array<{
+      filePath: string
+      name: string
+      hintCount: number
+      actionHints: Array<{
+        hintId: string
+        keywords: string[]
+        requiredActions: string[]
+        answerAction: string
+      }>
+    }>
+    matchedRules?: Array<{
+      key: string
+      goal: string
+      source: string
+      skillFile?: string | null
+      keywords?: string[] | null
+      requiredActions: string[]
+      answerAction?: string | null
+    }>
+    suggestedActions?: string[]
+  }
+}
+
+type ReasoningActionCapability = {
+  action: string
+  title: string
+  tool: string
+  category: string
+  description: string
+}
+
+type ReasoningCapabilitySkill = {
+  filePath: string
+  name: string
+  hintCount: number
+  actionHints: Array<{
+    hintId: string
+    keywords: string[]
+    requiredActions: string[]
+    answerAction: string
+  }>
+}
+
+type ReasoningCapabilityGuide = {
+  filePath: string
+  content: string
+  exists: boolean
+}
+
+type ReasoningCapabilities = {
+  actions: ReasoningActionCapability[]
+  skills: ReasoningCapabilitySkill[]
+  guide: ReasoningCapabilityGuide
+}
+
 type EditableFileRecord = {
   filePath: string
   exists: boolean
@@ -203,6 +288,12 @@ type ReasoningEvent = {
   data?: Record<string, unknown>
 }
 
+type ChatHistoryEntry = {
+  role: string
+  content: string
+  tokens?: any
+}
+
 type ReasoningReview = {
   status: 'pending'
   targetType: 'plan' | 'step'
@@ -244,6 +335,8 @@ type ReasoningSession = {
   }
   error?: string | null
 }
+
+const ACTIVE_REASONING_SESSION_STORAGE_KEY = 'gamestudio.activeReasoningSessionId'
 
 type ModelInspection = {
   model: string
@@ -398,6 +491,7 @@ const reasoningBusy = ref(false)
 const reasoningError = ref('')
 const reasoningReviewBusy = ref(false)
 const reasoningReviewDraft = ref('')
+const reasoningAutoApproveEnabled = ref(true)
 const memoryConfig = ref<MemoryConfig | null>(null)
 const memoryConfigBusy = ref(false)
 const memoryConfigError = ref('')
@@ -426,11 +520,15 @@ const submitSelectedContextPoolIds = ref<string[]>([])
 const submitDraftBusy = ref(false)
 const submitDraftError = ref('')
 const submitDraftResult = ref<ContextDraftResult | null>(null)
+const reasoningCapabilities = ref<ReasoningCapabilities | null>(null)
+const reasoningCapabilitiesBusy = ref(false)
+const reasoningCapabilitiesError = ref('')
 const submitConfirmedSummary = ref('')
 const contextPoolSaveBusy = ref(false)
 const contextPoolSaveMessage = ref('')
 const contextPoolEditorBusy = ref(false)
 const contextPoolEditorError = ref('')
+const contextPoolDeleteBusy = ref(false)
 const selectedContextPoolEntryId = ref('')
 const selectedContextPoolEntry = ref<ContextPoolEntryDetail | null>(null)
 const selectedContextSourceId = ref('')
@@ -448,6 +546,172 @@ const editorModalOpen = ref(false)
 const editorModalKind = ref<'source' | 'context-pool' | null>(null)
 
 const editorTheme = [oneDark]
+
+function escapeHtml(value: string) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function sanitizeMarkdownUrl(rawUrl: string) {
+  const value = String(rawUrl || '').trim()
+  if (/^(https?:|mailto:)/i.test(value)) return value
+  return ''
+}
+
+function renderInlineMarkdown(input: string) {
+  const placeholders: string[] = []
+  let output = escapeHtml(String(input || ''))
+
+  output = output.replace(/`([^`]+)`/g, (_, code) => {
+    const token = `@@MD_TOKEN_${placeholders.length}@@`
+    placeholders.push(`<code>${escapeHtml(code)}</code>`)
+    return token
+  })
+
+  output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    const safeUrl = sanitizeMarkdownUrl(url)
+    if (!safeUrl) return escapeHtml(label)
+    const token = `@@MD_TOKEN_${placeholders.length}@@`
+    placeholders.push(`<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`)
+    return token
+  })
+
+  output = output.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  output = output.replace(/__([^_]+)__/g, '<strong>$1</strong>')
+  output = output.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>')
+  output = output.replace(/(^|[^_])_([^_]+)_(?!_)/g, '$1<em>$2</em>')
+
+  placeholders.forEach((replacement, index) => {
+    output = output.replace(`@@MD_TOKEN_${index}@@`, replacement)
+  })
+
+  return output
+}
+
+function renderMarkdownBlock(block: string) {
+  const trimmed = String(block || '').trim()
+  if (!trimmed) return ''
+
+  if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+    return '<hr />'
+  }
+
+  const codeFenceMatch = trimmed.match(/^```([\w-]+)?\n([\s\S]*?)\n```$/)
+  if (codeFenceMatch) {
+    const language = String(codeFenceMatch[1] || '').trim()
+    const code = escapeHtml(codeFenceMatch[2] || '')
+    const languageAttr = language ? ` data-language="${escapeHtml(language)}"` : ''
+    return `<pre><code${languageAttr}>${code}</code></pre>`
+  }
+
+  const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/)
+  if (headingMatch && trimmed.split(/\r?\n/).length === 1) {
+    const level = Math.min(6, headingMatch[1].length)
+    return `<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`
+  }
+
+  const lines = trimmed.split(/\r?\n/)
+  if (lines.every((line) => /^>\s?/.test(line))) {
+    return `<blockquote>${lines.map((line) => renderInlineMarkdown(line.replace(/^>\s?/, ''))).join('<br />')}</blockquote>`
+  }
+
+  if (lines.every((line) => /^[-*+]\s+/.test(line))) {
+    return `<ul>${lines.map((line) => `<li>${renderInlineMarkdown(line.replace(/^[-*+]\s+/, '').trim())}</li>`).join('')}</ul>`
+  }
+
+  if (lines.every((line) => /^\d+\.\s+/.test(line))) {
+    return `<ol>${lines.map((line) => `<li>${renderInlineMarkdown(line.replace(/^\d+\.\s+/, '').trim())}</li>`).join('')}</ol>`
+  }
+
+  return `<p>${lines.map((line) => renderInlineMarkdown(line)).join('<br />')}</p>`
+}
+
+function renderChatMessage(markdownText: string) {
+  const source = String(markdownText || '').replace(/\r\n/g, '\n')
+  if (!source.trim()) return '<p></p>'
+
+  const blocks: string[] = []
+  let current = ''
+  let inCodeFence = false
+
+  for (const line of source.split('\n')) {
+    if (line.startsWith('```')) {
+      current += `${current ? '\n' : ''}${line}`
+      inCodeFence = !inCodeFence
+      continue
+    }
+
+    if (!inCodeFence && !line.trim()) {
+      if (current.trim()) {
+        blocks.push(current)
+        current = ''
+      }
+      continue
+    }
+
+    current += `${current ? '\n' : ''}${line}`
+  }
+
+  if (current.trim()) blocks.push(current)
+  return blocks.map((block) => renderMarkdownBlock(block)).join('')
+}
+
+function formatDurationSeconds(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.round(Number(totalSeconds) || 0))
+  const hours = Math.floor(safeSeconds / 3600)
+  const minutes = Math.floor((safeSeconds % 3600) / 60)
+  const seconds = safeSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+function getReasoningSessionElapsedSeconds(session: ReasoningSession | null, nowMs: number) {
+  if (!session) return 0
+  const startedAt = new Date(session.createdAt).getTime()
+  if (Number.isNaN(startedAt)) return 0
+  const isFinished = session.status === 'completed' || session.status === 'failed'
+  const endAt = isFinished ? new Date(session.updatedAt).getTime() : nowMs
+  if (Number.isNaN(endAt)) return 0
+  return Math.max(0, Math.round((endAt - startedAt) / 1000))
+}
+
+function getReasoningEventData(event: ReasoningEvent) {
+  return event.data && typeof event.data === 'object' ? event.data : null
+}
+
+function getReasoningEventMetaLines(event: ReasoningEvent) {
+  const data = getReasoningEventData(event)
+  if (!data) return [] as string[]
+
+  const lines: string[] = []
+  if (typeof data.tool === 'string' && data.tool.trim()) {
+    lines.push(`工具: ${data.tool.trim()}`)
+  }
+  if (typeof data.action === 'string' && data.action.trim()) {
+    lines.push(`动作: ${data.action.trim()}`)
+  }
+  if (Number.isInteger(data.stepIndex)) {
+    lines.push(`步骤序号: #${Number(data.stepIndex) + 1}`)
+  }
+  return lines
+}
+
+function getReasoningEventOps(event: ReasoningEvent) {
+  const data = getReasoningEventData(event)
+  if (!data || !Array.isArray(data.observableOps)) return [] as string[]
+  return data.observableOps.map((item) => String(item || '').trim()).filter(Boolean)
+}
+
+function formatReasoningEventTime(timestamp: string) {
+  const value = new Date(timestamp)
+  if (Number.isNaN(value.getTime())) return timestamp
+  return value.toLocaleTimeString('zh-CN', { hour12: false })
+}
 
 const sourceEditorExtensions = computed(() => {
   const filePath = selectedContextSource.value?.filePath || ''
@@ -892,6 +1156,8 @@ async function connectSelectedAgent() {
     memoryConfigError.value = ''
     configSaveMessage.value = ''
     configSaveError.value = ''
+    reasoningCapabilities.value = null
+    reasoningCapabilitiesError.value = ''
     skillFilesText.value = ''
     resetPreflightState()
     selectedAgentLabel.value = ''
@@ -910,18 +1176,39 @@ async function connectSelectedAgent() {
     skillConfig.value = null
     configReadiness.value = null
     memoryConfigError.value = ''
+    reasoningCapabilities.value = null
+    reasoningCapabilitiesError.value = ''
     resetPreflightState()
     error.value = ''
     return
   }
 
   await loadEngineConfig()
+  await loadReasoningCapabilities()
   await loadChatHistory()
   await loadHermesRuntimeStatus()
+  await restoreBufferedReasoningSession()
   if (runtimeState.value?.state === 'running') {
     await loadHermesSelfCheck()
   } else {
     selfCheck.value = null
+  }
+}
+
+async function loadReasoningCapabilities() {
+  reasoningCapabilitiesBusy.value = true
+  reasoningCapabilitiesError.value = ''
+  try {
+    const response = await fetch('/api/control/agents/hermes-manager/reasoning-capabilities')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok || !payload?.capabilities) {
+      throw new Error(payload?.error || `reasoning_capabilities_http_${response.status}`)
+    }
+    reasoningCapabilities.value = payload.capabilities
+  } catch (caught) {
+    reasoningCapabilitiesError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    reasoningCapabilitiesBusy.value = false
   }
 }
 
@@ -1226,7 +1513,7 @@ async function runLeftBrainPreflight() {
   }
 }
 
-const chatHistory = ref<{role: string, content: string, tokens?: any}[]>([])
+const chatHistory = ref<ChatHistoryEntry[]>([])
 const chatMemoryDirty = computed(() => chatMemoryDraft.value !== chatMemoryLoadedContent.value)
 const reasoningStatusLabel = computed(() => {
   if (!activeReasoningSession.value) return '未开始'
@@ -1260,6 +1547,29 @@ function formatReasoningEvidence(value: unknown) {
   }
 }
 
+function parseStructuredOutboundPreview(value: unknown): StructuredOutboundPreview | null {
+  if (!value || typeof value !== 'object') return null
+  const preview = value as StructuredOutboundPreview
+  if (!preview.controllerRequest && !preview.runtimeRoute && !preview.plannerHints) return null
+  return preview
+}
+
+function getPreviewControllerRequest(value: unknown) {
+  return parseStructuredOutboundPreview(value)?.controllerRequest || null
+}
+
+function getPreviewRuntimeRoute(value: unknown) {
+  return parseStructuredOutboundPreview(value)?.runtimeRoute || null
+}
+
+function getPreviewPlannerHints(value: unknown) {
+  return parseStructuredOutboundPreview(value)?.plannerHints || null
+}
+
+function formatActionHintLine(hint: { keywords: string[]; requiredActions: string[]; answerAction: string }) {
+  return `${hint.keywords.join(' | ')} => ${[...hint.requiredActions, hint.answerAction].filter(Boolean).join(', ')}`
+}
+
 function validateJsonEditorContent(filePath: string, content: string) {
   if (!/\.json$/i.test(filePath)) return
   JSON.parse(content)
@@ -1280,6 +1590,8 @@ const chatActiveRequestElapsedSeconds = computed(() => {
 
   return Math.max(0, Math.round((chatUiNow.value - startedAtMs) / 1000))
 })
+
+const reasoningElapsedSeconds = computed(() => getReasoningSessionElapsedSeconds(activeReasoningSession.value, chatUiNow.value))
 
 const shortTermMemoryHint = computed(() => {
   const modelId = String(leftBrain.value.model || '').trim().toLowerCase()
@@ -1378,6 +1690,26 @@ function resetSubmitGateState() {
   submitConfirmedSummary.value = ''
   contextPoolSaveBusy.value = false
   contextPoolSaveMessage.value = ''
+}
+
+function persistActiveReasoningSessionId(sessionId: string | null) {
+  if (typeof window === 'undefined') return
+  if (sessionId) {
+    window.localStorage.setItem(ACTIVE_REASONING_SESSION_STORAGE_KEY, sessionId)
+    return
+  }
+  window.localStorage.removeItem(ACTIVE_REASONING_SESSION_STORAGE_KEY)
+}
+
+function readPersistedActiveReasoningSessionId() {
+  if (typeof window === 'undefined') return ''
+  return window.localStorage.getItem(ACTIVE_REASONING_SESSION_STORAGE_KEY) || ''
+}
+
+function syncReasoningSessionUi(session: ReasoningSession | null) {
+  activeReasoningSession.value = session
+  persistActiveReasoningSessionId(session?.sessionId || null)
+  reasoningBusy.value = Boolean(session && (session.status === 'planning' || session.status === 'running'))
 }
 
 async function loadContextCandidates() {
@@ -1598,6 +1930,41 @@ async function saveContextPoolEntryEdits() {
   }
 }
 
+async function deleteContextPoolEntry(entryId: string) {
+  if (!entryId || contextPoolDeleteBusy.value) return
+  if (typeof window !== 'undefined' && !window.confirm('确认删除这条上下文池记录吗？删除后不可恢复。')) {
+    return
+  }
+
+  contextPoolDeleteBusy.value = true
+  contextPoolEditorError.value = ''
+  contextPoolFileSaveMessage.value = ''
+  try {
+    const response = await fetch(`/api/control/agents/hermes-manager/context-pool/${entryId}`, {
+      method: 'DELETE'
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `context_pool_delete_http_${response.status}`)
+    }
+
+    if (selectedContextPoolEntryId.value === entryId) {
+      selectedContextPoolEntryId.value = ''
+      selectedContextPoolEntry.value = null
+      contextPoolFile.value = null
+      contextPoolFileContent.value = ''
+      closeEditorModal()
+    }
+
+    submitSelectedContextPoolIds.value = submitSelectedContextPoolIds.value.filter((value) => value !== entryId)
+    await loadContextCandidates()
+  } catch (caught) {
+    contextPoolEditorError.value = caught instanceof Error ? caught.message : String(caught)
+  } finally {
+    contextPoolDeleteBusy.value = false
+  }
+}
+
 async function openContextPoolEntryInEditor() {
   if (!selectedContextPoolEntryId.value) return
   contextPoolEditorBusy.value = true
@@ -1624,7 +1991,7 @@ async function performReasoningSubmission(userText: string, submissionContext: R
   sandboxPrompt.value = ''
   stopReasoningPolling()
   chatHistory.value.push({ role: 'user', content: userText })
-  activeReasoningSession.value = null
+  syncReasoningSessionUi(null)
 
   try {
     const response = await fetch('/api/control/agents/hermes-manager/reasoning-sessions', {
@@ -1637,7 +2004,7 @@ async function performReasoningSubmission(userText: string, submissionContext: R
       throw new Error(payload?.details || payload?.error || `reasoning_start_http_${response.status}`)
     }
 
-    activeReasoningSession.value = {
+    syncReasoningSessionUi({
       sessionId: payload.session.sessionId,
       agentId: 'hermes-manager',
       userPrompt: userText,
@@ -1650,7 +2017,7 @@ async function performReasoningSubmission(userText: string, submissionContext: R
       events: [],
       artifacts: {},
       error: null,
-    }
+    })
     await loadReasoningSession(payload.session.sessionId)
     scheduleReasoningPolling()
   } catch (caught) {
@@ -1821,8 +2188,9 @@ async function loadReasoningSession(sessionId: string) {
     if (!response.ok || !payload?.ok || !payload?.session) {
       throw new Error(payload?.error || `reasoning_session_http_${response.status}`)
     }
-    activeReasoningSession.value = payload.session
-    return payload.session as ReasoningSession
+    const session = payload.session as ReasoningSession
+    syncReasoningSessionUi(session)
+    return session
   } catch (caught) {
     reasoningError.value = caught instanceof Error ? caught.message : String(caught)
     return null
@@ -1845,6 +2213,11 @@ function scheduleReasoningPolling(delayMs = 1500) {
       return
     }
 
+    if (session.status === 'waiting_review' && reasoningAutoApproveEnabled.value) {
+      await submitReasoningReview('approve', { skipManualDraft: true })
+      return
+    }
+
     reasoningBusy.value = false
     if (session.status === 'waiting_review') {
       return
@@ -1853,16 +2226,33 @@ function scheduleReasoningPolling(delayMs = 1500) {
   }, delayMs)
 }
 
+async function restoreBufferedReasoningSession() {
+  const sessionId = readPersistedActiveReasoningSessionId()
+  if (!sessionId) return
+
+  const session = await loadReasoningSession(sessionId)
+  if (!session) {
+    persistActiveReasoningSessionId(null)
+    return
+  }
+
+  if (session.status === 'planning' || session.status === 'running') {
+    scheduleReasoningPolling()
+  }
+}
+
 async function sendObservableReasoningChat() {
   await openSubmitGate('reasoning')
 }
 
-async function submitReasoningReview(decision: 'approve' | 'reject') {
+async function submitReasoningReview(decision: 'approve' | 'reject', options: { skipManualDraft?: boolean } = {}) {
   const sessionId = activeReasoningSession.value?.sessionId
   if (!sessionId || !reasoningPendingReview.value) return
+  if (reasoningReviewBusy.value) return
 
   reasoningReviewBusy.value = true
   reasoningError.value = ''
+  const correctionPrompt = options.skipManualDraft ? '' : reasoningReviewDraft.value.trim()
 
   try {
     const response = await fetch(`/api/control/agents/hermes-manager/reasoning-sessions/${sessionId}/review`, {
@@ -1870,7 +2260,7 @@ async function submitReasoningReview(decision: 'approve' | 'reject') {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         decision,
-        correctionPrompt: reasoningReviewDraft.value.trim()
+        correctionPrompt
       })
     })
     const payload = await response.json().catch(() => null)
@@ -1878,7 +2268,7 @@ async function submitReasoningReview(decision: 'approve' | 'reject') {
       throw new Error(payload?.details || payload?.error || `reasoning_review_http_${response.status}`)
     }
 
-    activeReasoningSession.value = payload.session
+    syncReasoningSessionUi(payload.session)
     reasoningReviewDraft.value = ''
     if (payload.session.status === 'planning' || payload.session.status === 'running') {
       reasoningBusy.value = true
@@ -1886,6 +2276,7 @@ async function submitReasoningReview(decision: 'approve' | 'reject') {
     } else {
       reasoningBusy.value = false
       stopReasoningPolling()
+      await loadChatHistory()
     }
   } catch (caught) {
     reasoningError.value = caught instanceof Error ? caught.message : String(caught)
@@ -2497,17 +2888,19 @@ async function restartGlobalRuntime() {
         自动恢复耗时 {{ Math.round(chatUiStatus.recovery.durationMs / 1000) }} 秒 · {{ chatUiStatus.recovery.ok ? '恢复完成，可重新发送' : '恢复失败，请检查运行时日志' }}
       </div>
     </div>
-    <div ref="chatScrollContainer" class="chat-thread">
-      <div v-if="chatHistory.length === 0" class="chat-empty-state">
-        <div class="chat-empty-title">Hermes 对话已就绪</div>
-        <div class="chat-empty-copy">输入消息后使用 `Cmd/Ctrl + Enter` 发送，`Enter` 可直接换行。单次最长等待 {{ chatRuntimeTimeoutSeconds || 500 }} 秒。</div>
-      </div>
-      <div v-for="(msg, i) in chatHistory" :key="i" class="chat-row" :data-role="msg.role">
-        <div class="chat-bubble" :data-role="msg.role">
-          <div class="chat-role">{{ msg.role.toUpperCase() }}</div>
-          <div class="chat-message-text">{{ msg.content }}</div>
-          <div v-if="msg.tokens" class="chat-token-usage">
-            Token 消耗: 提示词 {{ msg.tokens.prompt_tokens }} | 输出 {{ msg.tokens.completion_tokens }} | 总计 {{ msg.tokens.total_tokens }}
+    <div ref="chatScrollContainer" class="chat-thread-resizable">
+      <div class="chat-thread">
+        <div v-if="chatHistory.length === 0" class="chat-empty-state">
+          <div class="chat-empty-title">Hermes 对话已就绪</div>
+          <div class="chat-empty-copy">输入消息后使用 Cmd/Ctrl + Enter 发送，Enter 可直接换行。单次最长等待 {{ chatRuntimeTimeoutSeconds || 500 }} 秒。</div>
+        </div>
+        <div v-for="(msg, i) in chatHistory" :key="i" class="chat-row" :data-role="msg.role">
+          <div class="chat-bubble" :data-role="msg.role">
+            <div class="chat-role">{{ msg.role.toUpperCase() }}</div>
+            <div class="chat-message-text" v-html="renderChatMessage(msg.content)"></div>
+            <div v-if="msg.tokens" class="chat-token-usage">
+              Token 消耗: 提示词 {{ msg.tokens.prompt_tokens }} | 输出 {{ msg.tokens.completion_tokens }} | 总计 {{ msg.tokens.total_tokens }}
+            </div>
           </div>
         </div>
       </div>
@@ -2523,6 +2916,10 @@ async function restartGlobalRuntime() {
       <div class="chat-composer-footer">
         <div class="chat-composer-hint">Enter 换行，Cmd/Ctrl + Enter 发送，最长等待 {{ chatRuntimeTimeoutSeconds || 500 }} 秒</div>
         <div class="chat-composer-actions">
+          <label class="reasoning-auto-approve-toggle">
+            <input v-model="reasoningAutoApproveEnabled" type="checkbox" />
+            <span>可观测执行自动通过审核</span>
+          </label>
           <button class="action-btn outline" @click="sendObservableReasoningChat" :disabled="sandboxBusy || reasoningBusy || !sandboxPrompt.trim()">{{ reasoningBusy ? '推理中...' : '可观测执行' }}</button>
           <button class="action-btn" @click="sendChat" :disabled="sandboxBusy || reasoningBusy || !sandboxPrompt.trim()">{{ sandboxBusy ? '发送中...' : '发送' }}</button>
         </div>
@@ -2532,7 +2929,7 @@ async function restartGlobalRuntime() {
       <div class="chat-context-summary-line">
         <strong>提交前确认</strong>
         <span>{{ submitGateMode === 'reasoning' ? '可观测执行' : '直接发送' }}</span>
-        <span>可先预览将发送给 Hermes / OMLX 的内容，再决定是否发送</span>
+        <span>可先预览 Control 提交包、Hermes 当前运行时路由和命中的 skill/action hints，再决定是否发送</span>
       </div>
       <div class="submit-gate-block">
         <div class="chat-memory-title">本次问题</div>
@@ -2551,7 +2948,7 @@ async function restartGlobalRuntime() {
                 </label>
                 <button class="action-btn outline submit-source-open-btn" type="button" @click.stop="loadContextSourceFile(source.sourceId)" :disabled="sourceEditorBusy">{{ selectedContextSourceId === source.sourceId ? '已打开' : '查看/编辑' }}</button>
               </div>
-              <span class="chat-context-source-path">{{ source.filePath }}</span>
+              <span class="chat-context-source-meta">{{ source.exists ? `载入 ${source.loadedChars} / ${source.totalChars} 字符` : '当前文件缺失' }}</span>
             </label>
             <div v-if="contextSourceCandidates.length === 0" class="chat-memory-desc">当前没有需要手工附加的原始上下文源；Hermes 启动后会自行读取默认 memory 文件。</div>
           </div>
@@ -2586,10 +2983,42 @@ async function restartGlobalRuntime() {
         {{ contextCandidatesError || submitDraftError }}
       </div>
       <div v-if="submitDraftResult" class="reasoning-review-box" style="margin-top: 12px;">
-        <div class="reasoning-plan-title">即将发送给 Hermes / OMLX 的内容</div>
+        <div class="reasoning-plan-title">提交流程预览</div>
         <div v-if="submitDraftResult.summary" class="chat-memory-desc" style="margin-bottom: 10px; white-space: pre-wrap;">{{ submitDraftResult.summary }}</div>
-        <div v-if="submitDraftResult.outboundPreview" class="reasoning-evidence-block">
-          <div class="reasoning-evidence-title">发给 Hermes / OMLX 的内容</div>
+        <div v-if="getPreviewControllerRequest(submitDraftResult.outboundPreview) || getPreviewRuntimeRoute(submitDraftResult.outboundPreview) || getPreviewPlannerHints(submitDraftResult.outboundPreview)" class="transport-preview-grid">
+          <div v-if="getPreviewControllerRequest(submitDraftResult.outboundPreview)" class="transport-preview-card controller">
+            <div class="transport-preview-card-title">Control 提交给 Hermes</div>
+            <div class="transport-preview-meta">目标 {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.target }}</div>
+            <div class="transport-preview-meta">调度模型 hermes-agent · 共 {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.totalMessages }} 条消息 · system {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.systemMessageCount }} · 历史重放 {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.replayedMessageCount }} · user {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.userMessageCount }}</div>
+            <pre class="reasoning-evidence-pre transport-preview-pre">{{ formatReasoningEvidence(getPreviewControllerRequest(submitDraftResult.outboundPreview)?.messages || []) }}</pre>
+          </div>
+          <div v-if="getPreviewRuntimeRoute(submitDraftResult.outboundPreview)" class="transport-preview-card route">
+            <div class="transport-preview-card-title">Hermes 当前运行时路由</div>
+            <div class="transport-preview-meta">运行时 {{ getPreviewRuntimeRoute(submitDraftResult.outboundPreview)?.provider }} / {{ getPreviewRuntimeRoute(submitDraftResult.outboundPreview)?.model }}</div>
+            <div class="transport-preview-meta">Base URL {{ getPreviewRuntimeRoute(submitDraftResult.outboundPreview)?.baseUrl }}</div>
+            <div class="chat-memory-desc" style="white-space: pre-wrap;">{{ getPreviewRuntimeRoute(submitDraftResult.outboundPreview)?.note }}</div>
+          </div>
+          <div v-if="getPreviewPlannerHints(submitDraftResult.outboundPreview)" class="transport-preview-card hints">
+            <div class="transport-preview-card-title">命中的 skill / action hints</div>
+            <div v-if="getPreviewPlannerHints(submitDraftResult.outboundPreview)?.suggestedActions?.length" class="transport-preview-meta">建议动作 {{ getPreviewPlannerHints(submitDraftResult.outboundPreview)?.suggestedActions?.join(', ') }}</div>
+            <div v-if="getPreviewPlannerHints(submitDraftResult.outboundPreview)?.selectedSkills?.length" class="chat-context-sources-list" style="margin-top: 8px;">
+              <div v-for="skill in getPreviewPlannerHints(submitDraftResult.outboundPreview)?.selectedSkills || []" :key="skill.filePath" class="chat-context-source-line">
+                <strong class="chat-context-source-label">{{ skill.name }}</strong>
+                <span class="chat-context-source-ok">{{ skill.hintCount }} 条 hint</span>
+                <span>{{ skill.filePath }}</span>
+              </div>
+            </div>
+            <div v-if="getPreviewPlannerHints(submitDraftResult.outboundPreview)?.matchedRules?.length" class="chat-context-sources-list" style="margin-top: 8px;">
+              <div v-for="rule in getPreviewPlannerHints(submitDraftResult.outboundPreview)?.matchedRules || []" :key="rule.key" class="chat-context-source-line transport-hint-line">
+                <strong class="chat-context-source-label">{{ rule.source === 'skill' ? 'Skill Hint' : 'Built-in Rule' }}</strong>
+                <span class="chat-context-source-ok">{{ [...rule.requiredActions, rule.answerAction].filter(Boolean).join(', ') }}</span>
+                <span>{{ rule.goal }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="submitDraftResult.outboundPreview" class="reasoning-evidence-block">
+          <div class="reasoning-evidence-title">提交预览</div>
           <pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(submitDraftResult.outboundPreview) }}</pre>
         </div>
       </div>
@@ -2601,7 +3030,6 @@ async function restartGlobalRuntime() {
         <span v-if="chatContextInfo.contextPoolEntryCount">上下文池 {{ chatContextInfo.contextPoolEntryCount }} 条</span>
         <span>重放历史 {{ chatContextInfo.replayedMessageCount }} 条</span>
         <span>运行时 {{ chatContextInfo.runtime.provider }} / {{ chatContextInfo.runtime.model }}</span>
-        <span>{{ chatContextInfo.runtime.baseUrl }}</span>
         <span>超时 {{ Math.round(chatContextInfo.runtime.timeoutMs / 1000) }} 秒</span>
         <span v-if="chatUiStatus.kind === 'pending' && chatUiStatus.activeRequest">本次请求已运行 {{ chatActiveRequestElapsedSeconds }} 秒</span>
       </div>
@@ -2610,7 +3038,6 @@ async function restartGlobalRuntime() {
         <div v-for="source in chatContextInfo.sources" :key="source.label + source.filePath" class="chat-context-source-line">
           <strong class="chat-context-source-label">{{ source.label }}</strong>
           <span :class="source.exists ? 'chat-context-source-ok' : 'chat-context-source-missing'">{{ source.exists ? '已加载' : '缺失' }}</span>
-          <span class="chat-context-source-path">{{ source.filePath }}</span>
           <span v-if="source.exists" class="chat-context-source-meta">载入 {{ source.loadedChars }} / {{ source.totalChars }} 字符<span v-if="source.truncated"> · 已截断</span></span>
         </div>
       </div>
@@ -2619,10 +3046,50 @@ async function restartGlobalRuntime() {
           <strong class="chat-context-source-label">确认上下文</strong>
           <span class="chat-context-source-ok">已注入</span>
           <span>{{ entry.title }}</span>
-          <span class="chat-context-source-path">{{ entry.filePath }}</span>
         </div>
       </div>
     </div>
+    <details v-if="reasoningCapabilities || reasoningCapabilitiesBusy || reasoningCapabilitiesError" class="chat-context-panel capability-panel" open>
+      <summary class="chat-context-summary-line capability-summary">
+        <strong>Plan 能力注册表</strong>
+        <span v-if="reasoningCapabilities">action {{ reasoningCapabilities.actions.length }}</span>
+        <span v-if="reasoningCapabilities">skill {{ reasoningCapabilities.skills.length }}</span>
+        <span v-if="reasoningCapabilities?.guide?.exists">附带扩展示例</span>
+      </summary>
+      <div v-if="reasoningCapabilitiesError" class="message-banner error" style="margin-top: 8px; font-size: 12px;">{{ reasoningCapabilitiesError }}</div>
+      <div v-else-if="reasoningCapabilitiesBusy" class="chat-memory-desc" style="margin-top: 8px;">读取中...</div>
+      <template v-else-if="reasoningCapabilities">
+        <div class="capability-section">
+          <div class="chat-memory-title">已注册 action</div>
+          <div class="chat-context-sources-list">
+            <div v-for="action in reasoningCapabilities.actions" :key="action.action" class="chat-context-source-line capability-action-line">
+              <strong class="chat-context-source-label">{{ action.action }}</strong>
+              <span class="chat-context-source-ok">{{ action.tool }}</span>
+              <span>{{ action.description }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="capability-section" v-if="reasoningCapabilities.skills.length">
+          <div class="chat-memory-title">当前 skill 与 hints</div>
+          <div class="chat-context-sources-list">
+            <div v-for="skill in reasoningCapabilities.skills" :key="skill.filePath" class="chat-context-source-line capability-skill-line">
+              <strong class="chat-context-source-label">{{ skill.name }}</strong>
+              <span class="chat-context-source-ok">{{ skill.hintCount }} 条 hint</span>
+              <span>{{ skill.filePath }}</span>
+            </div>
+          </div>
+          <div v-for="skill in reasoningCapabilities.skills" :key="`${skill.filePath}-hints`" class="capability-hint-group">
+            <div class="chat-memory-desc">{{ skill.name }}</div>
+            <div v-for="hint in skill.actionHints" :key="hint.hintId" class="reasoning-event-meta-chip capability-hint-chip">{{ formatActionHintLine(hint) }}</div>
+          </div>
+        </div>
+        <div class="capability-section" v-if="reasoningCapabilities.guide?.exists">
+          <div class="chat-memory-title">扩展示例</div>
+          <div class="chat-memory-desc" style="margin-bottom: 8px;">{{ reasoningCapabilities.guide.filePath }}</div>
+          <pre class="reasoning-evidence-pre transport-preview-pre capability-guide-pre">{{ reasoningCapabilities.guide.content }}</pre>
+        </div>
+      </template>
+    </details>
     <div class="chat-memory-panel">
       <div class="chat-memory-header-row">
         <div>
@@ -2640,12 +3107,17 @@ async function restartGlobalRuntime() {
         <div class="submit-gate-block">
           <div class="chat-memory-title">已保存记录</div>
           <div class="submit-source-list">
-            <button
+            <div
               v-for="entry in contextPoolEntries"
               :key="entry.entryId"
-              class="action-btn outline context-pool-list-btn"
-              @click="selectedContextPoolEntryId = entry.entryId; loadContextPoolEntry(entry.entryId)"
-            >{{ entry.title }}</button>
+              class="context-pool-list-row"
+            >
+              <button
+                class="action-btn outline context-pool-list-btn"
+                @click="selectedContextPoolEntryId = entry.entryId; loadContextPoolEntry(entry.entryId)"
+              >{{ entry.title }}</button>
+              <button class="action-btn outline mini-danger-btn" @click.stop="deleteContextPoolEntry(entry.entryId)" :disabled="contextPoolDeleteBusy || contextPoolEditorBusy">{{ contextPoolDeleteBusy ? '删除中...' : '删除' }}</button>
+            </div>
             <div v-if="contextPoolEntries.length === 0" class="chat-memory-desc">还没有上下文池文件。</div>
           </div>
         </div>
@@ -2694,6 +3166,7 @@ async function restartGlobalRuntime() {
           <Codemirror v-model="contextPoolFileContent" class="context-file-codemirror" :extensions="contextPoolEditorExtensions" :style="{ height: '60vh' }" />
           <div class="reasoning-review-actions" style="margin-top: 8px;">
             <button class="action-btn" @click="saveContextPoolEntryEdits" :disabled="contextPoolEditorBusy || !contextPoolFileDirty">{{ contextPoolEditorBusy ? '保存中...' : '保存修改' }}</button>
+            <button class="action-btn outline mini-danger-btn" @click="deleteContextPoolEntry(selectedContextPoolEntry.entryId)" :disabled="contextPoolDeleteBusy || contextPoolEditorBusy">{{ contextPoolDeleteBusy ? '删除中...' : '删除记录' }}</button>
           </div>
           <div v-if="contextPoolFileSaveMessage" class="chat-memory-desc">{{ contextPoolFileSaveMessage }}</div>
         </div>
@@ -2703,8 +3176,12 @@ async function restartGlobalRuntime() {
       <div class="reasoning-panel-header">
         <div>
           <div class="chat-memory-title">可观测推理链</div>
-          <div class="reasoning-subtitle">状态 {{ reasoningStatusLabel }}<span v-if="activeReasoningSession"> · Session {{ activeReasoningSession.sessionId }}</span></div>
+          <div class="reasoning-subtitle">状态 {{ reasoningStatusLabel }}<span v-if="activeReasoningSession"> · Session {{ activeReasoningSession.sessionId }} · 总计时 {{ formatDurationSeconds(reasoningElapsedSeconds) }}</span></div>
         </div>
+        <label class="reasoning-auto-approve-toggle panel">
+          <input v-model="reasoningAutoApproveEnabled" type="checkbox" />
+          <span>{{ reasoningAutoApproveEnabled ? '自动审核已开启' : '人工审核模式' }}</span>
+        </label>
       </div>
       <div v-if="activeReasoningSession?.plan" class="reasoning-plan-box">
         <div class="reasoning-plan-title">PLAN</div>
@@ -2712,7 +3189,8 @@ async function restartGlobalRuntime() {
         <div class="reasoning-plan-steps">
           <div v-for="step in activeReasoningSession.plan.steps" :key="step.stepId" class="reasoning-plan-step" :class="{ active: activeReasoningSession.currentStepId === step.stepId, review: activeReasoningSession.review?.stepId === step.stepId }">
             <strong>{{ step.title }}</strong>
-            <span>{{ step.tool }}</span>
+            <span class="reasoning-plan-step-chip">{{ step.action }}</span>
+            <span class="reasoning-plan-step-chip">{{ step.tool }}</span>
           </div>
         </div>
       </div>
@@ -2720,9 +3198,35 @@ async function restartGlobalRuntime() {
         <div class="reasoning-plan-title">{{ reasoningReviewTargetLabel }}</div>
         <div class="reasoning-review-title">{{ reasoningPendingReview.title }}</div>
         <div class="reasoning-review-summary">{{ reasoningPendingReview.summary }}</div>
+        <div v-if="reasoningAutoApproveEnabled" class="chat-memory-desc" style="margin-bottom: 10px;">当前已开启自动审核，检测到待审核步骤后会自动通过并继续执行。</div>
         <div v-if="reasoningReviewEvidence?.outboundPreview" class="reasoning-evidence-block">
-          <div class="reasoning-evidence-title">提交给 Hermes / OMLX 的内容</div>
-          <pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(reasoningReviewEvidence.outboundPreview) }}</pre>
+          <div class="reasoning-evidence-title">本轮提交流程</div>
+          <div v-if="getPreviewControllerRequest(reasoningReviewEvidence.outboundPreview) || getPreviewRuntimeRoute(reasoningReviewEvidence.outboundPreview) || getPreviewPlannerHints(reasoningReviewEvidence.outboundPreview)" class="transport-preview-grid review">
+            <div v-if="getPreviewControllerRequest(reasoningReviewEvidence.outboundPreview)" class="transport-preview-card controller">
+              <div class="transport-preview-card-title">Control 提交给 Hermes</div>
+              <div class="transport-preview-meta">目标 {{ getPreviewControllerRequest(reasoningReviewEvidence.outboundPreview)?.target }}</div>
+              <div class="transport-preview-meta">调度模型 hermes-agent · 共 {{ getPreviewControllerRequest(reasoningReviewEvidence.outboundPreview)?.totalMessages }} 条消息 · system {{ getPreviewControllerRequest(reasoningReviewEvidence.outboundPreview)?.systemMessageCount }} · 历史重放 {{ getPreviewControllerRequest(reasoningReviewEvidence.outboundPreview)?.replayedMessageCount }} · user {{ getPreviewControllerRequest(reasoningReviewEvidence.outboundPreview)?.userMessageCount }}</div>
+              <pre class="reasoning-evidence-pre transport-preview-pre">{{ formatReasoningEvidence(getPreviewControllerRequest(reasoningReviewEvidence.outboundPreview)?.messages || []) }}</pre>
+            </div>
+            <div v-if="getPreviewRuntimeRoute(reasoningReviewEvidence.outboundPreview)" class="transport-preview-card route">
+              <div class="transport-preview-card-title">Hermes 当前运行时路由</div>
+              <div class="transport-preview-meta">运行时 {{ getPreviewRuntimeRoute(reasoningReviewEvidence.outboundPreview)?.provider }} / {{ getPreviewRuntimeRoute(reasoningReviewEvidence.outboundPreview)?.model }}</div>
+              <div class="transport-preview-meta">Base URL {{ getPreviewRuntimeRoute(reasoningReviewEvidence.outboundPreview)?.baseUrl }}</div>
+              <div class="chat-memory-desc" style="white-space: pre-wrap;">{{ getPreviewRuntimeRoute(reasoningReviewEvidence.outboundPreview)?.note }}</div>
+            </div>
+            <div v-if="getPreviewPlannerHints(reasoningReviewEvidence.outboundPreview)" class="transport-preview-card hints">
+              <div class="transport-preview-card-title">命中的 skill / action hints</div>
+              <div v-if="getPreviewPlannerHints(reasoningReviewEvidence.outboundPreview)?.suggestedActions?.length" class="transport-preview-meta">建议动作 {{ getPreviewPlannerHints(reasoningReviewEvidence.outboundPreview)?.suggestedActions?.join(', ') }}</div>
+              <div v-if="getPreviewPlannerHints(reasoningReviewEvidence.outboundPreview)?.matchedRules?.length" class="chat-context-sources-list" style="margin-top: 8px;">
+                <div v-for="rule in getPreviewPlannerHints(reasoningReviewEvidence.outboundPreview)?.matchedRules || []" :key="rule.key" class="chat-context-source-line transport-hint-line">
+                  <strong class="chat-context-source-label">{{ rule.source === 'skill' ? 'Skill Hint' : 'Built-in Rule' }}</strong>
+                  <span class="chat-context-source-ok">{{ [...rule.requiredActions, rule.answerAction].filter(Boolean).join(', ') }}</span>
+                  <span>{{ rule.goal }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <pre v-else class="reasoning-evidence-pre">{{ formatReasoningEvidence(reasoningReviewEvidence.outboundPreview) }}</pre>
         </div>
         <div v-if="reasoningReviewEvidence?.rawResponsePreview" class="reasoning-evidence-block">
           <div class="reasoning-evidence-title">模型首先返回的结果</div>
@@ -2738,10 +3242,11 @@ async function restartGlobalRuntime() {
           rows="4"
           spellcheck="false"
           placeholder="驳回时填写修正条件，例如：必须调用 project.listStories，不要猜数据库。"
+          :disabled="reasoningAutoApproveEnabled"
         />
         <div class="reasoning-review-actions">
-          <button class="action-btn outline" @click="submitReasoningReview('reject')" :disabled="reasoningReviewBusy">{{ reasoningReviewBusy ? '提交中...' : '驳回并重跑当前目标' }}</button>
-          <button class="action-btn" @click="submitReasoningReview('approve')" :disabled="reasoningReviewBusy">{{ reasoningReviewBusy ? '提交中...' : '通过并继续' }}</button>
+          <button class="action-btn outline" @click="submitReasoningReview('reject')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : '驳回并重跑当前目标' }}</button>
+          <button class="action-btn" @click="submitReasoningReview('approve')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : '通过并继续' }}</button>
         </div>
       </div>
       <div v-if="activeReasoningSession?.artifacts?.storyIndex?.length" class="reasoning-artifact-box">
@@ -2758,8 +3263,15 @@ async function restartGlobalRuntime() {
           <div class="reasoning-event-body">
             <div class="reasoning-event-title">{{ event.title }}</div>
             <div class="reasoning-event-summary">{{ event.summary }}</div>
+            <div v-if="getReasoningEventMetaLines(event).length" class="reasoning-event-meta-list">
+              <span v-for="line in getReasoningEventMetaLines(event)" :key="`${event.eventId}-${line}`" class="reasoning-event-meta-chip">{{ line }}</span>
+            </div>
+            <div v-if="getReasoningEventOps(event).length" class="reasoning-event-ops">
+              <div class="reasoning-event-ops-title">可观测调用</div>
+              <div v-for="line in getReasoningEventOps(event)" :key="`${event.eventId}-${line}`" class="reasoning-event-op-line">{{ line }}</div>
+            </div>
           </div>
-          <div class="reasoning-event-time">{{ event.timestamp }}</div>
+          <div class="reasoning-event-time">{{ formatReasoningEventTime(event.timestamp) }}</div>
         </div>
       </div>
       <div v-if="activeReasoningSession?.error || reasoningError" class="message-banner error" style="font-size: 12px; line-height: 1.5;">
@@ -2769,9 +3281,7 @@ async function restartGlobalRuntime() {
     <div class="chat-memory-panel">
       <div class="chat-memory-header-row">
         <div>
-          <div class="chat-memory-title">聊天记录文件</div>
-          <div v-if="chatMemoryFile" class="chat-memory-path">{{ chatMemoryFile.filePath }}</div>
-          <div v-else class="chat-memory-path">正在读取今日聊天记录文件路径...</div>
+          <div class="chat-memory-title">聊天记录存档</div>
           <div class="chat-memory-desc">按日期持续写入的长期聊天记录，用于回看、整理和人工提取信息；它不等同于 Agent 记忆文件。</div>
         </div>
         <div class="chat-memory-actions">
@@ -2901,14 +3411,21 @@ async function restartGlobalRuntime() {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  min-height: 280px;
-  max-height: min(52vh, 560px);
+  min-height: 100%;
+  max-height: none;
   overflow-y: auto;
   padding: 16px;
   background:
     linear-gradient(180deg, rgba(18, 22, 28, 0.96) 0%, rgba(26, 31, 38, 0.92) 100%);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
+}
+
+.chat-thread-resizable {
+  min-height: 320px;
+  max-height: min(72vh, 860px);
+  resize: vertical;
+  overflow: auto;
 }
 
 .chat-empty-state {
@@ -2982,8 +3499,96 @@ async function restartGlobalRuntime() {
 .chat-message-text {
   font-size: 15px;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.chat-message-text :deep(h1),
+.chat-message-text :deep(h2),
+.chat-message-text :deep(h3),
+.chat-message-text :deep(h4),
+.chat-message-text :deep(h5),
+.chat-message-text :deep(h6) {
+  margin: 0 0 10px;
+  line-height: 1.35;
+  color: #ffffff;
+}
+
+.chat-message-text :deep(h1) {
+  font-size: 20px;
+}
+
+.chat-message-text :deep(h2) {
+  font-size: 18px;
+}
+
+.chat-message-text :deep(h3) {
+  font-size: 16px;
+}
+
+.chat-message-text :deep(p),
+.chat-message-text :deep(ul),
+.chat-message-text :deep(ol),
+.chat-message-text :deep(blockquote),
+.chat-message-text :deep(pre) {
+  margin: 0;
+}
+
+.chat-message-text :deep(p + p),
+.chat-message-text :deep(p + ul),
+.chat-message-text :deep(p + ol),
+.chat-message-text :deep(ul + p),
+.chat-message-text :deep(ol + p),
+.chat-message-text :deep(blockquote + p),
+.chat-message-text :deep(pre + p),
+.chat-message-text :deep(p + blockquote),
+.chat-message-text :deep(p + pre) {
+  margin-top: 10px;
+}
+
+.chat-message-text :deep(ul),
+.chat-message-text :deep(ol) {
+  padding-left: 20px;
+}
+
+.chat-message-text :deep(li + li) {
+  margin-top: 4px;
+}
+
+.chat-message-text :deep(blockquote) {
+  padding-left: 12px;
+  border-left: 3px solid rgba(143, 191, 255, 0.45);
+  color: #c8d8e8;
+}
+
+.chat-message-text :deep(code) {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  font: 12px/1.5 SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+}
+
+.chat-message-text :deep(pre) {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(4, 8, 14, 0.72);
+  overflow: auto;
+}
+
+.chat-message-text :deep(pre code) {
+  display: block;
+  padding: 0;
+  background: transparent;
+}
+
+.chat-message-text :deep(a) {
+  color: #8fc4ff;
+  text-decoration: underline;
+}
+
+.chat-message-text :deep(hr) {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .chat-token-usage {
@@ -3168,8 +3773,23 @@ async function restartGlobalRuntime() {
 }
 
 .context-pool-list-btn {
+  flex: 1;
   justify-content: flex-start;
   text-align: left;
+}
+
+.context-pool-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mini-danger-btn {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: #ffb3a7;
+  border-color: rgba(255, 140, 120, 0.35);
 }
 
 .context-file-editor-shell {
@@ -3271,6 +3891,90 @@ async function restartGlobalRuntime() {
   border-radius: 10px;
 }
 
+.transport-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.transport-preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(9, 12, 18, 0.56);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.transport-preview-card.controller {
+  border-color: rgba(89, 167, 255, 0.32);
+  background: rgba(13, 24, 38, 0.72);
+}
+
+.transport-preview-card.route {
+  border-color: rgba(255, 184, 107, 0.28);
+  background: rgba(36, 24, 10, 0.62);
+}
+
+.transport-preview-card.hints {
+  border-color: rgba(124, 252, 154, 0.24);
+  background: rgba(12, 28, 20, 0.62);
+}
+
+.transport-preview-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #f5f7fb;
+}
+
+.transport-preview-meta {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #aebdca;
+}
+
+.transport-preview-pre {
+  max-height: 320px;
+}
+
+.transport-hint-line {
+  align-items: flex-start;
+}
+
+.capability-panel {
+  margin-top: 12px;
+}
+
+.capability-summary {
+  cursor: pointer;
+}
+
+.capability-section {
+  margin-top: 10px;
+}
+
+.capability-action-line,
+.capability-skill-line {
+  align-items: flex-start;
+}
+
+.capability-hint-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.capability-hint-chip {
+  white-space: normal;
+}
+
+.capability-guide-pre {
+  max-height: 360px;
+}
+
 .reasoning-plan-title {
   font-size: 12px;
   font-weight: 700;
@@ -3316,6 +4020,14 @@ async function restartGlobalRuntime() {
 
 .reasoning-plan-step.review {
   color: #f6e7aa;
+}
+
+.reasoning-plan-step-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(143, 191, 255, 0.12);
+  border: 1px solid rgba(143, 191, 255, 0.18);
+  color: #cfe5ff;
 }
 
 .reasoning-review-box {
@@ -3401,6 +4113,45 @@ async function restartGlobalRuntime() {
   color: #aebdca;
 }
 
+.reasoning-event-meta-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.reasoning-event-meta-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #d7e1ea;
+}
+
+.reasoning-event-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(5, 8, 12, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.reasoning-event-ops-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #8fbfff;
+}
+
+.reasoning-event-op-line {
+  font: 12px/1.5 SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  color: #d7e1ea;
+  word-break: break-word;
+}
+
 .reasoning-event-time {
   color: #7f91a2;
 }
@@ -3484,9 +4235,12 @@ async function restartGlobalRuntime() {
 }
 
 @media (max-width: 820px) {
+  .chat-thread-resizable {
+    min-height: 260px;
+    max-height: 60vh;
+  }
+
   .chat-thread {
-    min-height: 220px;
-    max-height: 48vh;
     padding: 12px;
   }
 
