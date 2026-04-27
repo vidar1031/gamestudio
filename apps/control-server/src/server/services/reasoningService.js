@@ -1,0 +1,25 @@
+export function createReasoningService(deps) {
+  return {
+    appendReasoningEvent: deps.appendReasoningEvent,
+    applyPreparedLifecycleScript: deps.applyPreparedLifecycleScript,
+    applyPreparedWorkspaceOperation: deps.applyPreparedWorkspaceOperation,
+    applyPreparedReasoningWrite: deps.applyPreparedReasoningWrite,
+    buildHermesBinding: deps.buildHermesBinding,
+    cancelReasoningSession: deps.cancelReasoningSession,
+    clearReasoningReview: deps.clearReasoningReview,
+    continueReasoningSessionFromStep: deps.continueReasoningSessionFromStep,
+    createReasoningSession: deps.createReasoningSession,
+    deleteReasoningSessionRecord: deps.deleteReasoningSessionRecord,
+    getHermesRuntimeState: deps.getHermesRuntimeState,
+    hermesAgentDefinition: deps.hermesAgentDefinition,
+    markReasoningSessionFailed: deps.markReasoningSessionFailed,
+    persistHermesChatPrompt: deps.persistHermesChatPrompt,
+    persistReasoningReviewDecision: deps.persistReasoningReviewDecision,
+    prepareReasoningSessionPlan: deps.prepareReasoningSessionPlan,
+    readHermesChatHistory: deps.readHermesChatHistory,
+    readReasoningSession: deps.readReasoningSession,
+    runAllReasoningStepsFrom: deps.runAllReasoningStepsFrom,
+    runReasoningSession: deps.runReasoningSession,
+    updateReasoningSession: deps.updateReasoningSession,
+  }
+}

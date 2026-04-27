@@ -3,6 +3,8 @@ export type ReasoningPlanStep = {
   title: string
   action: string
   tool: string
+  params?: Record<string, unknown>
+  skipReview?: boolean
   dependsOn: string[]
 }
 
@@ -33,13 +35,17 @@ export type ChatHistoryEntry = {
 
 export type ReasoningReview = {
   status: 'pending'
-  targetType: 'plan' | 'step' | 'completion' | 'answer'
+  targetType: 'plan' | 'runtime_task_graph' | 'step' | 'completion' | 'answer'
+  action?: string | null
   stepId?: string | null
   stepIndex?: number | null
   title: string
   summary: string
   correctionPrompt?: string | null
   iteration?: number
+  allowAutoApprove?: boolean
+  requiredHumanDecision?: boolean
+  requiresApplyOnApprove?: boolean
   evidence?: {
     outboundPreview?: unknown
     rawResponsePreview?: string | null
@@ -66,12 +72,17 @@ export type ReasoningStoryIndexItem = {
 
 export type ReasoningSession = {
   sessionId: string
+  runtimeSessionId?: string | null
+  sessionKind?: 'reasoning' | 'agent_runtime'
   agentId: string
   userPrompt: string
-  status: 'planning' | 'running' | 'waiting_review' | 'completed' | 'failed'
+  parentSessionId?: string | null
+  childSessionIds?: string[]
+  status: 'planning' | 'running' | 'waiting_review' | 'completed' | 'failed' | 'cancelled'
   createdAt: string
   updatedAt: string
   plan: ReasoningPlan | null
+  runtimeTaskGraph?: ReasoningPlan | null
   currentStepId: string | null
   review?: ReasoningReview | null
   events: ReasoningEvent[]
@@ -80,6 +91,10 @@ export type ReasoningSession = {
     storyIndex?: ReasoningStoryIndexItem[]
     finalAnswer?: string
     finalAnswerPersisted?: boolean
+    workspaceStructure?: Record<string, unknown>
+    writtenFiles?: Array<Record<string, unknown>>
+    pendingWrites?: Record<string, unknown>
+    tasks?: Record<string, unknown>
     qualityGateAttempt?: number
     answerAssessmentAutoEnabled?: boolean
     latestAnswerAssessment?: ReasoningAnswerAssessment | null

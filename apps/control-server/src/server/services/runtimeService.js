@@ -1,0 +1,26 @@
+export function createRuntimeService(deps) {
+  return {
+    CONTROL_RESTART_SCRIPT: deps.CONTROL_RESTART_SCRIPT,
+    GAMESTUDIO_ROOT: deps.GAMESTUDIO_ROOT,
+    appendHermesLog: deps.appendHermesLog,
+    buildConfigValidation: deps.buildConfigValidation,
+    buildHermesPreflight: deps.buildHermesPreflight,
+    buildHermesSelfCheck: deps.buildHermesSelfCheck,
+    buildHermesBindingFromConfig: deps.buildHermesBindingFromConfig,
+    buildModelStateSnapshot: deps.buildModelStateSnapshot,
+    buildRuntimeStateSnapshot: deps.buildRuntimeStateSnapshot,
+    fetchLocalModelCatalog: deps.fetchLocalModelCatalog,
+    fs: deps.fs,
+    getHermesControlConfigFingerprint: deps.getHermesControlConfigFingerprint,
+    getHermesControlState: deps.getHermesControlState,
+    getHermesRuntimeState: deps.getHermesRuntimeState,
+    getPersistedHermesControlConfig: deps.getPersistedHermesControlConfig,
+    hermesAgentDefinition: deps.hermesAgentDefinition,
+    inspectModelAccess: deps.inspectModelAccess,
+    mergeHermesControlConfig: deps.mergeHermesControlConfig,
+    spawn: deps.spawn,
+    startHermesRuntime: deps.startHermesRuntime,
+    stopHermesRuntime: deps.stopHermesRuntime,
+    updateHermesControlState: deps.updateHermesControlState,
+  }
+}

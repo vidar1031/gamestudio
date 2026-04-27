@@ -89,3 +89,4 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 - Hermes 管理配置：`docs/HERMES_MANAGER_CONFIG.md`
 - 三层工作流：`docs/使用说明_三层工作流.md`
 - 交互故事编辑器契约：`ai/interactive_story_editor.contract.md`
+- 页内编辑器是:vue-codemirror

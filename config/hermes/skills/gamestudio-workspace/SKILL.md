@@ -65,6 +65,8 @@
 
 ## Planner Action Hints
 
+- editor|编辑器|前端目录|frontend|目录在哪里 => locate_project, generate_default_answer
+- 业务后端|后端目录|server目录|backend directory|apps/server => locate_project, generate_default_answer
 - control|Hermes|管理器|reasoning|对话|聊天|后端文件|主要后端|backend => locate_project, inspect_control_backend_surfaces, generate_default_answer
 - story|stories|脚本|scripts.json|项目扫描|已创建故事 => locate_project, list_created_stories, summarize_story_index
 - 图片生成|出图|image|background|comfyui|服务端入口 => locate_project, inspect_server_image_entrypoints, generate_default_answer

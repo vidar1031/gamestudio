@@ -20,6 +20,10 @@
 8. `ai/TOOLS.md`（当任务需要命令、接口、端口或目录细节时）
 9. `ai/interactive_story_editor.contract.md`（当任务明确涉及 editor schema / UI 契约时）
 
+当任务明确涉及 `control`、`control-server`、`control-console`、`Hermes manager` 结构或接口时，追加读取：
+
+10. `ai/control_architecture.md`
+
 ## 权威目录事实
 
 - 编辑器：`apps/editor`
@@ -42,6 +46,7 @@
 ## 工作规则
 
 - 对项目路径、目录结构、任务状态的判断，以文件事实为先，不以旧聊天印象为先。
+- 对 `control` 结构、路由归属、console/service 对齐关系的判断，以 `ai/control_architecture.md` 为先。
 - 普通聊天用于短问题、直接执行和状态查询。
 - 多步骤任务使用 reasoning / 可观测执行，并且必须给出显式结论。
 - stories / 项目扫描类任务必须优先扫描 `storage/projects`，并在结果里明确返回：
