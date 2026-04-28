@@ -15,6 +15,7 @@ import {
   HERMES_REASONING_TASK_HARD_TIMEOUT_MS,
   HERMES_REASONING_TASK_LEASE_MS,
   HERMES_REASONING_TASK_MAX_RENEWS,
+  HERMES_REASONING_TRANSIENT_PROBE_FAILURE_BUDGET,
 } from '../config/constants.js'
 import {
   CONTROL_RESTART_SCRIPT,
@@ -38,11 +39,68 @@ import {
   HERMES_RUNTIME_PID_FILE,
   HERMES_VENV_PYTHON,
   LEGACY_HERMES_CONTROL_CONFIG_FILE,
-  LEGACY_PROJECTS_ROOT,
   STUDIO_STORAGE_ROOT,
   STORAGE_PROJECTS_ROOT,
 } from '../config/paths.js'
 import { hermesAgentDefinition, openclawAgentDefinition } from './agentDefinitions.js'
+import {
+  inspectControlBackendSurfaces,
+  inspectWorkspaceDirectory,
+  inspectServerImageEntrypoints,
+  discoverWorkspaceAppRoots,
+  buildWorkspaceStructureArtifact,
+  resolveWorkspacePathFromInput,
+} from './workspace/inspectors.js'
+import {
+  normalizeWorkspaceRelativePath,
+  isDirectoryListingPrompt,
+  inferWorkspaceDirectoryFromPrompt,
+  inferWorkspaceDirectoriesFromPromptText,
+  inferWorkspaceFilesFromPrompt,
+  isWorkspaceFileQuestionPrompt,
+  isWorkspaceDirectoryQuestionPrompt,
+  isImageServiceEntrypointPrompt,
+  isControlBackendSurfacePrompt,
+  isControlLocationPrompt,
+  isEditorLocationPrompt,
+  isBusinessServerLocationPrompt,
+  hasWorkspaceLocationEvidence,
+  summarizeReasoningArtifactsForAssessment,
+  buildImageServiceEntrypointsAnswer,
+  buildControlBackendSurfacesAnswer,
+  shouldUseDeterministicImageServiceAnswer,
+  shouldUseDeterministicControlBackendAnswer,
+  shouldUseDeterministicDirectoryListingAnswer,
+  evaluateControlLocationAnswerQuality,
+  evaluateDirectoryListingAnswerQuality,
+  evaluateWorkspaceLocationAnswerQuality,
+  evaluateWorkspaceFileQuestionAnswerQuality,
+  evaluateWorkspaceDirectoryQuestionAnswerQuality,
+  evaluateImageServiceAnswerQuality,
+} from './reasoning/heuristics.js'
+import {
+  buildReasoningFileRewriteMessages,
+  buildReasoningWriteFallbackContent,
+  isWorkspaceEditablePath,
+  isWorkspaceRunnableScriptPath,
+  runWorkspaceTextSearch,
+} from './workspace/edits.js'
+import {
+  buildReasoningFallbackPlan,
+  buildReasoningPlannerMessages,
+  extractJsonObjectString,
+  normalizeReasoningPlan,
+} from './reasoning/promptBuilders.js'
+import { buildReasoningRecentContextArtifact } from './reasoning/memory.js'
+import {
+  generateReasoningFinalAnswer,
+  generateReasoningPlan,
+  getReasoningRequestError,
+} from './reasoning/modelRequests.js'
+import {
+  evaluateReasoningFinalAnswerQuality,
+  finalizeReasoningSessionWithQualityGate,
+} from './reasoning/qualityGate.js'
 import {
   buildReasoningActionCatalog,
   isReasoningAnswerAction,
@@ -59,6 +117,14 @@ import { registerContextRoutes } from './routes/contextRoutes.js'
 import { registerOverviewRoutes } from './routes/overviewRoutes.js'
 import { registerReasoningRoutes } from './routes/reasoningRoutes.js'
 import { registerRuntimeRoutes } from './routes/runtimeRoutes.js'
+import { registerSkillProposalsRoutes } from './routes/skillProposalsRoutes.js'
+import {
+  bootstrapIntents,
+  findIntentForAnswer,
+  findIntentForEvaluation,
+  findIntentForPlan,
+  registerIntent,
+} from './intents/index.js'
 import { createChatService } from './services/chatService.js'
 import { createConfigService } from './services/configService.js'
 import { createContextService } from './services/contextService.js'
@@ -432,6 +498,40 @@ function getHermesRuntimeState() {
   }
 }
 
+async function waitForHermesApiReady(timeoutMs = 12000, intervalMs = 400) {
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 12000)
+  let lastError = null
+
+  while (Date.now() < deadline) {
+    try {
+      const access = getProviderAccess('omlx', HERMES_API_SERVER_BASE_URL)
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 1500)
+      const response = await fetch(`${access.baseUrl}/models`, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...access.headers,
+        },
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
+
+      if (response.ok) return { ready: true, detail: 'Hermes API server ready' }
+      lastError = new Error(`http_${response.status}`)
+    } catch (error) {
+      lastError = error
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+
+  return {
+    ready: false,
+    detail: lastError instanceof Error ? lastError.message : String(lastError || 'unknown_error')
+  }
+}
+
 function mergeNoProxyValues(...groups) {
   const values = []
   for (const group of groups) {
@@ -482,6 +582,7 @@ function buildHermesEphemeralSystemPrompt(binding) {
     ['AGENTS', binding?.memory?.agentDefinitionFile],
     ['USER', binding?.memory?.userFile],
     ['MEMORY', binding?.memory?.memoryFile],
+    ['LONG_TASKS', binding?.memory?.longTasksFile],
     ['STATUS', binding?.memory?.statusFile],
     ['TASK_QUEUE', binding?.memory?.taskQueueFile],
     ['DECISIONS', binding?.memory?.decisionsFile]
@@ -538,6 +639,7 @@ async function startHermesRuntime() {
     GAMESTUDIO_AGENT_DEFINITION_FILE: binding.memory.agentDefinitionFile,
     GAMESTUDIO_USER_MEMORY_FILE: binding.memory.userFile,
     GAMESTUDIO_PROJECT_MEMORY_FILE: binding.memory.memoryFile,
+    GAMESTUDIO_LONG_TASKS_FILE: binding.memory.longTasksFile,
     GAMESTUDIO_STATUS_FILE: binding.memory.statusFile,
     GAMESTUDIO_TASK_QUEUE_FILE: binding.memory.taskQueueFile,
     GAMESTUDIO_DECISIONS_FILE: binding.memory.decisionsFile,
@@ -572,7 +674,10 @@ async function startHermesRuntime() {
   child.unref()
   writeHermesPid(child.pid)
 
-  await new Promise((resolve) => setTimeout(resolve, 600))
+  const readiness = await waitForHermesApiReady()
+  if (!readiness.ready) {
+    appendHermesLog(`[START][WARN] Hermes API not ready after launch wait: ${readiness.detail}`)
+  }
   return getHermesRuntimeState()
 }
 
@@ -755,6 +860,7 @@ function getDefaultHermesControlConfig() {
       agentDefinitionFile: path.join(aiRoot, 'AGENTS.md'),
       userFile: path.join(aiRoot, 'USER.md'),
       memoryFile: path.join(aiRoot, 'MEMORY.md'),
+      longTasksFile: path.join(aiMemoryRoot, 'LONG_TASKS.md'),
       statusFile: path.join(aiMemoryRoot, 'STATUS.md'),
       taskQueueFile: path.join(aiMemoryRoot, 'TASK_QUEUE.md'),
       decisionsFile: path.join(aiMemoryRoot, 'DECISIONS.md'),
@@ -809,6 +915,7 @@ function buildPersistedHermesControlConfig(rawConfig = {}) {
       agentDefinitionFile: String(memory.agentDefinitionFile || defaults.memory.agentDefinitionFile),
       userFile: String(memory.userFile || defaults.memory.userFile),
       memoryFile: String(memory.memoryFile || defaults.memory.memoryFile),
+      longTasksFile: String(memory.longTasksFile || defaults.memory.longTasksFile),
       statusFile: String(memory.statusFile || defaults.memory.statusFile),
       taskQueueFile: String(memory.taskQueueFile || defaults.memory.taskQueueFile),
       decisionsFile: String(memory.decisionsFile || defaults.memory.decisionsFile),
@@ -1075,7 +1182,7 @@ function parseSkillPlannerActionHints(markdown) {
         .map((item) => String(item || '').trim())
         .filter((action) => Boolean(REASONING_ACTIONS[action]))
       if (!keywords.length || !actions.length) return null
-      const answerAction = actions.find((action) => action === 'summarize_story_index' || action === 'generate_default_answer') || 'generate_default_answer'
+      const answerAction = actions.find((action) => action === 'generate_default_answer') || 'generate_default_answer'
       const requiredActions = actions.filter((action) => action !== answerAction)
       const options = {}
       const optionMatch = body.match(/\|\|\s*(.+)$/)
@@ -1149,6 +1256,7 @@ function buildAgentMemoryConfig(memoryConfig) {
     memoryConfig.agentDefinitionFile,
     memoryConfig.userFile,
     memoryConfig.memoryFile,
+    memoryConfig.longTasksFile,
     memoryConfig.statusFile,
     memoryConfig.taskQueueFile,
     memoryConfig.decisionsFile
@@ -1379,6 +1487,7 @@ function buildConfigValidation(config, binding, inspection = null) {
   addPathCheck('memory-agent-definition', 'Agent 定义文件', config.memory.agentDefinitionFile)
   addPathCheck('memory-user-file', '用户长期记忆', config.memory.userFile)
   addPathCheck('memory-memory-file', '项目长期记忆', config.memory.memoryFile)
+  addPathCheck('memory-long-tasks-file', '长任务主线文件', config.memory.longTasksFile)
   addPathCheck('memory-status-file', '状态文件', config.memory.statusFile)
   addPathCheck('memory-task-queue-file', '任务队列文件', config.memory.taskQueueFile)
   addPathCheck('memory-decisions-file', '决策文件', config.memory.decisionsFile)
@@ -1887,6 +1996,130 @@ function buildOpenClawAgentRecord() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Builtin intent registration
+// ---------------------------------------------------------------------------
+//
+// Each builtin intent wraps an existing detector / evaluator already
+// implemented above. Refactoring the if-chains in
+// generateReasoningPlan / generateReasoningFinalAnswer /
+// evaluateReasoningFinalAnswerQuality means those pipelines now consult
+// the registry; without these builtins the legacy behaviour would
+// silently disappear. Behaviour is intentionally byte-equivalent to
+// the previous cascades.
+
+let builtinIntentsRegistered = false
+
+function registerBuiltinIntents() {
+  if (builtinIntentsRegistered) return
+  builtinIntentsRegistered = true
+
+  // 1. Workspace location prompts (editor / control / business server).
+  registerIntent({
+    id: 'builtin.workspace_location',
+    source: 'builtin',
+    description: 'Editor / control / business server 目录定位类问题',
+    priority: 100,
+    matchPlan: (prompt) =>
+      isEditorLocationPrompt(prompt)
+      || isControlLocationPrompt(prompt)
+      || isBusinessServerLocationPrompt(prompt),
+    matchEvaluation: (prompt, artifacts) =>
+      hasWorkspaceLocationEvidence(prompt, artifacts) && !isControlLocationPrompt(prompt),
+    evaluateAnswer: (prompt, answer, artifacts) =>
+      evaluateWorkspaceLocationAnswerQuality(prompt, answer, artifacts),
+  })
+
+  // 2. Workspace single-file question.
+  registerIntent({
+    id: 'builtin.workspace_file_question',
+    source: 'builtin',
+    description: '关于具体仓库文件作用 / 职责的问题',
+    priority: 95,
+    matchPlan: (prompt) => isWorkspaceFileQuestionPrompt(prompt),
+    matchEvaluation: (prompt) => isWorkspaceFileQuestionPrompt(prompt),
+    evaluateAnswer: (prompt, answer, artifacts) =>
+      evaluateWorkspaceFileQuestionAnswerQuality(prompt, answer, artifacts),
+  })
+
+  // 3. Workspace directory question.
+  registerIntent({
+    id: 'builtin.workspace_directory_question',
+    source: 'builtin',
+    description: '关于仓库目录组织 / 职责的问题',
+    priority: 90,
+    matchPlan: (prompt) => isWorkspaceDirectoryQuestionPrompt(prompt),
+    matchEvaluation: (prompt) => isWorkspaceDirectoryQuestionPrompt(prompt),
+    evaluateAnswer: (prompt, answer, artifacts) =>
+      evaluateWorkspaceDirectoryQuestionAnswerQuality(prompt, answer, artifacts),
+  })
+
+  // 4. Image service entrypoint evaluator (no plan override; reuses model planner).
+  registerIntent({
+    id: 'builtin.image_service_entrypoint',
+    source: 'builtin',
+    description: '图片生成服务端入口问题的确定性评分',
+    priority: 80,
+    matchEvaluation: (prompt, artifacts) =>
+      shouldUseDeterministicImageServiceAnswer(prompt, artifacts),
+    evaluateAnswer: (prompt, answer, artifacts) =>
+      evaluateImageServiceAnswerQuality(answer, artifacts),
+  })
+
+  // 5. Directory-listing summarisation: deterministic answer + deterministic eval.
+  registerIntent({
+    id: 'builtin.directory_listing',
+    source: 'builtin',
+    description: '基于 list_directory_contents 结果的确定性回答与评分',
+    priority: 70,
+    matchPlan: (prompt, ctx) => {
+      if (!isDirectoryListingPrompt(prompt)) return false
+      const hasInferred = Boolean(ctx?.inferredDirPath)
+      const hasContextDirs = Array.isArray(ctx?.inferredContextDirPaths) && ctx.inferredContextDirPaths.length > 0
+      return hasInferred || hasContextDirs
+    },
+    matchAnswer: (prompt, artifacts) =>
+      shouldUseDeterministicDirectoryListingAnswer(prompt, artifacts),
+    buildDeterministicAnswer: (prompt, artifacts) =>
+      buildReasoningFallbackAnswer(prompt, artifacts),
+    deterministicAnswerReason: 'deterministic_directory_listing_summary',
+    matchEvaluation: (prompt, artifacts) =>
+      shouldUseDeterministicDirectoryListingAnswer(prompt, artifacts),
+    evaluateAnswer: (prompt, answer, artifacts) =>
+      evaluateDirectoryListingAnswerQuality(answer, artifacts),
+  })
+
+  // 6. Control surface location (the bottom of the legacy eval cascade).
+  registerIntent({
+    id: 'builtin.control_location',
+    source: 'builtin',
+    description: 'control / Hermes 后端目录定位类问题',
+    priority: 60,
+    matchEvaluation: (prompt) => isControlLocationPrompt(prompt),
+    evaluateAnswer: (prompt, answer, artifacts) =>
+      evaluateControlLocationAnswerQuality(prompt, answer, artifacts),
+  })
+}
+
+function bootstrapControlServerIntents() {
+  registerBuiltinIntents()
+  try {
+    const summary = bootstrapIntents()
+    console.log(
+      `[control-server] [intents] registered ${summary.total} intent(s) `
+      + `(builtin=${summary.bySource.builtin || 0}, json=${summary.bySource.json || 0}, proposal=${summary.bySource.proposal || 0}); `
+      + `json loader: loaded=${summary.json.loaded}, errors=${summary.json.errors.length}`
+    )
+    if (summary.json.errors.length > 0) {
+      for (const error of summary.json.errors) {
+        console.warn('[control-server] [intents] JSON intent failed:', error.filePath, error.error)
+      }
+    }
+  } catch (error) {
+    console.warn('[control-server] [intents] bootstrap failed:', error?.message || error)
+  }
+}
+
 function createControlServerRouteContext() {
   const shared = {
     CONTROL_RESTART_SCRIPT,
@@ -1897,6 +2130,7 @@ function createControlServerRouteContext() {
     HERMES_RUNTIME_LOG_FILE,
     appendHermesLog,
     appendReasoningEvent,
+    approveReasoningQualityOverride,
     applyPreparedLifecycleScript,
     applyPreparedWorkspaceOperation,
     applyPreparedReasoningWrite,
@@ -2002,9 +2236,11 @@ function registerPrimaryControlServerRoutes(app) {
   registerContextRoutes(app, context)
   registerChatRoutes(app, context)
   registerReasoningRoutes(app, context)
+  registerSkillProposalsRoutes(app)
 }
 
 export function registerControlServerRoutes(app) {
+  bootstrapControlServerIntents()
   registerPrimaryControlServerRoutes(app)
   registerChatRequestRoute(app)
 }
@@ -2068,11 +2304,11 @@ function ensureDirectory(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true })
 }
 
-function createOpaqueId(prefix) {
+export function createOpaqueId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
 }
 
-function truncateReasoningPreview(value, limit = 1600) {
+export function truncateReasoningPreview(value, limit = 1600) {
   const text = String(value || '')
   if (text.length <= limit) {
     return text
@@ -2114,7 +2350,7 @@ function buildMatchedReasoningRuleSummary(userPrompt, history, binding, contextS
   }))
 }
 
-function buildStructuredOutboundPreview({
+export function buildStructuredOutboundPreview({
   binding,
   messages,
   purpose,
@@ -2133,7 +2369,6 @@ function buildStructuredOutboundPreview({
     provider: binding.provider,
     model: binding.model,
     baseUrl: binding.baseUrl,
-    messages: previewMessages,
     controllerRequest: {
       purpose,
       mode,
@@ -2169,6 +2404,32 @@ function appendReasoningReviewRecord(record) {
   fs.appendFileSync(HERMES_REASONING_REVIEW_RECORDS_FILE, `${JSON.stringify(normalizedRecord)}\n`, 'utf8')
   ensureDirectory(path.dirname(HERMES_AGENT_RUNTIME_REVIEW_RECORDS_FILE))
   fs.appendFileSync(HERMES_AGENT_RUNTIME_REVIEW_RECORDS_FILE, `${JSON.stringify(normalizedRecord)}\n`, 'utf8')
+}
+
+const HERMES_REASONING_QUALITY_CALIBRATIONS_FILE = path.join(GAMESTUDIO_ROOT, 'state', 'reasoning-quality-calibrations.jsonl')
+
+function appendReasoningQualityCalibrationRecord(record) {
+  ensureDirectory(path.dirname(HERMES_REASONING_QUALITY_CALIBRATIONS_FILE))
+  fs.appendFileSync(HERMES_REASONING_QUALITY_CALIBRATIONS_FILE, `${JSON.stringify({
+    recordedAt: new Date().toISOString(),
+    recordType: 'reasoning-quality-calibration',
+    ...record
+  })}\n`, 'utf8')
+}
+
+export function readRecentReasoningQualityCalibrations(limit = 8) {
+  if (!fs.existsSync(HERMES_REASONING_QUALITY_CALIBRATIONS_FILE)) return []
+  const lines = fs.readFileSync(HERMES_REASONING_QUALITY_CALIBRATIONS_FILE, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return lines.slice(-Math.max(0, Number(limit) || 8)).map((line) => {
+    try {
+      return JSON.parse(line)
+    } catch {
+      return null
+    }
+  }).filter(Boolean)
 }
 
 function getLegacyReasoningSessionFilePath(sessionId) {
@@ -2256,7 +2517,7 @@ function getActiveReasoningExecution(sessionId) {
   return activeHermesReasoningExecutions.get(String(sessionId)) || null
 }
 
-function readReasoningSession(sessionId) {
+export function readReasoningSession(sessionId) {
   const runtimeFilePath = getAgentRuntimeSessionFilePath(sessionId)
   const legacyFilePath = getLegacyReasoningSessionFilePath(sessionId)
   const filePath = fs.existsSync(runtimeFilePath) ? runtimeFilePath : legacyFilePath
@@ -2284,7 +2545,7 @@ function deleteReasoningSessionRecord(sessionId) {
   return { sessionId }
 }
 
-function updateReasoningSession(sessionId, updater) {
+export function updateReasoningSession(sessionId, updater) {
   const current = readReasoningSession(sessionId)
   if (!current) {
     throw new Error('reasoning_session_not_found')
@@ -2294,7 +2555,7 @@ function updateReasoningSession(sessionId, updater) {
   return writeReasoningSession(next)
 }
 
-function appendReasoningEvent(sessionId, type, title, summary, extra = {}) {
+export function appendReasoningEvent(sessionId, type, title, summary, extra = {}) {
   return updateReasoningSession(sessionId, (session) => {
     const event = createReasoningEvent(sessionId, type, title, summary, extra)
     appendAgentRuntimeEventJournal({
@@ -2390,7 +2651,7 @@ async function continueReasoningParentChain(completedSession) {
   }
 
   const binding = buildHermesBinding()
-  const history = readHermesChatHistory()
+  const history = readHermesChatHistory({ includeAllSessions: true })
   const childSession = await createReasoningSession(parentSession.agentId, nextPrompt, childSubmissionContext)
   persistHermesChatPrompt(childSession.sessionId, nextPrompt)
   void runReasoningSession(childSession.sessionId, binding, history)
@@ -2547,10 +2808,11 @@ function applyPreparedLifecycleScript(sessionId, stepId) {
   }
 }
 
-function buildReasoningReview(targetType, options = {}) {
+export function buildReasoningReview(targetType, options = {}) {
   return {
     status: 'pending',
     targetType,
+    reviewPhase: String(options.reviewPhase || 'standard').trim() || 'standard',
     action: String(options.action || '').trim() || null,
     stepId: options.stepId || null,
     stepIndex: Number.isInteger(options.stepIndex) ? options.stepIndex : null,
@@ -2565,7 +2827,7 @@ function buildReasoningReview(targetType, options = {}) {
   }
 }
 
-function requestReasoningReview(sessionId, review, eventData = {}) {
+export function requestReasoningReview(sessionId, review, eventData = {}) {
   updateReasoningSession(sessionId, (session) => ({
     ...session,
     status: 'waiting_review',
@@ -2611,7 +2873,7 @@ function persistReasoningReviewDecision(sessionId, decision, review, correctionP
   })
 }
 
-function finalizeReasoningSession(sessionId, options = {}) {
+export function finalizeReasoningSession(sessionId, options = {}) {
   const session = readReasoningSession(sessionId)
   if (!session) {
     throw new Error('reasoning_session_not_found')
@@ -2649,6 +2911,96 @@ function finalizeReasoningSession(sessionId, options = {}) {
   return finalizedSession
 }
 
+async function generateReasoningQualityCalibrationLesson(session, binding, review, correctionPrompt = '') {
+  const assessment = session?.artifacts?.latestAnswerAssessment || null
+  const userFeedback = String(correctionPrompt || '').trim() || '用户确认：当前 Hermes 最终答案是正确的，评分系统应学习这类答案不要误判。'
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        'You are improving GameStudio control answer quality scoring.',
+        'A human reviewer approved an answer that the automatic quality gate rejected or doubted.',
+        'Return one strict JSON object with keys: lesson, scoringAdjustment, futureCheck.',
+        'Do not rewrite source code. Produce concise calibration guidance in Chinese.'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: [
+        `用户问题：${session?.userPrompt || ''}`,
+        '',
+        `Hermes 答案：\n${session?.artifacts?.finalAnswer || ''}`,
+        '',
+        `自动评分：\n${JSON.stringify(assessment || {}, null, 2)}`,
+        '',
+        `人工反馈：${userFeedback}`,
+        '',
+        `审核阶段：${review?.reviewPhase || ''}`
+      ].join('\n')
+    }
+  ]
+
+  try {
+    const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'hermes-agent',
+        messages,
+        max_tokens: 360
+      })
+    })
+    if (!response.ok) throw new Error(`quality_calibration_http_${response.status}`)
+    const data = await response.json()
+    return String(data.choices?.[0]?.message?.content || '').trim()
+  } catch (error) {
+    return JSON.stringify({
+      lesson: '人工确认自动评分误判；后续评分必须优先核对可观测工具返回的直接子项是否已完整出现在答案中。',
+      scoringAdjustment: '完整列出单个目录的路径和所有直接子项时，应允许通过质量门。',
+      futureCheck: error instanceof Error ? error.message : String(error)
+    })
+  }
+}
+
+async function approveReasoningQualityOverride(sessionId, binding, review, correctionPrompt = '') {
+  const session = readReasoningSession(sessionId)
+  if (!session) throw new Error('reasoning_session_not_found')
+  const assessment = session.artifacts?.latestAnswerAssessment || null
+  const calibrationLesson = await generateReasoningQualityCalibrationLesson(session, binding, review, correctionPrompt)
+
+  appendReasoningQualityCalibrationRecord({
+    sessionId,
+    userPrompt: session.userPrompt,
+    finalAnswer: session.artifacts?.finalAnswer || '',
+    assessment,
+    correctionPrompt: correctionPrompt || null,
+    calibrationLesson,
+    artifactsSummary: summarizeReasoningArtifactsForAssessment(session.artifacts || {})
+  })
+
+  updateReasoningSession(sessionId, (current) => ({
+    ...current,
+    artifacts: {
+      ...current.artifacts,
+      latestQualityCalibration: {
+        recordedAt: new Date().toISOString(),
+        calibrationLesson,
+        correctionPrompt: correctionPrompt || null
+      }
+    }
+  }))
+
+  appendReasoningEvent(sessionId, 'quality_calibration_recorded', '评分系统已记录人工校准', '用户确认答案可接受；本次问题、答案、评分结果和人工反馈已写入评分校准记录。', {
+    data: {
+      assessment,
+      calibrationLesson,
+      correctionPrompt: correctionPrompt || null
+    }
+  })
+
+  return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
+}
+
 function markReasoningSessionFailed(sessionId, error) {
   const currentSession = readReasoningSession(sessionId)
   if (!currentSession) return
@@ -2675,6 +3027,116 @@ function markReasoningSessionFailed(sessionId, error) {
   clearActiveReasoningExecution(sessionId)
 }
 
+function getReasoningErrorDetail(error) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function isRecoverableReasoningStepError(error, step) {
+  const detail = getReasoningErrorDetail(error)
+  if (!step || !detail) return false
+  if (step.action === 'read_file_content') {
+    return /read_file_content_not_found:|ENOENT/i.test(detail)
+  }
+  if (step.action === 'list_directory_contents') {
+    return /list_directory_contents_not_found:|list_directory_contents_not_directory:|ENOENT|ENOTDIR/i.test(detail)
+  }
+  return false
+}
+
+function summarizeReasoningArtifactsForRecovery(artifacts = {}) {
+  const lines = []
+  const directoryListings = artifacts?.directoryListings && typeof artifacts.directoryListings === 'object'
+    ? artifacts.directoryListings
+    : {}
+  for (const [dirPath, listing] of Object.entries(directoryListings).slice(-4)) {
+    const entries = Array.isArray(listing?.entries)
+      ? listing.entries.map((entry) => `${entry.kind === 'directory' ? '[dir]' : '[file]'} ${entry.name}`).slice(0, 12).join(', ')
+      : ''
+    lines.push(`- 已列目录 ${dirPath}: ${entries || '空目录或无可显示子项'}`)
+  }
+
+  const fileContents = artifacts?.fileContents && typeof artifacts.fileContents === 'object'
+    ? artifacts.fileContents
+    : {}
+  for (const filePath of Object.keys(fileContents).slice(-6)) {
+    lines.push(`- 已读文件 ${normalizeWorkspaceRelativePath(path.relative(GAMESTUDIO_ROOT, filePath)) || filePath}`)
+  }
+
+  return lines.length > 0 ? lines.join('\n') : '- 暂无已完成的可观测证据。'
+}
+
+function buildRecoverableStepFailureCorrectionPrompt(session, step, stepIndex, error) {
+  const detail = getReasoningErrorDetail(error)
+  const attemptedOps = buildReasoningObservableOps(step).join('; ') || `${step.action} ${JSON.stringify(step.params || {})}`
+  return [
+    '上一轮执行中有一个可观测工具失败，但该失败不是终局错误，请把它当成新的 artifact 继续规划。',
+    `失败步骤：#${stepIndex + 1} ${step.title || step.action}`,
+    `失败动作：${step.action}`,
+    `尝试操作：${attemptedOps}`,
+    `错误信息：${detail}`,
+    '重规划要求：不要再次读取同一个不存在的路径；改用已经存在的目录列表、package.json、src 目录、入口文件、或 search_workspace_text 等替代证据来回答原问题。',
+    '如果问题只是分析目录或文件职责，这是只读分析任务，不要追加 write_memory_file 或 update_task_queue。',
+    '已完成证据：',
+    summarizeReasoningArtifactsForRecovery(session?.artifacts || {})
+  ].join('\n')
+}
+
+async function recoverReasoningStepFailure(sessionId, binding, history, step, stepIndex, error) {
+  const session = readReasoningSession(sessionId)
+  if (!session || session.status === 'cancelled') return false
+  if (!isRecoverableReasoningStepError(error, step)) return false
+
+  const recoverableFailureCount = Number(session.artifacts?.recoverableFailureCount || 0)
+  if (recoverableFailureCount >= 2) return false
+
+  const detail = getReasoningErrorDetail(error)
+  const stepError = {
+    at: new Date().toISOString(),
+    stepId: step.stepId,
+    stepIndex,
+    title: step.title,
+    action: step.action,
+    tool: step.tool,
+    params: step.params || {},
+    message: detail,
+    observableOps: buildReasoningObservableOps(step)
+  }
+
+  updateReasoningSession(sessionId, (current) => ({
+    ...current,
+    status: 'running',
+    error: null,
+    artifacts: {
+      ...current.artifacts,
+      recoverableFailureCount: recoverableFailureCount + 1,
+      stepErrors: [...(current.artifacts?.stepErrors || []), stepError],
+      latestStepReviewEvidence: {
+        targetType: 'step_error',
+        stepId: step.stepId,
+        stepTitle: step.title,
+        tool: step.tool,
+        outboundPreview: {
+          action: step.action,
+          tool: step.tool,
+          params: step.params || {},
+          observableOps: stepError.observableOps
+        },
+        rawResponsePreview: detail,
+        structuredResult: stepError
+      },
+      nextStepIndex: stepIndex
+    }
+  }))
+  appendReasoningEvent(sessionId, 'step_failed_recoverable', '步骤失败，准备重规划', detail, {
+    stepId: step.stepId,
+    data: stepError
+  })
+
+  const correctionPrompt = buildRecoverableStepFailureCorrectionPrompt(readReasoningSession(sessionId), step, stepIndex, error)
+  await prepareReasoningSessionPlan(sessionId, binding, history, { correctionPrompt })
+  return true
+}
+
 function buildReasoningTaskRecord(phase, binding) {
   const now = new Date()
   return {
@@ -2692,10 +3154,39 @@ function buildReasoningTaskRecord(phase, binding) {
     leaseExpiresAt: new Date(now.getTime() + HERMES_REASONING_TASK_LEASE_MS).toISOString(),
     renewalCount: 0,
     maxRenewals: HERMES_REASONING_TASK_MAX_RENEWS,
+    transientProbeFailureCount: 0,
+    transientProbeFailureBudget: HERMES_REASONING_TRANSIENT_PROBE_FAILURE_BUDGET,
     hardTimeoutAt: new Date(now.getTime() + HERMES_REASONING_TASK_HARD_TIMEOUT_MS).toISOString(),
     providerStatus: null,
     lastObservedAt: null,
     error: null
+  }
+}
+
+function shouldTreatProbeFailureAsTransient(task, probe) {
+  if (!task || !probe) return false
+  if (probe.state !== 'provider_probe_failed' && probe.state !== 'provider_unreachable') {
+    return false
+  }
+
+  const hardTimeoutAtMs = Date.parse(String(task.hardTimeoutAt || ''))
+  if (Number.isFinite(hardTimeoutAtMs) && Date.now() >= hardTimeoutAtMs) {
+    return false
+  }
+
+  const budget = Math.max(0, Number(task.transientProbeFailureBudget || HERMES_REASONING_TRANSIENT_PROBE_FAILURE_BUDGET))
+  const failureCount = Math.max(0, Number(task.transientProbeFailureCount || 0))
+  return failureCount < budget
+}
+
+function buildTransientProbeContinuation(probe, phase, task) {
+  const nextFailureCount = Math.max(0, Number(task?.transientProbeFailureCount || 0)) + 1
+  const budget = Math.max(0, Number(task?.transientProbeFailureBudget || HERMES_REASONING_TRANSIENT_PROBE_FAILURE_BUDGET))
+  return {
+    ...probe,
+    state: 'provider_probe_failed_transient',
+    canContinue: true,
+    detail: `OMLX probe暂时失败（${nextFailureCount}/${budget}）：${probe.detail}；保留当前 ${phase} 本地推理任务，继续等待下一个观察窗口`
   }
 }
 
@@ -2894,6 +3385,7 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
         model: binding.model,
         leaseMs: HERMES_REASONING_TASK_LEASE_MS,
         maxRenewals: HERMES_REASONING_TASK_MAX_RENEWS,
+        transientProbeFailureBudget: initialTask.transientProbeFailureBudget,
         hardTimeoutMs: HERMES_REASONING_TASK_HARD_TIMEOUT_MS,
         hardTimeoutAt: initialTask.hardTimeoutAt,
         leaseExpiresAt: initialTask.leaseExpiresAt,
@@ -2961,17 +3453,26 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
       }
 
       const currentTask = getReasoningTask(currentSession, phase)
-      const probe = await probeReasoningProviderTask(binding, phase, currentTask)
+      const rawProbe = await probeReasoningProviderTask(binding, phase, currentTask)
+      const probe = shouldTreatProbeFailureAsTransient(currentTask, rawProbe)
+        ? buildTransientProbeContinuation(rawProbe, phase, currentTask)
+        : rawProbe
       const nextRenewalCount = probe.canContinue ? currentTask.renewalCount + 1 : currentTask.renewalCount
       const nextLeaseExpiresAt = probe.canContinue
         ? new Date(Date.now() + HERMES_REASONING_TASK_LEASE_MS).toISOString()
         : currentTask.leaseExpiresAt
+      const nextTransientProbeFailureCount = probe.canContinue
+        ? (probe.state === 'provider_probe_failed_transient'
+            ? Math.max(0, Number(currentTask.transientProbeFailureCount || 0)) + 1
+            : 0)
+        : Math.max(0, Number(currentTask.transientProbeFailureCount || 0))
 
       updateReasoningTask(sessionId, phase, (task) => ({
         ...task,
         status: probe.canContinue ? 'waiting_provider' : 'failed',
         renewalCount: nextRenewalCount,
         leaseExpiresAt: nextLeaseExpiresAt,
+        transientProbeFailureCount: nextTransientProbeFailureCount,
         providerStatus: probe,
         lastObservedAt: probe.checkedAt,
         telemetrySource: probe.telemetrySource,
@@ -2986,6 +3487,8 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
             providerStatus: probe,
             renewalCount: nextRenewalCount,
             maxRenewals: currentTask.maxRenewals,
+            transientProbeFailureCount: nextTransientProbeFailureCount,
+            transientProbeFailureBudget: currentTask.transientProbeFailureBudget,
             leaseMs: currentTask.leaseMs,
             leaseExpiresAt: nextLeaseExpiresAt,
             hardTimeoutAt: currentTask.hardTimeoutAt,
@@ -3020,106 +3523,64 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
   }
 }
 
-function buildReasoningStoryIndexRecord(projectId, filePath, parsed) {
-  const nodes = Array.isArray(parsed?.nodes) ? parsed.nodes : []
-  const nodeNames = nodes
-    .map((node) => String(node?.body?.title || node?.name || node?.id || '').trim())
-    .filter(Boolean)
-
-  return {
-    projectId,
-    filePath,
-    nodeCount: nodes.length,
-    nodeNames: nodeNames.slice(0, 8)
+export function inferWorkspaceDirectoriesFromRecentContext(userPrompt, history) {
+  if (!isDirectoryListingPrompt(userPrompt)) return []
+  if (isEditorLocationPrompt(userPrompt) || isControlLocationPrompt(userPrompt) || isBusinessServerLocationPrompt(userPrompt)) return []
+  const recentMessages = collectReplayableHermesMessages(history, { limit: 6 })
+  const latestAssistantMessage = [...recentMessages]
+    .reverse()
+    .find((message) => message?.role === 'assistant' || message?.role === 'hermes')
+  const recentText = String(latestAssistantMessage?.content || '')
+  const candidates = []
+  const pathPattern = /(?:\/[^\s`|，。；：]+\/gamestudio\/)?((?:apps|packages|storage|docs|scripts|ai|config|monitor|state)\/[A-Za-z0-9._/-]+)/g
+  let match = null
+  while ((match = pathPattern.exec(recentText))) {
+    const candidate = normalizeWorkspaceRelativePath(match[1]).replace(/[).,;，。；：]+$/g, '')
+    if (candidate) candidates.push(candidate)
   }
+
+  const uniqueDirectories = []
+  const seen = new Set()
+  for (const candidate of candidates) {
+    const resolvedPath = resolveWorkspacePathFromInput(candidate)
+    if (!resolvedPath || !resolvedPath.startsWith(GAMESTUDIO_ROOT)) continue
+    if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) continue
+    const relativePath = normalizeWorkspaceRelativePath(path.relative(GAMESTUDIO_ROOT, resolvedPath)) || '.'
+    if (seen.has(relativePath)) continue
+    seen.add(relativePath)
+    uniqueDirectories.push(relativePath)
+  }
+  return uniqueDirectories
 }
 
-function getStoryProjectSearchRoots() {
-  return [...new Set([STORAGE_PROJECTS_ROOT, LEGACY_PROJECTS_ROOT])]
-}
+const REASONING_INTENT_RULES = []
 
-function listCreatedStoriesFromProjects() {
-  const searchedRoots = getStoryProjectSearchRoots()
-  const availableRoots = []
-  const missingRoots = []
-  const readErrors = []
-  const stories = []
-  const seenFilePaths = new Set()
-
-  for (const rootPath of searchedRoots) {
-    if (!fs.existsSync(rootPath)) {
-      missingRoots.push(rootPath)
-      continue
-    }
-
-    availableRoots.push(rootPath)
-
-    let projectIds = []
-    try {
-      projectIds = fs.readdirSync(rootPath)
-    } catch (error) {
-      readErrors.push({
-        rootPath,
-        detail: error instanceof Error ? error.message : String(error)
-      })
-      continue
-    }
-
-    for (const projectId of projectIds) {
-      const filePath = path.join(rootPath, projectId, 'scripts.json')
-      if (!fs.existsSync(filePath) || seenFilePaths.has(filePath)) {
-        continue
-      }
-
-      seenFilePaths.add(filePath)
-
-      try {
-        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-        stories.push(buildReasoningStoryIndexRecord(projectId, filePath, parsed))
-      } catch (error) {
-        stories.push({
-          projectId,
-          filePath,
-          nodeCount: 0,
-          nodeNames: [],
-          error: error instanceof Error ? error.message : String(error)
-        })
-      }
-    }
-  }
-
-  return {
-    stories,
-    searchedRoots,
-    availableRoots,
-    missingRoots,
-    readErrors
-  }
-}
-
-const REASONING_INTENT_RULES = [
-  {
-    key: 'builtin:control_console_directory_listing',
-    goal: '列出 control-console 目录下的文件与子目录',
-    matches: (userPrompt) => /control-console/i.test(String(userPrompt || '')) && /目录|文件|有哪些|哪些|列表|列出|查看/i.test(String(userPrompt || '')),
-    requiredActions: ['list_directory_contents'],
-    answerAction: 'generate_default_answer',
-    source: 'built-in',
-    keywords: ['control-console', '目录', '文件', '列表'],
-    prependContext: false,
-  }
-]
-
-function inferReasoningStepSkipReview(step) {
+export function inferReasoningStepSkipReview(step) {
   if (typeof step?.skipReview === 'boolean') {
     return step.skipReview
   }
-  return !isReasoningWriteAction(step?.action) && !isReasoningAnswerAction(step?.action) && !isReasoningInvokeAction(step?.action)
+  return !isReasoningWriteAction(step?.action) && !isReasoningInvokeAction(step?.action)
 }
 
-function shouldRequireHumanReviewForStep(step) {
+function getReasoningReviewMode(sessionOrContext) {
+  const mode = String(sessionOrContext?.submissionContext?.reviewMode || sessionOrContext?.reviewMode || '').trim().toLowerCase()
+  return mode === 'auto' ? 'auto' : 'manual'
+}
+
+function isReasoningAutoReviewMode(sessionOrContext) {
+  return getReasoningReviewMode(sessionOrContext) === 'auto'
+}
+
+function shouldPauseBeforeExecutingReasoningStep(session, step) {
+  if (!session || !step) return false
+  if (isReasoningAutoReviewMode(session)) return false
+  return !isReasoningWriteAction(step.action) && !isReasoningInvokeAction(step.action)
+}
+
+function shouldRequireHumanReviewForStep(step, session = null) {
   if (!step) return false
-  if (isReasoningWriteAction(step.action) || isReasoningAnswerAction(step.action)) return true
+  if (isReasoningAutoReviewMode(session)) return false
+  if (isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)) return true
   return inferReasoningStepSkipReview(step) === false
 }
 
@@ -3162,7 +3623,7 @@ function buildSkillReasoningIntentRules(binding, contextSelection = {}) {
   return rules
 }
 
-function getMatchingReasoningIntentRules(userPrompt, history, binding, contextSelection = {}) {
+export function getMatchingReasoningIntentRules(userPrompt, history, binding, contextSelection = {}) {
   const candidateRules = [
     ...REASONING_INTENT_RULES,
     ...buildSkillReasoningIntentRules(binding, contextSelection)
@@ -3177,10 +3638,11 @@ function getMatchingReasoningIntentRules(userPrompt, history, binding, contextSe
   })
 }
 
-function collectReplayableHermesMessages(history, options = {}) {
+export function collectReplayableHermesMessages(history, options = {}) {
   const replayableMessages = []
   const excludedRequestId = String(options.excludeRequestId || '').trim()
   const limit = Math.max(0, Number.isFinite(Number(options.limit)) ? Number(options.limit) : MAX_REPLAYED_HERMES_CHAT_MESSAGES)
+  let pendingUserMessage = null
 
   for (const item of Array.isArray(history) ? history : []) {
     const role = String(item?.role || '').trim().toLowerCase()
@@ -3190,12 +3652,20 @@ function collectReplayableHermesMessages(history, options = {}) {
     if (excludedRequestId && requestId === excludedRequestId) continue
 
     if (role === 'user') {
-      replayableMessages.push({ role: 'user', content })
+      pendingUserMessage = { role: 'user', content }
       continue
     }
 
     if (role === 'hermes' || role === 'assistant') {
       if (isHermesChatErrorReplay(content)) continue
+      if (pendingUserMessage && shouldSkipInvalidCompletedReplayPair(pendingUserMessage.content, content)) {
+        pendingUserMessage = null
+        continue
+      }
+      if (pendingUserMessage) {
+        replayableMessages.push(pendingUserMessage)
+        pendingUserMessage = null
+      }
       replayableMessages.push({ role: 'assistant', content })
     }
   }
@@ -3203,1164 +3673,18 @@ function collectReplayableHermesMessages(history, options = {}) {
   return limit > 0 ? replayableMessages.slice(-limit) : []
 }
 
-function buildReasoningRecentContextArtifact(projectMemory, replayableMessages, plannerSource) {
-  return {
-    replayedMessageCount: replayableMessages.length,
-    selectedMemorySources: projectMemory.selectedSources.map((source) => ({
-      label: source.label,
-      filePath: source.filePath,
-      exists: source.exists,
-      truncated: Boolean(source.truncated)
-    })),
-    loadedMemorySources: projectMemory.loadedSources.map((source) => ({
-      label: source.label,
-      filePath: source.filePath,
-      loadedChars: source.loadedChars,
-      totalChars: source.totalChars,
-      truncated: Boolean(source.truncated)
-    })),
-    plannerSource
+function shouldSkipInvalidCompletedReplayPair(userPrompt, assistantAnswer) {
+  const answer = String(assistantAnswer || '').toLowerCase()
+  if (isEditorLocationPrompt(userPrompt)) {
+    return !answer.includes('apps/editor')
   }
-}
-
-const REASONING_PLANNER_DEFAULT_MEMORY_LABELS = new Set([
-  'Project Memory',
-  'Project Status',
-  'Task Queue',
-  'Decisions',
-  'Latest Daily Log'
-])
-
-function selectReasoningPlannerSources(projectMemory) {
-  const selectedSources = Array.isArray(projectMemory?.selectedSources) ? projectMemory.selectedSources : []
-  return selectedSources.filter((source) => {
-    if (!source) return false
-    if (source.kind === 'skill') return true
-    return REASONING_PLANNER_DEFAULT_MEMORY_LABELS.has(source.label)
-  })
-}
-
-function buildReasoningPlannerProjectMemory(binding, userPrompt, options = {}) {
-  const projectMemory = buildProjectMemorySystemMessage(binding, userPrompt, options)
-  const selectedSources = selectReasoningPlannerSources(projectMemory)
-  const loadedSources = selectedSources.filter((source) => source.exists && source.content)
-  const message = [
-    'GameStudio execution memory below is injected by the control plane for reasoning-plan generation.',
-    'Use these markdown records together with the nearby conversation to decide the next observable execution steps.',
-    'Treat explicitly selected skills as planner rules for routing, review, and observable constraints.',
-    'Do not use agent identity or persona files when creating the plan unless they also appear in the nearby conversation.'
-  ]
-
-  for (const source of loadedSources) {
-    message.push(`\n[${source.label}] ${source.filePath}`)
-    message.push(source.content)
+  if (isControlLocationPrompt(userPrompt)) {
+    return !answer.includes('apps/control-console') || !answer.includes('apps/control-server')
   }
-
-  return {
-    ...projectMemory,
-    message: message.join('\n'),
-    selectedSources,
-    loadedSources
+  if (isBusinessServerLocationPrompt(userPrompt)) {
+    return !answer.includes('apps/server')
   }
-}
-
-function buildReasoningPlannerMessages(history, userPrompt, binding, correctionPrompt = '', contextSelection = {}) {
-  const projectMemory = buildReasoningPlannerProjectMemory(binding, userPrompt, contextSelection)
-  const replayWindowMessages = Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
-  const replayableMessages = collectReplayableHermesMessages(history, {
-    limit: replayWindowMessages
-  })
-  const allowedActionsText = REASONING_ALLOWED_ACTION_NAMES.join(', ')
-  const matchedIntentRules = getMatchingReasoningIntentRules(userPrompt, history, binding, contextSelection)
-  const hintedActionsText = [...new Set(matchedIntentRules.flatMap((rule) => [...(rule.requiredActions || []), rule.answerAction]).filter(Boolean))].join(', ')
-
-  return {
-    projectMemory,
-    replayableMessages,
-    messages: [
-      {
-        role: 'system',
-        content: buildHermesRuntimeSystemMessage(binding)
-      },
-      {
-        role: 'system',
-        content: projectMemory.message
-      },
-      {
-        role: 'system',
-        content: [
-          'You are the planning layer for the GameStudio observable reasoning pipeline.',
-          'Return one strict JSON object only. Do not include markdown fences or extra commentary.',
-          'Generate a short sequential execution plan for the current user request using the nearby conversation and injected markdown memory as the primary context.',
-          `Allowed actions: ${allowedActionsText}.`,
-          hintedActionsText ? `Selected skill and intent hints suggest these actions when relevant: ${hintedActionsText}.` : '',
-          'Do not speculate about databases, APIs, or external folders when a local project-listing tool exists.',
-          'Stay inside the GameStudio workspace and prefer observable tool results over generic assumptions.',
-          'Use summarize_story_index only when the plan includes list_created_stories; otherwise use generate_default_answer when the user expects a direct answer.',
-          'Use skipReview: true for pure read, routing, and evidence-gathering steps that may proceed automatically.',
-          'Do not set skipReview: true on final-answer or file-write steps.',
-          'For write actions (edit_workspace_file, write_memory_file, update_task_queue), the step MUST include a "params" field with the required parameters.',
-          'For edit_workspace_file: params must contain "filePath" (relative to workspace) and "content" (edit intent or desired content).',
-          'For write_memory_file: params must contain "filePath" (relative to workspace, under ai/) and "content" (the full file content to write).',
-          'For update_task_queue: params must contain "content" (the task entry text to append) and optionally "replaceAll" (boolean).',
-          'For run_lifecycle_script: params must contain "scriptName" (one of: restart_control.sh, restart_server.sh, reporter.sh, openclaw_selfcheck.sh).',
-          'For read_file_content: params must contain "filePath" (relative to workspace).',
-          'For list_directory_contents: params must contain "dirPath" and may also use legacy "startDir" for compatibility.',
-          'For search_workspace_text: params must contain "query" and may contain "startDir" and "maxResults".',
-          'For create_workspace_file: params must contain "filePath" and "content".',
-          'For rename_workspace_path: params must contain "fromPath" and "toPath".',
-          'For delete_workspace_path: params must contain "targetPath".',
-          'For run_workspace_script: params must contain "scriptPath" (workspace-relative and under allowed roots).',
-          'Schema: {"goal": string, "strategy": "sequential", "steps": [{"title": string, "action": string, "params": object, "skipReview": boolean?}]}'
-        ].join('\n')
-      },
-      ...replayableMessages,
-      {
-        role: 'user',
-        content: [
-          `当前用户问题：${userPrompt}`,
-          correctionPrompt ? `审核修正条件：${correctionPrompt}` : '',
-          '',
-          '请基于最近上下文和已注入的 markdown 项目记忆，输出严格 JSON plan。'
-        ].filter(Boolean).join('\n')
-      }
-    ]
-  }
-}
-
-function extractJsonObjectString(text) {
-  const raw = String(text || '').trim()
-  if (!raw) return ''
-
-  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  const candidate = fencedMatch ? fencedMatch[1].trim() : raw
-  const firstBrace = candidate.indexOf('{')
-  const lastBrace = candidate.lastIndexOf('}')
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return candidate.slice(firstBrace, lastBrace + 1)
-  }
-  return candidate
-}
-
-function isStoryIndexPrompt(prompt) {
-  return /故事|story|脚本|script|scripts\.json/i.test(String(prompt || ''))
-}
-
-function isStoryFollowUpPrompt(prompt, history, binding) {
-  const normalizedPrompt = String(prompt || '').trim()
-  if (!normalizedPrompt) return false
-  if (!/重新|再|不对|不正确|确认|核对|继续|补充/i.test(normalizedPrompt)) return false
-
-  const recentContextText = collectReplayableHermesMessages(history, {
-    limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
-  })
-    .map((message) => message.content)
-    .join('\n')
-
-  return /故事|story|scripts\.json|已创建故事|project\.listStories/i.test(recentContextText)
-}
-
-function isImageServiceEntrypointPrompt(prompt) {
-  return /图片生成|出图|图像生成|image|background|comfyui|sdwebui|服务端入口|入口文件|主要入口|api\/studio\/image/i.test(String(prompt || ''))
-}
-
-function isControlBackendSurfacePrompt(prompt) {
-  return /control|hermes|管理器|reasoning|对话|聊天|后端文件|主要后端|backend file|control-server|control-console/i.test(String(prompt || ''))
-}
-
-function inspectControlBackendSurfaces() {
-  const searchedRoot = path.join(GAMESTUDIO_ROOT, 'apps')
-  const entries = [
-    {
-      filePath: path.join(GAMESTUDIO_ROOT, 'apps', 'control-server', 'src', 'index.js'),
-      role: 'Hermes 对话、reasoning session 与 control API 主后端入口',
-      reason: '这里集中定义 Hermes chat、reasoning session、上下文池、runtime action 与审核流程，是 control 侧最核心的后端控制面。',
-      evidence: [
-        '路由: /api/control/agents/:agentId/chat',
-        '路由: /api/control/agents/:agentId/reasoning-sessions',
-        '函数: generateReasoningPlan(...)',
-        '函数: generateReasoningFinalAnswer(...)',
-        '函数: executeReasoningStep(...)'
-      ]
-    }
-  ].filter((entry) => fs.existsSync(entry.filePath))
-
-  return {
-    searchedRoot,
-    count: entries.length,
-    entries
-  }
-}
-
-function inspectWorkspaceDirectory(dirPath) {
-  const requestedPath = String(dirPath || '').trim()
-  const resolvedPath = path.isAbsolute(requestedPath)
-    ? requestedPath
-    : path.resolve(GAMESTUDIO_ROOT, requestedPath)
-
-  if (!resolvedPath.startsWith(GAMESTUDIO_ROOT)) {
-    throw new Error('list_directory_contents_path_outside_workspace')
-  }
-  if (!fs.existsSync(resolvedPath)) {
-    throw new Error(`list_directory_contents_not_found: ${resolvedPath}`)
-  }
-  if (!fs.statSync(resolvedPath).isDirectory()) {
-    throw new Error(`list_directory_contents_not_directory: ${resolvedPath}`)
-  }
-
-  const entries = fs.readdirSync(resolvedPath, { withFileTypes: true })
-    .map((entry) => ({
-      name: entry.name,
-      kind: entry.isDirectory() ? 'directory' : (entry.isFile() ? 'file' : 'other')
-    }))
-    .sort((left, right) => {
-      if (left.kind !== right.kind) return left.kind === 'directory' ? -1 : 1
-      return left.name.localeCompare(right.name, 'zh-CN')
-    })
-
-  return {
-    requestedPath,
-    resolvedPath,
-    count: entries.length,
-    entries
-  }
-}
-
-function inspectServerImageEntrypoints() {
-  const searchedRoot = path.join(GAMESTUDIO_ROOT, 'apps', 'server', 'src')
-  const entries = [
-    {
-      filePath: path.join(searchedRoot, 'index.js'),
-      role: '服务端 HTTP 入口与图片路由汇总',
-      reason: '这里是 Hono 服务主入口，集中定义图片相关 API，并把请求转发到实际的 AI 图片模块。',
-      evidence: [
-        '路由: /api/studio/image/preflight',
-        '路由: /api/studio/image/models',
-        '路由: /api/studio/image/test',
-        '调用: generateBackgroundImage(...)',
-        '调用: generateBackgroundPrompt(...)',
-        '调用: buildStoryAssetPlan(...) / buildStorySceneRenderSpec(...)'
-      ]
-    },
-    {
-      filePath: path.join(searchedRoot, 'ai', 'background.js'),
-      role: '实际出图分发器',
-      reason: '这里封装不同图片后端的生成逻辑，是图片 bytes 真正产生的核心服务模块。',
-      evidence: [
-        '导出: generateBackgroundImage(input)',
-        '导出: runComfyuiPromptWorkflow(...)',
-        '负责 provider 分发: sdwebui / comfyui / doubao'
-      ]
-    },
-    {
-      filePath: path.join(searchedRoot, 'ai', 'imagePrompt.js'),
-      role: '图片提示词生成入口',
-      reason: '真正出图前，服务端会先在这里把自然语言整理成适合文生图后端的 prompt / negativePrompt。',
-      evidence: [
-        '导出: generateBackgroundPrompt(...)',
-        '输出结构: globalPrompt / scenePrompt / prompt / negativePrompt'
-      ]
-    },
-    {
-      filePath: path.join(searchedRoot, 'ai', 'storyAssets.js'),
-      role: '故事资产图片链路入口',
-      reason: '当问题不是简单背景测试，而是故事资产或场景资产生成时，这里负责生成资产计划与渲染规格。',
-      evidence: [
-        '导出: buildStoryAssetPlan(...)',
-        '导出: buildStorySceneRenderSpec(...)',
-        '被 apps/server/src/index.js 的故事资产图片流程调用'
-      ]
-    }
-  ].filter((entry) => fs.existsSync(entry.filePath))
-
-  return {
-    searchedRoot,
-    count: entries.length,
-    entries
-  }
-}
-
-function buildReasoningFallbackPlan(userPrompt, history, binding, contextSelection = {}) {
-  if (/control-console/i.test(String(userPrompt || '')) && /目录|文件|有哪些|哪些|列表|列出|查看/i.test(String(userPrompt || ''))) {
-    return {
-      planId: createOpaqueId('plan'),
-      goal: '列出 control-console 目录下的文件与子目录',
-      strategy: 'sequential',
-      steps: [
-        {
-          stepId: 'step_list_control_console_directory',
-          title: '列出 control-console 目录内容',
-          action: 'list_directory_contents',
-          tool: 'workspace.listDirectory',
-          params: { dirPath: 'apps/control-console' },
-          skipReview: true,
-          dependsOn: []
-        },
-        {
-          stepId: 'step_answer_directory_listing',
-          title: '生成目录清单回答',
-          action: 'generate_default_answer',
-          tool: 'model.answer',
-          params: {},
-          skipReview: false,
-          dependsOn: ['step_list_control_console_directory']
-        }
-      ]
-    }
-  }
-
-  const matchedIntentRules = getMatchingReasoningIntentRules(userPrompt, history, binding, contextSelection)
-
-  if (matchedIntentRules.length > 0) {
-    const actions = []
-    for (const rule of matchedIntentRules) {
-      if (rule.prependContext !== false && !actions.includes('read_recent_context')) {
-        actions.push('read_recent_context')
-      }
-      for (const action of Array.isArray(rule.requiredActions) ? rule.requiredActions : []) {
-        if (!actions.includes(action)) actions.push(action)
-      }
-    }
-    const preferredAnswerAction = matchedIntentRules.find((rule) => rule.answerAction)?.answerAction || 'generate_default_answer'
-    if (!actions.includes(preferredAnswerAction)) actions.push(preferredAnswerAction)
-
-    const steps = actions.map((action, index) => ({
-      stepId: `step_${action}_${index + 1}`,
-      title: REASONING_ACTIONS[action]?.title || action,
-      action,
-      tool: REASONING_ACTIONS[action]?.tool || 'planner.default',
-      params: {},
-      skipReview: !isReasoningWriteAction(action) && !isReasoningAnswerAction(action),
-      dependsOn: index === 0 ? [] : [`step_${actions[index - 1]}_${index}`]
-    }))
-
-    return {
-      planId: createOpaqueId('plan'),
-      goal: matchedIntentRules[0]?.goal || '结合最近上下文生成结构化回答',
-      strategy: 'sequential',
-      steps
-    }
-  }
-
-  return {
-    planId: createOpaqueId('plan'),
-    goal: '结合最近上下文生成结构化回答',
-    strategy: 'sequential',
-    steps: [
-      {
-        stepId: 'step_read_recent_context',
-        title: '读取最近上下文',
-        action: 'read_recent_context',
-        tool: 'context.recent',
-        params: {},
-        skipReview: true,
-        dependsOn: []
-      },
-      {
-        stepId: 'step_answer',
-        title: '生成最终回答',
-        action: 'generate_default_answer',
-        tool: 'model.answer',
-        params: {},
-        skipReview: false,
-        dependsOn: ['step_read_recent_context']
-      }
-    ]
-  }
-}
-
-function normalizeReasoningPlan(rawPlan, userPrompt, history, binding, contextSelection = {}) {
-  const fallbackPlan = buildReasoningFallbackPlan(userPrompt, history, binding, contextSelection)
-  const plan = rawPlan && typeof rawPlan === 'object' && !Array.isArray(rawPlan) ? rawPlan : {}
-  const rawSteps = Array.isArray(plan.steps) ? plan.steps : []
-  const normalizedSteps = []
-
-  for (const [index, rawStep] of rawSteps.entries()) {
-    const action = String(rawStep?.action || '').trim()
-    const metadata = REASONING_ACTIONS[action]
-    if (!metadata) continue
-    const rawParams = rawStep?.params && typeof rawStep.params === 'object' && !Array.isArray(rawStep.params)
-      ? rawStep.params
-      : {}
-    const dependsOn = Array.isArray(rawStep?.dependsOn)
-      ? rawStep.dependsOn.map((item) => String(item || '').trim()).filter(Boolean)
-      : []
-    const normalizedStep = {
-      stepId: String(rawStep?.stepId || `step_${action}_${index + 1}`).trim(),
-      title: String(rawStep?.title || metadata.title).trim() || metadata.title,
-      action,
-      tool: metadata.tool,
-      params: rawParams,
-      skipReview: typeof rawStep?.skipReview === 'boolean' ? rawStep.skipReview : inferReasoningStepSkipReview({ action }),
-      dependsOn: dependsOn.length > 0 ? dependsOn : (normalizedSteps.length === 0 ? [] : [normalizedSteps[normalizedSteps.length - 1].stepId])
-    }
-    normalizedSteps.push(normalizedStep)
-  }
-
-  const steps = normalizedSteps.length > 0
-    ? normalizedSteps
-    : fallbackPlan.steps.map((step) => ({
-      ...step,
-      skipReview: typeof step.skipReview === 'boolean' ? step.skipReview : inferReasoningStepSkipReview(step)
-    }))
-
-  return {
-    planId: String(plan.planId || createOpaqueId('plan')),
-    goal: String(plan.goal || fallbackPlan.goal || '生成结构化回答').trim() || '生成结构化回答',
-    strategy: 'sequential',
-    steps
-  }
-}
-
-function getReasoningRequestError(error, phase) {
-  if (error?.name === 'AbortError') {
-    const timeoutMs = phase === 'reasoning_plan'
-      ? HERMES_REASONING_TASK_HARD_TIMEOUT_MS
-      : HERMES_CHAT_REQUEST_TIMEOUT_MS
-    return `${phase}_timeout_${timeoutMs}`
-  }
-  return error instanceof Error ? error.message : String(error)
-}
-
-async function generateReasoningPlan(userPrompt, history, binding, options = {}) {
-  const correctionPrompt = String(options.correctionPrompt || '').trim()
-  const plannerContext = buildReasoningPlannerMessages(history, userPrompt, binding, correctionPrompt, options.contextSelection || {})
-  const recentContextArtifact = buildReasoningRecentContextArtifact(plannerContext.projectMemory, plannerContext.replayableMessages, 'model')
-  const controller = new AbortController()
-  const timeoutMs = Number(options.timeoutMs || HERMES_REASONING_TASK_HARD_TIMEOUT_MS)
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  const externalSignal = options.signal || null
-  const abortFromExternalSignal = () => controller.abort()
-
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      controller.abort()
-    } else {
-      externalSignal.addEventListener('abort', abortFromExternalSignal, { once: true })
-    }
-  }
-
-  try {
-    const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'hermes-agent',
-        messages: plannerContext.messages,
-        max_tokens: 260,
-        temperature: 0.1
-      })
-    })
-
-    if (!response.ok) {
-      throw new Error(`reasoning_plan_http_${response.status}_${response.statusText}`)
-    }
-
-    const data = await response.json()
-    const content = data.choices?.[0]?.message?.content || ''
-    let parsed = null
-    let source = 'model'
-    try {
-      parsed = JSON.parse(extractJsonObjectString(content))
-    } catch {
-      parsed = buildReasoningFallbackPlan(userPrompt, history, binding, options.contextSelection || {})
-      source = 'fallback'
-    }
-    return {
-      plan: normalizeReasoningPlan(parsed, userPrompt, history, binding, options.contextSelection || {}),
-      source,
-      usage: data.usage || null,
-      recentContextArtifact,
-      outboundPreview: buildStructuredOutboundPreview({
-        binding,
-        messages: plannerContext.messages,
-        purpose: 'reasoning-plan',
-        mode: 'reasoning',
-        userPrompt,
-        replayedMessageCount: plannerContext.replayableMessages.length,
-        contextSelection: options.contextSelection || {},
-        history
-      }),
-      rawResponsePreview: truncateReasoningPreview(content, 2400)
-    }
-  } catch (error) {
-    const detail = getReasoningRequestError(error, 'reasoning_plan')
-    const plannerError = new Error(detail)
-    plannerError.cause = error
-    plannerError.recentContextArtifact = recentContextArtifact
-    throw plannerError
-  } finally {
-    if (externalSignal && !externalSignal.aborted) {
-      externalSignal.removeEventListener('abort', abortFromExternalSignal)
-    }
-    clearTimeout(timeout)
-  }
-}
-
-function buildReasoningAnswerMessages(history, sessionId, userPrompt, artifacts, binding, correctionPrompt = '', contextSelection = {}) {
-  const storyIndex = Array.isArray(artifacts?.storyIndex) ? artifacts.storyIndex : []
-  const storyScan = artifacts?.storyScan && typeof artifacts.storyScan === 'object' ? artifacts.storyScan : null
-  const projectRoot = artifacts?.projectRoot || GAMESTUDIO_ROOT
-  const projectMemory = buildProjectMemorySystemMessage(binding, userPrompt, contextSelection)
-  const replayableMessages = collectReplayableHermesMessages(history, {
-    excludeRequestId: sessionId,
-    limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
-  })
-  const storySummary = storyIndex.length > 0
-    ? storyIndex.map((story) => {
-        const names = Array.isArray(story.nodeNames) && story.nodeNames.length > 0
-          ? story.nodeNames.join(' / ')
-          : '无节点标题'
-        return `- ${story.projectId} | nodes=${story.nodeCount} | path=${story.filePath} | titles=${names}`
-      }).join('\n')
-    : [
-        '- 未发现可读取的 stories index',
-        storyScan?.searchedRoots?.length ? `- 已扫描目录: ${storyScan.searchedRoots.join(' ; ')}` : '- 已扫描目录: 无',
-        storyScan?.missingRoots?.length ? `- 缺失目录: ${storyScan.missingRoots.join(' ; ')}` : '',
-        storyScan?.readErrors?.length
-          ? `- 读取错误: ${storyScan.readErrors.map((item) => `${item.rootPath}: ${item.detail}`).join(' ; ')}`
-          : ''
-      ].filter(Boolean).join('\n')
-
-  return [
-    {
-      role: 'system',
-      content: buildHermesRuntimeSystemMessage(binding)
-    },
-    {
-      role: 'system',
-      content: projectMemory.message
-    },
-    {
-      role: 'system',
-      content: [
-        'You are Hermes Manager inside GameStudio control.',
-        'Use the nearby conversation and injected markdown project memory together with the structured execution artifacts below.',
-        'If the latest user request corrects an earlier wrong answer, prefer the newest request and the latest observable artifacts.',
-        'Do not claim hidden reasoning. Summarize the observable steps and then answer directly in Chinese.',
-        `Workspace root: ${projectRoot}`,
-        correctionPrompt ? `Review correction: ${correctionPrompt}` : '',
-        'If the tool result is empty, say so plainly.'
-      ].filter(Boolean).join('\n')
-    },
-    ...replayableMessages,
-    {
-      role: 'user',
-      content: [
-        `用户问题: ${userPrompt}`,
-        '',
-        '可观测工具结果：',
-        storySummary
-      ].join('\n')
-    }
-  ]
-}
-
-function buildReasoningFallbackAnswer(userPrompt, artifacts) {
-  const directoryListing = artifacts?.directoryListing && typeof artifacts.directoryListing === 'object'
-    ? artifacts.directoryListing
-    : null
-  if (/control-console/i.test(String(userPrompt || '')) && directoryListing?.resolvedPath) {
-    const entries = Array.isArray(directoryListing.entries) ? directoryListing.entries : []
-    const lines = entries.length > 0
-      ? entries.map((entry, index) => `${index + 1}. ${entry.kind === 'directory' ? '[dir]' : '[file]'} ${entry.name}`)
-      : ['当前目录为空。']
-    return [
-      `根据当前工作区可观测结果，${directoryListing.resolvedPath} 下共有 ${entries.length} 个直接子项：`,
-      lines.join('\n'),
-      '这是目录直接子项清单，不包含递归扫描结果。'
-    ].join('\n\n')
-  }
-
-  const storyIndex = Array.isArray(artifacts?.storyIndex) ? artifacts.storyIndex : []
-  const storyScan = artifacts?.storyScan && typeof artifacts.storyScan === 'object' ? artifacts.storyScan : null
-  if (storyIndex.length === 0) {
-    return [
-      '未在 `storage/projects/*/scripts.json` 中发现可读取的已创建故事。',
-      storyScan?.searchedRoots?.length ? `已扫描目录：${storyScan.searchedRoots.join('；')}` : '已扫描目录：无',
-      storyScan?.missingRoots?.length ? `缺失目录：${storyScan.missingRoots.join('；')}` : '',
-      storyScan?.readErrors?.length ? `读取错误：${storyScan.readErrors.map((item) => `${item.rootPath}: ${item.detail}`).join('；')}` : '',
-      `本次问题：${userPrompt}`
-    ].filter(Boolean).join('\n\n')
-  }
-
-  const lines = storyIndex.map((story, index) => {
-    const names = Array.isArray(story.nodeNames) && story.nodeNames.length > 0
-      ? story.nodeNames.join(' / ')
-      : '无节点标题'
-    return `${index + 1}. ${story.projectId}：${story.nodeCount} 个节点；标题示例：${names}`
-  })
-
-  const hasStructuredStoryContent = storyIndex.some((story) => Number(story.nodeCount || 0) > 0 || (Array.isArray(story.nodeNames) && story.nodeNames.length > 0))
-
-  return [
-    '根据当前 `storage/projects/*/scripts.json` 的可观测结果，已创建故事如下：',
-    lines.join('\n'),
-    storyScan?.searchedRoots?.length ? `已扫描目录：${storyScan.searchedRoots.join('；')}` : '',
-    storyScan?.missingRoots?.length ? `缺失目录：${storyScan.missingRoots.join('；')}` : '',
-    hasStructuredStoryContent
-      ? '当前结论仅基于 scripts.json 的可观测结果，不代表已递归扫描 assets、story-scenes 或其它子目录。'
-      : '当前仅确认 scripts.json 文件存在，但未从其中读到可用的节点标题或节点内容；不足以推断更深层的 story 资产状态。'
-  ].filter(Boolean).join('\n\n')
-}
-
-function buildImageServiceEntrypointsAnswer(userPrompt, artifacts) {
-  const inspection = artifacts?.imageServiceEntrypoints && typeof artifacts.imageServiceEntrypoints === 'object'
-    ? artifacts.imageServiceEntrypoints
-    : null
-  const entries = Array.isArray(inspection?.entries) ? inspection.entries : []
-
-  if (!entries.length) {
-    return [
-      '当前没有拿到图片生成服务端入口的可观测结果。',
-      inspection?.searchedRoot ? `已检查目录：${inspection.searchedRoot}` : '已检查目录：无',
-      `本次问题：${userPrompt}`
-    ].filter(Boolean).join('\n\n')
-  }
-
-  const lines = entries.map((entry, index) => {
-    const evidence = Array.isArray(entry.evidence) && entry.evidence.length
-      ? `证据：${entry.evidence.join('；')}`
-      : ''
-    return [
-      `${index + 1}. ${entry.filePath}`,
-      `角色：${entry.role}`,
-      `原因：${entry.reason}`,
-      evidence
-    ].filter(Boolean).join('\n')
-  })
-
-  return [
-    '根据当前仓库里的可观测服务端代码，图片生成相关的主要入口文件如下：',
-    lines.join('\n\n'),
-    inspection?.searchedRoot ? `已检查目录：${inspection.searchedRoot}` : '',
-    '其中最上层 HTTP 入口是 apps/server/src/index.js，真正执行出图的是 apps/server/src/ai/background.js；提示词生成与故事资产渲染规格分别由 apps/server/src/ai/imagePrompt.js 和 apps/server/src/ai/storyAssets.js 承担。'
-  ].filter(Boolean).join('\n\n')
-}
-
-function buildControlBackendSurfacesAnswer(userPrompt, artifacts) {
-  const inspection = artifacts?.controlBackendSurfaces && typeof artifacts.controlBackendSurfaces === 'object'
-    ? artifacts.controlBackendSurfaces
-    : null
-  const entries = Array.isArray(inspection?.entries) ? inspection.entries : []
-
-  if (!entries.length) {
-    return [
-      '当前没有拿到 control/Hermes 后端文件的可观测结果。',
-      inspection?.searchedRoot ? `已检查目录：${inspection.searchedRoot}` : '已检查目录：无',
-      `本次问题：${userPrompt}`
-    ].filter(Boolean).join('\n\n')
-  }
-
-  const lines = entries.map((entry, index) => {
-    const evidence = Array.isArray(entry.evidence) && entry.evidence.length
-      ? `证据：${entry.evidence.join('；')}`
-      : ''
-    return [
-      `${index + 1}. ${entry.filePath}`,
-      `角色：${entry.role}`,
-      `原因：${entry.reason}`,
-      evidence
-    ].filter(Boolean).join('\n')
-  })
-
-  return [
-    '根据当前 control 侧可观测代码，负责 Hermes 对话与 reasoning 的主要后端文件如下：',
-    lines.join('\n\n'),
-    inspection?.searchedRoot ? `已检查目录：${inspection.searchedRoot}` : '',
-    '当前这条链路的主后端入口集中在 apps/control-server/src/index.js；如果后续再拆模块，应继续通过同一套可注册 observable action 暴露给 planner，而不是把文件名硬写进 prompt。'
-  ].filter(Boolean).join('\n\n')
-}
-
-function shouldUseDeterministicControlConsoleDirectoryAnswer(userPrompt, artifacts) {
-  const hasListing = artifacts?.directoryListing && typeof artifacts.directoryListing === 'object'
-  if (!hasListing) return false
-  return /control-console/i.test(String(userPrompt || '')) && /目录|文件|有哪些|哪些|列表|列出|查看/i.test(String(userPrompt || ''))
-}
-
-function shouldUseDeterministicStoryAnswer(userPrompt, artifacts) {
-  const hasStoryScan = artifacts?.storyScan && typeof artifacts.storyScan === 'object'
-  if (!hasStoryScan) return false
-  return /故事|story|scripts\.json|项目|扫描|可观测事实/i.test(String(userPrompt || ''))
-}
-
-function shouldUseDeterministicImageServiceAnswer(userPrompt, artifacts) {
-  const hasInspection = artifacts?.imageServiceEntrypoints && typeof artifacts.imageServiceEntrypoints === 'object'
-  if (!hasInspection) return false
-  return isImageServiceEntrypointPrompt(userPrompt)
-}
-
-function shouldUseDeterministicControlBackendAnswer(userPrompt, artifacts) {
-  const hasInspection = artifacts?.controlBackendSurfaces && typeof artifacts.controlBackendSurfaces === 'object'
-  if (!hasInspection) return false
-  return isControlBackendSurfacePrompt(userPrompt)
-}
-
-function summarizeReasoningArtifactsForAssessment(artifacts) {
-  const summary = {}
-  if (artifacts?.storyScan && typeof artifacts.storyScan === 'object') {
-    summary.storyScan = {
-      searchedRoots: artifacts.storyScan.searchedRoots,
-      availableRoots: artifacts.storyScan.availableRoots,
-      missingRoots: artifacts.storyScan.missingRoots,
-      readErrors: artifacts.storyScan.readErrors,
-      stories: Array.isArray(artifacts.storyIndex)
-        ? artifacts.storyIndex.map((story) => ({
-            projectId: story.projectId,
-            filePath: story.filePath,
-            nodeCount: story.nodeCount
-          }))
-        : []
-    }
-  }
-  if (artifacts?.imageServiceEntrypoints && typeof artifacts.imageServiceEntrypoints === 'object') {
-    summary.imageServiceEntrypoints = artifacts.imageServiceEntrypoints
-  }
-  if (artifacts?.controlBackendSurfaces && typeof artifacts.controlBackendSurfaces === 'object') {
-    summary.controlBackendSurfaces = artifacts.controlBackendSurfaces
-  }
-  if (artifacts?.workspaceStructure && typeof artifacts.workspaceStructure === 'object') {
-    summary.workspaceStructure = artifacts.workspaceStructure
-  }
-  if (artifacts?.directoryListing && typeof artifacts.directoryListing === 'object') {
-    summary.directoryListing = artifacts.directoryListing
-  }
-  return summary
-}
-
-function evaluateImageServiceAnswerQuality(answer, artifacts) {
-  const text = String(answer || '')
-  const normalized = text.toLowerCase()
-  const requiredPaths = [
-    'apps/server/src/index.js',
-    'apps/server/src/ai/background.js',
-    'apps/server/src/ai/imagePrompt.js'
-  ]
-  const optionalPaths = ['apps/server/src/ai/storyAssets.js']
-  const hallucinationPatterns = [
-    'tools/vision_tools.py',
-    'agent/auxiliary_client.py',
-    'tools/registry.py',
-    'tools/openrouter_client.py',
-    'gateway/',
-    'web/'
-  ]
-
-  let score = 45
-  const strengths = []
-  const issues = []
-
-  for (const filePath of requiredPaths) {
-    if (normalized.includes(filePath.toLowerCase())) {
-      score += 15
-      strengths.push(`已命中关键入口 ${filePath}`)
-    } else {
-      issues.push(`缺少关键入口 ${filePath}`)
-    }
-  }
-
-  for (const filePath of optionalPaths) {
-    if (normalized.includes(filePath.toLowerCase())) {
-      score += 8
-      strengths.push(`已补充扩展入口 ${filePath}`)
-    }
-  }
-
-  if (/api\/studio\/image\/test|api\/studio\/image\/preflight|api\/studio\/image\/models/i.test(text)) {
-    score += 10
-    strengths.push('已指出 index.js 中的图片路由证据')
-  } else {
-    issues.push('没有指出 index.js 中的图片路由证据')
-  }
-
-  if (/generatebackgroundimage|generatebackgroundprompt|buildstoryassetplan|buildstoryscenerenderspec/i.test(normalized)) {
-    score += 10
-    strengths.push('已指出服务端内部调用证据')
-  } else {
-    issues.push('没有指出服务端内部调用证据')
-  }
-
-  const foundHallucinations = hallucinationPatterns.filter((pattern) => normalized.includes(pattern.toLowerCase()))
-  if (foundHallucinations.length > 0) {
-    score -= foundHallucinations.length * 25
-    issues.push(`出现仓库外或错误路径：${foundHallucinations.join('、')}`)
-  }
-
-  score = Math.max(0, Math.min(100, score))
-  const passed = score >= HERMES_REASONING_MIN_ACCEPT_SCORE
-  return {
-    score,
-    passed,
-    source: 'deterministic',
-    summary: passed ? `图片入口答案评分 ${score}/100，已通过。` : `图片入口答案评分 ${score}/100，未达到 ${HERMES_REASONING_MIN_ACCEPT_SCORE} 分。`,
-    strengths,
-    issues,
-    correctionPrompt: passed
-      ? '当前答案已通过质量门槛。'
-      : [
-          '必须仅基于当前 GameStudio 仓库回答。',
-          '必须明确指出 apps/server/src/index.js、apps/server/src/ai/background.js、apps/server/src/ai/imagePrompt.js。',
-          '如涉及故事资产链路，可补充 apps/server/src/ai/storyAssets.js。',
-          '必须说明它们为什么是入口文件，并引用 /api/studio/image/* 或 generateBackgroundImage / generateBackgroundPrompt / buildStoryAssetPlan 等可观测证据。',
-          '禁止再提 tools/vision_tools.py、gateway、web、agent/auxiliary_client.py 等当前仓库不存在路径。'
-        ].join('\n')
-  }
-}
-
-async function evaluateReasoningFinalAnswerQuality(sessionId, userPrompt, answer, artifacts, binding) {
-  if (shouldUseDeterministicImageServiceAnswer(userPrompt, artifacts)) {
-    return evaluateImageServiceAnswerQuality(answer, artifacts)
-  }
-
-  const artifactSummary = summarizeReasoningArtifactsForAssessment(artifacts)
-  const messages = [
-    {
-      role: 'system',
-      content: [
-        'You are the GameStudio observable reasoning answer evaluator.',
-        'Return one strict JSON object only.',
-        'Score the final answer from 0 to 100 against the user question and the observable artifacts.',
-        'Prefer repository-local observable evidence over eloquence.',
-        'If the answer invents files, tools, APIs, or folders not supported by artifacts, score it harshly.',
-        'Schema: {"score": number, "summary": string, "issues": string[], "strengths": string[], "correctionPrompt": string}'
-      ].join('\n')
-    },
-    {
-      role: 'user',
-      content: [
-        `用户问题：${userPrompt}`,
-        '',
-        `最终回答：${answer}`,
-        '',
-        '可观测 artifacts：',
-        truncateReasoningPreview(JSON.stringify(artifactSummary, null, 2), 2400)
-      ].join('\n')
-    }
-  ]
-
-  try {
-    const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'hermes-agent',
-        messages,
-        max_tokens: 220,
-        temperature: 0
-      })
-    })
-
-    if (!response.ok) {
-      throw new Error(`reasoning_answer_assessment_http_${response.status}_${response.statusText}`)
-    }
-
-    const data = await response.json()
-    const raw = data.choices?.[0]?.message?.content || '{}'
-    const parsed = JSON.parse(extractJsonObjectString(raw))
-    const score = Math.max(0, Math.min(100, Number(parsed?.score || 0)))
-    return {
-      score,
-      passed: score >= HERMES_REASONING_MIN_ACCEPT_SCORE,
-      source: 'model',
-      summary: String(parsed?.summary || '').trim() || `最终答案评分 ${score}/100。`,
-      issues: Array.isArray(parsed?.issues) ? parsed.issues.map((item) => String(item || '').trim()).filter(Boolean) : [],
-      strengths: Array.isArray(parsed?.strengths) ? parsed.strengths.map((item) => String(item || '').trim()).filter(Boolean) : [],
-      correctionPrompt: String(parsed?.correctionPrompt || '').trim() || '请严格基于当前 observable artifacts 修正答案，删除任何未经验证的路径、工具或服务推断。'
-    }
-  } catch (error) {
-    return {
-      score: 0,
-      passed: false,
-      source: 'fallback',
-      summary: '最终答案质量评估失败。',
-      issues: [error instanceof Error ? error.message : String(error)],
-      strengths: [],
-      correctionPrompt: '质量评估失败，请严格基于当前 observable artifacts 重新生成答案，不要引入仓库外路径或泛化架构推断。'
-    }
-  }
-}
-
-async function finalizeReasoningSessionWithQualityGate(sessionId, binding, history) {
-  const session = readReasoningSession(sessionId)
-  if (!session) {
-    throw new Error('reasoning_session_not_found')
-  }
-
-  const answer = String(session.artifacts?.finalAnswer || '').trim()
-  if (!answer) {
-    return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
-  }
-
-  const attempt = Math.max(0, Number(session.artifacts?.qualityGateAttempt || 0)) + 1
-  const assessment = await evaluateReasoningFinalAnswerQuality(sessionId, session.userPrompt, answer, session.artifacts || {}, binding)
-
-  updateReasoningSession(sessionId, (current) => ({
-    ...current,
-    artifacts: {
-      ...current.artifacts,
-      qualityGateAttempt: attempt,
-      latestAnswerAssessment: assessment,
-      answerAssessmentHistory: [
-        ...(Array.isArray(current.artifacts?.answerAssessmentHistory) ? current.artifacts.answerAssessmentHistory : []),
-        {
-          attempt,
-          assessedAt: new Date().toISOString(),
-          assessment
-        }
-      ]
-    }
-  }))
-
-  appendReasoningEvent(sessionId, 'final_answer_ready', '最终答案质检', `${assessment.summary}（第 ${attempt} / ${HERMES_REASONING_MAX_QUALITY_RETRIES} 轮）`, {
-    data: {
-      attempt,
-      score: assessment.score,
-      source: assessment.source,
-      issues: assessment.issues,
-      strengths: assessment.strengths
-    }
-  })
-
-  if (assessment.passed) {
-    return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
-  }
-
-  if (attempt < HERMES_REASONING_MAX_QUALITY_RETRIES) {
-    appendReasoningEvent(sessionId, 'planning_started', '答案未通过质检，重新规划', `评分 ${assessment.score}/100，低于 ${HERMES_REASONING_MIN_ACCEPT_SCORE} 分。将带着修正条件重新规划。`, {
-      data: {
-        attempt,
-        correctionPrompt: assessment.correctionPrompt
-      }
-    })
-
-    updateReasoningSession(sessionId, (current) => ({
-      ...current,
-      status: 'planning',
-      plan: null,
-      currentStepId: null,
-      review: null,
-      error: null,
-      artifacts: {
-        ...current.artifacts,
-        finalAnswer: '',
-        finalAnswerUsage: null,
-        finalAnswerPersisted: false,
-        latestPlanReviewEvidence: null,
-        latestStepReviewEvidence: null,
-        nextStepIndex: 0
-      }
-    }))
-
-    await prepareReasoningSessionPlan(sessionId, binding, history, {
-      correctionPrompt: [
-        `最终答案质量评分只有 ${assessment.score}/100。`,
-        assessment.correctionPrompt
-      ].filter(Boolean).join('\n')
-    })
-    return readReasoningSession(sessionId)
-  }
-
-  const failureReply = [
-    `本次可观测执行已经进行了 ${attempt} 轮问答自检，最终评分仍低于 ${HERMES_REASONING_MIN_ACCEPT_SCORE} 分。`,
-    '当前无法可靠给出高置信结论。',
-    assessment.issues.length ? `主要问题：${assessment.issues.join('；')}` : '',
-    '建议：补充更明确的 skill / contract / 可观测工具后再重试。'
-  ].filter(Boolean).join('\n\n')
-
-  updateReasoningSession(sessionId, (current) => ({
-    ...current,
-    artifacts: {
-      ...current.artifacts,
-      finalAnswer: failureReply,
-      finalAnswerUsage: null,
-      finalAnswerPersisted: false
-    }
-  }))
-
-  appendReasoningEvent(sessionId, 'session_failed', '答案质量未达标', failureReply, {
-    data: {
-      attempt,
-      score: assessment.score,
-      issues: assessment.issues
-    }
-  })
-
-  return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
-}
-
-async function generateReasoningFinalAnswer(sessionId, userPrompt, artifacts, binding, history, options = {}) {
-  if (shouldUseDeterministicStoryAnswer(userPrompt, artifacts)) {
-    const fallbackReply = buildReasoningFallbackAnswer(userPrompt, artifacts)
-    return {
-      reply: fallbackReply,
-      usage: null,
-      fallback: true,
-      fallbackReason: 'deterministic_story_scan_summary',
-      outboundPreview: buildStructuredOutboundPreview({
-        binding,
-        messages: [],
-        purpose: 'deterministic-story-answer',
-        mode: 'reasoning',
-        userPrompt,
-        replayedMessageCount: 0,
-        contextSelection: options.contextSelection || {},
-        history
-      }),
-      rawResponsePreview: truncateReasoningPreview(fallbackReply, 2400)
-    }
-  }
-
-
-  if (shouldUseDeterministicControlConsoleDirectoryAnswer(userPrompt, artifacts)) {
-    const fallbackReply = buildReasoningFallbackAnswer(userPrompt, artifacts)
-    return {
-      reply: fallbackReply,
-      usage: null,
-      fallback: true,
-      fallbackReason: 'deterministic_control_console_directory_summary',
-      outboundPreview: buildStructuredOutboundPreview({
-        binding,
-        messages: [],
-        purpose: 'deterministic-control-console-directory-answer',
-        mode: 'reasoning',
-        userPrompt,
-        replayedMessageCount: 0,
-        contextSelection: options.contextSelection || {},
-        history
-      }),
-      rawResponsePreview: truncateReasoningPreview(fallbackReply, 2400)
-    }
-  }
-
-function buildReasoningWriteFallbackContent(step, currentContent) {
-  if (step.action === 'update_task_queue') {
-    const nextEntry = String(step.params?.content || '').trim()
-    const replaceAll = Boolean(step.params?.replaceAll)
-    if (replaceAll) return nextEntry
-    const existing = String(currentContent || '')
-    if (!existing.trim()) return `${nextEntry}\n`
-    return `${existing}${existing.endsWith('\n') ? '' : '\n'}${nextEntry}\n`
-  }
-  return String(step.params?.content || '')
-}
-
-function isWorkspaceEditablePath(resolvedPath) {
-  if (!resolvedPath.startsWith(GAMESTUDIO_ROOT)) return false
-  const blockedSegments = [
-    `${path.sep}.git${path.sep}`,
-    `${path.sep}node_modules${path.sep}`,
-    `${path.sep}dist${path.sep}`,
-    `${path.sep}.run${path.sep}`,
-  ]
-  return !blockedSegments.some((segment) => resolvedPath.includes(segment))
-}
-
-function resolveWorkspacePathFromInput(inputPath) {
-  const requestedPath = String(inputPath || '').trim()
-  if (!requestedPath) return ''
-  return path.isAbsolute(requestedPath)
-    ? path.resolve(requestedPath)
-    : path.resolve(GAMESTUDIO_ROOT, requestedPath)
-}
-
-function isWorkspaceRunnableScriptPath(resolvedPath) {
-  if (!resolvedPath.startsWith(GAMESTUDIO_ROOT)) return false
-  if (!fs.existsSync(resolvedPath)) return false
-  const stat = fs.statSync(resolvedPath)
-  if (!stat.isFile()) return false
-  const ext = path.extname(resolvedPath).toLowerCase()
-  const allowedExtensions = new Set(['.sh', '.js', '.mjs', '.cjs'])
-  if (!allowedExtensions.has(ext)) return false
-  const relativePath = path.relative(GAMESTUDIO_ROOT, resolvedPath)
-  if (!relativePath || relativePath.startsWith('..')) return false
-  return relativePath.startsWith(`scripts${path.sep}`) || !relativePath.includes(path.sep)
-}
-
-function runWorkspaceTextSearch(query, options = {}) {
-  const normalizedQuery = String(query || '').trim()
-  if (!normalizedQuery) throw new Error('search_workspace_text_missing_query')
-  const startDir = resolveWorkspacePathFromInput(options.startDir || GAMESTUDIO_ROOT)
-  if (!startDir.startsWith(GAMESTUDIO_ROOT)) throw new Error('search_workspace_text_path_outside_workspace')
-  const maxResults = Math.min(100, Math.max(1, Number(options.maxResults || 20)))
-  const rgLookup = spawnSync('which', ['rg'], { encoding: 'utf8' })
-  if (rgLookup.status === 0) {
-    const result = spawnSync('rg', ['-n', '--no-heading', '--color', 'never', '-F', normalizedQuery, startDir, '-g', '!.git', '-g', '!node_modules', '-g', '!dist', '-g', '!.run'], {
-      cwd: GAMESTUDIO_ROOT,
-      encoding: 'utf8'
-    })
-    if (result.status !== 0 && result.status !== 1) {
-      throw new Error(`search_workspace_text_failed: ${(result.stderr || result.stdout || '').trim() || 'rg_failed'}`)
-    }
-    const matches = String(result.stdout || '').split('\n').filter(Boolean).slice(0, maxResults).map((line) => {
-      const [filePath, lineNumber, ...rest] = line.split(':')
-      return {
-        filePath,
-        lineNumber: Number(lineNumber || 0),
-        preview: rest.join(':').trim()
-      }
-    })
-    return { query: normalizedQuery, startDir, count: matches.length, matches }
-  }
-
-  const matches = []
-  const visit = (currentPath) => {
-    if (matches.length >= maxResults) return
-    const stat = fs.statSync(currentPath)
-    if (stat.isDirectory()) {
-      const base = path.basename(currentPath)
-      if (base === '.git' || base === 'node_modules' || base === 'dist' || base === '.run') return
-      for (const entry of fs.readdirSync(currentPath)) {
-        visit(path.join(currentPath, entry))
-        if (matches.length >= maxResults) return
-      }
-      return
-    }
-    const raw = fs.readFileSync(currentPath, 'utf8')
-    const lines = raw.split('\n')
-    for (let index = 0; index < lines.length; index++) {
-      if (lines[index].includes(normalizedQuery)) {
-        matches.push({ filePath: currentPath, lineNumber: index + 1, preview: lines[index].trim() })
-        if (matches.length >= maxResults) return
-      }
-    }
-  }
-  visit(startDir)
-  return { query: normalizedQuery, startDir, count: matches.length, matches }
-}
-
-function buildReasoningFileRewriteMessages(step, userPrompt, filePath, currentContent, desiredContent) {
-  return [
-    {
-      role: 'system',
-      content: [
-        step.action === 'edit_workspace_file'
-          ? 'You rewrite GameStudio workspace files for the observable reasoning pipeline.'
-          : 'You rewrite GameStudio workspace memory files for the observable reasoning pipeline.',
-        'Return one strict JSON object only.',
-        'Preserve valid file syntax or markdown structure and avoid unrelated edits.',
-        'Schema: {"updatedContent": string, "summary": string}'
-      ].join('\n')
-    },
-    {
-      role: 'user',
-      content: [
-        `用户原始问题：${userPrompt}`,
-        `步骤标题：${step.title}`,
-        `目标文件：${filePath}`,
-        '',
-        '当前文件内容：',
-        String(currentContent || ''),
-        '',
-        '目标内容或变更意图：',
-        String(desiredContent || '')
-      ].join('\n')
-    }
-  ]
+  return false
 }
 
 async function generateReasoningFileRewrite(sessionId, step, userPrompt, binding) {
@@ -4405,12 +3729,16 @@ async function generateReasoningFileRewrite(sessionId, step, userPrompt, binding
   if (response.ok) {
     const data = await response.json()
     rawResponsePreview = truncateReasoningPreview(data.choices?.[0]?.message?.content || '{}', 2400)
-    const parsed = JSON.parse(extractJsonObjectString(data.choices?.[0]?.message?.content || '{}'))
-    if (typeof parsed?.updatedContent === 'string' && parsed.updatedContent.trim()) {
-      updatedContent = parsed.updatedContent
-    }
-    if (typeof parsed?.summary === 'string' && parsed.summary.trim()) {
-      summary = parsed.summary.trim()
+    try {
+      const parsed = JSON.parse(extractJsonObjectString(data.choices?.[0]?.message?.content || '{}'))
+      if (typeof parsed?.updatedContent === 'string' && parsed.updatedContent.trim()) {
+        updatedContent = parsed.updatedContent
+      }
+      if (typeof parsed?.summary === 'string' && parsed.summary.trim()) {
+        summary = parsed.summary.trim()
+      }
+    } catch (error) {
+      summary = `模型未返回有效 JSON，已使用 fallback 内容。${error instanceof Error ? error.message : String(error)}`
     }
   } else {
     rawResponsePreview = `rewrite_http_${response.status}_${response.statusText}`
@@ -4433,141 +3761,6 @@ async function generateReasoningFileRewrite(sessionId, step, userPrompt, binding
       history: []
     }),
     rawResponsePreview
-  }
-}
-  if (shouldUseDeterministicImageServiceAnswer(userPrompt, artifacts)) {
-    const fallbackReply = buildImageServiceEntrypointsAnswer(userPrompt, artifacts)
-    return {
-      reply: fallbackReply,
-      usage: null,
-      fallback: true,
-      fallbackReason: 'deterministic_image_service_entrypoints_summary',
-      outboundPreview: buildStructuredOutboundPreview({
-        binding,
-        messages: [],
-        purpose: 'deterministic-image-answer',
-        mode: 'reasoning',
-        userPrompt,
-        replayedMessageCount: 0,
-        contextSelection: options.contextSelection || {},
-        history
-      }),
-      rawResponsePreview: truncateReasoningPreview(fallbackReply, 2400)
-    }
-  }
-
-  if (shouldUseDeterministicControlBackendAnswer(userPrompt, artifacts)) {
-    const fallbackReply = buildControlBackendSurfacesAnswer(userPrompt, artifacts)
-    return {
-      reply: fallbackReply,
-      usage: null,
-      fallback: true,
-      fallbackReason: 'deterministic_control_backend_summary',
-      outboundPreview: buildStructuredOutboundPreview({
-        binding,
-        messages: [],
-        purpose: 'deterministic-control-answer',
-        mode: 'reasoning',
-        userPrompt,
-        replayedMessageCount: 0,
-        contextSelection: options.contextSelection || {},
-        history
-      }),
-      rawResponsePreview: truncateReasoningPreview(fallbackReply, 2400)
-    }
-  }
-
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), HERMES_CHAT_REQUEST_TIMEOUT_MS)
-  const externalSignal = options.signal || null
-  const abortFromExternalSignal = () => controller.abort(externalSignal?.reason || 'reasoning_cancelled_by_user')
-  const correctionPrompt = String(options.correctionPrompt || '').trim()
-  const answerMessages = buildReasoningAnswerMessages(
-    history,
-    sessionId,
-    userPrompt,
-    artifacts,
-    binding,
-    correctionPrompt,
-    options.contextSelection || {}
-  )
-
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      controller.abort(externalSignal.reason || 'reasoning_cancelled_by_user')
-    } else {
-      externalSignal.addEventListener('abort', abortFromExternalSignal, { once: true })
-    }
-  }
-
-  try {
-    const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'hermes-agent',
-        messages: answerMessages,
-        max_tokens: 220
-      })
-    })
-
-    if (!response.ok) {
-      throw new Error(`reasoning_model_http_${response.status}_${response.statusText}`)
-    }
-
-    const data = await response.json()
-    return {
-      reply: data.choices?.[0]?.message?.content || JSON.stringify(data),
-      usage: data.usage || null,
-      fallback: false,
-      outboundPreview: buildStructuredOutboundPreview({
-        binding,
-        messages: answerMessages,
-        purpose: 'reasoning-final-answer',
-        mode: 'reasoning',
-        userPrompt,
-        replayedMessageCount: collectReplayableHermesMessages(history, {
-          excludeRequestId: sessionId,
-          limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
-        }).length,
-        contextSelection: options.contextSelection || {},
-        history
-      }),
-      rawResponsePreview: truncateReasoningPreview(data.choices?.[0]?.message?.content || JSON.stringify(data), 2400)
-    }
-  } catch (error) {
-    if (externalSignal?.aborted) {
-      throw new Error(String(externalSignal.reason || 'reasoning_cancelled_by_user'))
-    }
-    const fallbackReply = buildReasoningFallbackAnswer(userPrompt, artifacts)
-    return {
-      reply: fallbackReply,
-      usage: null,
-      fallback: true,
-      fallbackReason: getReasoningRequestError(error, 'reasoning_answer'),
-      outboundPreview: buildStructuredOutboundPreview({
-        binding,
-        messages: answerMessages,
-        purpose: 'reasoning-final-answer',
-        mode: 'reasoning',
-        userPrompt,
-        replayedMessageCount: collectReplayableHermesMessages(history, {
-          excludeRequestId: sessionId,
-          limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
-        }).length,
-        contextSelection: options.contextSelection || {},
-        history
-      }),
-      rawResponsePreview: truncateReasoningPreview(fallbackReply, 2400)
-    }
-  } finally {
-    if (externalSignal && !externalSignal.aborted) {
-      externalSignal.removeEventListener('abort', abortFromExternalSignal)
-    }
-    clearTimeout(timeout)
   }
 }
 
@@ -4595,24 +3788,8 @@ function buildReasoningObservableOps(step, extra = {}) {
       `pwd -> ${GAMESTUDIO_ROOT}`,
       `ls ${path.join(GAMESTUDIO_ROOT, 'apps')}`,
       `ls ${STUDIO_STORAGE_ROOT}`,
-      'resolve editor/server/storage workspace roots'
+      'resolve control-console/control-server/editor/server/storage workspace roots'
     ]
-  }
-
-  if (step.action === 'list_created_stories') {
-    const searchedRoots = Array.isArray(extra.searchedRoots) ? extra.searchedRoots : []
-    const projects = Array.isArray(extra.projects) ? extra.projects : []
-    const ops = [
-      `ls ${STORAGE_PROJECTS_ROOT}`,
-      'read storage/projects/*/scripts.json'
-    ]
-    for (const rootPath of searchedRoots.slice(0, 3)) {
-      ops.push(`scan ${rootPath}`)
-    }
-    for (const story of projects.slice(0, 3)) {
-      if (story?.filePath) ops.push(`read ${story.filePath}`)
-    }
-    return ops
   }
 
   if (step.action === 'list_directory_contents') {
@@ -4667,10 +3844,10 @@ function buildReasoningObservableOps(step, extra = {}) {
     ]
   }
 
-  if (step.action === 'summarize_story_index' || step.action === 'generate_default_answer') {
+  if (step.action === 'generate_default_answer') {
     const binding = extra.binding && typeof extra.binding === 'object' ? extra.binding : {}
     const outboundPreview = extra.outboundPreview && typeof extra.outboundPreview === 'object' ? extra.outboundPreview : {}
-    const totalMessages = Number(outboundPreview.messages?.length || 0)
+    const totalMessages = Number(outboundPreview.controllerRequest?.totalMessages || outboundPreview.messages?.length || 0)
     const fallbackReason = String(extra.fallbackReason || '').trim()
     if (extra.fallback) {
       return [
@@ -4794,29 +3971,23 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
   }
 
   if (step.action === 'locate_project') {
+    const workspaceStructure = buildWorkspaceStructureArtifact()
     updateReasoningSession(sessionId, (session) => ({
       ...session,
       artifacts: {
         ...session.artifacts,
         projectRoot: GAMESTUDIO_ROOT,
-        workspaceStructure: {
-          editorAppRoot: path.join(GAMESTUDIO_ROOT, 'apps', 'editor'),
-          serverAppRoot: path.join(GAMESTUDIO_ROOT, 'apps', 'server'),
-          storageRoot: STUDIO_STORAGE_ROOT,
-          projectsRoot: STORAGE_PROJECTS_ROOT
-        }
+        workspaceStructure
       }
     }))
-    appendReasoningEvent(sessionId, 'tool_result', step.title, `定位到工作区：${GAMESTUDIO_ROOT}；editor=${path.join(GAMESTUDIO_ROOT, 'apps', 'editor')}；server=${path.join(GAMESTUDIO_ROOT, 'apps', 'server')}；storage=${STUDIO_STORAGE_ROOT}`, {
+    const appSummary = Object.entries(workspaceStructure.appRoots || {})
+      .map(([name, appPath]) => `${name}=${appPath}`)
+      .join('；')
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `定位到工作区：${GAMESTUDIO_ROOT}；apps=${appSummary || '无'}；storage=${STUDIO_STORAGE_ROOT}`, {
       stepId: step.stepId,
       data: buildReasoningStepEventData(step, stepIndex, {
         projectRoot: GAMESTUDIO_ROOT,
-        workspaceStructure: {
-          editorAppRoot: path.join(GAMESTUDIO_ROOT, 'apps', 'editor'),
-          serverAppRoot: path.join(GAMESTUDIO_ROOT, 'apps', 'server'),
-          storageRoot: STUDIO_STORAGE_ROOT,
-          projectsRoot: STORAGE_PROJECTS_ROOT
-        },
+        workspaceStructure,
         observableOps: buildReasoningObservableOps(step)
       })
     })
@@ -4833,11 +4004,16 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       throw new Error('list_directory_contents_missing_dirPath')
     }
     const listing = inspectWorkspaceDirectory(targetDir)
+    const listingKey = normalizeWorkspaceRelativePath(path.relative(GAMESTUDIO_ROOT, listing.resolvedPath)) || '.'
     updateReasoningSession(sessionId, (session) => ({
       ...session,
       artifacts: {
         ...session.artifacts,
         directoryListing: listing,
+        directoryListings: {
+          ...(session.artifacts?.directoryListings || {}),
+          [listingKey]: listing
+        },
         latestStepReviewEvidence: {
           targetType: 'step',
           stepId: step.stepId,
@@ -4863,69 +4039,6 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       })
     })
     appendReasoningEvent(sessionId, 'step_completed', step.title, '目录内容读取完成', {
-      stepId: step.stepId,
-      data: buildReasoningStepEventData(step, stepIndex)
-    })
-    return
-  }
-
-  if (step.action === 'list_created_stories') {
-    const storyScan = listCreatedStoriesFromProjects()
-    const storyIndex = Array.isArray(storyScan?.stories) ? storyScan.stories : []
-    updateReasoningSession(sessionId, (session) => ({
-      ...session,
-      artifacts: {
-        ...session.artifacts,
-        storyIndex,
-        storyScan,
-        latestStepReviewEvidence: {
-          targetType: 'step',
-          stepId: step.stepId,
-          stepTitle: step.title,
-          tool: step.tool,
-          outboundPreview: {
-            tool: step.tool,
-            target: 'storage/projects/*/scripts.json',
-            projectRoot: GAMESTUDIO_ROOT,
-            searchedRoots: storyScan.searchedRoots
-          },
-          rawResponsePreview: truncateReasoningPreview(JSON.stringify(storyScan, null, 2), 2400),
-          structuredResult: {
-            count: storyIndex.length,
-            searchedRoots: storyScan.searchedRoots,
-            availableRoots: storyScan.availableRoots,
-            missingRoots: storyScan.missingRoots,
-            readErrors: storyScan.readErrors,
-            projects: storyIndex.map((story) => ({
-              projectId: story.projectId,
-              nodeCount: story.nodeCount,
-              filePath: story.filePath,
-              nodeNames: story.nodeNames
-            }))
-          }
-        }
-      }
-    }))
-    appendReasoningEvent(sessionId, 'tool_result', step.title, `扫描 ${storyScan.searchedRoots.length} 个候选目录，发现 ${storyIndex.length} 个故事项目`, {
-      stepId: step.stepId,
-      data: buildReasoningStepEventData(step, stepIndex, {
-        count: storyIndex.length,
-        searchedRoots: storyScan.searchedRoots,
-        availableRoots: storyScan.availableRoots,
-        missingRoots: storyScan.missingRoots,
-        readErrors: storyScan.readErrors,
-        projects: storyIndex.map((story) => ({
-          projectId: story.projectId,
-          nodeCount: story.nodeCount,
-          filePath: story.filePath
-        })),
-        observableOps: buildReasoningObservableOps(step, {
-          searchedRoots: storyScan.searchedRoots,
-          projects: storyIndex
-        })
-      })
-    })
-    appendReasoningEvent(sessionId, 'step_completed', step.title, '故事索引读取完成', {
       stepId: step.stepId,
       data: buildReasoningStepEventData(step, stepIndex)
     })
@@ -5018,10 +4131,10 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
     return
   }
 
-  if (step.action === 'summarize_story_index' || step.action === 'generate_default_answer') {
+  if (step.action === 'generate_default_answer') {
     const session = readReasoningSession(sessionId)
     const binding = buildHermesBinding()
-    const history = readHermesChatHistory()
+    const history = readHermesChatHistory({ includeAllSessions: true })
     const answer = await runManagedReasoningTask(sessionId, 'answer', binding, ({ signal }) => generateReasoningFinalAnswer(sessionId, userPrompt, session?.artifacts || {}, binding, history, {
       signal,
       correctionPrompt,
@@ -5071,7 +4184,7 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       answer.rawResponsePreview ? `[REASONING][ANSWER][RAW] sessionId=${sessionId} preview=${truncateReasoningPreview(answer.rawResponsePreview, 600)}` : '',
       answer.reply ? `[REASONING][ANSWER][FINAL] sessionId=${sessionId} preview=${truncateReasoningPreview(answer.reply, 600)}` : ''
     ].filter(Boolean))
-    if (shouldRequireHumanReviewForStep(step)) {
+    if (shouldRequireHumanReviewForStep(step, session)) {
       requestReasoningReview(sessionId, buildReasoningReview('answer', {
         action: step.action,
         stepId: step.stepId,
@@ -5541,7 +4654,7 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
   throw new Error(`unsupported_reasoning_action_${step.action}`)
 }
 
-async function prepareReasoningSessionPlan(sessionId, binding, history, options = {}) {
+export async function prepareReasoningSessionPlan(sessionId, binding, history, options = {}) {
   const session = readReasoningSession(sessionId)
   if (!session) {
     throw new Error('reasoning_session_not_found')
@@ -5600,11 +4713,22 @@ async function prepareReasoningSessionPlan(sessionId, binding, history, options 
     planResult.rawResponsePreview ? `[REASONING][PLAN][RAW] sessionId=${sessionId} preview=${truncateReasoningPreview(planResult.rawResponsePreview, 600)}` : ''
   ].filter(Boolean))
 
-  // 计划已生成，直接开始自动执行所有步骤，无需人工审核计划本身
-  // 用户可在 final_answer_ready 事件后通过 reject review 附带修正条件重新规划
-  void runAllReasoningStepsFrom(sessionId, binding, history, 0).catch((error) => {
-    markReasoningSessionFailed(sessionId, error)
-  })
+  if (isReasoningAutoReviewMode(session)) {
+    void runAllReasoningStepsFrom(sessionId, binding, history, 0).catch((error) => {
+      markReasoningSessionFailed(sessionId, error)
+    })
+  } else {
+    requestReasoningReview(sessionId, buildReasoningReview('runtime_task_graph', {
+      reviewPhase: 'before_execution',
+      title: '审核运行任务图',
+      summary: '运行任务图已生成。请确认任务链后开始执行第一步。',
+      allowAutoApprove: false,
+      requiredHumanDecision: true,
+      evidence: readReasoningSession(sessionId)?.artifacts?.latestPlanReviewEvidence || null
+    }), {
+      targetType: 'runtime_task_graph'
+    })
+  }
 
   return readReasoningSession(sessionId)
 }
@@ -5626,16 +4750,81 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
       const step = currentSession.plan?.steps?.[i]
       if (!step) break
 
-      const executionResult = await executeReasoningStep(sessionId, step, currentSession.userPrompt, {
-        correctionPrompt: i === startIndex ? (options.correctionPrompt || '') : ''
-      })
-
-      const postStepSession = readReasoningSession(sessionId)
-      if (!executionResult?.pausedForReview && postStepSession?.status !== 'waiting_review' && shouldRequireHumanReviewForStep(step) && !isReasoningWriteAction(step.action) && !isReasoningAnswerAction(step.action)) {
+      if (shouldPauseBeforeExecutingReasoningStep(currentSession, step) && !currentSession.artifacts?.approvedStepRuns?.[step.stepId]) {
         requestReasoningReview(sessionId, buildReasoningReview('step', {
           action: step.action,
           stepId: step.stepId,
           stepIndex: i,
+          reviewPhase: 'before_execution',
+          title: `审核执行步骤：${step.title}`,
+          summary: `确认后才会执行步骤 ${step.title}。`,
+          allowAutoApprove: false,
+          requiredHumanDecision: true,
+          evidence: {
+            targetType: 'step',
+            stepId: step.stepId,
+            stepTitle: step.title,
+            tool: step.tool,
+            outboundPreview: {
+              action: step.action,
+              tool: step.tool,
+              params: step.params || {},
+              dependsOn: step.dependsOn || [],
+              observableOps: buildReasoningObservableOps(step)
+            },
+            rawResponsePreview: '',
+            structuredResult: {
+              phase: 'before_execution',
+              action: step.action,
+              tool: step.tool,
+              params: step.params || {},
+              dependsOn: step.dependsOn || [],
+              observableOps: buildReasoningObservableOps(step)
+            }
+          }
+        }), {
+          action: step.action,
+          stepIndex: i
+        })
+        updateReasoningSession(sessionId, (current) => ({
+          ...current,
+          currentStepId: step.stepId,
+          artifacts: { ...current.artifacts, nextStepIndex: i }
+        }))
+        return readReasoningSession(sessionId)
+      }
+
+      let executionResult = null
+      try {
+        executionResult = await executeReasoningStep(sessionId, step, currentSession.userPrompt, {
+          correctionPrompt: i === startIndex ? (options.correctionPrompt || '') : ''
+        })
+      } catch (error) {
+        const recovered = await recoverReasoningStepFailure(sessionId, binding, history, step, i, error)
+        if (recovered) return readReasoningSession(sessionId)
+        throw error
+      }
+
+      const postStepSession = readReasoningSession(sessionId)
+      if (postStepSession?.artifacts?.approvedStepRuns?.[step.stepId]) {
+        updateReasoningSession(sessionId, (current) => {
+          const approvedStepRuns = { ...(current.artifacts?.approvedStepRuns || {}) }
+          delete approvedStepRuns[step.stepId]
+          return {
+            ...current,
+            artifacts: {
+              ...current.artifacts,
+              approvedStepRuns
+            }
+          }
+        })
+      }
+      if (!executionResult?.pausedForReview && postStepSession?.status !== 'waiting_review' && !isReasoningAutoReviewMode(postStepSession) && shouldRequireHumanReviewForStep(step, postStepSession) && !isReasoningWriteAction(step.action) && !isReasoningAnswerAction(step.action) && !shouldPauseBeforeExecutingReasoningStep(postStepSession, step)) {
+        requestReasoningReview(sessionId, buildReasoningReview('step', {
+          action: step.action,
+          stepId: step.stepId,
+          stepIndex: i,
+          reviewPhase: 'after_execution',
           title: `审核步骤：${step.title}`,
           summary: '该步骤已完成，等待人工确认后继续执行后续步骤。',
           allowAutoApprove: false,
@@ -5732,6 +4921,7 @@ async function createReasoningSession(agentId, userPrompt, submissionContext = {
       latestStepReviewEvidence: null,
         childGoalQueue: Array.isArray(submissionContext?.childGoals) ? submissionContext.childGoals : [],
         pendingWrites: {},
+      approvedStepRuns: {},
       nextStepIndex: 0,
       tasks: {
         plan: null
@@ -5845,8 +5035,25 @@ function writeHermesChatHistory(history) {
 function readStoredHermesChatHistory() {
   const chatFile = getHermesChatFilePath()
   if (!fs.existsSync(chatFile)) return []
-  const parsed = JSON.parse(fs.readFileSync(chatFile, 'utf-8'))
-  return Array.isArray(parsed) ? parsed : []
+  const raw = fs.readFileSync(chatFile, 'utf-8')
+  if (!String(raw || '').trim()) {
+    writeHermesChatHistory([])
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    try {
+      const backupFile = `${chatFile}.corrupt-${Date.now()}`
+      fs.writeFileSync(backupFile, raw, 'utf-8')
+      writeHermesChatHistory([])
+    } catch {
+      // Ignore recovery failures and fall through to an empty history.
+    }
+    return []
+  }
 }
 
 function isDiagnosticUserPrompt(content) {
@@ -5922,14 +5129,17 @@ function pruneHermesChatHistory(history) {
   }
 }
 
-function readHermesChatHistory() {
+function readHermesChatHistory(options = {}) {
   try {
     const storedHistory = readStoredHermesChatHistory()
     const pruned = pruneHermesChatHistory(storedHistory)
-    const currentSessionHistory = pruned.history.filter((entry) => String(entry?.chatSessionId || '').trim() === currentHermesChatSessionId)
     if (pruned.removedEntries > 0) {
       appendHermesLog(`[CHAT][HISTORY] Skipped ${pruned.removedEntries} diagnostic entries when replaying model context`)
     }
+    if (options?.includeAllSessions) {
+      return pruned.history
+    }
+    const currentSessionHistory = pruned.history.filter((entry) => String(entry?.chatSessionId || '').trim() === currentHermesChatSessionId)
     return currentSessionHistory
   } catch {
     return []
@@ -6024,7 +5234,7 @@ function isHermesChatErrorReplay(content) {
     || /HTTP 507/i.test(text)
 }
 
-function buildHermesRuntimeSystemMessage(binding) {
+export function buildHermesRuntimeSystemMessage(binding) {
   return [
     'You are Hermes chat running inside GameStudio control.',
     'Current runtime metadata below is the source of truth for the active model and endpoint.',
@@ -6040,6 +5250,7 @@ const PROJECT_MEMORY_SOURCE_CHAR_LIMITS = {
   'Agent Definition': 2200,
   'User Preferences': 1200,
   'Project Memory': 1200,
+  'Long Tasks': 2200,
   'Project Status': 2400,
   'Task Queue': 2400,
   'Decisions': 1800,
@@ -6216,6 +5427,7 @@ function getProjectMemorySources(binding) {
     readProjectMemorySource('Agent Definition', memoryConfig.agentDefinitionFile),
     readProjectMemorySource('User Preferences', memoryConfig.userFile),
     readProjectMemorySource('Project Memory', memoryConfig.memoryFile),
+    readProjectMemorySource('Long Tasks', memoryConfig.longTasksFile),
     readProjectMemorySource('Project Status', memoryConfig.statusFile),
     readProjectMemorySource('Task Queue', memoryConfig.taskQueueFile),
     readProjectMemorySource('Decisions', memoryConfig.decisionsFile),
@@ -6235,14 +5447,14 @@ function selectProjectMemorySourcesForPrompt(sources, userPrompt) {
 
   const asksForProjectState = /项目|当前|焦点|待办|状态|进度|阻塞|决策|任务|下一步|memory/i.test(prompt)
   if (asksForProjectState) {
-    const projectLabels = new Set(['Project Status', 'Task Queue', 'Decisions', 'Latest Daily Log'])
+    const projectLabels = new Set(['Long Tasks', 'Project Status', 'Task Queue', 'Decisions', 'Latest Daily Log'])
     return sources.filter((source) => projectLabels.has(source.label))
   }
 
   return sources
 }
 
-function buildProjectMemorySystemMessage(binding, userPrompt, options = {}) {
+export function buildProjectMemorySystemMessage(binding, userPrompt, options = {}) {
   const sources = buildSelectableContextSources(binding)
   const hasManualSourceSelection = Array.isArray(options.selectedSourceIds)
   const selectedSourceIds = new Set(hasManualSourceSelection ? options.selectedSourceIds.map((value) => String(value)) : [])
@@ -6329,6 +5541,10 @@ function buildContextDraftMessages(binding, userPrompt, options = {}) {
     ...options,
     memoryOverlayMode: 'content-injection'
   })
+  const replayWindowMessages = Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+  const replayableMessages = collectReplayableHermesMessages(options.history || [], {
+    limit: replayWindowMessages
+  })
   const messages = [
     {
       role: 'system',
@@ -6343,10 +5559,15 @@ function buildContextDraftMessages(binding, userPrompt, options = {}) {
       content: [
         'You are preparing a pre-submit context analysis for GameStudio control.',
         'Summarize the core requirements, constraints, relevant project structure, and execution hints for the current user request in Chinese.',
+        'Use recent conversation messages to resolve omitted references such as 上一题, 列表, 它, 这些, 前者/后者, or continue/继续.',
+        'If the current request is ambiguous but recent conversation clearly identifies the target, state the resolved target explicitly.',
+        'If the recent answer identified multiple directories and the current request asks what the list contains, keep all of those directories unless the user narrows the target.',
+        'Do not reinterpret the selected markdown source list itself as the task target unless the user explicitly asks about context sources.',
         'Be concrete and operational. Do not speculate beyond the provided materials.',
         'Return plain text only.'
       ].join('\n')
     },
+    ...replayableMessages,
     {
       role: 'user',
       content: `当前任务：${userPrompt}\n\n请先总结这些已选上下文对本次任务真正重要的内容。`
@@ -6361,6 +5582,81 @@ function buildContextDraftMessages(binding, userPrompt, options = {}) {
 
 async function generateContextDraft(userPrompt, binding, options = {}) {
   const draftContext = buildContextDraftMessages(binding, userPrompt, options)
+  if (isEditorLocationPrompt(userPrompt) || isControlLocationPrompt(userPrompt) || isBusinessServerLocationPrompt(userPrompt)) {
+    const summaryLines = [
+      '本轮问题已经明确指定目录定位目标，应以当前问题为准，不沿用上一轮的列表或 Control 上下文。',
+      ''
+    ]
+    if (isEditorLocationPrompt(userPrompt)) summaryLines.push('当前目标：GameStudio 编辑器前端目录。执行建议：调用 `locate_project`，由 Hermes 基于本轮 workspaceStructure 中的 editor 应用目录作答。')
+    if (isControlLocationPrompt(userPrompt)) summaryLines.push('当前目标：Control 前端与后端目录。执行建议：调用 `locate_project`，由 Hermes 基于本轮 workspaceStructure 中的 control 前后端目录作答。')
+    if (isBusinessServerLocationPrompt(userPrompt)) summaryLines.push('当前目标：GameStudio 业务后端目录。执行建议：调用 `locate_project`，由 Hermes 基于本轮 workspaceStructure 中的 server 应用目录作答。')
+    const summary = summaryLines.join('\n')
+    const replayedMessageCount = collectReplayableHermesMessages(options.history || [], {
+      limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+    }).length
+    return {
+      summary,
+      usage: null,
+      outboundPreview: buildStructuredOutboundPreview({
+        binding,
+        messages: draftContext.messages,
+        purpose: 'context-draft-workspace-location-routing',
+        mode: 'chat',
+        userPrompt,
+        replayedMessageCount,
+        contextSelection: options,
+        history: options.history || []
+      }),
+      rawResponsePreview: truncateReasoningPreview(summary, 2400),
+      contextSources: buildChatContextSourcesPayload({
+        replayedMessageCount,
+        projectMemory: draftContext.projectMemory
+      }, binding)
+    }
+  }
+
+  const inferredDirectoryTargets = inferWorkspaceDirectoriesFromRecentContext(userPrompt, options.history || [])
+  const explicitDirectoryTarget = inferWorkspaceDirectoryFromPrompt(userPrompt)
+  const directoryTargets = explicitDirectoryTarget ? [explicitDirectoryTarget] : inferredDirectoryTargets
+  if (isDirectoryListingPrompt(userPrompt) && directoryTargets.length > 0) {
+    const targetLabel = inferredDirectoryTargets.includes('apps/editor')
+      ? 'GameStudio 编辑器前端目录定位'
+      : (inferredDirectoryTargets.includes('apps/control-console') || inferredDirectoryTargets.includes('apps/control-server')
+          ? 'Control 目录定位'
+          : '最近一轮目录定位')
+    const summary = [
+      explicitDirectoryTarget
+        ? `本轮问题已明确指定目录：\`${explicitDirectoryTarget}\`。`
+        : `根据最近一轮已完成问答，本次省略主语的“列表包含的文件”应承接上一题的 ${targetLabel}。`,
+      '',
+      `本轮应扫描的目录：${directoryTargets.map((dirPath) => `\`${dirPath}\``).join('、')}`,
+      '',
+      '执行建议：对上述每个目录调用 `list_directory_contents`，只返回直接子项；在工具返回前不要预写文件名、子目录内容或递归结构。'
+    ].join('\n')
+    const replayedMessageCount = collectReplayableHermesMessages(options.history || [], {
+      limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+    }).length
+    return {
+      summary,
+      usage: null,
+      outboundPreview: buildStructuredOutboundPreview({
+        binding,
+        messages: draftContext.messages,
+        purpose: 'context-draft-deterministic-directory-followup',
+        mode: 'chat',
+        userPrompt,
+        replayedMessageCount,
+        contextSelection: options,
+        history: options.history || []
+      }),
+      rawResponsePreview: truncateReasoningPreview(summary, 2400),
+      contextSources: buildChatContextSourcesPayload({
+        replayedMessageCount,
+        projectMemory: draftContext.projectMemory
+      }, binding)
+    }
+  }
+
   const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -6388,13 +5684,17 @@ async function generateContextDraft(userPrompt, binding, options = {}) {
       purpose: 'context-draft',
       mode: 'chat',
       userPrompt,
-      replayedMessageCount: 0,
+      replayedMessageCount: collectReplayableHermesMessages(options.history || [], {
+        limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+      }).length,
       contextSelection: options,
-      history: []
+      history: options.history || []
     }),
     rawResponsePreview: truncateReasoningPreview(content, 2400),
     contextSources: buildChatContextSourcesPayload({
-      replayedMessageCount: 0,
+      replayedMessageCount: collectReplayableHermesMessages(options.history || [], {
+        limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+      }).length,
       projectMemory: draftContext.projectMemory
     }, binding)
   }

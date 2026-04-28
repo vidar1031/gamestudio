@@ -2,7 +2,6 @@
 import ControlConsoleDiagnosticsPanel from './components/ControlConsoleDiagnosticsPanel.vue'
 import ControlConsoleHeader from './components/ControlConsoleHeader.vue'
 import ControlConsoleMainPanels from './components/ControlConsoleMainPanels.vue'
-import ControlConsoleTaskQueuePanel from './components/ControlConsoleTaskQueuePanel.vue'
 import { provideControlConsoleApp } from './composables/useControlConsoleAppContext'
 import { useControlConsoleApp } from './composables/useControlConsoleApp'
 
@@ -16,7 +15,6 @@ provideControlConsoleApp(controlConsoleApp)
     <section class="console-body" v-if="controlConsoleApp.selectedAgentId">
       <ControlConsoleMainPanels />
       <ControlConsoleDiagnosticsPanel />
-      <ControlConsoleTaskQueuePanel />
     </section>
   </main>
 </template>

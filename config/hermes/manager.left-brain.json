@@ -14,6 +14,7 @@
     "agentDefinitionFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md",
     "userFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md",
     "memoryFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md",
+    "longTasksFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md",
     "statusFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md",
     "taskQueueFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md",
     "decisionsFile": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md",

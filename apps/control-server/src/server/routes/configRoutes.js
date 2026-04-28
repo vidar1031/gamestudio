@@ -80,7 +80,7 @@ function buildMemoryRecordsPayload(context, binding) {
   } = context
   const memoryConfig = binding.memory
   const dailyLogFiles = listDailyLogFiles(memoryConfig, fs, path)
-  const latestDailyLogFile = dailyLogFiles[0] || getTodayDailyLogPath(memoryConfig, fs, path)
+  const todayDailyLogFile = getTodayDailyLogPath(memoryConfig, fs, path)
   const contextPoolEntries = listContextPoolEntries()
 
   const records = [
@@ -110,7 +110,7 @@ function buildMemoryRecordsPayload(context, binding) {
       key: 'daily-log',
       label: '当日日志',
       scope: 'short-term',
-      filePath: latestDailyLogFile,
+      filePath: todayDailyLogFile,
       previewMode: 'tail',
       itemCount: dailyLogFiles.length
     }),
@@ -132,6 +132,12 @@ function buildMemoryRecordsPayload(context, binding) {
       scope: 'long-term',
       filePath: memoryConfig.memoryFile
     }),
+      buildMemoryRecord(readUtf8FileRecord, {
+        key: 'long-tasks',
+        label: '长任务主线',
+        scope: 'long-term',
+        filePath: memoryConfig.longTasksFile
+      }),
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'project-status',
       label: '项目状态记录',
@@ -182,10 +188,11 @@ function resolveMemoryRecordPath(context, binding, recordKey) {
   }
   if (normalizedKey === 'chat-history') return getHermesChatFilePath()
   if (normalizedKey === 'runtime-log') return HERMES_RUNTIME_LOG_FILE
-  if (normalizedKey === 'daily-log') return listDailyLogFiles(memoryConfig, fs, path)[0] || getTodayDailyLogPath(memoryConfig, fs, path)
+  if (normalizedKey === 'daily-log') return getTodayDailyLogPath(memoryConfig, fs, path)
   if (normalizedKey === 'agent-definition') return memoryConfig.agentDefinitionFile
   if (normalizedKey === 'user-memory') return memoryConfig.userFile
   if (normalizedKey === 'project-memory') return memoryConfig.memoryFile
+  if (normalizedKey === 'long-tasks') return memoryConfig.longTasksFile
   if (normalizedKey === 'project-status') return memoryConfig.statusFile
   if (normalizedKey === 'task-queue') return memoryConfig.taskQueueFile
   if (normalizedKey === 'decisions') return memoryConfig.decisionsFile
@@ -288,6 +295,7 @@ export function registerConfigRoutes(app, context) {
       ['agentDefinitionFile', binding.memory.agentDefinitionFile],
       ['userFile', binding.memory.userFile],
       ['memoryFile', binding.memory.memoryFile],
+      ['longTasksFile', binding.memory.longTasksFile],
       ['statusFile', binding.memory.statusFile],
       ['taskQueueFile', binding.memory.taskQueueFile],
       ['decisionsFile', binding.memory.decisionsFile]

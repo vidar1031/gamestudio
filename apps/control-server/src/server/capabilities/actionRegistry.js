@@ -24,13 +24,6 @@ export const REASONING_ACTIONS = {
       'dirPath: 工作区内相对路径或绝对路径，必须位于 GameStudio 工作区内。'
     ]
   },
-  list_created_stories: {
-    title: '读取故事索引',
-    tool: REASONING_TOOLS['project.listStories'].tool,
-    category: 'observable',
-    description: '扫描 storage/projects/*/scripts.json，输出可验证的故事索引。',
-    paramsSpec: []
-  },
   inspect_server_image_entrypoints: {
     title: '盘点图片生成服务端入口',
     tool: REASONING_TOOLS['project.inspectServerImageEntrypoints'].tool,
@@ -50,13 +43,6 @@ export const REASONING_ACTIONS = {
     tool: REASONING_TOOLS['planner.default'].tool,
     category: 'planner',
     description: '整理问题与证据，准备进入最终回答阶段。',
-    paramsSpec: []
-  },
-  summarize_story_index: {
-    title: '生成最终回答',
-    tool: REASONING_TOOLS['model.answer'].tool,
-    category: 'answer',
-    description: '基于故事索引和上下文生成最终回答。',
     paramsSpec: []
   },
   generate_default_answer: {
@@ -176,7 +162,7 @@ export function isReasoningInvokeAction(action) {
 }
 
 export function isReasoningAnswerAction(action) {
-  return action === 'generate_default_answer' || action === 'summarize_story_index'
+  return action === 'generate_default_answer'
 }
 
 export function buildReasoningActionCatalog() {
@@ -187,7 +173,7 @@ export function buildReasoningActionCatalog() {
     category: metadata.category || 'general',
     description: metadata.description || '',
     paramsSpec: Array.isArray(metadata.paramsSpec) ? metadata.paramsSpec : [],
-    defaultSkipReview: !isReasoningWriteAction(action) && !isReasoningAnswerAction(action) && !isReasoningInvokeAction(action),
-    requiresHumanReview: isReasoningWriteAction(action) || isReasoningAnswerAction(action) || isReasoningInvokeAction(action)
+    defaultSkipReview: !isReasoningWriteAction(action) && !isReasoningInvokeAction(action),
+    requiresHumanReview: isReasoningWriteAction(action) || isReasoningInvokeAction(action)
   }))
 }

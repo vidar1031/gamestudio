@@ -1,0 +1,9 @@
+[
+  {
+    "role": "user",
+    "content": "扫描 storage/projects，列出当前已有项目。",
+    "createdAt": "2026-04-27T10:51:32.954Z",
+    "requestId": "reasoning_1777287092954_bc84cbc4",
+    "chatSessionId": "chat_1777287016068_7154b720"
+  }
+]

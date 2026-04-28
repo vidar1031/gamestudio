@@ -6,8 +6,8 @@
   },
   "config": {
     "saved": true,
-    "savedAt": "2026-04-27T07:08:05.651Z",
-    "savedFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
+    "savedAt": "2026-04-27T08:21:57.977Z",
+    "savedFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
     "lastSavedModel": "Qwen3.6-35B-A3B-4bit",
     "detail": "已保存左脑配置"
   },
@@ -18,15 +18,15 @@
     "provider": "omlx",
     "baseUrl": "http://127.0.0.1:18888/v1",
     "model": "Qwen3.6-35B-A3B-4bit",
-    "inspectedAt": "2026-04-27T07:08:05.724Z",
-    "loadedAt": "2026-04-27T06:56:26.934Z",
+    "inspectedAt": "2026-04-28T09:26:47.085Z",
+    "loadedAt": "2026-04-28T07:47:18.614Z",
     "lastAction": "load",
     "inspection": {
       "model": "Qwen3.6-35B-A3B-4bit",
       "accessible": true,
       "status": "ok",
       "detail": "模型可访问，最小推理探测成功",
-      "checkedAt": "2026-04-27T07:08:05.724Z",
+      "checkedAt": "2026-04-28T09:26:47.085Z",
       "usage": {
         "promptTokens": 11,
         "completionTokens": 1,
@@ -39,23 +39,154 @@
     }
   },
   "preflight": {
-    "ready": false,
-    "checkedAt": null,
-    "configFingerprint": "",
-    "detail": "当前配置尚未重新自检",
-    "checks": [],
-    "inspection": null
+    "ready": true,
+    "checkedAt": "2026-04-28T07:47:18.613Z",
+    "configFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
+    "detail": "左脑自检通过",
+    "checks": [
+      {
+        "key": "hermes-install",
+        "label": "检测 Hermes 安装",
+        "status": "ok",
+        "detail": "Hermes OK"
+      },
+      {
+        "key": "model-provider",
+        "label": "模型供应商",
+        "status": "ok",
+        "detail": "omlx"
+      },
+      {
+        "key": "model-base-url",
+        "label": "模型服务地址",
+        "status": "ok",
+        "detail": "http://127.0.0.1:18888/v1"
+      },
+      {
+        "key": "model-name",
+        "label": "模型名称",
+        "status": "ok",
+        "detail": "Qwen3.6-35B-A3B-4bit"
+      },
+      {
+        "key": "short-term-context",
+        "label": "短期记忆窗口",
+        "status": "ok",
+        "detail": "要求 >= 65536 tokens，当前 131072"
+      },
+      {
+        "key": "memory-agent-definition",
+        "label": "Agent 定义文件",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md"
+      },
+      {
+        "key": "memory-user-file",
+        "label": "用户长期记忆",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md"
+      },
+      {
+        "key": "memory-memory-file",
+        "label": "项目长期记忆",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md"
+      },
+      {
+        "key": "memory-long-tasks-file",
+        "label": "长任务主线文件",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md"
+      },
+      {
+        "key": "memory-status-file",
+        "label": "状态文件",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md"
+      },
+      {
+        "key": "memory-task-queue-file",
+        "label": "任务队列文件",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md"
+      },
+      {
+        "key": "memory-decisions-file",
+        "label": "决策文件",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md"
+      },
+      {
+        "key": "memory-daily-log-dir",
+        "label": "日志目录",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/ai/memory"
+      },
+      {
+        "key": "skills-root",
+        "label": "技能根目录",
+        "status": "ok",
+        "detail": "/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills"
+      },
+      {
+        "key": "skills-files",
+        "label": "技能文件",
+        "status": "ok",
+        "detail": "1/1 个技能文件可用"
+      },
+      {
+        "key": "model-access",
+        "label": "模型连通性",
+        "status": "ok",
+        "detail": "模型可访问，最小推理探测成功"
+      },
+      {
+        "key": "omlx-service",
+        "label": "检测本地模型服务",
+        "status": "ok",
+        "detail": "OMLX OK，发现 6 个模型 (http://127.0.0.1:18888/v1)"
+      },
+      {
+        "key": "model-selection",
+        "label": "检测模型选择",
+        "status": "ok",
+        "detail": "Qwen3.6-35B-A3B-4bit"
+      },
+      {
+        "key": "active-inference",
+        "label": "主动推理自检",
+        "status": "ok",
+        "detail": "Qwen3.6-35B-A3B-4bit 推理可用"
+      }
+    ],
+    "inspection": {
+      "model": "Qwen3.6-35B-A3B-4bit",
+      "accessible": true,
+      "status": "ok",
+      "detail": "模型可访问，最小推理探测成功",
+      "checkedAt": "2026-04-28T07:47:16.367Z",
+      "usage": {
+        "promptTokens": 11,
+        "completionTokens": 1,
+        "totalTokens": 12
+      },
+      "contextLength": 131072,
+      "recommendedMaxOutputTokens": 8192,
+      "tokenizer": "qwen",
+      "metadataSource": "heuristic"
+    }
   },
   "runtime": {
-    "state": "stopped",
-    "label": "已暂停",
-    "detail": "Hermes 已安装，但当前没有运行中的 manager 受控进程",
-    "pid": null,
-    "updatedAt": "2026-04-27T07:08:06.272Z",
+    "state": "running",
+    "label": "运行中",
+    "detail": "Hermes gateway 进程正在运行",
+    "pid": 7765,
+    "updatedAt": "2026-04-28T09:26:53.258Z",
     "lastAction": null,
     "availableActions": [
       "all-restart",
-      "resume"
+      "pause",
+      "exit"
     ]
   }
 }

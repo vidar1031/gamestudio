@@ -2,6 +2,7 @@
 import { unref } from 'vue'
 import { Codemirror } from 'vue-codemirror'
 import { renderChatMessage } from '../lib/chatMarkdown'
+import ControlConsoleSkillProposalsPanel from './ControlConsoleSkillProposalsPanel.vue'
 import {
   formatDurationSeconds,
   formatReasoningEventTime,
@@ -127,6 +128,9 @@ const {
   reasoningElapsedSeconds,
   reasoningError,
   reasoningPendingReview,
+  canReasoningStepBack,
+  reasoningApproveActionLabel,
+  reasoningRejectActionLabel,
   reasoningReviewBusy,
   reasoningReviewDraft,
   reasoningReviewEvidence,
@@ -187,6 +191,9 @@ const {
   visibleLogLines,
   formatActionHintLine,
   formatReasoningEvidence,
+  smartStartHermes,
+  smartStartBusy,
+  smartStartMessage,
 } = useControlConsoleAppContext<any>()
 
 function memoryRecordsByScope(scope: string) {
@@ -250,16 +257,26 @@ function formatMemoryRecordMeta(record: any) {
             <span :style="{ color: leftBrainSummary.statusLabel === '已启动' ? 'var(--c-success-dim)' : 'var(--c-error-dim)' }">{{ leftBrainSummary.statusLabel }}</span>
           </div>
         </div>
-        <div style="display: flex; gap: 8px;">
-          <button class="action-btn outline" :disabled="preflightBusy || memoryConfigBusy || configSaving" @click.stop="runLeftBrainPreflight" style="padding: 2px 10px; font-size: 12px;">
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="action-btn outline" :disabled="preflightBusy || memoryConfigBusy || configSaving || smartStartBusy" @click.stop="runLeftBrainPreflight" style="padding: 2px 10px; font-size: 12px;" title="只跑左脑配置自检（OMLX / Ollama 连通、模型加载、记忆/技能配置等），不启动 runtime。">
             {{ preflightBusy ? '自检中...' : '🔎 自检' }}
           </button>
-          <button class="action-btn" :disabled="runtimeBusy || memoryConfigBusy || configSaving" @click.stop="toggleHermesRuntime('left')" style="padding: 2px 10px; font-size: 12px;">
-            {{ runtimeBusy ? '处理中...' : (leftBrainRunning ? '🔴 停止左脑' : '🚀 启动左脑') }}
+          <button
+            class="action-btn"
+            :disabled="runtimeBusy || memoryConfigBusy || configSaving || smartStartBusy || leftBrainRunning"
+            @click.stop="smartStartHermes"
+            style="padding: 2px 10px; font-size: 12px; background: var(--c-success-dim, #2f9e44); color: #fff;"
+            title="一键串起：保存左脑配置 → 运行自检 → 启动 Hermes。等价于按顺序点「保存」+「自检」+「启动 Hermes」。"
+          >
+            {{ smartStartBusy ? '一键启动中...' : '⚡ 一键启动 (保存→自检→启动)' }}
+          </button>
+          <button class="action-btn" :disabled="runtimeBusy || memoryConfigBusy || configSaving || smartStartBusy" @click.stop="toggleHermesRuntime('left')" style="padding: 2px 10px; font-size: 12px;" title="启动 / 停止 Hermes runtime（即左脑进程）。与顶部「启动 Hermes（左脑）」是同一个动作。">
+            {{ runtimeBusy ? '处理中...' : (leftBrainRunning ? '🔴 停止 Hermes' : '🚀 启动 Hermes (应用此配置)') }}
           </button>
         </div>
       </summary>
       <div class="panel-content" style="padding: 0;">
+        <div v-if="smartStartMessage" :style="{ padding: '6px 12px', fontSize: '12px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(94,204,255,0.08)', color: 'var(--c-accent)' }">{{ smartStartMessage }}</div>
         <!-- Tab switcher -->
         <div style="display: flex; border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.18);">
           <button @click="brainActiveTab = 'left'" :style="{ padding: '8px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', background: 'transparent', border: 'none', borderBottom: brainActiveTab === 'left' ? '2px solid var(--c-accent)' : '2px solid transparent', color: brainActiveTab === 'left' ? 'var(--c-accent)' : 'var(--c-text-sub)' }">🧠 左脑</button>
@@ -490,6 +507,7 @@ function formatMemoryRecordMeta(record: any) {
           <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'plan' }" @click="dashboardActiveTab = 'plan'">Agent Runtime</button>
           <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'pool' }" @click="dashboardActiveTab = 'pool'">上下文池</button>
           <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'history' }" @click="dashboardActiveTab = 'history'">聊天记录存档</button>
+          <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'skills' }" @click="dashboardActiveTab = 'skills'">技能提案</button>
         </div>
 
         <div class="dashboard-tab-content" v-show="dashboardActiveTab === 'reasoning'">
@@ -500,12 +518,12 @@ function formatMemoryRecordMeta(record: any) {
               <div class="reasoning-plan-title">{{ reasoningReviewTargetLabel }}</div>
               <div class="reasoning-review-title">{{ reasoningPendingReview.title }}</div>
               <div class="reasoning-review-summary">{{ reasoningPendingReview.summary }}</div>
-              <div v-if="reasoningAutoApproveEnabled" class="chat-memory-desc" style="margin-bottom: 10px;">当前已开启自动审核，但要求人工确认的写文件/最终回答步骤不会被自动通过。</div>
+              <div class="chat-memory-desc" style="margin-bottom: 10px;">{{ reasoningAutoApproveEnabled ? '当前为自动直跑模式：运行任务图和步骤不会停在审核框。' : '当前为人工全审模式：运行任务图、执行步骤和最终回答都会进入审核。' }}</div>
               <div v-if="reasoningReviewEvidence?.outboundPreview" class="reasoning-evidence-block"><div class="reasoning-evidence-title">本轮提交流程</div><pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(reasoningReviewEvidence.outboundPreview) }}</pre></div>
               <div v-if="reasoningReviewEvidence?.rawResponsePreview" class="reasoning-evidence-block"><div class="reasoning-evidence-title">模型首先返回的结果</div><pre class="reasoning-evidence-pre">{{ reasoningReviewEvidence.rawResponsePreview }}</pre></div>
               <div v-if="reasoningReviewEvidence?.structuredResult" class="reasoning-evidence-block"><div class="reasoning-evidence-title">结构化结果摘要</div><pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(reasoningReviewEvidence.structuredResult) }}</pre></div>
               <textarea v-model="reasoningReviewDraft" class="chat-memory-editor reasoning-review-editor" rows="4" spellcheck="false" placeholder="驳回时填写修正条件，例如：必须调用 project.listStories，不要猜数据库。" :disabled="reasoningAutoApproveEnabled" />
-              <div class="reasoning-review-actions"><button class="action-btn outline" @click="submitReasoningReview('reject')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : '驳回并重跑当前目标' }}</button><button class="action-btn" @click="submitReasoningReview('approve')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : '通过并继续' }}</button></div>
+              <div class="reasoning-review-actions"><button v-if="canReasoningStepBack" class="action-btn outline" @click="submitReasoningReview('back')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : '后退一步' }}</button><button class="action-btn outline" @click="submitReasoningReview('reject')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : reasoningRejectActionLabel }}</button><button class="action-btn" @click="submitReasoningReview('approve')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : reasoningApproveActionLabel }}</button></div>
             </div>
             <div v-if="activeReasoningSession?.events?.length" class="reasoning-timeline" ref="reasoningTimelineRef"><div v-for="event in activeReasoningSession.events" :key="event.eventId" class="reasoning-event-row"><div class="reasoning-event-type">{{ event.type }}</div><div class="reasoning-event-body"><div class="reasoning-event-title">{{ event.title }}</div><div class="reasoning-event-summary">{{ event.summary }}</div><div v-if="getReasoningEventMetaLines(event).length" class="reasoning-event-meta-list"><span v-for="line in getReasoningEventMetaLines(event)" :key="`${event.eventId}-${line}`" class="reasoning-event-meta-chip">{{ line }}</span></div><div v-if="getReasoningEventOps(event).length" class="reasoning-event-ops"><div class="reasoning-event-ops-title">可观测调用</div><div v-for="line in getReasoningEventOps(event)" :key="`${event.eventId}-${line}`" class="reasoning-event-op-line">{{ line }}</div></div><div v-if="getReasoningEventPreviewBlocks(event).length" class="reasoning-event-ops"><div class="reasoning-event-ops-title">Hermes 返回</div><div v-for="block in getReasoningEventPreviewBlocks(event)" :key="`${event.eventId}-${block.title}`" style="margin-top: 8px;"><div class="reasoning-event-ops-title" style="margin-bottom: 4px;">{{ block.title }}</div><pre class="reasoning-evidence-pre" style="margin: 0; max-height: 240px; overflow: auto;">{{ block.content }}</pre></div></div></div><div class="reasoning-event-time">{{ formatReasoningEventTime(event.timestamp) }}</div></div></div>
             <div v-if="activeReasoningSession?.error || reasoningError" class="message-banner error" style="font-size: 12px; line-height: 1.5;">{{ activeReasoningSession?.error || reasoningError }}</div>
@@ -609,6 +627,10 @@ function formatMemoryRecordMeta(record: any) {
         </div>
         <div class="dashboard-tab-content" v-show="dashboardActiveTab === 'pool'"><div class="chat-memory-panel"><div class="chat-memory-header-row"><div><div class="chat-memory-title">上下文池</div><div class="chat-memory-desc">这里只保存人工确认后的上下文理解；未确认内容不会落盘，也不会复用。</div></div><div class="chat-memory-actions"><button class="action-btn outline" @click="loadContextCandidates" :disabled="contextCandidatesBusy || contextPoolEditorBusy">{{ contextCandidatesBusy ? '刷新中...' : '刷新列表' }}</button></div></div><div class="chat-memory-meta"><span>记录数 {{ contextPoolEntries.length }}</span></div></div></div>
         <div class="dashboard-tab-content" v-show="dashboardActiveTab === 'history'"><div class="chat-memory-panel"><div class="chat-memory-header-row"><div><div class="chat-memory-title">聊天记录存档</div><div class="chat-memory-desc">按日期持续写入的长期聊天记录，用于回看、整理和人工提取信息；它不等同于 Agent 记忆文件。</div></div><div class="chat-memory-actions"><button class="action-btn outline" @click="openChatHistoryFileInEditor" :disabled="chatMemoryOpenBusy || chatMemoryBusy || chatMemorySaveBusy">{{ chatMemoryOpenBusy ? '打开中...' : '在编辑器打开' }}</button><button class="action-btn outline" @click="openChatMemoryEditor" :disabled="chatMemoryBusy || chatMemorySaveBusy || chatMemoryOpenBusy">{{ chatMemoryBusy ? '读取中...' : '内嵌查看' }}</button><button class="action-btn outline" @click="loadChatHistory" :disabled="chatMemoryBusy || chatMemorySaveBusy || chatMemoryOpenBusy">刷新路径</button></div></div><div v-if="chatMemoryFile" class="chat-memory-meta"><span :style="{ color: chatMemoryFile.exists ? 'var(--c-success-dim)' : 'var(--c-error-dim)' }">{{ chatMemoryFile.exists ? '文件已存在' : '今日文件尚未生成，保存后会创建' }}</span><span>字符数 {{ chatMemoryFile.sizeChars }}</span><span>更新时间 {{ chatMemoryFile.updatedAt || '未写入' }}</span></div><div v-if="chatMemoryEditorOpen" class="chat-memory-editor-shell"><textarea v-model="chatMemoryDraft" class="chat-memory-editor" spellcheck="false" placeholder="这里显示 ai/chat 下当天聊天记录 JSON，可直接编辑后保存。" /><div class="chat-memory-editor-footer"><div class="chat-memory-editor-hint">服务端保存前会校验 JSON 数组结构，避免写坏聊天历史。</div><div class="chat-memory-actions"><button class="action-btn outline" @click="loadChatMemoryFile" :disabled="chatMemoryBusy || chatMemorySaveBusy">{{ chatMemoryBusy ? '刷新中...' : '重新加载' }}</button><button class="action-btn" @click="saveChatMemoryFile" :disabled="chatMemorySaveBusy || chatMemoryBusy || !chatMemoryDirty">{{ chatMemorySaveBusy ? '保存中...' : '保存文件' }}</button></div></div></div><div v-if="chatMemoryOpenMessage" class="message-banner tip" style="font-size: 12px; line-height: 1.5;">{{ chatMemoryOpenMessage }}</div><div v-if="chatMemorySaveMessage" class="message-banner tip" style="font-size: 12px; line-height: 1.5;">{{ chatMemorySaveMessage }}</div><div v-if="chatMemoryError" class="message-banner error" style="font-size: 12px; line-height: 1.5;">{{ chatMemoryError }}</div></div></div>
+
+        <div class="dashboard-tab-content" v-show="dashboardActiveTab === 'skills'">
+          <ControlConsoleSkillProposalsPanel />
+        </div>
 
         <div v-if="editorModalOpen" class="editor-modal-backdrop" @click.self="closeEditorModal">
           <div class="editor-modal-shell" tabindex="-1" role="dialog" aria-modal="true" :aria-label="editorModalTitle">

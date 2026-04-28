@@ -390,6 +390,7 @@ type ChatHistoryEntry = {
 type ReasoningReview = {
   status: 'pending'
   targetType: 'plan' | 'runtime_task_graph' | 'step' | 'completion' | 'answer'
+  reviewPhase?: 'before_execution' | 'after_execution' | 'standard' | 'quality_override'
   action?: string | null
   stepId?: string | null
   stepIndex?: number | null
@@ -471,6 +472,7 @@ type MemoryConfig = {
   agentDefinitionFile: string
   userFile: string
   memoryFile: string
+  longTasksFile: string
   statusFile: string
   taskQueueFile: string
   decisionsFile: string
@@ -581,6 +583,14 @@ export function useControlConsoleApp() {
   const dashboardActiveTab = ref('reasoning')
   const brainActiveTab = ref<'left' | 'right'>('left')
   const sandboxBusy = ref(false)
+  const skillProposalsList = ref<any[]>([])
+  const skillIntentsActive = ref<any[]>([])
+  const skillProposalsBusy = ref(false)
+  const skillProposalsError = ref('')
+  const skillProposalsScanMessage = ref('')
+  const skillProposalsActionBusy = ref('')
+  const smartStartBusy = ref(false)
+  const smartStartMessage = ref('')
   const chatContextInfo = ref<ChatContextInfo | null>(null)
   const chatUiStatus = ref<ChatUiStatus>({ kind: 'idle', message: '', activeRequest: null, recovery: null })
   const chatMemoryFile = ref<ChatMemoryFileSummary | null>(null)
@@ -751,6 +761,24 @@ export function useControlConsoleApp() {
     if (!review) return ''
     return review.targetType === 'plan' || review.targetType === 'runtime_task_graph' ? '运行任务审核' : `步骤审核${review.stepIndex != null ? ` #${review.stepIndex + 1}` : ''}`
   })
+  const canReasoningStepBack = computed(() => {
+    const review = reasoningPendingReview.value
+    if (!review) return false
+    return Number.isInteger(review.stepIndex) && Number(review.stepIndex) > 0
+  })
+  const reasoningRejectActionLabel = computed(() => {
+    const review = reasoningPendingReview.value
+    if (!review) return '驳回并重新规划'
+    if (review.targetType === 'plan' || review.targetType === 'runtime_task_graph' || review.reviewPhase === 'before_execution') {
+      return '驳回并重新规划'
+    }
+    return '驳回并重跑当前步骤'
+  })
+  const reasoningApproveActionLabel = computed(() => {
+    const review = reasoningPendingReview.value
+    if (review?.reviewPhase === 'quality_override') return '通过并强化评分'
+    return '通过并继续'
+  })
   const reasoningReviewEvidence = computed(() => reasoningPendingReview.value?.evidence || null)
   const chatActiveRequestElapsedSeconds = computed(() => {
     const activeRequest = chatUiStatus.value.activeRequest
@@ -764,7 +792,7 @@ export function useControlConsoleApp() {
   const canClearReasoningSession = computed(() => ['completed', 'failed', 'cancelled'].includes(activeReasoningSession.value?.status || ''))
   const showChatStatusBanner = computed(() => chatUiStatus.value.kind !== 'idle' && !reasoningSessionInForeground.value)
   const composerPrefersReasoning = computed(() => dashboardActiveTab.value === 'reasoning')
-  const reviewModeLabel = computed(() => reasoningAutoApproveEnabled.value ? '自动审核已开启' : '人工审核模式')
+  const reviewModeLabel = computed(() => reasoningAutoApproveEnabled.value ? '自动直跑模式' : '人工全审模式')
   const primaryComposerActionLabel = computed(() => composerPrefersReasoning.value ? (reasoningBusy.value ? '推理中...' : '开始可观测执行') : (sandboxBusy.value ? '发送中...' : '直接聊天'))
   const secondaryComposerActionLabel = computed(() => composerPrefersReasoning.value ? (sandboxBusy.value ? '直接聊天中...' : '直接聊天') : (reasoningBusy.value ? '推理中...' : '可观测执行'))
   const shortTermMemoryHint = computed(() => String(leftBrain.value.model || '').trim().toLowerCase().includes('gemma-4-26b-a4b') ? 'Gemma-4-26B-A4B 当前 OMLX 配置应填写为：短期记忆最小窗口 65536。该项只校验上下文窗口；最大输出 token 4096 由模型服务配置控制，不在这里填写。' : '这里填写的是模型最小上下文窗口要求。要通过自检，模型的上下文窗口必须大于等于该值；最大输出 token 由模型服务自身配置控制。')
@@ -779,6 +807,7 @@ export function useControlConsoleApp() {
         agentDefinitionFile: memoryConfig.value.agentDefinitionFile,
         userFile: memoryConfig.value.userFile,
         memoryFile: memoryConfig.value.memoryFile,
+        longTasksFile: memoryConfig.value.longTasksFile,
         statusFile: memoryConfig.value.statusFile,
         taskQueueFile: memoryConfig.value.taskQueueFile,
         decisionsFile: memoryConfig.value.decisionsFile,
@@ -823,6 +852,7 @@ export function useControlConsoleApp() {
       'memory-agent-definition': 'Agent 定义文件',
       'memory-user-file': '用户记忆文件',
       'memory-memory-file': '项目记忆文件',
+      'memory-long-tasks-file': '长任务主线文件',
       'memory-status-file': '状态文件',
       'memory-task-queue-file': '任务队列文件',
       'memory-decisions-file': '决策文件',
@@ -1175,6 +1205,7 @@ export function useControlConsoleApp() {
           agentDefinitionFile: payload.config.memory.agentDefinitionFile,
           userFile: payload.config.memory.userFile,
           memoryFile: payload.config.memory.memoryFile,
+          longTasksFile: payload.config.memory.longTasksFile,
           statusFile: payload.config.memory.statusFile,
           taskQueueFile: payload.config.memory.taskQueueFile,
           decisionsFile: payload.config.memory.decisionsFile,
@@ -1765,7 +1796,11 @@ export function useControlConsoleApp() {
     chatHistory.value.push({ role: 'user', content: userText })
     syncReasoningSessionUi(null)
     try {
-      const response = await createReasoningSession('hermes-manager', { prompt: userText, ...submissionContext })
+      const response = await createReasoningSession('hermes-manager', {
+        prompt: userText,
+        reviewMode: reasoningAutoApproveEnabled.value ? 'auto' : 'manual',
+        ...submissionContext,
+      })
       const payload = await response.json().catch(() => null)
       if (!response.ok || !payload?.ok || !payload?.session) throw new Error(payload?.details || payload?.error || `reasoning_start_http_${response.status}`)
       syncReasoningSessionUi({ sessionId: payload.session.sessionId, runtimeSessionId: payload.session.runtimeSessionId ?? payload.session.sessionId, sessionKind: payload.session.sessionKind ?? 'agent_runtime', agentId: 'hermes-manager', userPrompt: userText, status: payload.session.status, createdAt: payload.session.createdAt, updatedAt: payload.session.createdAt, plan: payload.session.runtimeTaskGraph ?? payload.session.plan, runtimeTaskGraph: payload.session.runtimeTaskGraph ?? payload.session.plan, currentStepId: null, review: null, events: [], artifacts: {}, error: null })
@@ -1867,7 +1902,7 @@ export function useControlConsoleApp() {
       const session = await loadReasoningSession(sessionId)
       if (!session) return
       if (session.status === 'planning' || session.status === 'running') { scheduleReasoningPolling(delayMs); return }
-      if (session.status === 'waiting_review' && reasoningAutoApproveEnabled.value && session.review?.allowAutoApprove !== false && session.review?.requiredHumanDecision !== true) { await submitReasoningReview('approve', { skipManualDraft: true }); return }
+      if (session.status === 'waiting_review' && reasoningAutoApproveEnabled.value) { await submitReasoningReview('approve', { skipManualDraft: true }); return }
       reasoningBusy.value = false
       stopReasoningPolling()
       if (session.status === 'waiting_review') return
@@ -1906,7 +1941,7 @@ export function useControlConsoleApp() {
   async function sendObservableReasoningChat() { if (sandboxPrompt.value.trim()) await openSubmitGate('reasoning') }
   async function sendChat() { if (sandboxPrompt.value.trim()) await openSubmitGate('chat') }
 
-  async function submitReasoningReview(decision: 'approve' | 'reject', options: { skipManualDraft?: boolean } = {}) {
+  async function submitReasoningReview(decision: 'approve' | 'reject' | 'back', options: { skipManualDraft?: boolean } = {}) {
     const sessionId = activeReasoningSession.value?.sessionId
     if (!sessionId || !reasoningPendingReview.value || reasoningReviewBusy.value) return
     reasoningReviewBusy.value = true
@@ -2069,6 +2104,136 @@ export function useControlConsoleApp() {
     document.body.style.overflow = ''
   })
 
+  // ---------------------- Skill / intent proposals ----------------------
+  async function loadSkillProposals() {
+    skillProposalsBusy.value = true
+    skillProposalsError.value = ''
+    try {
+      const response = await fetch('/api/control/skill-proposals')
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_proposals_http_${response.status}`)
+      skillProposalsList.value = Array.isArray(payload.proposals) ? payload.proposals : []
+      skillIntentsActive.value = Array.isArray(payload.activeIntents) ? payload.activeIntents : []
+    } catch (caught) {
+      skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      skillProposalsBusy.value = false
+    }
+  }
+
+  async function scanSkillProposals(minOccurrence = 2) {
+    skillProposalsBusy.value = true
+    skillProposalsError.value = ''
+    skillProposalsScanMessage.value = ''
+    try {
+      const response = await fetch('/api/control/skill-proposals/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minOccurrence }),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_proposals_scan_http_${response.status}`)
+      const wrote = Array.isArray(payload.written) ? payload.written.length : 0
+      const scanned = Number(payload.scannedRecords || 0)
+      const groups = Number(payload.correctionGroups || 0)
+      skillProposalsScanMessage.value = `扫描完成：审阅记录 ${scanned} 条，去重纠偏 ${groups} 组，新提案 ${wrote} 条。`
+      await loadSkillProposals()
+    } catch (caught) {
+      skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      skillProposalsBusy.value = false
+    }
+  }
+
+  async function promoteSkillProposal(id: string) {
+    if (!id) return
+    skillProposalsActionBusy.value = `promote:${id}`
+    skillProposalsError.value = ''
+    try {
+      const response = await fetch(`/api/control/skill-proposals/${encodeURIComponent(id)}/promote`, { method: 'POST' })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_proposal_promote_http_${response.status}`)
+      await loadSkillProposals()
+    } catch (caught) {
+      skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      skillProposalsActionBusy.value = ''
+    }
+  }
+
+  async function rejectSkillProposal(id: string) {
+    if (!id) return
+    skillProposalsActionBusy.value = `reject:${id}`
+    skillProposalsError.value = ''
+    try {
+      const response = await fetch(`/api/control/skill-proposals/${encodeURIComponent(id)}/reject`, { method: 'POST' })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_proposal_reject_http_${response.status}`)
+      await loadSkillProposals()
+    } catch (caught) {
+      skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      skillProposalsActionBusy.value = ''
+    }
+  }
+
+  async function deactivateSkillIntent(id: string) {
+    if (!id) return
+    skillProposalsActionBusy.value = `deactivate:${id}`
+    skillProposalsError.value = ''
+    try {
+      const response = await fetch(`/api/control/skill-intents/${encodeURIComponent(id)}/deactivate`, { method: 'POST' })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_intent_deactivate_http_${response.status}`)
+      await loadSkillProposals()
+    } catch (caught) {
+      skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      skillProposalsActionBusy.value = ''
+    }
+  }
+
+  // ---------------------- Smart start chain ----------------------
+  // 一键串起：保存配置 → 自检 → 启动 Hermes runtime。
+  // 这只是把现有三个独立按钮的步骤按正确顺序串起来，
+  // 不替换原本的三个按钮，符合 control 非回归约束。
+  async function smartStartHermes() {
+    if (smartStartBusy.value || runtimeBusy.value) return
+    if (selectedAgent.value?.definition.runtime !== 'hermes') return
+    if (leftBrainRunning.value) {
+      smartStartMessage.value = 'Hermes 已在运行，无需再次启动。'
+      return
+    }
+    smartStartBusy.value = true
+    smartStartMessage.value = '步骤 1/3：保存左脑配置...'
+    try {
+      if (!leftBrainConfigSaved.value) {
+        await saveLeftBrainConfig()
+        if (configSaveError.value) {
+          smartStartMessage.value = `配置保存失败：${configSaveError.value}`
+          return
+        }
+      }
+      smartStartMessage.value = '步骤 2/3：运行左脑自检...'
+      if (!effectivePreflightReady.value) {
+        await runLeftBrainPreflight()
+        if (preflightError.value) {
+          smartStartMessage.value = `自检未通过：${preflightError.value}`
+          return
+        }
+      }
+      smartStartMessage.value = '步骤 3/3：启动 Hermes runtime...'
+      await toggleHermesRuntime('left')
+      smartStartMessage.value = leftBrainRunning.value
+        ? '一键启动完成，Hermes 智能体已就绪。'
+        : (error.value ? `启动失败：${error.value}` : '启动流程已发起，请观察右上方运行状态。')
+    } catch (caught) {
+      smartStartMessage.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      smartStartBusy.value = false
+    }
+  }
+
   return {
     activeEditorFilePath,
     activeReasoningSession,
@@ -2208,6 +2373,9 @@ export function useControlConsoleApp() {
     reasoningElapsedSeconds,
     reasoningError,
     reasoningPendingReview,
+    canReasoningStepBack,
+    reasoningApproveActionLabel,
+    reasoningRejectActionLabel,
     reasoningReviewBusy,
     reasoningReviewDraft,
     reasoningReviewEvidence,
@@ -2276,5 +2444,19 @@ export function useControlConsoleApp() {
     toggleGlobalRuntime,
     toggleHermesRuntime,
     visibleLogLines,
+    skillProposalsList,
+    skillIntentsActive,
+    skillProposalsBusy,
+    skillProposalsError,
+    skillProposalsScanMessage,
+    skillProposalsActionBusy,
+    loadSkillProposals,
+    scanSkillProposals,
+    promoteSkillProposal,
+    rejectSkillProposal,
+    deactivateSkillIntent,
+    smartStartHermes,
+    smartStartBusy,
+    smartStartMessage,
   }
 }

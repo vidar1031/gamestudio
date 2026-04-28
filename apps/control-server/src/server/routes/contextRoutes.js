@@ -95,10 +95,12 @@ export function registerContextRoutes(app, context) {
     }
 
     const binding = buildHermesBinding()
+    const history = readHermesChatHistory({ includeAllSessions: true })
     const draft = await generateContextDraft(prompt, binding, {
       selectedSourceIds: body.selectedSourceIds,
       selectedContextPoolIds: body.selectedContextPoolIds,
-      confirmedContextSummary: body.confirmedContextSummary
+      confirmedContextSummary: body.confirmedContextSummary,
+      history
     })
 
     return c.json({ ok: true, draft })
@@ -118,7 +120,7 @@ export function registerContextRoutes(app, context) {
 
     const mode = String(body.mode || 'chat') === 'reasoning' ? 'reasoning' : 'chat'
     const binding = buildHermesBinding()
-    const history = readHermesChatHistory()
+    const history = readHermesChatHistory({ includeAllSessions: true })
     const contextSelection = {
       selectedSourceIds: body.selectedSourceIds,
       selectedContextPoolIds: body.selectedContextPoolIds,

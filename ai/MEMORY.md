@@ -34,7 +34,8 @@
 
 ## 当前重点
 
-- 已修正 Hermes 普通聊天的当前会话记忆窗口。
-- 已修正 reasoning 对 `storage/projects` 的扫描路径。
-- 已修正 stories 空结果时必须返回明确结论。
-- 下一阶段聚焦“control 驱动 Hermes 创建和配置故事项目”。
+- 已恢复 control-console 的页面内记忆编辑链路，不再依赖本地桌面编辑器。
+- 已把 `LONG_TASKS.md` 纳入 control / Hermes 的运行时记忆注入链。
+- 已把“当日日志”修正为只认当天 `ai/memory/YYYY-MM-DD.md`，不再回退旧日期日志。
+- 已给 reasoning planner 增加记忆同步约束，状态变化后需要补写 `STATUS`、`TASK_QUEUE`、`DECISIONS`，必要时补写 `LONG_TASKS`。
+- 当前阶段重点是验证下一轮 runtime / reasoning 执行能否持续正确维护这些记忆文件。

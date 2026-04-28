@@ -36,6 +36,7 @@ export type ChatHistoryEntry = {
 export type ReasoningReview = {
   status: 'pending'
   targetType: 'plan' | 'runtime_task_graph' | 'step' | 'completion' | 'answer'
+  reviewPhase?: 'before_execution' | 'after_execution' | 'standard' | 'quality_override'
   action?: string | null
   stepId?: string | null
   stepIndex?: number | null

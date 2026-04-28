@@ -13,16 +13,17 @@
 1. `README.md`
 2. `ai/USER.md`
 3. `ai/MEMORY.md`
-4. `ai/memory/STATUS.md`
-5. `ai/memory/TASK_QUEUE.md`
-6. `ai/memory/DECISIONS.md`
-7. 最新的 `ai/memory/YYYY-MM-DD.md`
-8. `ai/TOOLS.md`（当任务需要命令、接口、端口或目录细节时）
-9. `ai/interactive_story_editor.contract.md`（当任务明确涉及 editor schema / UI 契约时）
+4. `ai/memory/LONG_TASKS.md`
+5. `ai/memory/STATUS.md`
+6. `ai/memory/TASK_QUEUE.md`
+7. `ai/memory/DECISIONS.md`
+8. 最新的 `ai/memory/YYYY-MM-DD.md`
+9. `ai/TOOLS.md`（当任务需要命令、接口、端口或目录细节时）
+10. `ai/interactive_story_editor.contract.md`（当任务明确涉及 editor schema / UI 契约时）
 
 当任务明确涉及 `control`、`control-server`、`control-console`、`Hermes manager` 结构或接口时，追加读取：
 
-10. `ai/control_architecture.md`
+11. `ai/control_architecture.md`
 
 ## 权威目录事实
 
@@ -62,6 +63,7 @@
 - 当前目标 / 阻塞 / 下一步变化：更新 `ai/memory/STATUS.md`
 - 新的稳定取舍：更新 `ai/memory/DECISIONS.md`
 - 当日关键进展：更新当日 `ai/memory/YYYY-MM-DD.md`
+- 当多步骤执行改变了项目状态、流程规则或当前主线时，必须在最终回答前同步上述记忆文件，而不是只更新聊天历史。
 
 ## 响应规则
 

@@ -80,15 +80,6 @@ export const REASONING_TOOLS = {
     description: '删除工作区内文件或目录，必须人工审核后才会执行。',
     routes: ['internal:reasoning/workspace.deletePath']
   },
-  'project.listStories': {
-    tool: 'project.listStories',
-    title: '读取故事索引',
-    category: 'observable',
-    executionMode: 'deterministic',
-    reviewPolicy: 'auto',
-    description: '扫描 storage/projects/*/scripts.json 生成可验证故事索引。',
-    routes: ['internal:reasoning/project.listStories']
-  },
   'project.inspectServerImageEntrypoints': {
     tool: 'project.inspectServerImageEntrypoints',
     title: '检查图片服务端入口',
@@ -157,8 +148,8 @@ export const REASONING_TOOLS = {
     title: '生成最终回答',
     category: 'answer',
     executionMode: 'model-assisted',
-    reviewPolicy: 'required',
-    description: '基于当前 artifacts 生成最终回答或结构化总结。',
+    reviewPolicy: 'auto',
+    description: '基于当前 artifacts 生成最终回答或结构化总结，并在结果准备好后直接返回。',
     routes: ['internal:reasoning/model.answer']
   }
 }

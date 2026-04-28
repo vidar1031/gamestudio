@@ -31,3 +31,18 @@
 
 - 决策：只注入当天的 `ai/memory/YYYY-MM-DD.md`，没有当天文件时不注入旧日志
 - 原因：避免过期日志持续污染当前任务判断
+
+## 7. LONG_TASKS 是运行时权威记忆的一部分
+
+- 决策：`ai/memory/LONG_TASKS.md` 必须进入 control / Hermes 的运行时注入链与 reasoning planner 默认记忆源
+- 原因：它定义长线主线和里程碑；只写在文档里但不注入 runtime，会让 planner 看不到长期方向
+
+## 8. 状态变化后必须同步项目记忆文件
+
+- 决策：多步骤执行如果改变了项目状态、修复了运行时规则、推进了任务链，必须在最终回答前同步 `STATUS.md` 与 `TASK_QUEUE.md`；涉及稳定规则或长线主线变化时，同步 `DECISIONS.md` 与 `LONG_TASKS.md`
+- 原因：只更新聊天历史不足以维持可持续的项目记忆，容易让 runtime 继续读取过期状态
+
+## 9. DECISIONS 只记录稳定规则，不记录流水账
+
+- 决策：`DECISIONS.md` 只保留稳定约束、架构边界和经过验证的规则，不写临时进展或一次性操作细节
+- 原因：防止决策文件被噪声污染，影响后续 runtime 判断

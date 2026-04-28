@@ -38,7 +38,7 @@ export function registerChatRequestRoutes(app, context) {
     let requestId = null
     try {
       const binding = buildHermesBinding()
-      const history = readHermesChatHistory()
+      const history = readHermesChatHistory({ includeAllSessions: true })
       const chatContext = buildHermesChatMessages(history, userPrompt, binding, {
         selectedSourceIds: body.selectedSourceIds,
         selectedContextPoolIds: body.selectedContextPoolIds,

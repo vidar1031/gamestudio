@@ -72,6 +72,7 @@ HermesManager 启动前，不仅要配置模型，还要显式配置：
     "agentDefinitionFile": ".../ai/AGENTS.md",
     "userFile": ".../ai/USER.md",
     "memoryFile": ".../ai/MEMORY.md",
+    "longTasksFile": ".../ai/memory/LONG_TASKS.md",
     "statusFile": ".../ai/memory/STATUS.md",
     "taskQueueFile": ".../ai/memory/TASK_QUEUE.md",
     "decisionsFile": ".../ai/memory/DECISIONS.md",
@@ -96,10 +97,15 @@ HermesManager 启动前，不仅要配置模型，还要显式配置：
 - provider、baseUrl、model 已配置
 - 模型上下文窗口不低于 65536 token
 - ai/AGENTS.md、ai/USER.md、ai/MEMORY.md 存在
-- ai/memory 下的 STATUS、TASK_QUEUE、DECISIONS 存在
+- ai/memory 下的 LONG_TASKS、STATUS、TASK_QUEUE、DECISIONS 存在
 - 技能根目录存在
 - skillFiles 至少有一个有效的 SKILL.md
 - 右脑保持禁用
+
+附加约束：
+
+- 当 reasoning / workflow 执行改变项目状态、修复运行时规则或推进多步骤任务时，必须在最终回答前安排记忆同步步骤，至少更新 `STATUS.md` 与 `TASK_QUEUE.md`，并在规则或长线主线变更时同步 `DECISIONS.md` 与 `LONG_TASKS.md`
+- 当日日志只读取当天 `ai/memory/YYYY-MM-DD.md`；当天文件不存在时不回退旧日志
 
 ## 当前默认技能
 

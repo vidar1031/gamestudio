@@ -1,6 +1,7 @@
 export function registerReasoningRoutes(app, context) {
   const {
     appendReasoningEvent,
+    approveReasoningQualityOverride,
     applyPreparedLifecycleScript,
     applyPreparedWorkspaceOperation,
     applyPreparedReasoningWrite,
@@ -45,7 +46,7 @@ export function registerReasoningRoutes(app, context) {
     }
 
     const binding = buildHermesBinding()
-    const history = readHermesChatHistory()
+    const history = readHermesChatHistory({ includeAllSessions: true })
     const session = await createReasoningSession(agentId, userPrompt, {
       parentSessionId,
       childGoals: body.childGoals,
@@ -152,15 +153,34 @@ export function registerReasoningRoutes(app, context) {
     const body = await c.req.json().catch(() => ({}))
     const decision = String(body.decision || '').trim().toLowerCase()
     const correctionPrompt = String(body.correctionPrompt || '').trim()
-    if (decision !== 'approve' && decision !== 'reject') {
+    if (decision !== 'approve' && decision !== 'reject' && decision !== 'back') {
       return c.json({ ok: false, error: 'review_decision_invalid' }, 400)
     }
 
     const binding = buildHermesBinding()
-    const history = readHermesChatHistory()
+    const history = readHermesChatHistory({ includeAllSessions: true })
     const review = session.review
 
     if (decision === 'approve') {
+      if (review.targetType === 'answer' && review.reviewPhase === 'quality_override') {
+        persistReasoningReviewDecision(sessionId, 'approve', review, correctionPrompt)
+        const finalizedSession = await approveReasoningQualityOverride(sessionId, binding, review, correctionPrompt)
+        return c.json({ ok: true, session: finalizedSession })
+      }
+
+      if (review.reviewPhase === 'before_execution' && review.stepId) {
+        updateReasoningSession(sessionId, (current) => ({
+          ...current,
+          artifacts: {
+            ...current.artifacts,
+            approvedStepRuns: {
+              ...(current.artifacts?.approvedStepRuns || {}),
+              [review.stepId]: true
+            }
+          }
+        }))
+      }
+
       if (review.requiresApplyOnApprove && review.stepId) {
         if (review.action === 'run_lifecycle_script' || review.action === 'run_workspace_script') {
           const preparedScript = applyPreparedLifecycleScript(sessionId, review.stepId)
@@ -257,12 +277,48 @@ export function registerReasoningRoutes(app, context) {
       const approvedStepIndex = Number.isInteger(review.stepIndex) ? review.stepIndex : -1
       const nextStepIndex = review.targetType === 'plan' || review.targetType === 'runtime_task_graph'
         ? Number(session.artifacts?.nextStepIndex || 0)
+        : review.reviewPhase === 'before_execution'
+          ? approvedStepIndex
         : approvedStepIndex + 1
       updateReasoningSession(sessionId, (current) => ({
         ...current,
         artifacts: { ...current.artifacts, nextStepIndex }
       }))
       void runAllReasoningStepsFrom(sessionId, binding, history, nextStepIndex)
+      return c.json({ ok: true, session: readReasoningSession(sessionId) })
+    }
+
+    if (decision === 'back') {
+      if (!Number.isInteger(review.stepIndex) || Number(review.stepIndex) <= 0) {
+        return c.json({ ok: false, error: 'reasoning_review_back_unavailable' }, 409)
+      }
+
+      const previousStepIndex = Math.max(0, Number(review.stepIndex) - 1)
+      persistReasoningReviewDecision(sessionId, 'back', review, correctionPrompt)
+      appendReasoningEvent(sessionId, 'review_backtracked', review.title, correctionPrompt || '用户选择后退一步，从前一个步骤重新进入执行链。', {
+        stepId: review.stepId || undefined,
+        data: {
+          targetType: review.targetType,
+          stepIndex: review.stepIndex ?? null,
+          previousStepIndex,
+          correctionPrompt: correctionPrompt || null
+        }
+      })
+
+      clearReasoningReview(sessionId)
+      updateReasoningSession(sessionId, (current) => ({
+        ...current,
+        artifacts: {
+          ...current.artifacts,
+          nextStepIndex: previousStepIndex
+        }
+      }))
+
+      void continueReasoningSessionFromStep(sessionId, binding, history, {
+        stepIndex: previousStepIndex,
+        correctionPrompt
+      })
+
       return c.json({ ok: true, session: readReasoningSession(sessionId) })
     }
 
@@ -278,7 +334,7 @@ export function registerReasoningRoutes(app, context) {
 
     clearReasoningReview(sessionId)
 
-    if (review.targetType === 'plan' || review.targetType === 'runtime_task_graph') {
+    if (review.targetType === 'plan' || review.targetType === 'runtime_task_graph' || review.reviewPhase === 'before_execution' || review.reviewPhase === 'quality_override') {
       void prepareReasoningSessionPlan(sessionId, binding, history, { correctionPrompt }).catch((error) => {
         markReasoningSessionFailed(sessionId, error)
       })
