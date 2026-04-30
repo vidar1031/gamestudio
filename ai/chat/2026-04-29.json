@@ -1,0 +1,276 @@
+[
+  {
+    "role": "user",
+    "content": "列出 storage/projects 当前已有项目。必须先列目录，不读取 scripts.json，并在回答中给出 artifact 级证据。",
+    "createdAt": "2026-04-29T02:09:06.865Z",
+    "requestId": "reasoning_1777428546861_c9cbc336",
+    "chatSessionId": "chat_1777427892464_ab2e56db"
+  },
+  {
+    "role": "hermes",
+    "content": "根据目录可观测结果，直接回答：\n\n## `storage/projects` 当前项目列表\n\n**路径：** `/Volumes/ovokit2t/aiwork/gamestudio/storage/projects`\n\n**目录直接子项（共 1 个）：**\n\n| 类型 | 项目 ID |\n|------|---------|\n| `[dir]` | `296d0b72-5583-47b3-bd6f-c585d159820e` |\n\n---\n\n### Artifact 级证据\n\n```\n目录键: storage/projects\n路径: /Volumes/ovokit2t/aiwork/gamestudio/storage/projects\n直接子项数量: 1\n  - [dir] 296d0b72-5583-47b3-bd6f-c585d159820e\n```\n\n**结论：** 当前只有 **1 个项目**，ID 为 `296d0b72-5583-47b3-bd6f-c585d159820e`。未读取 `scripts.json`，以上结论仅基于目录扫描结果。",
+    "createdAt": "2026-04-29T02:11:23.066Z",
+    "requestId": "reasoning_1777428546861_c9cbc336",
+    "tokens": {
+      "prompt_tokens": 13229,
+      "completion_tokens": 405,
+      "total_tokens": 13634
+    },
+    "chatSessionId": "chat_1777427892464_ab2e56db"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T05:38:31.870Z",
+    "requestId": "reasoning_1777441111869_df79d384",
+    "chatSessionId": "chat_1777441004629_cc508f89"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T06:35:56.182Z",
+    "requestId": "reasoning_1777444556182_3edbe78d",
+    "chatSessionId": "chat_1777444553762_1cf6fd7b"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T06:52:32.517Z",
+    "requestId": "reasoning_1777445552516_83437c77",
+    "chatSessionId": "chat_1777445550028_290bef8a"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T06:53:02.282Z",
+    "requestId": "reasoning_1777445582281_46b5c444",
+    "chatSessionId": "chat_1777445579829_bfb6d165"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T07:05:07.108Z",
+    "requestId": "reasoning_1777446307108_ab6e2d4b",
+    "chatSessionId": "chat_1777446304829_0fe8225c"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T07:07:26.134Z",
+    "requestId": "reasoning_1777446446134_9691c790",
+    "chatSessionId": "chat_1777446304829_0fe8225c"
+  },
+  {
+    "role": "hermes",
+    "content": "## `apps/control-server` 的职责\n\n这是一个 **Node.js HTTP 服务**，基于 [Hono](https://hono.dev/) 微框架构建。\n\n### 核心职责\n\n| 职责 | 来源 |\n|------|------|\n| **启动 HTTP 服务** | 监听 `http://127.0.0.1:<port>` |\n| **创建应用实例** | `createApp()` → 初始化 Hono 实例（中间件、错误处理等） |\n| **注册路由** | `registerRoutes()` → 注册所有 API 路由 |\n| **清理孤立的推理会话** | `cleanupOrphanedReasoningSessions()` → 清理无效的 reasoning 会话 |\n\n### 技术栈\n\n- **框架**: `hono ^4.6.10`\n- **适配器**: `@hono/node-server ^1.13.8`\n- **类型**: ESM (`\"type\": \"module\"`)\n- **开发**: `node src/index.js`\n\n### 模块架构\n\n```\napps/control-server/\n├── package.json          ← 元数据\n├── src/\n│   ├── index.js          ← 入口\n│   ├── app/              ← 应用创建\n│   ├── config/           ← 配置（端口等）\n│   ├── routes/           ← API 路由定义\n│   └── server/           ← 核心逻辑（会话管理等）\n```\n\n**一句话总结：** `control-server` 是项目的 HTTP 控制平面，负责对外提供 API 接口并管理内部推理会话的生命周期。",
+    "createdAt": "2026-04-29T07:12:22.948Z",
+    "requestId": "reasoning_1777446446134_9691c790",
+    "tokens": {
+      "prompt_tokens": 13970,
+      "completion_tokens": 743,
+      "total_tokens": 14713
+    },
+    "chatSessionId": "chat_1777446304829_0fe8225c"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T07:36:40.480Z",
+    "requestId": "reasoning_1777448200479_df4b9a18",
+    "chatSessionId": "chat_1777448174581_1cb07d05"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T07:38:53.507Z",
+    "requestId": "reasoning_1777448333507_782c16b4",
+    "chatSessionId": "chat_1777448174581_1cb07d05"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T08:55:47.593Z",
+    "requestId": "reasoning_1777452947592_f20a3cb3",
+    "chatSessionId": "chat_1777451297651_63eb90a4"
+  },
+  {
+    "role": "hermes",
+    "content": "现在我已经读取了完整的 `src/index.js` 源码，可以给出准确分析了。\n\n## `apps/control-server` 职责\n\n基于源码，这是一个 **Node.js HTTP 服务**（基于 [Hono](https://hono.dev/) 微框架）。\n\n### 核心职责（按 `src/index.js` 顺序）\n\n| 步骤 | 调用 | 职责 |\n|------|------|------|\n| 1 | `createApp()` | 初始化 Hono 应用实例（含中间件、错误处理等） |\n| 2 | `registerRoutes(app)` | 注册所有 API 路由 |\n| 3 | `cleanupOrphanedReasoningSessions()` | 清理孤立的推理会话 |\n| 4 | `serve()` | 启动 HTTP 监听 `http://127.0.0.1:<port>` |\n\n### 目录结构\n\n```\napps/control-server/\n├── package.json          ← 元数据（@game-studio/control-server）\n├── src/\n│   ├── index.js          ← 入口（上面已读）\n│   ├── app/              ← 应用创建（中间件、错误处理等）\n│   ├── config/           ← 配置（端口等）\n│   ├── routes/           ← API 路由定义\n│   └── server/           ← 核心逻辑（会话管理等）\n```\n\n### 技术栈\n\n- **框架**: `hono ^4.6.10`\n- **适配器**: `@hono/node-server ^1.13.8`\n- **模式**: ESM (`\"type\": \"module\"`)\n- **启动**: `node src/index.js` 或 `node --watch-path=src src/index.js`\n\n---\n\n**一句话总结：** `control-server` 是项目的 HTTP 控制平面，负责对外提供 API 接口，并管理内部推理会话（reasoning sessions）的生命周期。",
+    "createdAt": "2026-04-29T09:45:06.291Z",
+    "requestId": "reasoning_1777452947592_f20a3cb3",
+    "tokens": {
+      "prompt_tokens": 37959,
+      "completion_tokens": 647,
+      "total_tokens": 38606
+    },
+    "chatSessionId": "chat_1777451297651_63eb90a4"
+  },
+  {
+    "role": "user",
+    "content": "apps/server 的职责是什么？",
+    "createdAt": "2026-04-29T09:45:07.612Z",
+    "requestId": "reasoning_1777455907612_cf2bd72a",
+    "chatSessionId": "chat_1777451297651_63eb90a4"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T10:11:46.061Z",
+    "requestId": "reasoning_1777457506056_ea291806",
+    "chatSessionId": "chat_1777457491216_b8718a3d"
+  },
+  {
+    "role": "hermes",
+    "content": "上一版答案过于浅层，我深入读取了核心文件 `src/server/controlServerCore.js`（~5936 行），这才是实际的控制中心。\n\n## `apps/control-server` 完整职责\n\n这是一个 **Node.js HTTP 控制面板**，是整个 GameStudio 项目的**中央控制平面**。\n\n### 1. 模型访问检查（Model Probe）\n函数：`inspectModelAccess()`\n- 向 LLM API 发送最小 ping 请求（1 token，temp=0）\n- 验证模型是否可达、响应时间、token 使用情况\n- 支持超时控制（可配 `PROBE_TIMEOUT_MS`）\n\n### 2. Hermes 运行时管理（Runtime State）\n函数：`getHermesRuntimeState()` / `detectHermesInstallState()`\n- 读取 PID 文件管理 Hermes 进程状态\n- 探测 Hermes gateway 脚本是否存在\n- 返回三种状态：`running`（运行中）、`stopped`（已暂停）、`uninstalled`（未安装）\n- 提供可用操作：`all-restart`、`pause`、`exit`、`resume`\n\n### 3. 多模型元数据目录\n常量：`MODEL_METADATA_CATALOG`\n预置 6 个模型：gemma-4-26b-a4b、gpt-oss-20b、qwen3.5-9b/27b 等\n- 上下文长度、推荐最大输出 token、tokenizer 类型\n\n### 4. Provider 配置解析\n函数：`getProviderAccess()` / `normalizeProviderName()`\n- 从环境变量读取 API Key（支持 LOCALOXML、STUDIO_AI、OPENAI 三级回退）\n- 标准化 provider 名称（ollama → 特殊处理，其他 → omxl）\n- 处理代理配置（NO_PROXY 合并）\n\n### 5. 日志写入\n函数：`appendHermesLog()`\n- 向 `HERMES_RUNTIME_LOG_FILE` 追加带时间戳的日志\n\n### 6. 环境文件解析\n函数：`readSimpleEnvFile()` / `getEnvValue()`\n- 解析 `.env` 文件（支持 `\"` 和 `'` 引号值）\n\n### 7. 工作区检查\n函数：`inspectWorkspaceDirectory()` / `inspectControlBackendSurfaces()` / `inspectServerImageEntrypoints()`\n- 检查工作区目录结构\n- 发现控制后端服务入口\n- 构建工作区结构产物\n\n### 8. 推理系统（Reasoning System）— 最大功能块\n#### a) 启发式评估\n- `evaluateControlLocationAnswerQuality()` — 控制器位置答案质量\n- `evaluateWorkspaceLocationAnswerQuality()` — 工作区位置答案质量\n- `evaluateDirectoryListingAnswerQuality()` — 目录列表答案质量\n- `evaluateImageServiceAnswerQuality()` — 镜像服务答案质量\n\n#### b) 确定性答案判定\n- `shouldUseDeterministic*()` 系列 — 判断是否使用确定性回答\n\n#### c) 提示词构建\n- `buildReasoning*()` 系列 — 提示词、回退计划、上下文摘要\n\n#### d) 模型请求\n- `generateReasoningFinalAnswer()` / `generateReasoningPlan()`\n\n#### e) 质量门控（Quality Gate）\n- `evaluateReasoningFinalAnswerQuality()` — 最终答案质量评分（阈值 `MIN_ACCEPT_SCORE=80`）\n- `finalizeReasoningSessionWithQualityGate()` — 带质量门的会话终结\n- 最大重试次数 `MAX_QUALITY_RETRIES=2`\n\n#### f) 动作注册\n- `REASONING_ACTIONS` — 答案/调用/写入三类推理动作\n- 工具目录：`buildReasoningToolCatalog()`\n\n#### g) 记忆与上下文\n- `buildReasoningRecentContextArtifact()` — 近期上下文产物\n- `buildReasoningActionCatalog()` — 动作目录\n\n#### h) 意图系统\n- `bootstrapIntents()` — 初始化意图\n- `findIntentFor*()` — 按答案/评估/计划查找意图\n\n### 9. 会话状态管理\n```js\nactiveHermesChatRequest       // 当前聊天请求\nactiveHermesReasoningSessionIds  // Set — 活跃推理会话\nactiveHermesReasoningExecutions  // Map — 活跃推理执行\ncurrentHermesChatSessionId    // 当前聊天会话 ID\n```\n\n### 10. 会话清理\n函数：`cleanupOrphanedReasoningSessions()`\n- 清理孤立的推理会话（超时/异常的 session）\n\n### 11. API 路由注册\n共注册 **8 组路由**：\n| 路由组 | 用途 |\n|--------|------|\n| `chatRequestRoutes` | 聊天请求处理 |\n| `chatRoutes` | 聊天管理 |\n| `configRoutes` | 配置管理 |\n| `contextRoutes` | 上下文管理 |\n| `overviewRoutes` | 概览/健康检查 |\n| `reasoningRoutes` | 推理任务管理 |\n| `runtimeRoutes` | 运行时状态查询 |\n| `skillProposalsRoutes` | 技能提案 |\n\n---\n\n**一句话总结：** `control-server` 是 GameStudio 的中央控制塔 —— 管理 Hermes 运行器的生命周期、探针模型可达性、协调推理会话（含质量门控和多重试）、暴露完整的 REST API，并作为所有前端/平台的单一后端入口。",
+    "createdAt": "2026-04-29T10:13:10.409Z",
+    "requestId": "reasoning_1777457506056_ea291806",
+    "tokens": {
+      "prompt_tokens": 46704,
+      "completion_tokens": 2186,
+      "total_tokens": 48890
+    },
+    "chatSessionId": "chat_1777457491216_b8718a3d"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-29T10:15:04.285Z",
+    "requestId": "reasoning_1777457704284_6d139a19",
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "hermes",
+    "content": "基于你提供的目录结构和源码 `src/index.js`，`apps/control-server` 的职责非常明确：\n\n它是一个基于 **Hono** 框架的 **Node.js HTTP Web 服务**。\n\n### 核心职责（代码流程）\n\n1.  **初始化应用实例**\n    调用 `createApp()` 创建并配置 Hono 应用实例。\n2.  **注册 API 路由**\n    调用 `registerRoutes(app)` 将所有的功能接口（路由）加载到应用中。\n3.  **执行后台维护任务**\n    调用 `cleanupOrphanedReasoningSessions()`。这表明该服务的一个重要职责是**维护状态健康**，负责清理那些失效或残留的“推理会话”（Reasoning Sessions）。\n4.  **启动网络监听**\n    调用 `serve()` 在本地回环地址 `127.0.0.1` 和指定端口上开启 HTTP 服务，等待请求。\n\n### 技术栈\n\n*   **开发语言**: Node.js (使用 ES Modules 模式)。\n*   **核心框架**: `hono` (轻量级 Web 框架) + `@hono/node-server`。\n*   **构建/运行**: 支持常规启动 (`dev`) 以及基于源码热更新的开发模式 (`dev:watch`)。\n\n**一句话总结：**\n`control-server` 是项目中的一个**本地 Web 后端服务**，主要负责暴露 API 接口、管理推理会话的生命周期，并对外提供 Web 监听。",
+    "createdAt": "2026-04-29T10:15:54.225Z",
+    "requestId": "reasoning_1777457704284_6d139a19",
+    "tokens": {
+      "prompt_tokens": 20525,
+      "completion_tokens": 1527,
+      "total_tokens": 22052
+    },
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "user",
+    "content": "apps/server 的职责是什么？",
+    "createdAt": "2026-04-29T10:18:10.443Z",
+    "requestId": "reasoning_1777457890442_9fc6198c",
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "hermes",
+    "content": "`apps/server` 是 GameStudio 项目的核心 **后端服务**。\n\n它基于 **Node.js** 和 **Hono** 框架构建，主要职责是为编辑器（Editor）提供完整的业务逻辑支持，特别是 **AI 辅助创作** 和 **游戏项目管理**。\n\n### 核心职责\n\n| 职责领域 | 关键功能 |\n| :--- | :--- |\n| **AI 工作流编排** | 集成 Ollama 和本地 AI 模型，处理剧本生成、故事 bible 创建、角色指纹生成。 |\n| **图像生成接口** | 封装 **ComfyUI** 调用（线稿提取、白底生成、风格化处理、提示词构建）。 |\n| **项目与资产管理** | 管理本地项目文件系统（读写/重命名/删除）、`storage` 目录结构、项目状态保存。 |\n| **蓝图编译 (Blueprint)** | 将脚本卡片（Scripts）编译为游戏蓝图，并进行局部或远程（OpenAI）的代码审查。 |\n| **全局配置** | 管理 Studio 设置（`settings.js`）、密钥（`secrets.js`）及环境文件（`.env`）。 |\n| **插件支持** | 集成特定功能插件（如 `pluginStoryPixi`）。 |\n\n### 模块架构 (基于 `src/index.js`)\n\n**1. AI 与创作 (`src/ai/`)**\n这是 Server 最重的部分。它充当了编辑器与底层 AI 模型之间的“翻译官”和“调度员”。\n*   **剧本创作**: `generateScriptDraft()`, `guessTitleFromPrompt()`, `reviewStoryPrompt...()`\n*   **资产制作**: `generateStoryBible()`, `generateCharacterFingerprint()`, `translatePromptText()`\n*   **ComfyUI 接口**: `runComfyuiPromptWorkflow()`, `generateBackgroundImage()`, `mapComfy...()`\n\n**2. 蓝图系统 (`src/blueprint/`)**\n*   `compileBlueprintFromScripts()`: 将用户的创意脚本转化为可执行的引擎蓝图。\n*   `reviewBlueprintViaOpenAI()`: 利用云端 AI 进行项目级别的代码质量审查。\n\n**3. 工作室配置 (`src/studio/`)**\n*   `getEffectiveStudioConfig()`: 提供全局配置。\n*   `writeStudioSettings()`: 持久化用户偏好。\n\n**4. 基础设施 (`src/net/`, `src/plugins/`)**\n*   负责跨域支持（CORS）、本地编辑器端口通信（8868 -> 1999）、以及插件的生命周期管理。\n\n### 总结\n`apps/server` 不仅仅是一个静态文件服务器，它是一个 **计算密集型的服务端**。它负责将用户的“游戏创意”通过 **AI（文本生成）** 和 **工作流引擎（ComfyUI 图像生成）** 转化为具体的游戏资产，并最终编译成可运行的项目蓝图。\n\n**简而言之：** 用户在前端看到的一键生成、AI 写作、风格迁移功能，背后全部由 `apps/server` 驱动。",
+    "createdAt": "2026-04-29T10:23:52.662Z",
+    "requestId": "reasoning_1777457890442_9fc6198c",
+    "tokens": {
+      "prompt_tokens": 22959,
+      "completion_tokens": 1823,
+      "total_tokens": 24782
+    },
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "user",
+    "content": "apps/server 的职责是什么？",
+    "createdAt": "2026-04-29T10:37:37.834Z",
+    "requestId": "reasoning_1777459057834_a442705e",
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "user",
+    "content": "apps/server 的职责是什么？",
+    "createdAt": "2026-04-29T10:47:38.238Z",
+    "requestId": "reasoning_1777459658237_7e3c3086",
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "hermes",
+    "content": "基于 `apps/server/package.json` 和 `src/index.js` 的源码，`apps/server` 是 GameStudio 项目的 **后端核心服务 (Backend Core)**。它基于 Node.js 和 Hono 框架构建，充当着“本地计算引擎”和“资产加工厂”的角色。\n\n### 核心职责\n\n| 职责领域 | 关键功能 |\n| :--- | :--- |\n| **AI 工具链集成** | 统一封装本地 AI 模型（Ollama）、云端 API（OpenAI）和图像工作流（ComfyUI）。它是编辑器与各类算力之间的“翻译官”。 |\n| **剧本与资产生成** | 提供脚本草稿生成、翻译、全局规则管理、故事圣经（Story Bible）创建、角色指纹生成等功能。 |\n| **ComfyUI 图像管线** | 负责线稿提取、白底背景生成、提示词构建及完整的 ComfyUI 工作流调度。 |\n| **蓝图编译 (Blueprint)** | 将前端的脚本卡片编译为可执行的游戏蓝图，并提供本地和云端的代码质量审查。 |\n| **项目与资产管理** | 维护本地文件系统（`storage/projects`），处理文件的读取、重命名、删除及 Studio 设置持久化。 |\n\n### 模块架构 (基于 `src/index.js`)\n\n**1. AI 集成层 (`src/ai/`)**\n这是 Server 最核心的计算单元，负责调度所有的 AI 模型：\n*   **文本处理**: `genId`, `generateScriptDraft`, `translatePromptText`, `generateStoryBible`.\n*   **图像生成 (ComfyUI)**: `runComfyuiPromptWorkflow`, `generateBackgroundImage`, `generateComfyuiWhiteBackgroundFromReference`.\n*   **代码审查 (Blueprint Review)**: `reviewBlueprintViaOpenAI`, `reviewBlueprintLocally`.\n\n**2. 蓝图系统 (`src/blueprint/`)**\n*   `compileBlueprintFromScripts()`: 将用户的创意脚本转化为游戏引擎能看懂的代码结构。\n*   `validateBlueprintDoc()`: 确保编译后的蓝图符合引擎规范。\n\n**3. 工作室与配置 (`src/studio/`)**\n*   `getEffectiveStudioConfig()`: 提供全局配置。\n*   `writeStudioSettings()`: 持久化用户的偏好设置。\n\n**4. 基础设施 (`src/net/`, `src/plugins/`)**\n*   负责跨域支持（CORS），处理本地编辑器（端口 8868）与后端（端口 1999）之间的通信。\n\n### 总结\n`apps/server` 是 GameStudio 项目的 **本地计算后端**。它负责接管繁重的计算任务（如 AI 推理、图像渲染调度、代码编译），让前端编辑器保持轻量化，并最终把用户的创意转化为可运行的游戏项目。",
+    "createdAt": "2026-04-29T10:51:40.691Z",
+    "requestId": "reasoning_1777459658237_7e3c3086",
+    "tokens": {
+      "prompt_tokens": 23274,
+      "completion_tokens": 1623,
+      "total_tokens": 24897
+    },
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "user",
+    "content": "apps/editor 的职责是什么？",
+    "createdAt": "2026-04-29T10:51:40.787Z",
+    "requestId": "reasoning_1777459900787_c2ee31b6",
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "hermes",
+    "content": "基于目录结构和源码分析，`apps/editor` 是该项目的 **前端交互与可视化中心**。它是一个基于 **React** 和 **PixiJS** 构建的富客户端应用，主要负责游戏画面的实时渲染、AI 辅助创作的交互界面以及项目配置管理。\n\n### 核心职责\n\n| 职责领域 | 关键功能 |\n| :--- | :--- |\n| **游戏画面渲染 (Rendering)** | 利用 `pixi.js` 加载并渲染游戏资产（角色、背景），构建游戏场景与动画帧。 |\n| **AI 辅助创作 (AI Creation)** | 提供交互式对话框，处理 AI 背景生成（抠像/白底处理）、角色素材生成、剧本批处理与提示词翻译。 |\n| **项目管理与配置** | 提供项目设置界面，处理 Studio 参数配置，管理与本地资产的关联。 |\n| **资产管线预处理** | 通过 `chromaKey.ts` 等模块提供关键帧/色度键处理逻辑，辅助图像资产进入生产管线。 |\n| **前后端通信枢纽** | 作为前端与 `apps/server` 之间的桥梁，负责将用户的创作意图转化为 API 调用（`api.ts`）。 |\n\n### 模块架构 (基于 `src/` 文件)\n\n**1. 核心交互 (Main & App)**\n- `App.tsx` / `main.tsx`：React 应用的主入口与核心视图容器。\n- `StartupOverlay.tsx`：负责应用启动时的加载与初始化逻辑。\n\n**2. AI 创作工作流 (AI Workflows)**\n- `AiBackgroundModal.tsx` / `AiCharacterSpriteModal.tsx`：封装 AI 生成工具，引导用户完成背景或角色的素材制作。\n- `AiStoryboardBatchModal.tsx`：处理剧本脚本的批量生成任务。\n- `StoryboardPromptTranslate.ts`：负责剧本提示词的翻译与本地化处理。\n- `chromaKey.ts`：提供色度键（绿幕）处理等图像预处理的底层逻辑。\n\n**3. 数据与配置 (Data & Settings)**\n- `StudioSettingsModal.tsx`：管理 Studio 级别的配置项与全局参数。\n- `@game-studio/schema`：本地引用的数据结构包，确保前后端数据交换的格式一致性。\n\n### 总结\n`apps/editor` 是一个 **游戏化、可视化的创作客户端**。它的职责不是单纯的界面展示，而是与后端服务紧密协作，通过 `pixi.js` 实现游戏级别的实时渲染，并利用一系列 AI 交互组件（抠像、角色生成、剧本管理）赋能用户进行高质量的游戏资产生产。\n\n**简而言之：** 它是用户操作的“可视化工作台”，负责画面渲染、AI 辅助生产的交互调度以及素材的内部预处理。",
+    "createdAt": "2026-04-29T10:52:25.019Z",
+    "requestId": "reasoning_1777459900787_c2ee31b6",
+    "tokens": {
+      "prompt_tokens": 21532,
+      "completion_tokens": 1149,
+      "total_tokens": 22681
+    },
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-console 的职责是什么？",
+    "createdAt": "2026-04-29T10:52:26.035Z",
+    "requestId": "reasoning_1777459946035_1bc14d06",
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-console 的职责是什么？",
+    "createdAt": "2026-04-29T10:54:01.268Z",
+    "requestId": "reasoning_1777460041268_4f56c77b",
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "hermes",
+    "content": "基于目录结构和 `package.json` 的依赖配置，`apps/control-console` 是一个基于 **Vue 3** 构建的 **前端管理控制台（Admin Console / Dashboard）**。\n\n### 核心职责\n\n| 职责领域 | 关键功能 |\n| :--- | :--- |\n| **系统状态监控** | 提供 Studio 的全局运行状态仪表盘，可视化展示服务连接、API 状态及项目运行负载。 |\n| **底层数据交互** | 提供结构化的 API 调用与调试界面，允许开发者直接查看或修改项目的核心配置与底层数据。 |\n| **代码与脚本管理** | 深度集成 **CodeMirror** 提供 JSON 和 Markdown 的语法高亮编辑器，用于查看/编辑蓝图代码、Markdown 剧本或本地配置文件。 |\n| **Studio 管理** | 提供控制台级别的入口，用于管理插件状态、全局变量和内部服务的开关与生命周期。 |\n\n### 技术栈与模块架构 (基于 `package.json`)\n\n**1. 核心依赖**\n- **前端框架**: `vue@^3.5.13` + `TypeScript` + `Vite`。\n- **编辑能力**: 全套 `@codemirror` 工具包（支持 JSON、Markdown 语法高亮与代码编辑）以及 `markdown-it` 渲染器。\n- **构建工具**: `vite` (标准现代前端构建流程)。\n\n**2. 目录结构 (基于 `src/`)**\n- `components/`: 封装控制台特有的 UI 交互组件（如配置表单、代码查看器、状态卡片）。\n- `services/`: 负责与 `apps/server` 进行底层数据交互的 API 请求封装。\n- `composables/`: Vue 3 Composition API 逻辑复用（如状态轮询、API 错误处理）。\n- `types/`: 严格定义前后端数据交换的接口契约。\n\n### 总结\n`apps/control-console` 是 GameStudio 的 **底层管理面板**。它不负责游戏画面的直接渲染（那是 `editor` 的事），而是利用 **CodeMirror** 和 **Vue 3** 为开发者/高级用户提供系统级的配置管理、API 调试、JSON/Markdown 数据查看以及 Studio 运行状态的实时监控。它相当于 Studio 的“后台指挥中心”。",
+    "createdAt": "2026-04-29T10:56:20.250Z",
+    "requestId": "reasoning_1777459946035_1bc14d06",
+    "tokens": {
+      "prompt_tokens": 20907,
+      "completion_tokens": 1670,
+      "total_tokens": 22577
+    },
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "hermes",
+    "content": "从目录结构和源码来看，`apps/control-console` 是一个基于 **Vue 3** 构建的 **前端管理控制台（Admin Console / Dashboard）**。\n\n### 核心职责\n\n| 职责领域 | 关键功能 |\n| :--- | :--- |\n| **系统状态监控** | 提供 Studio 的全局运行状态仪表盘，可视化展示服务连接、API 状态及项目运行负载。 |\n| **底层数据交互** | 提供结构化的 API 调用与调试界面，允许开发者直接查看或修改项目的核心配置与底层数据。 |\n| **代码与脚本管理** | 深度集成 **CodeMirror** 提供 JSON 和 Markdown 的语法高亮编辑器，用于查看/编辑蓝图代码、Markdown 剧本或本地配置文件。 |\n| **Studio 管理** | 提供控制台级别的入口，用于管理插件状态、全局变量和内部服务的开关与生命周期。 |\n\n### 技术栈与模块架构 (基于 `package.json`)\n\n**1. 核心依赖**\n- **前端框架**: `vue@^3.5.13` + `TypeScript` + `Vite`。\n- **编辑能力**: 全套 `@codemirror` 工具包（支持 JSON、Markdown 语法高亮与代码编辑）以及 `markdown-it` 渲染器。\n- **构建工具**: `vite` (标准现代前端构建流程)。\n\n**2. 目录结构 (基于 `src/`)**\n- `components/`: 封装控制台特有的 UI 交互组件（如配置表单、代码查看器、状态卡片）。\n- `services/`: 负责与 `apps/server` 进行底层数据交互的 API 请求封装。\n- `composables/`: Vue 3 Composition API 逻辑复用（如状态轮询、API 错误处理）。\n- `types/`: 严格定义前后端数据交换的接口契约。\n\n### 总结\n`apps/control-console` 是 GameStudio 的 **底层管理面板**。它不负责游戏画面的直接渲染（那是 `editor` 的事），而是利用 **CodeMirror** 和 **Vue 3** 为开发者/高级用户提供系统级的配置管理、API 调试、JSON/Markdown 数据查看以及 Studio 运行状态的实时监控。它相当于 Studio 的“后台指挥中心”。",
+    "createdAt": "2026-04-29T10:58:02.438Z",
+    "requestId": "reasoning_1777460041268_4f56c77b",
+    "tokens": {
+      "prompt_tokens": 118914,
+      "completion_tokens": 1565,
+      "total_tokens": 120479
+    },
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "user",
+    "content": "为什么模型输出不能直接等同于执行结果？",
+    "createdAt": "2026-04-29T10:58:03.731Z",
+    "requestId": "reasoning_1777460283731_5d8efe9f",
+    "chatSessionId": "chat_1777457685113_c3593ffb"
+  },
+  {
+    "role": "user",
+    "content": "为什么模型输出不能直接等同于执行结果？",
+    "createdAt": "2026-04-29T11:09:09.125Z",
+    "requestId": "reasoning_1777460949121_8726212f",
+    "chatSessionId": "chat_1777460928739_3965f185"
+  },
+  {
+    "role": "user",
+    "content": "为什么模型输出不能直接等同于执行结果？",
+    "createdAt": "2026-04-29T11:29:32.051Z",
+    "requestId": "reasoning_1777462172050_dcd9a8ed",
+    "chatSessionId": "chat_1777460928739_3965f185"
+  }
+]

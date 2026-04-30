@@ -17,7 +17,7 @@ export function registerChatRequestRoutes(app, context) {
     persistHermesChatPrompt,
     persistHermesChatReply,
     readHermesChatHistory,
-    requestJsonWithoutHeadersTimeout,
+    requestHermesChatCompletion,
     setActiveHermesChatRequest,
   } = context
 
@@ -97,29 +97,13 @@ export function registerChatRequestRoutes(app, context) {
       ])
       const completionPromise = (async () => {
         try {
-          const response = await requestJsonWithoutHeadersTimeout(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-            model: 'hermes-agent',
+          const data = await requestHermesChatCompletion({
+            sessionId: requestId,
+            phase: 'chat',
             messages,
-            max_tokens: 150
+            maxTokens: 150,
+            timeoutMs: HERMES_CHAT_REQUEST_TIMEOUT_MS
           })
-
-          if (!response.ok) {
-            const errorBody = String(response.text || '')
-            appendHermesLog(`[CHAT][ERROR] httpStatus=${response.status} statusText=${response.statusText} bodyChars=${errorBody.length}`)
-            persistHermesChatError(
-              requestId,
-              `Hermes chat service returned HTTP ${response.status}: ${response.statusText}`,
-              errorBody.slice(0, 1000)
-            )
-            return {
-              kind: 'error',
-              status: response.status,
-              error: `Hermes chat service returned HTTP ${response.status}: ${response.statusText}`,
-              details: errorBody.slice(0, 1000)
-            }
-          }
-
-          const data = response.json()
           const reply = data.choices?.[0]?.message?.content || JSON.stringify(data)
           persistHermesChatReply(requestId, reply, data.usage)
           appendHermesLog(`[CHAT][RESPONSE] durationMs=${Date.now() - getActiveHermesChatRequest().startedAt} replyChars=${reply.length}`)

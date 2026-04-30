@@ -31,6 +31,7 @@ export type ChatHistoryEntry = {
   content: string
   tokens?: any
   transient?: boolean
+  sourceKey?: string
 }
 
 export type ReasoningReview = {
@@ -62,6 +63,22 @@ export type ReasoningAnswerAssessment = {
   issues: string[]
   strengths: string[]
   correctionPrompt: string
+}
+
+export type ReasoningSelfReview = {
+  verdict: 'approve' | 'repair' | 'human_review'
+  summary: string
+  issues: string[]
+  strengths: string[]
+  correctionPrompt: string
+  reusableSections?: string[]
+  promotableLesson?: {
+    category: string
+    summary: string
+    candidateText: string
+    recommendedActions: string[]
+  } | null
+  source?: string
 }
 
 export type ReasoningStoryIndexItem = {
@@ -103,6 +120,12 @@ export type ReasoningSession = {
       attempt: number
       assessedAt: string
       assessment: ReasoningAnswerAssessment
+    }>
+    latestSelfReview?: ReasoningSelfReview | null
+    selfReviewHistory?: Array<{
+      attempt: number
+      reviewedAt: string
+      selfReview: ReasoningSelfReview
     }>
   }
   error?: string | null

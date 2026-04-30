@@ -44,6 +44,8 @@ npm run dev:control-console
 - Hermes 首轮启动流接口 `/api/control/agents/hermes-manager/startup-flow`
 - Hermes 下一条动作接口 `/api/control/agents/hermes-manager/next-action`
 - Vue 控制台首页，展示当前控制系统定位与健康状态
+- 全局模型任务队列：control-server 内所有 Hermes/OMLX chat completion 请求必须经过统一队列，默认同一时间只允许 1 个模型任务运行，并按 session 限制模型调用预算，避免本地 OMLX 被 plan、answer、quality gate、self-review、context draft 等并发请求压垮。
+- 可观测长任务心跳：reasoning task 在等待模型或 provider 时必须持续写入 heartbeat 事件，Control Console 不能长时间静默，让用户误判为卡死。
 
 ## Hermes 代理对象
 
@@ -121,6 +123,62 @@ npm run dev:control-console
 3. 控制系统将成为唯一状态真相源，而不是另一个展示面板。
 4. Hermes 首先作为控制系统内的一级代理资源建模，再基于该代理对象扩展具体业务接口。
 5. Hermes 的项目启动行为应统一由 manager 提供的 startup profile 与保存配置驱动。
+6. 模型请求不是状态机。Hermes/OMLX 只能生成候选 plan、候选内容、解释和评分建议；任务推进、权限、重试、artifact 与验收必须由 Control Server 负责。
+7. 本地模型资源必须受控调度。任何新增模型调用都必须接入 `apps/control-server/src/server/model/modelTaskQueue.js`，不得在业务模块中直接 `fetch` Hermes gateway。
+
+## 当前结构性改造约束
+
+项目仍处于构建测试阶段，不保留旧的不可靠路径作为兼容分支。后续改造按最新方案直接推进：
+
+1. `controlServerCore.js` 不再作为新增能力的默认落点；新增能力优先拆到 `server/model/`、`server/reasoning/`、`server/workflows/`、`server/capabilities/` 或 `server/routes/`。
+2. Control Server 是工程可靠性主体；Hermes 是候选生成与解释层；OMLX 是推理资源。
+3. 每个项目自动化目标必须落到 workflow、action schema、executor guard、artifact、deterministic evaluator 五层之一。
+4. 自我评分和自我强化只能产生待审核 proposal，不能直接修改运行规则，也不能作为事实正确性的唯一依据。
+5. 所有长任务必须有预算：最大模型调用次数、最大运行时间、最大上下文大小、最大重试次数和明确取消路径。
+6. 记忆和上下文必须有生命周期。chat、context pool、reasoning session、daily log、memory markdown 不能无限保存并默认注入 planner；具体规则见 [MEMORY_LIFECYCLE.md](MEMORY_LIFECYCLE.md)。
+
+## 问题路由约定
+
+Control Server 在收到用户提问后先做执行路径判定，不把自然语言直接等同为聊天回答。
+
+- `answer_only`：低风险普通解释。
+- `plan_then_answer`：需要 reasoning plan 和 artifact 的只读任务。
+- `inspect_then_answer`：当前能力状态、覆盖度、是否完成、缺口类问题。当前由 `apps/control-server/src/server/workflows/projectStatusWorkflows.js` 提供 `project_capability_status` 通用检查 workflow。
+- `workflow_execute`：故事项目创建、配置、生成、资产、验证、导出。
+- `write_or_invoke_review`：写入、删除、脚本和生命周期动作。
+
+`project_capability_status` 不是 L1-11 的专用规则，而是一类问题的固定检查公式：关键文档 -> intent 配置目录 -> docs 搜索 -> control-server 实现搜索 -> artifact-based answer。后续新增能力状态题应优先扩展这个 workflow 的证据选择，而不是继续添加单题 if 分支。
+
+### 第一阶段决策规则
+
+Reasoning plan 的第一阶段是 request decision，而不是直接加载全部上下文生成计划。该阶段只允许使用“决策规则 + 当前题目”，输出题目类型、置信度和原因，不回答题目内容。
+
+当前类型集合：
+
+- `project_listing`：盘点 `storage/projects` 现有项目。
+- `directory_listing`：列出工作区目录内容。
+- `file_inspection`：解释具体文件的职责、作用或内容。
+- `directory_inspection`：解释具体目录的职责、作用或内容。
+- `surface_location`：询问 editor/control/server 等入口在哪里。
+- `capability_status_inspection`：询问 workflow、evaluator、状态机、Hermes、GameStudio Server、关键词可靠性或能力缺口是否完成/覆盖/建立。
+- `story_workflow_execute`：创建、配置、生成、校验或导出互动故事项目。
+- `write_or_invoke_review`：写入、删除、重命名、运行脚本、启动、停止、重启等需要审核的动作。
+- `contextual_plan_answer`：需要结合最近上下文继续规划或分析。
+- `answer_only`：不需要项目事实证据的普通解释。
+
+工程策略是确定性分类优先；只有规则置信度不足时，才调用 Hermes 做轻量 request decision，并且该调用只携带规则和题目，不携带项目上下文。命中专用 workflow 后，再进入对应上下文收集与执行逻辑。
+
+## 记忆生命周期约定
+
+Control Server 的记忆分为运行态记录、浅记忆、深记忆、归档记忆和删除项。
+
+- 运行态记录用于审计，不默认进入模型上下文。
+- 浅记忆默认睡眠，只在题目、caseId、sessionId、文件路径或人工选择命中时唤醒。
+- 深记忆默认醒着，但必须受 token 预算和题型路由限制。
+- 归档记忆只保留索引，不自动注入全文。
+- 删除项必须有明确原因，模型只能提出删除 proposal，不能直接删除深记忆。
+
+后续新增 memory/context 功能应优先落到 `server/memory/`，不要继续堆进 `controlServerCore.js`。
 
 ## 后续建设顺序
 

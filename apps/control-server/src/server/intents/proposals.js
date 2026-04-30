@@ -24,6 +24,57 @@ const MAX_RECORDS_SCAN = 1000
 const MAX_KEYWORDS_PER_PROPOSAL = 8
 const MIN_KEYWORD_LENGTH = 3
 
+const SELF_REVIEW_OPERATOR_RULES = [
+  {
+    ruleId: 'operator.workflow_registry_status',
+    matches(record) {
+      const prompt = String(record?.userPrompt || '')
+      return /(workflow\s*registry|intent\s*registry|完整\s*workflow\s*registry|config\/hermes\/intents)/i.test(prompt)
+    },
+    build(record) {
+      const sessionId = String(record?.sessionId || '').trim()
+      return {
+        id: 'operator.workflow_registry_status',
+        version: 1,
+        source: 'proposal',
+        priority: 82,
+        description: 'Operator rule: workflow registry answers must distinguish builtin infrastructure from missing active JSON intent instances.',
+        match: {
+          anyRegex: [
+            'workflow\\s*registry',
+            'intent\\s*registry',
+            '完整\\s*workflow\\s*registry',
+            'config/hermes/intents'
+          ]
+        },
+        evaluation: {
+          minScore: 82,
+          scoreBase: 18,
+          perRequiredHit: 14,
+          perOptionalHit: 6,
+          perEvidenceHit: 16,
+          perForbiddenHit: -30,
+          mustInclude: ['builtin', '_inbox'],
+          optional: ['json intent', '未完成', '基础设施', 'activeintentfiles'],
+          evidenceRegex: [
+            'config/hermes/intents',
+            '/api/control/intents|/api/control/skill-proposals',
+            '未.*建立|未完成|只有基础设施|0 个 json'
+          ],
+          forbidden: ['已完整建立', '已经建立', '完整的 workflow registry 已经建立', '已经完全建立', '完整 workflow registry 已建立', '可以直接新增并立即生效'],
+          correctionPrompt: '回答 workflow registry / intents registry 相关问题时，必须明确区分 builtin intents、活动中的 JSON intents、以及 _inbox proposal。若 activeIntentFiles 为空或 config/hermes/intents 下没有活动 JSON intent，应明确说明只有基础设施已建立，完整 workflow registry 仍未建立。'
+        },
+        provenance: {
+          sourceType: 'self_review_operator_rule',
+          operatorRuleId: 'operator.workflow_registry_status',
+          sessionId: sessionId || null,
+          generatedAt: new Date().toISOString()
+        }
+      }
+    }
+  }
+]
+
 function readJsonlTail(filePath, limit) {
   if (!fs.existsSync(filePath)) return []
   try {
@@ -68,6 +119,45 @@ function extractKeywords(prompt) {
 function safeProposalId(rawId) {
   const cleaned = String(rawId || '').replace(/[^A-Za-z0-9_.\-]/g, '_')
   return cleaned.slice(0, 80) || `proposal_${shortHash(String(Date.now()))}`
+}
+
+function proposalAlreadyExists(id) {
+  const safeId = safeProposalId(id)
+  return fs.existsSync(path.join(INTENTS_DIR, `${safeId}.json`)) || fs.existsSync(path.join(INTENTS_INBOX_DIR, `${safeId}.json`))
+}
+
+export function enqueueSelfReviewOperatorProposals(record) {
+  ensureIntentDirs()
+  const written = []
+  const skipped = []
+
+  for (const rule of SELF_REVIEW_OPERATOR_RULES) {
+    if (!rule.matches(record)) continue
+    const proposal = rule.build(record)
+    const safeId = safeProposalId(proposal.id || rule.ruleId)
+    const target = path.join(INTENTS_INBOX_DIR, `${safeId}.json`)
+
+    if (proposalAlreadyExists(safeId)) {
+      skipped.push(`${safeId}:exists`)
+      continue
+    }
+
+    try {
+      compileJsonIntent(proposal)
+    } catch (error) {
+      skipped.push(`${safeId}:invalid:${error instanceof Error ? error.message : String(error)}`)
+      continue
+    }
+
+    try {
+      fs.writeFileSync(target, JSON.stringify(proposal, null, 2), 'utf8')
+      written.push(target)
+    } catch (error) {
+      skipped.push(`${safeId}:write_failed:${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  return { written, skipped }
 }
 
 export function scanProposals({ minOccurrence = 2 } = {}) {

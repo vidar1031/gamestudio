@@ -22,6 +22,7 @@
     "typecheck": "npm --workspace @game-studio/editor run typecheck && npm --workspace @game-studio/control-console run typecheck",
     "control:start": "npm run dev:control-server",
     "control:console": "npm run dev:control-console",
+    "test:control-production": "node scripts/test/control_production_test.mjs",
     "sync:from-compose": "node tools/syncFromCompose.mjs",
     "lint": "echo \"(todo)\""
   }

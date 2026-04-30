@@ -54,6 +54,7 @@ import {
 import {
   normalizeWorkspaceRelativePath,
   isDirectoryListingPrompt,
+  isProjectListingPrompt,
   inferWorkspaceDirectoryFromPrompt,
   inferWorkspaceDirectoriesFromPromptText,
   inferWorkspaceFilesFromPrompt,
@@ -125,6 +126,15 @@ import {
   findIntentForPlan,
   registerIntent,
 } from './intents/index.js'
+import { enqueueSelfReviewOperatorProposals } from './intents/proposals.js'
+import { requestHermesChatCompletion } from './model/modelTaskQueue.js'
+import {
+  createMemoryLifecycleMetadata,
+  MEMORY_LIFECYCLE_STATES,
+  MEMORY_RECORD_KINDS,
+  shouldWakeMemoryRecord,
+} from './memory/lifecyclePolicy.js'
+import { runMemoryLifecycleMaintenance } from './memory/lifecycleMaintenance.js'
 import { createChatService } from './services/chatService.js'
 import { createConfigService } from './services/configService.js'
 import { createContextService } from './services/contextService.js'
@@ -135,6 +145,9 @@ let activeHermesChatRequest = null
 let activeHermesChatRecovery = null
 const activeHermesReasoningSessionIds = new Set()
 const activeHermesReasoningExecutions = new Map()
+// 心跳事件只用于 UI 展示「仍在执行 X 秒」，不会触发任何 OMLX 调用。
+// 之前 10s 节奏让人误以为 OMLX 在频繁返回；改回 30s 仅减少 UI 噪音，不影响 120s 单次等待 + 12 次续租契约。
+const HERMES_REASONING_TASK_HEARTBEAT_MS = Math.max(3000, Number(process.env.HERMES_REASONING_TASK_HEARTBEAT_MS || 30000))
 let currentHermesChatSessionId = createOpaqueId('chat')
 
 function getActiveHermesChatRequest() {
@@ -209,6 +222,141 @@ function appendHermesLog(lines) {
     // Ignore logging failures.
   }
 }
+
+const HERMES_GATEWAY_LOG_WATCH_INTERVAL_MS = Math.max(
+  500,
+  Number(process.env.HERMES_GATEWAY_LOG_WATCH_INTERVAL_MS || 1500)
+)
+const HERMES_GATEWAY_LOG_MAX_CHUNK_BYTES = 256 * 1024
+const HERMES_GATEWAY_FAULT_TTL_MS = Math.max(
+  60 * 1000,
+  Number(process.env.HERMES_GATEWAY_FAULT_TTL_MS || 10 * 60 * 1000)
+)
+const HERMES_GATEWAY_FAULT_PATTERNS = [
+  { kind: 'omlx_nonetype_config', regex: /'NoneType' object has no attribute 'config'/ },
+  { kind: 'omlx_max_retries_exhausted', regex: /Max retries \(\d+\) exhausted/ },
+  { kind: 'omlx_api_failed_after_retries', regex: /API failed after \d+ retries/ }
+]
+let hermesGatewayLogWatcherTimer = null
+let hermesGatewayLogReadOffset = 0
+let hermesGatewayLogTail = ''
+let hermesGatewayLastFault = null
+
+function inspectHermesGatewayLogChunk(text) {
+  if (!text) return []
+  const detections = []
+  const lines = text.split(/\r?\n/)
+  for (const line of lines) {
+    if (!line) continue
+    if (line.includes('[GATEWAY-WATCHER]')) continue
+    for (const pattern of HERMES_GATEWAY_FAULT_PATTERNS) {
+      if (pattern.regex.test(line)) {
+        detections.push({ kind: pattern.kind, line })
+        break
+      }
+    }
+  }
+  return detections
+}
+
+function handleHermesGatewayFaults(detections) {
+  if (!detections.length) return
+  const detection = detections[detections.length - 1]
+  const sessionIds = Array.from(activeHermesReasoningExecutions.keys())
+  hermesGatewayLastFault = {
+    at: new Date().toISOString(),
+    kind: detection.kind,
+    line: detection.line.slice(0, 600),
+    sessionIds
+  }
+  appendHermesLog(
+    `[GATEWAY-WATCHER][FAULT] kind=${detection.kind} affectedSessions=${sessionIds.length} line=${detection.line.slice(0, 200)}`
+  )
+  for (const sessionId of sessionIds) {
+    try {
+      markReasoningSessionFailed(
+        sessionId,
+        new Error(`hermes_gateway_omlx_fault:${detection.kind}:${detection.line.slice(0, 200)}`)
+      )
+    } catch (error) {
+      appendHermesLog(
+        `[GATEWAY-WATCHER][FAULT][MARK_FAILED_ERROR] sessionId=${sessionId} detail=${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+}
+
+function pollHermesGatewayLog() {
+  let fd = null
+  try {
+    if (!fs.existsSync(HERMES_RUNTIME_LOG_FILE)) {
+      hermesGatewayLogReadOffset = 0
+      hermesGatewayLogTail = ''
+      return
+    }
+    const stats = fs.statSync(HERMES_RUNTIME_LOG_FILE)
+    if (stats.size < hermesGatewayLogReadOffset) {
+      hermesGatewayLogReadOffset = 0
+      hermesGatewayLogTail = ''
+    }
+    if (stats.size === hermesGatewayLogReadOffset) return
+
+    const available = stats.size - hermesGatewayLogReadOffset
+    const toRead = Math.min(available, HERMES_GATEWAY_LOG_MAX_CHUNK_BYTES)
+    const buffer = Buffer.allocUnsafe(toRead)
+    fd = fs.openSync(HERMES_RUNTIME_LOG_FILE, 'r')
+    const bytesRead = fs.readSync(fd, buffer, 0, toRead, hermesGatewayLogReadOffset)
+    hermesGatewayLogReadOffset += bytesRead
+    if (bytesRead <= 0) return
+
+    const chunk = hermesGatewayLogTail + buffer.slice(0, bytesRead).toString('utf8')
+    const newlineIndex = chunk.lastIndexOf('\n')
+    let processable = chunk
+    if (newlineIndex >= 0) {
+      processable = chunk.slice(0, newlineIndex)
+      hermesGatewayLogTail = chunk.slice(newlineIndex + 1)
+    } else {
+      hermesGatewayLogTail = chunk
+      processable = ''
+    }
+    const detections = inspectHermesGatewayLogChunk(processable)
+    if (detections.length) handleHermesGatewayFaults(detections)
+  } catch {
+    // Ignore poll errors; next tick will retry.
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd) } catch {}
+    }
+  }
+}
+
+function ensureHermesGatewayLogWatcher() {
+  if (hermesGatewayLogWatcherTimer) return
+  try {
+    if (fs.existsSync(HERMES_RUNTIME_LOG_FILE)) {
+      hermesGatewayLogReadOffset = fs.statSync(HERMES_RUNTIME_LOG_FILE).size
+    } else {
+      hermesGatewayLogReadOffset = 0
+    }
+  } catch {
+    hermesGatewayLogReadOffset = 0
+  }
+  hermesGatewayLogTail = ''
+  hermesGatewayLogWatcherTimer = setInterval(pollHermesGatewayLog, HERMES_GATEWAY_LOG_WATCH_INTERVAL_MS)
+  if (typeof hermesGatewayLogWatcherTimer.unref === 'function') {
+    hermesGatewayLogWatcherTimer.unref()
+  }
+}
+
+function getHermesGatewayFaultSnapshot() {
+  if (!hermesGatewayLastFault) return null
+  const at = Date.parse(hermesGatewayLastFault.at)
+  if (!Number.isFinite(at)) return null
+  if (Date.now() - at > HERMES_GATEWAY_FAULT_TTL_MS) return null
+  return hermesGatewayLastFault
+}
+
+ensureHermesGatewayLogWatcher()
 
 function getHermesPython() {
   return fs.existsSync(HERMES_VENV_PYTHON) ? HERMES_VENV_PYTHON : 'python3'
@@ -343,6 +491,14 @@ function normalizeUsage(usage) {
   }
 }
 
+// Per ownership rule: control 必须只通过队列 + Hermes 与模型交互，禁止任何代码路径在队列外直接对 OMLX 发起 /chat/completions 推理探测。
+// 因此本探测改为只读的 /models 列表查询，且当任意 reasoning session 活跃时，跳过本探测，直接返回上次缓存的结果，避免与受控 reasoning 任务争抢 OMLX。
+const inspectModelAccessCache = new Map() // key=`${provider}|${baseUrl}|${model}` → 上次探测结果
+
+function buildInspectModelCacheKey({ provider, baseUrl, model }) {
+  return `${provider || ''}|${baseUrl || ''}|${model || ''}`
+}
+
 async function inspectModelAccess({ provider, baseUrl, model }) {
   const metadata = getModelMetadata(model)
   const access = getProviderAccess(provider, baseUrl)
@@ -360,21 +516,36 @@ async function inspectModelAccess({ provider, baseUrl, model }) {
     }
   }
 
+  // 当存在活跃的 reasoning session 时，禁止任何 control 端的旁路探测：
+  // 这是为了防止「队列外直连 OMLX」与正在进行的受控推理任务并行竞争模型，
+  // 也防止「上一题没答完就触发下一题/旁路任务」。
+  const cacheKey = buildInspectModelCacheKey({ provider, baseUrl, model })
+  if (activeHermesReasoningSessionIds.size > 0) {
+    const cached = inspectModelAccessCache.get(cacheKey)
+    if (cached) {
+      return { ...cached, checkedAt: cached.checkedAt, deferredDuringReasoning: true }
+    }
+    return {
+      model,
+      accessible: false,
+      status: 'deferred',
+      detail: '存在活跃的可观测推理任务，已跳过 control 旁路探测以避免与队列任务争抢模型',
+      checkedAt,
+      usage: normalizeUsage(null),
+      deferredDuringReasoning: true,
+      ...metadata
+    }
+  }
+
   try {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
-    const resp = await fetch(`${access.baseUrl}/chat/completions`, {
-      method: 'POST',
+    const resp = await fetch(`${access.baseUrl}/models`, {
+      method: 'GET',
       headers: {
-        'Content-Type': 'application/json',
+        Accept: 'application/json',
         ...access.headers
       },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-        temperature: 0
-      }),
       signal: controller.signal
     })
     clearTimeout(timeout)
@@ -382,28 +553,50 @@ async function inspectModelAccess({ provider, baseUrl, model }) {
     const data = await resp.json().catch(() => null)
     if (!resp.ok) {
       const msg = data?.error?.message || data?.message || `HTTP ${resp.status}`
-      return {
+      const failure = {
         model,
         accessible: false,
         status: 'error',
         detail: String(msg),
         checkedAt,
-        usage: normalizeUsage(data?.usage),
+        usage: normalizeUsage(null),
         ...metadata
       }
+      inspectModelAccessCache.set(cacheKey, failure)
+      return failure
     }
 
-    return {
-      model,
-      accessible: true,
-      status: 'ok',
-      detail: '模型可访问，最小推理探测成功',
-      checkedAt,
-      usage: normalizeUsage(data?.usage),
-      ...metadata
-    }
+    const entries = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : [])
+    const presentInCatalog = entries.some((entry) => {
+      if (!entry) return false
+      if (typeof entry === 'string') return entry === model
+      const id = String(entry.id || entry.name || entry.model || '').trim()
+      return id === model
+    })
+
+    const result = presentInCatalog
+      ? {
+          model,
+          accessible: true,
+          status: 'ok',
+          detail: '模型已出现在 OMLX /models 目录中（只读探测，不触发推理）',
+          checkedAt,
+          usage: normalizeUsage(null),
+          ...metadata
+        }
+      : {
+          model,
+          accessible: false,
+          status: 'error',
+          detail: `模型未出现在 OMLX /models 目录中：${model}`,
+          checkedAt,
+          usage: normalizeUsage(null),
+          ...metadata
+        }
+    inspectModelAccessCache.set(cacheKey, result)
+    return result
   } catch (err) {
-    return {
+    const failure = {
       model,
       accessible: false,
       status: 'error',
@@ -412,6 +605,8 @@ async function inspectModelAccess({ provider, baseUrl, model }) {
       usage: normalizeUsage(null),
       ...metadata
     }
+    inspectModelAccessCache.set(cacheKey, failure)
+    return failure
   }
 }
 
@@ -477,13 +672,18 @@ function getHermesRuntimeState() {
 
   const pid = readHermesPid()
   if (pid && isPidRunning(pid)) {
+    const gatewayFault = getHermesGatewayFaultSnapshot()
+    const detail = gatewayFault
+      ? `Hermes gateway 进程正在运行；最近一次后端故障 ${gatewayFault.kind} @ ${gatewayFault.at}`
+      : 'Hermes gateway 进程正在运行'
     return {
       state: 'running',
       label: '运行中',
-      detail: 'Hermes gateway 进程正在运行',
+      detail,
       pid,
       logFile: HERMES_RUNTIME_LOG_FILE,
-      availableActions: ['all-restart', 'pause', 'exit']
+      availableActions: ['all-restart', 'pause', 'exit'],
+      gatewayFault
     }
   }
 
@@ -673,6 +873,7 @@ async function startHermesRuntime() {
 
   child.unref()
   writeHermesPid(child.pid)
+  ensureHermesGatewayLogWatcher()
 
   const readiness = await waitForHermesApiReady()
   if (!readiness.ready) {
@@ -2054,6 +2255,15 @@ function registerBuiltinIntents() {
       evaluateWorkspaceDirectoryQuestionAnswerQuality(prompt, answer, artifacts),
   })
 
+  // 3.5. Project listing questions: force a stable storage/projects path.
+  registerIntent({
+    id: 'builtin.project_listing',
+    source: 'builtin',
+    description: '列出 storage/projects 当前已有项目',
+    priority: 85,
+    matchPlan: (prompt) => isProjectListingPrompt(prompt),
+  })
+
   // 4. Image service entrypoint evaluator (no plan override; reuses model planner).
   registerIntent({
     id: 'builtin.image_service_entrypoint',
@@ -2204,6 +2414,14 @@ function createControlServerRouteContext() {
     readUtf8FileRecord,
     refreshHermesControlStateFromConfig,
     requestJsonWithoutHeadersTimeout,
+    requestHermesChatCompletion,
+    runMemoryLifecycleMaintenance: () => runMemoryLifecycleMaintenance({
+      fs,
+      rootDir: GAMESTUDIO_ROOT,
+      contextPoolDir: HERMES_CONTEXT_POOL_DIR,
+      chatDir: path.join(GAMESTUDIO_ROOT, 'ai', 'chat'),
+      sessionDir: HERMES_AGENT_RUNTIME_SESSIONS_DIR,
+    }),
     runAllReasoningStepsFrom,
     runReasoningSession,
     setActiveHermesChatRequest,
@@ -2407,12 +2625,33 @@ function appendReasoningReviewRecord(record) {
 }
 
 const HERMES_REASONING_QUALITY_CALIBRATIONS_FILE = path.join(GAMESTUDIO_ROOT, 'state', 'reasoning-quality-calibrations.jsonl')
+const HERMES_REASONING_SELF_REVIEWS_FILE = path.join(GAMESTUDIO_ROOT, 'state', 'reasoning-self-reviews.jsonl')
+const HERMES_REASONING_IMPROVEMENT_CANDIDATES_FILE = path.join(GAMESTUDIO_ROOT, 'state', 'reasoning-improvement-candidates.jsonl')
 
 function appendReasoningQualityCalibrationRecord(record) {
   ensureDirectory(path.dirname(HERMES_REASONING_QUALITY_CALIBRATIONS_FILE))
   fs.appendFileSync(HERMES_REASONING_QUALITY_CALIBRATIONS_FILE, `${JSON.stringify({
     recordedAt: new Date().toISOString(),
     recordType: 'reasoning-quality-calibration',
+    ...record
+  })}\n`, 'utf8')
+}
+
+export function appendReasoningSelfReviewRecord(record) {
+  ensureDirectory(path.dirname(HERMES_REASONING_SELF_REVIEWS_FILE))
+  fs.appendFileSync(HERMES_REASONING_SELF_REVIEWS_FILE, `${JSON.stringify({
+    recordedAt: new Date().toISOString(),
+    recordType: 'reasoning-self-review',
+    ...record
+  })}\n`, 'utf8')
+}
+
+export function appendReasoningImprovementCandidateRecord(record) {
+  ensureDirectory(path.dirname(HERMES_REASONING_IMPROVEMENT_CANDIDATES_FILE))
+  fs.appendFileSync(HERMES_REASONING_IMPROVEMENT_CANDIDATES_FILE, `${JSON.stringify({
+    recordedAt: new Date().toISOString(),
+    recordType: 'reasoning-improvement-candidate',
+    status: 'pending-review',
     ...record
   })}\n`, 'utf8')
 }
@@ -2494,6 +2733,60 @@ function createReasoningEvent(sessionId, type, title, summary, extra = {}) {
   }
 }
 
+function normalizePromptForReuse(prompt) {
+  return String(prompt || '').replace(/\s+/g, ' ').trim()
+}
+
+function listRecentReasoningSessionFiles(limit = 12) {
+  ensureDirectory(HERMES_AGENT_RUNTIME_SESSIONS_DIR)
+  return fs.readdirSync(HERMES_AGENT_RUNTIME_SESSIONS_DIR)
+    .filter((file) => file.endsWith('.json'))
+    .map((file) => {
+      const filePath = path.join(HERMES_AGENT_RUNTIME_SESSIONS_DIR, file)
+      let mtimeMs = 0
+      try {
+        mtimeMs = fs.statSync(filePath).mtimeMs
+      } catch {
+        mtimeMs = 0
+      }
+      return { filePath, mtimeMs }
+    })
+    .sort((left, right) => right.mtimeMs - left.mtimeMs)
+    .slice(0, Math.max(1, Number(limit) || 12))
+}
+
+function isReusableVerifiedReasoningSession(session, prompt) {
+  if (!session || typeof session !== 'object') return false
+  if (session.status !== 'completed') return false
+  if (normalizePromptForReuse(session.userPrompt) !== normalizePromptForReuse(prompt)) return false
+  const finalAnswer = String(session.artifacts?.finalAnswer || '').trim()
+  if (!finalAnswer) return false
+  const latestAssessment = session.artifacts?.latestAnswerAssessment || null
+  const latestSelfReview = session.artifacts?.latestSelfReview || null
+  const humanApproved = Array.isArray(session.events)
+    && session.events.some((event) => event?.type === 'review_approved' && event?.data?.targetType === 'answer')
+  const selfReviewApproved = latestSelfReview?.verdict === 'approve'
+  const assessmentPassed = Boolean(latestAssessment?.passed)
+  return humanApproved || (assessmentPassed && selfReviewApproved)
+}
+
+function findReusableVerifiedReasoningSession(userPrompt) {
+  const normalizedPrompt = normalizePromptForReuse(userPrompt)
+  if (!normalizedPrompt) return null
+  for (const entry of listRecentReasoningSessionFiles(16)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(entry.filePath, 'utf8'))
+      const session = normalizeRuntimeSessionShape(parsed)
+      if (isReusableVerifiedReasoningSession(session, normalizedPrompt)) {
+        return session
+      }
+    } catch {
+      // best effort scan
+    }
+  }
+  return null
+}
+
 function writeReasoningSession(session) {
   const normalizedSession = normalizeRuntimeSessionShape(session)
   ensureDirectory(HERMES_REASONING_SESSIONS_DIR)
@@ -2553,6 +2846,17 @@ export function updateReasoningSession(sessionId, updater) {
   const next = updater(current)
   next.updatedAt = new Date().toISOString()
   return writeReasoningSession(next)
+}
+
+function getReasoningSessionLeaseWait(currentTask) {
+  const leaseExpiresAtMs = Date.parse(String(currentTask?.leaseExpiresAt || ''))
+  const leaseWaitMs = Number.isFinite(leaseExpiresAtMs)
+    ? Math.max(0, leaseExpiresAtMs - Date.now())
+    : HERMES_REASONING_TASK_LEASE_MS
+  const heartbeatWaitMs = Math.max(1000, HERMES_REASONING_TASK_HEARTBEAT_MS)
+  return leaseWaitMs <= heartbeatWaitMs
+    ? { waitMs: leaseWaitMs, kind: 'lease_expired' }
+    : { waitMs: heartbeatWaitMs, kind: 'heartbeat' }
 }
 
 export function appendReasoningEvent(sessionId, type, title, summary, extra = {}) {
@@ -2828,6 +3132,9 @@ export function buildReasoningReview(targetType, options = {}) {
 }
 
 export function requestReasoningReview(sessionId, review, eventData = {}) {
+  const current = readReasoningSession(sessionId)
+  if (isReasoningSessionTerminalStatus(current?.status)) return current
+
   updateReasoningSession(sessionId, (session) => ({
     ...session,
     status: 'waiting_review',
@@ -2913,7 +3220,14 @@ export function finalizeReasoningSession(sessionId, options = {}) {
 
 async function generateReasoningQualityCalibrationLesson(session, binding, review, correctionPrompt = '') {
   const assessment = session?.artifacts?.latestAnswerAssessment || null
-  const userFeedback = String(correctionPrompt || '').trim() || '用户确认：当前 Hermes 最终答案是正确的，评分系统应学习这类答案不要误判。'
+  const userFeedback = String(correctionPrompt || '').trim()
+  if (!userFeedback) {
+    return JSON.stringify({
+      lesson: '用户仅点击通过，未填写额外人工反馈；本记录表示人工接受本次答案，但不包含可泛化的新增评分规则。',
+      scoringAdjustment: '将本次问题、答案、自动评分和通过决策保存为评分校准样本，供后续质量门参考；不会自动修改评分器代码、intent、workflow 或智能体规则。',
+      futureCheck: '后续同类问题仍需基于可观测 artifacts 独立评分；若需要形成稳定规则，必须由人工补充反馈或审核 proposal。'
+    })
+  }
   const messages = [
     {
       role: 'system',
@@ -2941,17 +3255,12 @@ async function generateReasoningQualityCalibrationLesson(session, binding, revie
   ]
 
   try {
-    const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'hermes-agent',
-        messages,
-        max_tokens: 360
-      })
+    const data = await requestHermesChatCompletion({
+      sessionId: session?.sessionId || null,
+      phase: 'quality_calibration',
+      messages,
+      maxTokens: 360
     })
-    if (!response.ok) throw new Error(`quality_calibration_http_${response.status}`)
-    const data = await response.json()
     return String(data.choices?.[0]?.message?.content || '').trim()
   } catch (error) {
     return JSON.stringify({
@@ -2965,15 +3274,18 @@ async function generateReasoningQualityCalibrationLesson(session, binding, revie
 async function approveReasoningQualityOverride(sessionId, binding, review, correctionPrompt = '') {
   const session = readReasoningSession(sessionId)
   if (!session) throw new Error('reasoning_session_not_found')
+  const normalizedCorrectionPrompt = String(correctionPrompt || '').trim()
   const assessment = session.artifacts?.latestAnswerAssessment || null
-  const calibrationLesson = await generateReasoningQualityCalibrationLesson(session, binding, review, correctionPrompt)
+  const calibrationLesson = await generateReasoningQualityCalibrationLesson(session, binding, review, normalizedCorrectionPrompt)
+  const latestSelfReview = session.artifacts?.latestSelfReview || null
 
   appendReasoningQualityCalibrationRecord({
     sessionId,
     userPrompt: session.userPrompt,
     finalAnswer: session.artifacts?.finalAnswer || '',
     assessment,
-    correctionPrompt: correctionPrompt || null,
+    correctionPrompt: normalizedCorrectionPrompt || null,
+    reviewerFeedbackProvided: Boolean(normalizedCorrectionPrompt),
     calibrationLesson,
     artifactsSummary: summarizeReasoningArtifactsForAssessment(session.artifacts || {})
   })
@@ -2985,18 +3297,59 @@ async function approveReasoningQualityOverride(sessionId, binding, review, corre
       latestQualityCalibration: {
         recordedAt: new Date().toISOString(),
         calibrationLesson,
-        correctionPrompt: correctionPrompt || null
+        correctionPrompt: normalizedCorrectionPrompt || null,
+        reviewerFeedbackProvided: Boolean(normalizedCorrectionPrompt),
+        effect: '保存评分校准样本；不自动修改评分器代码、intent、workflow 或智能体规则。'
       }
     }
   }))
 
-  appendReasoningEvent(sessionId, 'quality_calibration_recorded', '评分系统已记录人工校准', '用户确认答案可接受；本次问题、答案、评分结果和人工反馈已写入评分校准记录。', {
+  const calibrationSummary = normalizedCorrectionPrompt
+    ? '用户点击通过并填写了反馈；本次问题、答案、评分结果和人工反馈已写入评分校准样本。该样本供后续质量门参考，不会自动修改评分器代码、intent、workflow 或智能体规则。'
+    : '用户点击通过，未填写额外反馈；系统已写入一条“通过决策”评分校准样本。该样本供后续质量门参考，不会自动修改评分器代码、intent、workflow 或智能体规则。'
+
+  appendReasoningEvent(sessionId, 'quality_calibration_recorded', '已记录评分校准样本', calibrationSummary, {
     data: {
       assessment,
       calibrationLesson,
-      correctionPrompt: correctionPrompt || null
+      correctionPrompt: normalizedCorrectionPrompt || null,
+      reviewerFeedbackProvided: Boolean(normalizedCorrectionPrompt),
+      effect: 'sample_only_no_code_or_rule_change'
     }
   })
+
+  if (latestSelfReview?.promotableLesson) {
+    appendReasoningImprovementCandidateRecord({
+      source: 'quality_override_approved',
+      sessionId,
+      userPrompt: session.userPrompt,
+      finalAnswer: session.artifacts?.finalAnswer || '',
+      assessment,
+      selfReview: latestSelfReview,
+      candidate: latestSelfReview.promotableLesson,
+      artifactsSummary: summarizeReasoningArtifactsForAssessment(session.artifacts || {})
+    })
+    appendReasoningEvent(sessionId, 'self_improvement_candidate_recorded', '自我强化候选已记录', `已记录 1 条待审核强化候选：${latestSelfReview.promotableLesson.summary || latestSelfReview.promotableLesson.category || '未命名候选'}`, {
+      data: {
+        source: 'quality_override_approved',
+        promotableLesson: latestSelfReview.promotableLesson
+      }
+    })
+
+    const operatorProposalResult = enqueueSelfReviewOperatorProposals({
+      source: 'quality_override_approved',
+      sessionId,
+      userPrompt: session.userPrompt,
+      finalAnswer: session.artifacts?.finalAnswer || '',
+      assessment,
+      selfReview: latestSelfReview,
+    })
+    if (operatorProposalResult.written.length > 0) {
+      appendReasoningEvent(sessionId, 'operator_rule_proposal_enqueued', 'Operator 规则提案已入队', `已根据 operator 规则自动生成 ${operatorProposalResult.written.length} 个待审核 JSON intent 候选。`, {
+        data: operatorProposalResult
+      })
+    }
+  }
 
   return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
 }
@@ -3004,7 +3357,7 @@ async function approveReasoningQualityOverride(sessionId, binding, review, corre
 function markReasoningSessionFailed(sessionId, error) {
   const currentSession = readReasoningSession(sessionId)
   if (!currentSession) return
-  if (currentSession.status === 'cancelled') {
+  if (isReasoningSessionTerminalStatus(currentSession.status)) {
     unmarkReasoningSessionActive(sessionId)
     clearActiveReasoningExecution(sessionId)
     return
@@ -3035,7 +3388,7 @@ function isRecoverableReasoningStepError(error, step) {
   const detail = getReasoningErrorDetail(error)
   if (!step || !detail) return false
   if (step.action === 'read_file_content') {
-    return /read_file_content_not_found:|ENOENT/i.test(detail)
+    return /read_file_content_not_found:|read_file_content_not_file:|ENOENT|EISDIR/i.test(detail)
   }
   if (step.action === 'list_directory_contents') {
     return /list_directory_contents_not_found:|list_directory_contents_not_directory:|ENOENT|ENOTDIR/i.test(detail)
@@ -3395,10 +3748,12 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
     appendHermesLog(`[REASONING][TASK][START] sessionId=${sessionId} phase=${phase} provider=${binding.provider} model=${binding.model} leaseMs=${HERMES_REASONING_TASK_LEASE_MS} maxRenewals=${HERMES_REASONING_TASK_MAX_RENEWS}`)
 
     while (true) {
+      const currentTaskForWait = getReasoningTask(readReasoningSession(sessionId), phase)
+      const wait = getReasoningSessionLeaseWait(currentTaskForWait)
       const result = await Promise.race([
         executionPromise,
         new Promise((resolve) => {
-          setTimeout(() => resolve({ kind: 'lease_expired' }), HERMES_REASONING_TASK_LEASE_MS)
+          setTimeout(() => resolve({ kind: wait.kind }), wait.waitMs)
         })
       ])
 
@@ -3438,6 +3793,41 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
         appendReasoningEvent(sessionId, 'task_failed', phaseLabel, detail, { data: { phase } })
         appendHermesLog(`[REASONING][TASK][FAILED] sessionId=${sessionId} phase=${phase} detail=${detail}`)
         throw result.error
+      }
+
+      if (result?.kind === 'heartbeat') {
+        const currentSession = readReasoningSession(sessionId)
+        if (currentSession?.status === 'cancelled') {
+          updateReasoningTask(sessionId, phase, (task) => ({
+            ...task,
+            status: 'cancelled',
+            finishedAt: new Date().toISOString(),
+            lastObservedAt: new Date().toISOString(),
+            error: currentSession.error || 'reasoning_cancelled_by_user'
+          }))
+          throw new Error(currentSession.error || 'reasoning_cancelled_by_user')
+        }
+
+        const currentTask = getReasoningTask(currentSession, phase)
+        const activeForMs = currentTask?.startedAt
+          ? Math.max(0, Date.now() - Date.parse(currentTask.startedAt))
+          : null
+        updateReasoningTask(sessionId, phase, (task) => ({
+          ...task,
+          lastObservedAt: new Date().toISOString(),
+          telemetrySource: 'control_heartbeat'
+        }))
+        appendReasoningEvent(sessionId, 'task_heartbeat', phaseLabel, `${phaseLabel}仍在执行，已运行 ${activeForMs == null ? '未知' : Math.round(activeForMs / 1000)} 秒。`, {
+          data: {
+            phase,
+            activeForMs,
+            provider: binding.provider,
+            model: binding.model,
+            heartbeatMs: HERMES_REASONING_TASK_HEARTBEAT_MS
+          }
+        })
+        appendHermesLog(`[REASONING][TASK][HEARTBEAT] sessionId=${sessionId} phase=${phase} activeForMs=${activeForMs ?? 'unknown'}`)
+        continue
       }
 
       const currentSession = readReasoningSession(sessionId)
@@ -3526,7 +3916,7 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
 export function inferWorkspaceDirectoriesFromRecentContext(userPrompt, history) {
   if (!isDirectoryListingPrompt(userPrompt)) return []
   if (isEditorLocationPrompt(userPrompt) || isControlLocationPrompt(userPrompt) || isBusinessServerLocationPrompt(userPrompt)) return []
-  const recentMessages = collectReplayableHermesMessages(history, { limit: 6 })
+  const recentMessages = collectReplayableHermesMessages(history, { limit: 6, userPrompt })
   const latestAssistantMessage = [...recentMessages]
     .reverse()
     .find((message) => message?.role === 'assistant' || message?.role === 'hermes')
@@ -3639,9 +4029,12 @@ export function getMatchingReasoningIntentRules(userPrompt, history, binding, co
 }
 
 export function collectReplayableHermesMessages(history, options = {}) {
-  const replayableMessages = []
+  const replayablePairs = []
   const excludedRequestId = String(options.excludeRequestId || '').trim()
   const limit = Math.max(0, Number.isFinite(Number(options.limit)) ? Number(options.limit) : MAX_REPLAYED_HERMES_CHAT_MESSAGES)
+  const currentPrompt = String(options.userPrompt || '').trim()
+  const currentTerms = extractContextMatchTerms(currentPrompt)
+  const allowRecentCarryover = shouldAllowRecentContextCarryover(currentPrompt)
   let pendingUserMessage = null
 
   for (const item of Array.isArray(history) ? history : []) {
@@ -3663,15 +4056,118 @@ export function collectReplayableHermesMessages(history, options = {}) {
         continue
       }
       if (pendingUserMessage) {
-        replayableMessages.push(pendingUserMessage)
-        pendingUserMessage = null
+        replayablePairs.push({ user: pendingUserMessage, assistant: { role: 'assistant', content } })
       }
-      replayableMessages.push({ role: 'assistant', content })
+      pendingUserMessage = null
     }
   }
 
+  const dedupedPairs = []
+  const seenPairs = new Set()
+  for (const pair of replayablePairs) {
+    const key = normalizeContextComparableText(`${pair.user.content}\n${pair.assistant.content}`).slice(0, 1600)
+    if (seenPairs.has(key)) continue
+    seenPairs.add(key)
+    dedupedPairs.push(pair)
+  }
+
+  const selectedPairs = currentPrompt
+    ? selectReplayableContextPairs(dedupedPairs, currentTerms, allowRecentCarryover, currentPrompt)
+    : dedupedPairs
+
+  const replayableMessages = selectedPairs.flatMap((pair) => [pair.user, pair.assistant])
   return limit > 0 ? replayableMessages.slice(-limit) : []
 }
+
+function selectReplayableContextPairs(pairs, currentTerms, allowRecentCarryover, currentPrompt = '') {
+  const normalizedCurrentPrompt = normalizeContextComparableText(currentPrompt)
+  const indexedPairs = pairs.map((pair, index) => {
+    const pairTerms = extractContextMatchTerms(`${pair.user.content}\n${pair.assistant.content}`)
+    const overlap = countTermOverlap(currentTerms, pairTerms)
+    const strongOverlap = countStrongContextOverlap(currentTerms, pairTerms)
+    const recencyScore = index / Math.max(1, pairs.length)
+    const isRecentCarryover = allowRecentCarryover && index >= Math.max(0, pairs.length - 3)
+    const exactPromptMatch = normalizedCurrentPrompt && normalizeContextComparableText(pair.user.content) === normalizedCurrentPrompt
+    return {
+      pair,
+      index,
+      score: (exactPromptMatch ? 100 : 0) + strongOverlap * 12 + overlap * 3 + recencyScore + (isRecentCarryover ? 3 : 0),
+      selected: exactPromptMatch || strongOverlap >= 2 || isRecentCarryover
+    }
+  })
+
+  const selected = indexedPairs
+    .filter((item) => item.selected)
+    .sort((left, right) => right.score - left.score || right.index - left.index)
+    .slice(0, 6)
+    .sort((left, right) => left.index - right.index)
+    .map((item) => item.pair)
+
+  if (selected.length > 0 || !allowRecentCarryover) return selected
+  return pairs.slice(-1)
+}
+
+function countTermOverlap(leftTerms, rightTerms) {
+  if (!leftTerms.size || !rightTerms.size) return 0
+  let count = 0
+  for (const term of leftTerms) {
+    if (rightTerms.has(term)) count += 1
+  }
+  return count
+}
+
+function countStrongContextOverlap(leftTerms, rightTerms) {
+  if (!leftTerms.size || !rightTerms.size) return 0
+  let count = 0
+  for (const term of leftTerms) {
+    if (!rightTerms.has(term)) continue
+    if (term.includes('/')) {
+      count += 1
+      continue
+    }
+    if (/^[a-z0-9._-]{5,}$/i.test(term)) {
+      count += 1
+      continue
+    }
+    if ((term.match(/[\u4e00-\u9fff]/g) || []).length >= 4) {
+      count += 1
+    }
+  }
+  return count
+}
+
+function shouldAllowRecentContextCarryover(prompt) {
+  const text = String(prompt || '').toLowerCase()
+  return /(继续|上一|上面|刚才|刚刚|它|这个|这些|该|前者|后者|列表|包含|再问|重复|same|again|previous|continue|that|those)/i.test(text)
+}
+
+function extractContextMatchTerms(value) {
+  const text = normalizeContextComparableText(value)
+  const terms = new Set()
+  for (const match of text.matchAll(/\b(?:apps|packages|storage|docs|scripts|ai|config|monitor|state)\/[a-z0-9._/-]+\b/g)) {
+    terms.add(match[0])
+  }
+  for (const token of text.split(/[^a-z0-9\u4e00-\u9fa5._/-]+/i)) {
+    const normalized = token.trim()
+    if (normalized.length < 2) continue
+    if (CONTEXT_STOP_TERMS.has(normalized)) continue
+    terms.add(normalized)
+  }
+  return terms
+}
+
+function normalizeContextComparableText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[`*_#>|()[\]{}:：,，.。;；!?！？]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+const CONTEXT_STOP_TERMS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'what', 'where', 'when', 'how',
+  '当前', '问题', '回答', '说明', '分析', '执行', '检查', '测试', '一个', '这个', '这些', '为什么', '是什么', '哪些', '如何', '是否', '必须', '不能', '不要', '可以'
+])
 
 function shouldSkipInvalidCompletedReplayPair(userPrompt, assistantAnswer) {
   const answer = String(assistantAnswer || '').toLowerCase()
@@ -3710,24 +4206,18 @@ async function generateReasoningFileRewrite(sessionId, step, userPrompt, binding
   const currentContent = fs.existsSync(resolvedPath) ? fs.readFileSync(resolvedPath, 'utf8') : ''
   const desiredContent = buildReasoningWriteFallbackContent(step, currentContent)
   const messages = buildReasoningFileRewriteMessages(step, userPrompt, resolvedPath, currentContent, desiredContent)
-  const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'hermes-agent',
-      messages,
-      max_tokens: 1400,
-      temperature: 0
-    })
-  })
 
   let updatedContent = desiredContent
   let summary = '使用 fallback 内容生成写入结果。'
   let rawResponsePreview = ''
-  if (response.ok) {
-    const data = await response.json()
+  try {
+    const data = await requestHermesChatCompletion({
+      sessionId,
+      phase: `reasoning_write_${String(step.stepId || step.action || 'unknown')}`,
+      messages,
+      maxTokens: 1400,
+      temperature: 0
+    })
     rawResponsePreview = truncateReasoningPreview(data.choices?.[0]?.message?.content || '{}', 2400)
     try {
       const parsed = JSON.parse(extractJsonObjectString(data.choices?.[0]?.message?.content || '{}'))
@@ -3740,8 +4230,8 @@ async function generateReasoningFileRewrite(sessionId, step, userPrompt, binding
     } catch (error) {
       summary = `模型未返回有效 JSON，已使用 fallback 内容。${error instanceof Error ? error.message : String(error)}`
     }
-  } else {
-    rawResponsePreview = `rewrite_http_${response.status}_${response.statusText}`
+  } catch (error) {
+    rawResponsePreview = `rewrite_failed_${error instanceof Error ? error.message : String(error)}`
   }
 
   return {
@@ -4228,6 +4718,9 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
     if (!fs.existsSync(resolvedPath)) {
       throw new Error(`read_file_content_not_found: ${resolvedPath}`)
     }
+    if (!fs.statSync(resolvedPath).isFile()) {
+      throw new Error(`read_file_content_not_file: ${resolvedPath}`)
+    }
     const raw = fs.readFileSync(resolvedPath, 'utf8')
     const truncated = raw.length > 8000 ? raw.slice(0, 8000) + '\n...[truncated]' : raw
     updateReasoningSession(sessionId, (session) => ({
@@ -4276,7 +4769,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       ...session,
       artifacts: {
         ...session.artifacts,
-        workspaceSearch: result
+        workspaceSearch: result,
+        workspaceSearches: {
+          ...(session.artifacts?.workspaceSearches || {}),
+          [step.stepId]: result
+        }
       }
     }))
     appendReasoningEvent(sessionId, 'tool_result', step.title, `已搜索 ${result.startDir}，命中 ${result.count} 条结果`, {
@@ -4660,13 +5157,20 @@ export async function prepareReasoningSessionPlan(sessionId, binding, history, o
     throw new Error('reasoning_session_not_found')
   }
 
+  const correctionPrompt = String(options.correctionPrompt || '').trim()
+  const priorArtifacts = options.priorArtifacts && typeof options.priorArtifacts === 'object'
+    ? options.priorArtifacts
+    : (session.artifacts || {})
+
   markReasoningSessionActive(sessionId)
 
   const planResult = await runManagedReasoningTask(sessionId, 'plan', binding, ({ signal }) => {
     return generateReasoningPlan(session.userPrompt, history, binding, {
+      sessionId,
       signal,
-      correctionPrompt: options.correctionPrompt,
-      contextSelection: session.submissionContext || {}
+      correctionPrompt,
+      contextSelection: session.submissionContext || {},
+      priorArtifacts
     })
   })
   const plan = planResult.plan
@@ -4722,6 +5226,7 @@ export async function prepareReasoningSessionPlan(sessionId, binding, history, o
       reviewPhase: 'before_execution',
       title: '审核运行任务图',
       summary: '运行任务图已生成。请确认任务链后开始执行第一步。',
+      correctionPrompt,
       allowAutoApprove: false,
       requiredHumanDecision: true,
       evidence: readReasoningSession(sessionId)?.artifacts?.latestPlanReviewEvidence || null
@@ -4742,6 +5247,7 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
     const session = readReasoningSession(sessionId)
     if (!session) throw new Error('reasoning_session_not_found')
     const steps = Array.isArray(session.plan?.steps) ? session.plan.steps : []
+    const correctionPrompt = String(options.correctionPrompt || '').trim()
 
     for (let i = startIndex; i < steps.length; i++) {
       const currentSession = readReasoningSession(sessionId)
@@ -4758,6 +5264,7 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
           reviewPhase: 'before_execution',
           title: `审核执行步骤：${step.title}`,
           summary: `确认后才会执行步骤 ${step.title}。`,
+          correctionPrompt,
           allowAutoApprove: false,
           requiredHumanDecision: true,
           evidence: {
@@ -4797,7 +5304,7 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
       let executionResult = null
       try {
         executionResult = await executeReasoningStep(sessionId, step, currentSession.userPrompt, {
-          correctionPrompt: i === startIndex ? (options.correctionPrompt || '') : ''
+          correctionPrompt: isReasoningAnswerAction(step.action) || i === startIndex ? correctionPrompt : ''
         })
       } catch (error) {
         const recovered = await recoverReasoningStepFailure(sessionId, binding, history, step, i, error)
@@ -4827,6 +5334,7 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
           reviewPhase: 'after_execution',
           title: `审核步骤：${step.title}`,
           summary: '该步骤已完成，等待人工确认后继续执行后续步骤。',
+          correctionPrompt,
           allowAutoApprove: false,
           requiredHumanDecision: true,
           evidence: postStepSession?.artifacts?.latestStepReviewEvidence || null
@@ -4896,6 +5404,57 @@ async function createReasoningSession(agentId, userPrompt, submissionContext = {
   const sessionId = createOpaqueId('reasoning')
   const now = new Date().toISOString()
   const parentSessionId = String(submissionContext?.parentSessionId || '').trim() || null
+  const allowRecentVerifiedReuse = !Boolean(submissionContext?.productionTest || submissionContext?.forceFreshRun)
+  const reusedSession = allowRecentVerifiedReuse ? findReusableVerifiedReasoningSession(userPrompt) : null
+  if (reusedSession) {
+    const reusedReply = String(reusedSession.artifacts?.finalAnswer || '').trim()
+    const session = {
+      sessionId,
+      runtimeSessionId: sessionId,
+      sessionKind: 'agent-runtime',
+      agentId,
+      userPrompt,
+      submissionContext,
+      parentSessionId,
+      childSessionIds: [],
+      status: 'completed',
+      createdAt: now,
+      updatedAt: now,
+      runtimeTaskGraph: null,
+      plan: null,
+      currentStepId: null,
+      review: null,
+      events: [
+        createReasoningEvent(sessionId, 'recent_verified_answer_reused', '复用近期已验证答案', `命中相同问题的近期已验证回答，直接复用 ${reusedSession.sessionId} 的最终答案，不再重新启动 workflow。`, {
+          data: {
+            reusedFromSessionId: reusedSession.sessionId,
+            reusedFromUpdatedAt: reusedSession.updatedAt || reusedSession.createdAt || null,
+          }
+        }),
+        createReasoningEvent(sessionId, 'final_answer_ready', '最终回答', '已直接复用近期已验证答案', {
+          data: {
+            targetType: 'answer',
+            reusedFromSessionId: reusedSession.sessionId,
+            finalAnswer: reusedReply
+          }
+        }),
+        createReasoningEvent(sessionId, 'session_completed', '推理完成', '本次问题命中近期已验证答案，未重新启动可观测推理链。', {
+          data: {
+            reusedFromSessionId: reusedSession.sessionId,
+          }
+        })
+      ],
+      artifacts: {
+        ...JSON.parse(JSON.stringify(reusedSession.artifacts || {})),
+        reusedFromSessionId: reusedSession.sessionId,
+        finalAnswer: reusedReply,
+        finalAnswerPersisted: false,
+      },
+      error: null
+    }
+    return writeReasoningSession(session)
+  }
+
   const session = {
     sessionId,
     runtimeSessionId: sessionId,
@@ -5350,6 +5909,7 @@ function listContextPoolEntries() {
           entryId: parsed.entryId,
           title: parsed.title,
           summary: parsed.summary,
+          lifecycle: parsed.lifecycle || null,
           createdAt: parsed.createdAt,
           updatedAt: parsed.updatedAt,
           filePath
@@ -5369,8 +5929,22 @@ function readContextPoolEntry(entryId) {
 
 function writeContextPoolEntry(entry) {
   ensureDirectory(HERMES_CONTEXT_POOL_DIR)
-  fs.writeFileSync(getContextPoolEntryFilePath(entry.entryId), JSON.stringify(entry, null, 2), 'utf8')
-  return entry
+  const now = new Date().toISOString()
+  const normalizedEntry = {
+    ...entry,
+    lifecycle: entry.lifecycle && typeof entry.lifecycle === 'object'
+      ? entry.lifecycle
+      : createMemoryLifecycleMetadata({
+        kind: MEMORY_RECORD_KINDS.CONTEXT_POOL,
+        state: MEMORY_LIFECYCLE_STATES.SLEEPING,
+        importance: 30,
+        confidence: 60,
+        createdAt: entry.createdAt || now,
+        updatedAt: entry.updatedAt || now
+      })
+  }
+  fs.writeFileSync(getContextPoolEntryFilePath(normalizedEntry.entryId), JSON.stringify(normalizedEntry, null, 2), 'utf8')
+  return normalizedEntry
 }
 
 function buildContextPoolSystemMessage(entries) {
@@ -5445,13 +6019,20 @@ function selectProjectMemorySourcesForPrompt(sources, userPrompt) {
     return sources.filter((source) => identityLabels.has(source.label))
   }
 
-  const asksForProjectState = /项目|当前|焦点|待办|状态|进度|阻塞|决策|任务|下一步|memory/i.test(prompt)
+  const asksForProjectState = /项目状态|当前状态|当前进度|当前焦点|待办|任务队列|长任务|状态|进度|阻塞|决策|任务|下一步|memory|记忆/i.test(prompt)
   if (asksForProjectState) {
     const projectLabels = new Set(['Long Tasks', 'Project Status', 'Task Queue', 'Decisions', 'Latest Daily Log'])
     return sources.filter((source) => projectLabels.has(source.label))
   }
 
-  return sources
+  const asksForWorkflowSurface = /workflow|工作流|能力链条|闭环|LT-0|长任务|主线/i.test(prompt)
+  if (asksForWorkflowSurface) {
+    const workflowLabels = new Set(['Project Memory', 'Long Tasks'])
+    return sources.filter((source) => workflowLabels.has(source.label))
+  }
+
+  const minimalLabels = new Set(['Project Memory'])
+  return sources.filter((source) => minimalLabels.has(source.label))
 }
 
 export function buildProjectMemorySystemMessage(binding, userPrompt, options = {}) {
@@ -5470,7 +6051,14 @@ export function buildProjectMemorySystemMessage(binding, userPrompt, options = {
     : []
   const selectedSources = [...autoSelectedMemorySources, ...selectedManualSources]
   const loadedSources = selectedSources.filter((source) => source.exists && source.content)
-  const contextPoolEntries = selectedContextPoolIds.map((entryId) => readContextPoolEntry(entryId)).filter(Boolean)
+  const selectedContextPoolEntries = selectedContextPoolIds.map((entryId) => readContextPoolEntry(entryId)).filter(Boolean)
+  const autoWokenContextPoolEntries = listContextPoolEntries()
+    .filter((entry) => !selectedContextPoolIds.includes(String(entry.entryId || '')))
+    .map((entry) => readContextPoolEntry(entry.entryId))
+    .filter(Boolean)
+    .filter((entry) => shouldWakeMemoryRecord(entry, options.requestDecision || null, userPrompt))
+    .slice(0, 4)
+  const contextPoolEntries = [...selectedContextPoolEntries, ...autoWokenContextPoolEntries]
   const message = [
     'GameStudio project memory below is injected by the control plane and should be treated as authoritative project context for this chat.',
     'Prefer these project records over stale conversational guesses when answering questions about project state, identity, memory, tasks, or decisions.'
@@ -5504,6 +6092,7 @@ export function buildProjectMemorySystemMessage(binding, userPrompt, options = {
     selectedSources,
     loadedSources,
     contextPoolEntries,
+    autoWokenContextPoolEntries,
     confirmedContextSummary,
     overlayMode
   }
@@ -5523,7 +6112,8 @@ function buildHermesChatMessages(history, userPrompt, binding, options = {}) {
   ]
   const replayWindowMessages = Math.max(0, Number(binding?.workflow?.replayWindowMessages || 0))
   const replayableMessages = collectReplayableHermesMessages(history, {
-    limit: replayWindowMessages
+    limit: replayWindowMessages,
+    userPrompt
   })
 
   messages.push(...replayableMessages)
@@ -5543,7 +6133,8 @@ function buildContextDraftMessages(binding, userPrompt, options = {}) {
   })
   const replayWindowMessages = Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
   const replayableMessages = collectReplayableHermesMessages(options.history || [], {
-    limit: replayWindowMessages
+    limit: replayWindowMessages,
+    userPrompt
   })
   const messages = [
     {
@@ -5592,7 +6183,8 @@ async function generateContextDraft(userPrompt, binding, options = {}) {
     if (isBusinessServerLocationPrompt(userPrompt)) summaryLines.push('当前目标：GameStudio 业务后端目录。执行建议：调用 `locate_project`，由 Hermes 基于本轮 workspaceStructure 中的 server 应用目录作答。')
     const summary = summaryLines.join('\n')
     const replayedMessageCount = collectReplayableHermesMessages(options.history || [], {
-      limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+      limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0)),
+      userPrompt
     }).length
     return {
       summary,
@@ -5634,7 +6226,8 @@ async function generateContextDraft(userPrompt, binding, options = {}) {
       '执行建议：对上述每个目录调用 `list_directory_contents`，只返回直接子项；在工具返回前不要预写文件名、子目录内容或递归结构。'
     ].join('\n')
     const replayedMessageCount = collectReplayableHermesMessages(options.history || [], {
-      limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+      limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0)),
+      userPrompt
     }).length
     return {
       summary,
@@ -5657,23 +6250,12 @@ async function generateContextDraft(userPrompt, binding, options = {}) {
     }
   }
 
-  const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'hermes-agent',
-      messages: draftContext.messages,
-      max_tokens: 320
-    })
+  const data = await requestHermesChatCompletion({
+    sessionId: options.sessionId || null,
+    phase: 'context_draft',
+    messages: draftContext.messages,
+    maxTokens: 320
   })
-
-  if (!response.ok) {
-    throw new Error(`context_draft_http_${response.status}_${response.statusText}`)
-  }
-
-  const data = await response.json()
   const content = data.choices?.[0]?.message?.content || ''
   return {
     summary: content,
@@ -5685,7 +6267,8 @@ async function generateContextDraft(userPrompt, binding, options = {}) {
       mode: 'chat',
       userPrompt,
       replayedMessageCount: collectReplayableHermesMessages(options.history || [], {
-        limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+        limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0)),
+        userPrompt
       }).length,
       contextSelection: options,
       history: options.history || []
@@ -5693,7 +6276,8 @@ async function generateContextDraft(userPrompt, binding, options = {}) {
     rawResponsePreview: truncateReasoningPreview(content, 2400),
     contextSources: buildChatContextSourcesPayload({
       replayedMessageCount: collectReplayableHermesMessages(options.history || [], {
-        limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0))
+        limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || binding?.workflow?.replayWindowMessages || 0)),
+        userPrompt
       }).length,
       projectMemory: draftContext.projectMemory
     }, binding)
@@ -5713,6 +6297,7 @@ function buildChatContextSourcesPayload(chatContext, binding) {
     selectedSourceCount: chatContext.projectMemory.selectedSources.length,
     loadedSourceCount: chatContext.projectMemory.loadedSources.length,
     contextPoolEntryCount: chatContext.projectMemory.contextPoolEntries?.length || 0,
+    autoWokenContextPoolEntryCount: chatContext.projectMemory.autoWokenContextPoolEntries?.length || 0,
     confirmedContextSummary: chatContext.projectMemory.confirmedContextSummary || '',
     sources: chatContext.projectMemory.selectedSources.map((source) => ({
       label: source.label,
@@ -5725,6 +6310,7 @@ function buildChatContextSourcesPayload(chatContext, binding) {
     contextPoolEntries: (chatContext.projectMemory.contextPoolEntries || []).map((entry) => ({
       entryId: entry.entryId,
       title: entry.title,
+      lifecycleState: entry.lifecycle?.state || null,
       filePath: getContextPoolEntryFilePath(entry.entryId)
     }))
   }

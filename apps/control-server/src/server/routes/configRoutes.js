@@ -35,7 +35,7 @@ function listDailyLogFiles(memoryConfig, fs, path) {
     .map((name) => path.join(dailyLogDir, name))
     .filter((filePath) => {
       try {
-        return fs.statSync(filePath).isFile()
+        return /^\d{4}-\d{2}-\d{2}\.md$/.test(path.basename(filePath)) && fs.statSync(filePath).isFile()
       } catch {
         return false
       }
@@ -47,6 +47,37 @@ function listDailyLogFiles(memoryConfig, fs, path) {
         return 0
       }
     })
+}
+
+function getFileSizeBytes(fs, filePath) {
+  try {
+    return fs.existsSync(filePath) && fs.statSync(filePath).isFile()
+      ? fs.statSync(filePath).size
+      : 0
+  } catch {
+    return 0
+  }
+}
+
+function getDirectorySizeBytes(fs, path, directoryPath) {
+  try {
+    if (!directoryPath || !fs.existsSync(directoryPath)) return 0
+    const stat = fs.statSync(directoryPath)
+    if (stat.isFile()) return stat.size
+    if (!stat.isDirectory()) return 0
+    return fs.readdirSync(directoryPath).reduce((total, name) => {
+      return total + getDirectorySizeBytes(fs, path, path.join(directoryPath, name))
+    }, 0)
+  } catch {
+    return 0
+  }
+}
+
+function formatBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0)
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
 function buildMemoryRecord(readUtf8FileRecord, options) {
@@ -82,13 +113,37 @@ function buildMemoryRecordsPayload(context, binding) {
   const dailyLogFiles = listDailyLogFiles(memoryConfig, fs, path)
   const todayDailyLogFile = getTodayDailyLogPath(memoryConfig, fs, path)
   const contextPoolEntries = listContextPoolEntries()
+  const stateRoot = path.join(context.GAMESTUDIO_ROOT, 'state')
+  const agentRuntimeSessionsDir = path.join(stateRoot, 'agent-runtime-sessions')
+  const legacyReasoningSessionsDir = path.join(stateRoot, 'reasoning-sessions')
+  const runtimeTraceFiles = [
+    path.join(stateRoot, 'agent-runtime-events.jsonl'),
+    path.join(stateRoot, 'agent-runtime-review-records.jsonl'),
+    path.join(stateRoot, 'reasoning-review-records.jsonl'),
+    path.join(stateRoot, 'reasoning-quality-calibrations.jsonl'),
+    path.join(stateRoot, 'reasoning-self-reviews.jsonl'),
+    path.join(stateRoot, 'reasoning-improvement-candidates.jsonl'),
+    path.join(stateRoot, 'reasoning-quality-calibrations.jsonl')
+  ]
+  const uniqueRuntimeTraceFiles = [...new Set(runtimeTraceFiles)]
+  const chatHistoryFilePath = getHermesChatFileRecord({ includeContent: true }).filePath
+  const logsSizeBytes = getFileSizeBytes(fs, HERMES_RUNTIME_LOG_FILE)
+    + dailyLogFiles.reduce((total, filePath) => total + getFileSizeBytes(fs, filePath), 0)
+  const runtimeTracesSizeBytes = getDirectorySizeBytes(fs, path, agentRuntimeSessionsDir)
+    + getDirectorySizeBytes(fs, path, legacyReasoningSessionsDir)
+    + uniqueRuntimeTraceFiles.reduce((total, filePath) => total + getFileSizeBytes(fs, filePath), 0)
+  const contextPoolSizeBytes = contextPoolEntries.reduce((total, entry) => total + getFileSizeBytes(fs, entry.filePath), 0)
+  const longTermMemorySizeBytes = [memoryConfig.userFile, memoryConfig.memoryFile]
+    .reduce((total, filePath) => total + getFileSizeBytes(fs, filePath), 0)
+  const stateRecordsSizeBytes = [memoryConfig.statusFile, memoryConfig.taskQueueFile, memoryConfig.decisionsFile]
+    .reduce((total, filePath) => total + getFileSizeBytes(fs, filePath), 0)
 
   const records = [
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'chat-history',
       label: '会话缓冲记录',
       scope: 'short-term',
-      filePath: getHermesChatFileRecord({ includeContent: true }).filePath,
+      filePath: chatHistoryFilePath,
       previewContent: getHermesChatFileRecord({ includeContent: true }).content,
       itemCount: (() => {
         try {
@@ -169,13 +224,113 @@ function buildMemoryRecordsPayload(context, binding) {
   return {
     records,
     clearTargets: [
-      { value: 'chat-history', label: '清空缓冲记录', description: '重置 Hermes 聊天缓冲 JSON。' },
-      { value: 'context-pool', label: '清空上下文记忆', description: '删除全部已确认上下文池条目。' },
-      { value: 'long-term-memory', label: '清空长期记忆', description: '重置用户长期记忆与项目长期记忆文件。' },
-      { value: 'state-records', label: '清空状态/任务/决策', description: '重置状态、任务队列和决策记录。' },
-      { value: 'logs', label: '清空日志', description: '清空 Hermes 运行日志和项目日志目录。' },
-      { value: 'all-test-records', label: '清空全部测试记录', description: '一次性重置缓冲、上下文池、长期记忆、状态记录和日志。' }
+      {
+        value: 'logs',
+        label: '清空日志',
+        description: '清空 Hermes 运行日志和当日日志目录。不会删除长期记忆、上下文池或任务状态。',
+        impactLevel: 'safe',
+        impactLabel: '可删除',
+        impactSummary: '仅影响排障回看，不影响 control + 智能体记忆。',
+        sizeBytes: logsSizeBytes,
+        sizeLabel: formatBytes(logsSizeBytes)
+      },
+      {
+        value: 'runtime-traces',
+        label: '清空运行轨迹/测试会话记录',
+        description: '删除已结束的 reasoning/agent-runtime session 文件，并重置事件、审核、自评和质量校准 JSONL。',
+        impactLevel: 'caution',
+        impactLabel: '谨慎删除',
+        impactSummary: '不删除长期记忆；会丢失 plan、任务行为、审核复盘和提案学习证据。',
+        sizeBytes: runtimeTracesSizeBytes,
+        sizeLabel: formatBytes(runtimeTracesSizeBytes)
+      },
+      {
+        value: 'chat-history',
+        label: '清空会话缓冲记录',
+        description: '重置 Hermes 聊天缓冲 JSON。',
+        impactLevel: 'caution',
+        impactLabel: '谨慎删除',
+        impactSummary: '影响短期对话上下文；不删除长期记忆文件。',
+        sizeBytes: getFileSizeBytes(fs, chatHistoryFilePath),
+        sizeLabel: formatBytes(getFileSizeBytes(fs, chatHistoryFilePath))
+      },
+      {
+        value: 'context-pool',
+        label: '清空上下文记忆',
+        description: '删除全部已确认上下文池条目。',
+        impactLevel: 'high',
+        impactLabel: '高影响',
+        impactSummary: '会删除人工确认过的上下文材料，影响后续任务复用。',
+        sizeBytes: contextPoolSizeBytes,
+        sizeLabel: formatBytes(contextPoolSizeBytes)
+      },
+      {
+        value: 'long-term-memory',
+        label: '清空长期记忆',
+        description: '重置用户长期记忆与项目长期记忆文件。',
+        impactLevel: 'critical',
+        impactLabel: '严重影响',
+        impactSummary: '会直接削弱 control + 智能体的长期记忆。仅在明确重置时使用。',
+        sizeBytes: longTermMemorySizeBytes,
+        sizeLabel: formatBytes(longTermMemorySizeBytes)
+      },
+      {
+        value: 'state-records',
+        label: '清空状态/任务/决策',
+        description: '重置状态、任务队列和决策记录。',
+        impactLevel: 'critical',
+        impactLabel: '严重影响',
+        impactSummary: '会丢失项目状态、任务队列和决策依据。仅在明确重置时使用。',
+        sizeBytes: stateRecordsSizeBytes,
+        sizeLabel: formatBytes(stateRecordsSizeBytes)
+      }
     ]
+  }
+}
+
+function clearTerminalRuntimeSessionFiles(fs, path, directoryPath) {
+  if (!directoryPath || !fs.existsSync(directoryPath)) return 0
+  let clearedCount = 0
+  for (const fileName of fs.readdirSync(directoryPath)) {
+    if (!fileName.endsWith('.json')) continue
+    const filePath = path.join(directoryPath, fileName)
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+      if (parsed?.status === 'completed' || parsed?.status === 'failed' || parsed?.status === 'cancelled') {
+        fs.unlinkSync(filePath)
+        clearedCount += 1
+      }
+    } catch {
+      // Keep unreadable session files for manual inspection.
+    }
+  }
+  return clearedCount
+}
+
+function countNonTerminalRuntimeSessionFiles(fs, path, directoryPath) {
+  if (!directoryPath || !fs.existsSync(directoryPath)) return 0
+  let activeCount = 0
+  for (const fileName of fs.readdirSync(directoryPath)) {
+    if (!fileName.endsWith('.json')) continue
+    const filePath = path.join(directoryPath, fileName)
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+      if (parsed?.status !== 'completed' && parsed?.status !== 'failed' && parsed?.status !== 'cancelled') {
+        activeCount += 1
+      }
+    } catch {
+      activeCount += 1
+    }
+  }
+  return activeCount
+}
+
+function assertRuntimeTracesClearable(fs, path, stateRoot) {
+  const agentActive = countNonTerminalRuntimeSessionFiles(fs, path, path.join(stateRoot, 'agent-runtime-sessions'))
+  const legacyActive = countNonTerminalRuntimeSessionFiles(fs, path, path.join(stateRoot, 'reasoning-sessions'))
+  const activeCount = agentActive + legacyActive
+  if (activeCount > 0) {
+    throw new Error(`runtime_traces_have_active_sessions:${activeCount}`)
   }
 }
 
@@ -530,11 +685,23 @@ export function registerConfigRoutes(app, context) {
     if (requestedTargets.length === 0) {
       return c.json({ ok: false, error: 'memory_clear_target_required' }, 400)
     }
-    const targets = requestedTargets.includes('all-test-records') ? ['all-test-records'] : Array.from(new Set(requestedTargets))
+    const targets = Array.from(new Set(requestedTargets))
+    if (targets.includes('all-test-records')) {
+      return c.json({ ok: false, error: 'memory_clear_all_target_disabled' }, 400)
+    }
 
     const binding = buildHermesBinding()
     const memoryConfig = binding.memory
     const dailyLogFiles = listDailyLogFiles(memoryConfig, context.fs, path)
+    const stateRoot = path.join(context.GAMESTUDIO_ROOT, 'state')
+    const runtimeTraceFiles = [...new Set([
+      path.join(stateRoot, 'agent-runtime-events.jsonl'),
+      path.join(stateRoot, 'agent-runtime-review-records.jsonl'),
+      path.join(stateRoot, 'reasoning-review-records.jsonl'),
+      path.join(stateRoot, 'reasoning-quality-calibrations.jsonl'),
+      path.join(stateRoot, 'reasoning-self-reviews.jsonl'),
+      path.join(stateRoot, 'reasoning-improvement-candidates.jsonl')
+    ])]
     const cleared = []
 
     const clearChatHistory = () => {
@@ -571,6 +738,15 @@ export function registerConfigRoutes(app, context) {
       }
       cleared.push('logs')
     }
+    const clearRuntimeTraces = () => {
+      assertRuntimeTracesClearable(context.fs, path, stateRoot)
+      const agentSessionsCleared = clearTerminalRuntimeSessionFiles(context.fs, path, path.join(stateRoot, 'agent-runtime-sessions'))
+      const legacySessionsCleared = clearTerminalRuntimeSessionFiles(context.fs, path, path.join(stateRoot, 'reasoning-sessions'))
+      for (const filePath of runtimeTraceFiles) {
+        resetFile(context.fs, path, filePath, '')
+      }
+      cleared.push(`runtime-traces:${agentSessionsCleared + legacySessionsCleared}`)
+    }
 
     try {
       for (const target of targets) {
@@ -579,13 +755,8 @@ export function registerConfigRoutes(app, context) {
         else if (target === 'long-term-memory') clearLongTermMemory()
         else if (target === 'state-records') clearStateRecords()
         else if (target === 'logs') clearLogs()
-        else if (target === 'all-test-records') {
-          clearChatHistory()
-          clearContextPool()
-          clearLongTermMemory()
-          clearStateRecords()
-          clearLogs()
-        } else {
+        else if (target === 'runtime-traces') clearRuntimeTraces()
+        else {
           return c.json({ ok: false, error: 'memory_clear_target_invalid' }, 400)
         }
       }
@@ -596,9 +767,7 @@ export function registerConfigRoutes(app, context) {
         target: targets[0],
         targets,
         cleared,
-        message: targets[0] === 'all-test-records'
-          ? '已清空全部测试记录。'
-          : targets.length > 1
+        message: targets.length > 1
             ? `已清空 ${targets.length} 类记录。`
             : '已清空所选记录。',
         ...payload

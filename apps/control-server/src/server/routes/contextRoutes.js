@@ -1,3 +1,9 @@
+import {
+  createMemoryLifecycleMetadata,
+  MEMORY_RECORD_KINDS,
+  MEMORY_LIFECYCLE_STATES,
+} from '../memory/lifecyclePolicy.js'
+
 export function registerContextRoutes(app, context) {
   const {
     createOpaqueId,
@@ -16,6 +22,7 @@ export function registerContextRoutes(app, context) {
     readContextPoolEntry,
     readHermesChatHistory,
     readUtf8FileRecord,
+    runMemoryLifecycleMaintenance,
     writeContextPoolEntry,
     writeUtf8FileRecord,
   } = context
@@ -182,6 +189,38 @@ export function registerContextRoutes(app, context) {
     return c.json({ ok: true, entries: listContextPoolEntries() })
   })
 
+  app.post('/api/control/agents/:agentId/memory-lifecycle/maintenance', async (c) => {
+    const { agentId } = c.req.param()
+    if (agentId !== hermesAgentDefinition.id) {
+      return c.json({ ok: false, error: 'agent_not_found' }, 404)
+    }
+
+    try {
+      const report = runMemoryLifecycleMaintenance()
+      return c.json({ ok: true, report })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
+
+  app.get('/api/control/agents/:agentId/memory-lifecycle/report', async (c) => {
+    const { agentId } = c.req.param()
+    if (agentId !== hermesAgentDefinition.id) {
+      return c.json({ ok: false, error: 'agent_not_found' }, 404)
+    }
+
+    const stateDir = context.path.dirname(context.path.dirname(getContextPoolEntryFilePath('__memory_lifecycle_probe__')))
+    const reportPath = context.path.join(stateDir, 'memory-lifecycle', 'latest-report.json')
+    try {
+      if (!context.fs.existsSync(reportPath)) {
+        return c.json({ ok: true, report: null })
+      }
+      return c.json({ ok: true, report: JSON.parse(context.fs.readFileSync(reportPath, 'utf8')) })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
+
   app.post('/api/control/agents/:agentId/context-pool', async (c) => {
     const { agentId } = c.req.param()
     if (agentId !== hermesAgentDefinition.id) {
@@ -202,6 +241,18 @@ export function registerContextRoutes(app, context) {
       summary,
       selectedSourceIds: Array.isArray(body.selectedSourceIds) ? body.selectedSourceIds.map((value) => String(value)) : [],
       selectedContextPoolIds: Array.isArray(body.selectedContextPoolIds) ? body.selectedContextPoolIds.map((value) => String(value)) : [],
+      lifecycle: createMemoryLifecycleMetadata({
+        kind: MEMORY_RECORD_KINDS.CONTEXT_POOL,
+        state: MEMORY_LIFECYCLE_STATES.SLEEPING,
+        importance: Number(body.importance || 30),
+        confidence: Number(body.confidence || 60),
+        createdAt: now,
+        updatedAt: now,
+        wakePatterns: Array.isArray(body.wakePatterns) ? body.wakePatterns : [],
+        relatedFiles: Array.isArray(body.relatedFiles) ? body.relatedFiles : [],
+        relatedCaseIds: Array.isArray(body.relatedCaseIds) ? body.relatedCaseIds : [],
+        relatedSessionIds: Array.isArray(body.relatedSessionIds) ? body.relatedSessionIds : []
+      }),
       createdAt: now,
       updatedAt: now
     })

@@ -14,6 +14,10 @@ export function getReasoningSession(agentId: string, sessionId: string) {
   return fetch(`/api/control/agents/${agentId}/agent-runtime-sessions/${sessionId}`)
 }
 
+export function getActiveProductionTestSession(agentId = 'hermes-manager') {
+  return fetch(`/api/control/agents/${agentId}/production-test-session`)
+}
+
 export function cancelReasoningSessionRequest(agentId: string, sessionId: string) {
   return fetch(`/api/control/agents/${agentId}/agent-runtime-sessions/${sessionId}/cancel`, {
     method: 'POST'

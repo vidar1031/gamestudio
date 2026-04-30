@@ -8,9 +8,14 @@ import {
   REASONING_ACTIONS,
   REASONING_ALLOWED_ACTION_NAMES,
   isReasoningAnswerAction,
+  isReasoningInvokeAction,
   isReasoningWriteAction,
 } from '../capabilities/actionRegistry.js'
 import { resolveWorkspacePathFromInput } from '../workspace/inspectors.js'
+import {
+  buildProjectCapabilityStatusPlan,
+  isProjectCapabilityStatusPrompt,
+} from '../workflows/projectStatusWorkflows.js'
 import {
   inferWorkspaceDirectoryFromPrompt,
   inferWorkspaceDirectoriesFromPromptText,
@@ -19,6 +24,7 @@ import {
   isControlLocationPrompt,
   isDirectoryListingPrompt,
   isEditorLocationPrompt,
+  isProjectListingPrompt,
   isWorkspaceDirectoryQuestionPrompt,
   isWorkspaceFileQuestionPrompt,
   normalizeWorkspaceRelativePath,
@@ -37,15 +43,17 @@ import {
   inferWorkspaceDirectoriesFromRecentContext,
 } from '../controlServerCore.js'
 
-export function buildReasoningPlannerMessages(history, userPrompt, binding, correctionPrompt = '', contextSelection = {}) {
+export function buildReasoningPlannerMessages(history, userPrompt, binding, correctionPrompt = '', contextSelection = {}, priorArtifacts = null) {
   const projectMemory = buildReasoningPlannerProjectMemory(binding, userPrompt, contextSelection)
   const replayWindowMessages = Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
   const replayableMessages = collectReplayableHermesMessages(history, {
-    limit: replayWindowMessages
+    limit: replayWindowMessages,
+    userPrompt
   })
   const allowedActionsText = REASONING_ALLOWED_ACTION_NAMES.join(', ')
   const matchedIntentRules = getMatchingReasoningIntentRules(userPrompt, history, binding, contextSelection)
   const hintedActionsText = [...new Set(matchedIntentRules.flatMap((rule) => [...(rule.requiredActions || []), rule.answerAction]).filter(Boolean))].join(', ')
+  const previousDraft = buildPriorDraftSummary(priorArtifacts)
 
   return {
     projectMemory,
@@ -65,6 +73,10 @@ export function buildReasoningPlannerMessages(history, userPrompt, binding, corr
           'You are the planning layer for the GameStudio observable reasoning pipeline.',
           'Return one strict JSON object only. Do not include markdown fences or extra commentary.',
           'Generate a short sequential execution plan for the current user request using the nearby conversation and injected markdown memory as the primary context.',
+          'The latest user request is the source of truth for the plan goal. Treat replayed conversation as optional context, not as the task to execute.',
+          'Before using replayed conversation, classify whether it is directly related to the latest user request. Use it only when the user explicitly continues, compares, repeats, corrects, or refers to prior work.',
+          'If the latest request names a concrete module, directory, file, workflow, or test case, plan for that explicit target even if replayed history contains a different target.',
+          'If the latest request repeats an earlier question, run the normal evidence-gathering workflow again; do not copy or drift from the earlier answer unless current artifacts support it.',
           `Allowed actions: ${allowedActionsText}.`,
           hintedActionsText ? `Selected skill and intent hints suggest these actions when relevant: ${hintedActionsText}.` : '',
           'Do not speculate about databases, APIs, or external folders when a local project-listing tool exists.',
@@ -95,6 +107,7 @@ export function buildReasoningPlannerMessages(history, userPrompt, binding, corr
         content: [
           `当前用户问题：${userPrompt}`,
           correctionPrompt ? `审核修正条件：${correctionPrompt}` : '',
+          previousDraft ? `上一轮候选答案（仅作修订草稿，不能当作已验证事实）：\n${previousDraft}` : '',
           '',
           '请基于最近上下文和已注入的 markdown 项目记忆，输出严格 JSON plan。'
         ].filter(Boolean).join('\n')
@@ -118,6 +131,38 @@ export function extractJsonObjectString(text) {
 }
 
 export function buildReasoningFallbackPlan(userPrompt, history, binding, contextSelection = {}) {
+  if (isProjectCapabilityStatusPrompt(userPrompt)) {
+    return buildProjectCapabilityStatusPlan(userPrompt)
+  }
+
+  if (isProjectListingPrompt(userPrompt)) {
+    return {
+      planId: createOpaqueId('plan'),
+      goal: '列出 storage/projects 当前已有项目',
+      strategy: 'sequential',
+      steps: [
+        {
+          stepId: 'step_list_projects_directory',
+          title: '列出 storage/projects 目录内容',
+          action: 'list_directory_contents',
+          tool: 'workspace.listDirectory',
+          params: { dirPath: 'storage/projects' },
+          skipReview: true,
+          dependsOn: []
+        },
+        {
+          stepId: 'step_generate_projects_answer',
+          title: '生成当前项目列表回答',
+          action: 'generate_default_answer',
+          tool: 'model.answer',
+          params: {},
+          skipReview: true,
+          dependsOn: ['step_list_projects_directory']
+        }
+      ]
+    }
+  }
+
   if (isEditorLocationPrompt(userPrompt) || isControlLocationPrompt(userPrompt) || isBusinessServerLocationPrompt(userPrompt)) {
     return {
       planId: createOpaqueId('plan'),
@@ -364,13 +409,117 @@ export function normalizeReasoningPlan(rawPlan, userPrompt, history, binding, co
       ...step,
       skipReview: typeof step.skipReview === 'boolean' ? step.skipReview : inferReasoningStepSkipReview(step)
     }))
+  const constrainedSteps = sanitizeReasoningPlanSteps(steps, fallbackPlan.steps, userPrompt, contextSelection)
+  const executableSteps = sanitizeProductionTestSteps(constrainedSteps, fallbackPlan.steps, contextSelection)
 
   return {
     planId: String(plan.planId || createOpaqueId('plan')),
     goal: String(plan.goal || fallbackPlan.goal || '生成结构化回答').trim() || '生成结构化回答',
     strategy: 'sequential',
-    steps: appendReasoningMemorySyncSteps(steps, userPrompt, binding)
+    steps: appendReasoningMemorySyncSteps(executableSteps, userPrompt, binding, contextSelection)
   }
+}
+
+function sanitizeReasoningPlanSteps(steps, fallbackSteps, userPrompt, contextSelection = {}) {
+  const readOnlyPrompt = isLikelyReadOnlyReasoningPrompt(userPrompt)
+  const filteredSteps = []
+
+  for (const step of steps) {
+    let normalizedStep = step
+
+    if ((contextSelection?.productionTest || readOnlyPrompt) && (isReasoningWriteAction(normalizedStep.action) || isReasoningInvokeAction(normalizedStep.action))) {
+      continue
+    }
+
+    if (normalizedStep.action === 'list_directory_contents') {
+      const dirPath = String(normalizedStep.params?.dirPath || normalizedStep.params?.startDir || '').trim()
+      if (!isExistingWorkspaceDirectory(dirPath)) continue
+    }
+
+    if (normalizedStep.action === 'read_file_content') {
+      const filePath = String(normalizedStep.params?.filePath || '').trim()
+      if (!isExistingWorkspaceFile(filePath)) continue
+      if (isProjectMemoryFile(filePath) && !shouldAllowProjectMemoryRead(userPrompt, filePath)) continue
+    }
+
+    if (normalizedStep.action === 'search_workspace_text') {
+      const startDir = String(normalizedStep.params?.startDir || '').trim()
+      if (startDir && !isExistingWorkspaceDirectory(startDir)) {
+        normalizedStep = {
+          ...normalizedStep,
+          params: {
+            ...normalizedStep.params,
+            startDir: '.'
+          }
+        }
+      }
+    }
+
+    filteredSteps.push(normalizedStep)
+  }
+
+  const safeSteps = filteredSteps.some((step) => isReasoningAnswerAction(step.action))
+    ? filteredSteps
+    : fallbackSteps.map((step) => ({
+      ...step,
+      skipReview: typeof step.skipReview === 'boolean' ? step.skipReview : inferReasoningStepSkipReview(step)
+    }))
+
+  return safeSteps.map((step, index) => ({
+    ...step,
+    dependsOn: index === 0 ? [] : [safeSteps[index - 1].stepId]
+  }))
+}
+
+function sanitizeProductionTestSteps(steps, fallbackSteps, contextSelection = {}) {
+  if (!contextSelection?.productionTest) return steps
+  const filteredSteps = steps.filter((step) => !isReasoningWriteAction(step.action) && !isReasoningInvokeAction(step.action))
+  const safeSteps = filteredSteps.some((step) => isReasoningAnswerAction(step.action))
+    ? filteredSteps
+    : fallbackSteps.map((step) => ({
+      ...step,
+      skipReview: typeof step.skipReview === 'boolean' ? step.skipReview : inferReasoningStepSkipReview(step)
+    }))
+
+  return safeSteps.map((step, index) => ({
+    ...step,
+    dependsOn: index === 0 ? [] : [safeSteps[index - 1].stepId]
+  }))
+}
+
+export function isLikelyReadOnlyReasoningPrompt(userPrompt) {
+  const text = String(userPrompt || '')
+  if (!text.trim()) return true
+  return !/(创建|新建|写入|修改|编辑|删除|重命名|导出|更新|写回|落盘|执行脚本|运行脚本|重启|启动|停止|恢复|暂停)/i.test(text)
+}
+
+function isExistingWorkspaceDirectory(targetPath) {
+  const resolvedPath = resolveWorkspacePathFromInput(targetPath)
+  return Boolean(resolvedPath)
+    && resolvedPath.startsWith(GAMESTUDIO_ROOT)
+    && fs.existsSync(resolvedPath)
+    && fs.statSync(resolvedPath).isDirectory()
+}
+
+function isExistingWorkspaceFile(targetPath) {
+  const resolvedPath = resolveWorkspacePathFromInput(targetPath)
+  return Boolean(resolvedPath)
+    && resolvedPath.startsWith(GAMESTUDIO_ROOT)
+    && fs.existsSync(resolvedPath)
+    && fs.statSync(resolvedPath).isFile()
+}
+
+function isProjectMemoryFile(filePath) {
+  const normalizedPath = normalizeWorkspaceRelativePath(filePath)
+  return /^ai\/memory\//.test(normalizedPath)
+}
+
+function shouldAllowProjectMemoryRead(userPrompt, filePath) {
+  const normalizedPrompt = String(userPrompt || '')
+  const normalizedPath = normalizeWorkspaceRelativePath(filePath)
+  if (!normalizedPath) return false
+  if (normalizedPrompt.includes(normalizedPath) || normalizedPrompt.includes(path.basename(normalizedPath))) return true
+  return /项目状态|当前状态|当前进度|当前焦点|待办|任务队列|长任务|状态|进度|阻塞|决策|任务|下一步|memory|记忆/i.test(normalizedPrompt)
 }
 
 export function buildReasoningAnswerMessages(history, sessionId, userPrompt, artifacts, binding, correctionPrompt = '', contextSelection = {}) {
@@ -393,7 +542,8 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
   const projectMemory = buildProjectMemorySystemMessage(binding, userPrompt, contextSelection)
   const replayableMessages = collectReplayableHermesMessages(history, {
     excludeRequestId: sessionId,
-    limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
+    limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0)),
+    userPrompt
   })
   const workspaceSummary = workspaceStructure
     ? [
@@ -449,6 +599,9 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
   const fileContents = artifacts?.fileContents && typeof artifacts.fileContents === 'object'
     ? artifacts.fileContents
     : null
+  const workspaceSearches = artifacts?.workspaceSearches && typeof artifacts.workspaceSearches === 'object'
+    ? artifacts.workspaceSearches
+    : (artifacts?.workspaceSearch && typeof artifacts.workspaceSearch === 'object' ? { workspaceSearch: artifacts.workspaceSearch } : null)
   const fileContentsSummary = fileContents
     ? Object.entries(fileContents).map(([filePath, content]) => {
         const relativePath = normalizeWorkspaceRelativePath(path.relative(GAMESTUDIO_ROOT, filePath)) || normalizeWorkspaceRelativePath(filePath)
@@ -459,10 +612,23 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
         ].join('\n')
       }).join('\n\n')
     : ''
+  const workspaceSearchSummary = workspaceSearches
+    ? Object.entries(workspaceSearches).map(([searchName, search]) => {
+        const matches = Array.isArray(search.matches) ? search.matches : []
+        return [
+          `搜索: ${searchName}`,
+          `query: ${search.query || ''}`,
+          `startDir: ${search.startDir || ''}`,
+          `命中数量: ${Number(search.count || matches.length || 0)}`,
+          ...matches.slice(0, 16).map((match) => `  - ${match.filePath}:${match.lineNumber || 0} ${String(match.preview || match.line || '').trim()}`)
+        ].filter(Boolean).join('\n')
+      }).join('\n\n')
+    : ''
   const latestEvidenceSummary = !directorySummary && !imageEntrypointSummary && !controlBackendSummary && artifacts?.latestStepReviewEvidence?.rawResponsePreview
     ? String(artifacts.latestStepReviewEvidence.rawResponsePreview)
     : ''
-  const observableBlocks = [workspaceSummary, directoryListingsSummary || directorySummary, imageEntrypointSummary, controlBackendSummary, fileContentsSummary, latestEvidenceSummary].filter(Boolean)
+  const observableBlocks = [workspaceSummary, directoryListingsSummary || directorySummary, imageEntrypointSummary, controlBackendSummary, fileContentsSummary, workspaceSearchSummary, latestEvidenceSummary].filter(Boolean)
+  const previousDraft = correctionPrompt ? buildPriorDraftSummary(artifacts) : ''
 
   return [
     {
@@ -478,8 +644,16 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
       content: [
         'You are Hermes Manager inside GameStudio control.',
         'Use the nearby conversation and injected markdown project memory together with the structured execution artifacts below.',
+        'The latest user request is the answer target. Replayed conversation may explain context, but it must not override the latest request or the latest structured artifacts.',
+        'Only carry facts forward from history when the latest user request explicitly refers to prior work, repeats the same target, asks for comparison, or asks to continue. Otherwise, answer from current artifacts and project memory.',
+        'When history and current artifacts conflict, trust current artifacts and state the current evidence plainly.',
         'If the latest user request corrects an earlier wrong answer, prefer the newest request and the latest observable artifacts.',
+        'If a previous draft answer is provided, treat it as a reusable draft only. Keep any useful structure, but remove or rewrite claims that are not supported by the current observable artifacts.',
         'Do not claim hidden reasoning. Summarize the observable steps and then answer directly in Chinese.',
+        'If the latest user request contains Chinese, the final answer must be written in Chinese. Do not use English section headings or opening sentences.',
+        'Only say a file was read, inspected, or used as evidence if it appears in the current structured file contents below.',
+        'Directory listings prove direct child names only; they do not prove unread file contents inside those child directories.',
+        'Do not mention previous versions, retries, quality scoring, calibration samples, or internal review loops in the final answer unless the user explicitly asked about those internals.',
         'Do not ask to read, scan, inspect, or verify again when the executed artifacts already contain the result.',
         'If the artifacts include a project list or story index, enumerate the projects directly with concrete IDs and available titles/counts.',
         'Do not say "让我继续读取" or any equivalent defer/next-step phrasing unless the artifacts are genuinely missing.',
@@ -493,12 +667,37 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
       role: 'user',
       content: [
         `用户问题: ${userPrompt}`,
+        '输出语言要求：中文。不要用英文标题或英文开场。',
+        previousDraft ? `上一轮候选答案（仅可复用其结构，不可直接视为证据）:\n${previousDraft}` : '',
         '',
         '可观测工具结果：',
         observableBlocks.length > 0 ? observableBlocks.join('\n\n') : '- 当前没有可用的结构化工具结果。'
       ].join('\n')
     }
   ]
+}
+
+function buildPriorDraftSummary(artifacts) {
+  const previousAnswer = String(artifacts?.finalAnswer || '').trim()
+  if (!previousAnswer) return ''
+
+  const assessment = artifacts?.latestAnswerAssessment && typeof artifacts.latestAnswerAssessment === 'object'
+    ? artifacts.latestAnswerAssessment
+    : null
+  const assessmentSummary = assessment
+    ? [
+        assessment.summary ? `上一轮质检摘要：${String(assessment.summary).trim()}` : '',
+        Array.isArray(assessment.issues) && assessment.issues.length > 0
+          ? `上一轮主要问题：${assessment.issues.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 4).join('；')}`
+          : ''
+      ].filter(Boolean).join('\n')
+    : ''
+
+  const draft = previousAnswer.length > 1800
+    ? `${previousAnswer.slice(0, 1800)}\n...[truncated]`
+    : previousAnswer
+
+  return [assessmentSummary, draft].filter(Boolean).join('\n\n')
 }
 
 export function buildReasoningFallbackAnswer(userPrompt, artifacts) {

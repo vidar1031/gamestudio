@@ -14,21 +14,32 @@ import {
 } from '../intents/proposals.js'
 import { listIntents } from '../intents/registry.js'
 
+function buildActiveIntentSummary() {
+  return listIntents().map((intent) => ({
+    id: intent.id,
+    source: intent.source || 'unknown',
+    description: intent.description || '',
+    hasMatchPlan: typeof intent.matchPlan === 'function',
+    hasMatchAnswer: typeof intent.matchAnswer === 'function',
+    hasMatchEvaluation: typeof intent.matchEvaluation === 'function',
+  }))
+}
+
 export function registerSkillProposalsRoutes(app) {
+  app.get('/api/control/intents', (c) => {
+    return c.json({
+      ok: true,
+      activeIntents: buildActiveIntentSummary(),
+      activeIntentFiles: listActiveIntentFiles(),
+    })
+  })
+
   app.get('/api/control/skill-proposals', (c) => {
     const proposals = listProposals()
-    const activeIntents = listIntents().map((intent) => ({
-      id: intent.id,
-      source: intent.source || 'unknown',
-      description: intent.description || '',
-      hasMatchPlan: typeof intent.matchPlan === 'function',
-      hasMatchAnswer: typeof intent.matchAnswer === 'function',
-      hasMatchEvaluation: typeof intent.matchEvaluation === 'function',
-    }))
     return c.json({
       ok: true,
       proposals,
-      activeIntents,
+      activeIntents: buildActiveIntentSummary(),
       activeIntentFiles: listActiveIntentFiles(),
     })
   })

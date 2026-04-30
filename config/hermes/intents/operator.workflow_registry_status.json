@@ -1,0 +1,47 @@
+{
+  "id": "operator.workflow_registry_status",
+  "version": 1,
+  "source": "json",
+  "priority": 86,
+  "description": "Operator rule: workflow registry answers must distinguish builtin infrastructure from missing active JSON intent instances.",
+  "match": {
+    "anyRegex": [
+      "workflow\\s*registry",
+      "intent\\s*registry",
+      "完整\\s*workflow\\s*registry",
+      "config/hermes/intents"
+    ]
+  },
+  "evaluation": {
+    "minScore": 82,
+    "scoreBase": 18,
+    "perRequiredHit": 14,
+    "perOptionalHit": 6,
+    "perEvidenceHit": 16,
+    "perForbiddenHit": -30,
+    "mustInclude": [
+      "builtin",
+      "_inbox"
+    ],
+    "optional": [
+      "json intent",
+      "未完成",
+      "基础设施",
+      "activeintentfiles"
+    ],
+    "evidenceRegex": [
+      "config/hermes/intents",
+      "/api/control/intents|/api/control/skill-proposals",
+      "未.*建立|未完成|只有基础设施|0 个 json"
+    ],
+    "forbidden": [
+      "已完整建立",
+      "已经建立",
+      "完整的 workflow registry 已经建立",
+      "已经完全建立",
+      "完整 workflow registry 已建立",
+      "可以直接新增并立即生效"
+    ],
+    "correctionPrompt": "回答 workflow registry / intents registry 相关问题时，必须明确区分 builtin intents、活动中的 JSON intents、以及 _inbox proposal。若 activeIntentFiles 为空或 config/hermes/intents 下没有活动 JSON intent，应明确说明只有基础设施已建立，完整 workflow registry 仍未建立。"
+  }
+}

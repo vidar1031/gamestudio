@@ -18,15 +18,15 @@
     "provider": "omlx",
     "baseUrl": "http://127.0.0.1:18888/v1",
     "model": "Qwen3.6-35B-A3B-4bit",
-    "inspectedAt": "2026-04-28T09:26:47.085Z",
-    "loadedAt": "2026-04-28T07:47:18.614Z",
+    "inspectedAt": "2026-04-30T12:00:26.484Z",
+    "loadedAt": "2026-04-30T11:06:31.381Z",
     "lastAction": "load",
     "inspection": {
       "model": "Qwen3.6-35B-A3B-4bit",
       "accessible": true,
       "status": "ok",
       "detail": "模型可访问，最小推理探测成功",
-      "checkedAt": "2026-04-28T09:26:47.085Z",
+      "checkedAt": "2026-04-30T12:00:26.484Z",
       "usage": {
         "promptTokens": 11,
         "completionTokens": 1,
@@ -40,7 +40,7 @@
   },
   "preflight": {
     "ready": true,
-    "checkedAt": "2026-04-28T07:47:18.613Z",
+    "checkedAt": "2026-04-30T11:06:31.381Z",
     "configFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
     "detail": "左脑自检通过",
     "checks": [
@@ -164,7 +164,7 @@
       "accessible": true,
       "status": "ok",
       "detail": "模型可访问，最小推理探测成功",
-      "checkedAt": "2026-04-28T07:47:16.367Z",
+      "checkedAt": "2026-04-30T11:06:30.959Z",
       "usage": {
         "promptTokens": 11,
         "completionTokens": 1,
@@ -180,8 +180,8 @@
     "state": "running",
     "label": "运行中",
     "detail": "Hermes gateway 进程正在运行",
-    "pid": 7765,
-    "updatedAt": "2026-04-28T09:26:53.258Z",
+    "pid": 64497,
+    "updatedAt": "2026-04-30T12:00:27.074Z",
     "lastAction": null,
     "availableActions": [
       "all-restart",

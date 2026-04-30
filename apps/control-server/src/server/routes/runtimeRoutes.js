@@ -1,4 +1,6 @@
 export function registerRuntimeRoutes(app, context) {
+  let runtimeActionInFlight = null
+
   const {
     CONTROL_RESTART_SCRIPT,
     GAMESTUDIO_ROOT,
@@ -36,8 +38,23 @@ export function registerRuntimeRoutes(app, context) {
       return c.json({ ok: false, error: 'invalid_action' }, 400)
     }
 
-    let runtimeStatus
-    const current = getHermesRuntimeState()
+    if (runtimeActionInFlight) {
+      return c.json({
+        ok: false,
+        error: 'runtime_action_busy',
+        activeAction: runtimeActionInFlight.action,
+        startedAt: runtimeActionInFlight.startedAt
+      }, 409)
+    }
+
+    runtimeActionInFlight = {
+      action,
+      startedAt: new Date().toISOString()
+    }
+
+    try {
+      let runtimeStatus
+      const current = getHermesRuntimeState()
     if (action === 'all-restart') {
       const existing = getPersistedHermesControlConfig()
       const requestedConfig = mergeHermesControlConfig(existing, body.config || {})
@@ -164,13 +181,16 @@ export function registerRuntimeRoutes(app, context) {
       })
     }
 
-    return c.json({
-      ok: true,
-      agentId,
-      action,
-      runtimeStatus,
-      state: context.getHermesControlState()
-    })
+      return c.json({
+        ok: true,
+        agentId,
+        action,
+        runtimeStatus,
+        state: context.getHermesControlState()
+      })
+    } finally {
+      runtimeActionInFlight = null
+    }
   })
 
   app.get('/api/control/local-models', async (c) => {

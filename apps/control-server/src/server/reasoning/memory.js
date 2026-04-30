@@ -75,7 +75,8 @@ export function buildReasoningPlannerProjectMemory(binding, userPrompt, options 
   }
 }
 
-export function shouldAppendReasoningMemorySync(steps, userPrompt) {
+export function shouldAppendReasoningMemorySync(steps, userPrompt, options = {}) {
+  if (options?.disableMemorySync || options?.productionTest) return false
   const normalizedPrompt = String(userPrompt || '').trim()
   const hasMutatingWork = steps.some((step) => isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action))
   if (hasMutatingWork) return true
@@ -85,8 +86,8 @@ export function shouldAppendReasoningMemorySync(steps, userPrompt) {
   return hasMutatingWork || asksForWorkflowClosure
 }
 
-export function appendReasoningMemorySyncSteps(steps, userPrompt, binding) {
-  if (!shouldAppendReasoningMemorySync(steps, userPrompt)) return steps
+export function appendReasoningMemorySyncSteps(steps, userPrompt, binding, options = {}) {
+  if (!shouldAppendReasoningMemorySync(steps, userPrompt, options)) return steps
 
   const normalizedPrompt = String(userPrompt || '').trim()
   const existingTaskQueueSync = steps.some((step) => step.action === 'update_task_queue')

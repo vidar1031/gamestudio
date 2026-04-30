@@ -1,0 +1,40 @@
+[
+  {
+    "role": "user",
+    "content": "当前 Control Server 是否已经是完整项目自动化状态机？",
+    "createdAt": "2026-04-30T11:29:46.320Z",
+    "requestId": "reasoning_1777548586302_80d32e46",
+    "chatSessionId": "chat_1777548488131_b48bab30"
+  },
+  {
+    "role": "hermes",
+    "content": "根据可观测文档，答案很明确：**不是**。\n\n`docs/CONTROL_SYSTEM.md` 在「暂未实现」一节里明确列出了以下未完成的模块：\n\n| 模块 | 状态 |\n|---|---|\n| 状态机模型定义 | ❌ 未实现 |\n| 阶段机规则编辑 | ❌ 未实现 |\n| 任务单与事件日志持久化 | ❌ 未实现 |\n| Hermes 调度接口约定 | ❌ 未实现 |\n| Hermes 真正消费 manager startup profile | ❌ 未实现 |\n| Hermes 真正消费 manager next-action / startup-flow | ❌ 未实现 |\n| 错误分类与恢复动作 | ❌ 未实现 |\n\n**当前 Control Server 实际具备的：**\n\n1. **意图路由层** — 收到请求先判定类型（`answer_only` / `plan_then_answer` / `inspect_then_answer` / `workflow_execute` / `write_or_invoke_review`）\n2. **Decision 分类器** — 第一阶段只做题目分类（类型 + 置信度 + 原因），不直接回答\n3. **Action Schema** — 注册了 `list_directory_contents`、`read_file_content` 等，但只有参数约束，没有 executor guard 的拒绝逻辑\n4. **全局模型任务队列** — 单并发、按 session 限预算\n5. **Heartbeat** — 长任务心跳写入\n6. **Hermes 代理建模** — `hermes-manager` 有 definition / binding / status / contract / startupProfile 五个属性\n7. **Startup Flow** — 定义了 4 阶段的首轮流程概念，但 Hermes 并未真正消费它\n8. **Checklist / 可靠性五层架构设计** — 已写入文档，但执行层未落地\n\n**结论：** Control Server 现在是**完整的意图路由和决策分类框架**，但**状态机本身（状态定义、阶段流转、持久化、恢复、调度）完全没有实现**。它更像是一张\"状态机的蓝图\"，而不是运行中的状态机。\n\n用文档自己的话说：\n\n> \"后续建设顺序：1. 定义项目主状态模型 → 2. 定义阶段机与流转规则 → 3. 将 Hermes 动作与管理器命令绑定 → …\"\n\n当前只完成了蓝图设计，执行进度约在 **0/7** 个未实现模块。",
+    "createdAt": "2026-04-30T11:45:52.807Z",
+    "requestId": "reasoning_1777548586302_80d32e46",
+    "tokens": {
+      "prompt_tokens": 19155,
+      "completion_tokens": 774,
+      "total_tokens": 19929
+    },
+    "chatSessionId": "chat_1777549457787_fcc95375"
+  },
+  {
+    "role": "user",
+    "content": "apps/control-server 的职责是什么？",
+    "createdAt": "2026-04-30T12:01:09.209Z",
+    "requestId": "reasoning_1777550469189_0844b8a1",
+    "chatSessionId": "chat_1777549457787_fcc95375"
+  },
+  {
+    "role": "hermes",
+    "content": "## `apps/control-server` 的职责\n\n这是一个基于 **Hono** 框架的 **Node.js HTTP 服务**，端口默认 `2099`。它是 GameStudio 项目中 Hermes AI Agent 的**控制中枢**，负责与本地 AI 模型（通过 Omlx 协议，`http://127.0.0.1:18888/v1`）进行交互。\n\n具体职责分为五大模块：\n\n### 1. 🤖 对话管理（Chat Service）\n- 发送用户消息到 Hermes AI 并接收回复\n- 读写本地聊天历史文件，支持会话恢复\n- 维护活跃对话请求状态（包括错误/失败持久化）\n\n### 2. 🧠 推理会话（Reasoning Service）\n- 创建、执行、取消推理会话\n- 支持多步推理（`runAllReasoningStepsFrom`）\n- 质量门控（Quality Gate）：对 AI 回答进行评分，不达标自动重试\n- 计划生成、Review 记录持久化\n\n### 3. ⚙️ 运行时管理（Runtime Service）\n- **启动/停止** Hermes 后端进程（读写 PID 文件）\n- 本地模型目录自动扫描（`fetchLocalModelCatalog`）\n- 模型访问检测（支持 `omlx`、`ollama`、本地模型）\n- 系统健康自检（配置校验、预检查）\n\n### 4. ⚙️ 配置管理（Config Service）\n- 管理 Hermes 控制配置（`hermesControlConfig`）\n- 构建 Agent 绑定、能力目录（工具/动作注册表）\n- 维护运行时状态快照\n\n### 5. 📋 上下文管理（Context Service）\n- 维护上下文池（Context Pool），保存和读取上下文条目\n- 生成上下文草稿、构建对话消息\n\n### 其他核心能力\n\n- **网关日志监控**：定期轮询 `HERMES_RUNTIME_LOG_FILE`，检测 Omlx 后端故障（如 `NoneType` 错误、重试耗尽），自动标记受影响的推理会话为失败\n- **清理孤立会话**：启动时清理未正常关闭的推理会话\n- **工作空间操作**：检查目录结构、发现应用根目录、文件读写、代码搜索\n- **意图系统**：注册和分发意图（工作流状态、技能提案等）\n- **模型元数据**：内建多种模型（gemma-4、qwen3.5、gpt-oss）的上下文长度和分词器信息",
+    "createdAt": "2026-04-30T12:05:30.396Z",
+    "requestId": "reasoning_1777550469189_0844b8a1",
+    "tokens": {
+      "prompt_tokens": 161327,
+      "completion_tokens": 1773,
+      "total_tokens": 163100
+    },
+    "chatSessionId": "chat_1777549457787_fcc95375"
+  }
+]

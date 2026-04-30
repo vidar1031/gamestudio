@@ -1,9 +1,10 @@
 import {
-  HERMES_API_SERVER_BASE_URL,
   HERMES_CHAT_REQUEST_TIMEOUT_MS,
   HERMES_REASONING_TASK_HARD_TIMEOUT_MS,
 } from '../../config/constants.js'
+import { requestHermesChatCompletion } from '../model/modelTaskQueue.js'
 import { findIntentForAnswer, findIntentForPlan } from '../intents/index.js'
+import { buildProjectCapabilityStatusPlan } from '../workflows/projectStatusWorkflows.js'
 import {
   inferWorkspaceDirectoryFromPrompt,
 } from './heuristics.js'
@@ -13,9 +14,17 @@ import {
   buildReasoningFallbackPlan,
   buildReasoningPlannerMessages,
   extractJsonObjectString,
+  isLikelyReadOnlyReasoningPrompt,
   normalizeReasoningPlan,
 } from './promptBuilders.js'
 import { buildReasoningRecentContextArtifact } from './memory.js'
+import {
+  buildReasoningRequestDecisionMessages,
+  classifyReasoningRequest,
+  parseReasoningRequestDecision,
+  shouldAskModelForRequestDecision,
+  shouldUseDeterministicPlanForDecision,
+} from './requestClassifier.js'
 import {
   buildStructuredOutboundPreview,
   collectReplayableHermesMessages,
@@ -33,13 +42,67 @@ export function getReasoningRequestError(error, phase) {
   return error instanceof Error ? error.message : String(error)
 }
 
+async function resolveReasoningRequestDecision(userPrompt, options = {}) {
+  const fallbackDecision = classifyReasoningRequest(userPrompt, {
+    contextSelection: options.contextSelection || {}
+  })
+  const messages = buildReasoningRequestDecisionMessages(userPrompt)
+
+  if (!shouldAskModelForRequestDecision(fallbackDecision, options)) {
+    return {
+      decision: fallbackDecision,
+      messages,
+      usage: null,
+      rawResponsePreview: JSON.stringify({ reason: 'deterministic_request_decision', decision: fallbackDecision }, null, 2)
+    }
+  }
+
+  try {
+    const data = await requestHermesChatCompletion({
+      sessionId: options.sessionId || null,
+      phase: 'reasoning_decision',
+      messages,
+      maxTokens: 160,
+      temperature: 0,
+      signal: options.signal || undefined,
+      timeoutMs: Math.min(Number(options.timeoutMs || HERMES_CHAT_REQUEST_TIMEOUT_MS), 20000)
+    })
+    const content = data.choices?.[0]?.message?.content || ''
+    return {
+      decision: parseReasoningRequestDecision(content, fallbackDecision),
+      messages,
+      usage: data.usage || null,
+      rawResponsePreview: content || JSON.stringify({ reason: 'empty_model_request_decision', decision: fallbackDecision }, null, 2)
+    }
+  } catch (error) {
+    return {
+      decision: fallbackDecision,
+      messages,
+      usage: null,
+      rawResponsePreview: JSON.stringify({
+        reason: 'model_request_decision_failed',
+        error: error instanceof Error ? error.message : String(error),
+        decision: fallbackDecision
+      }, null, 2)
+    }
+  }
+}
+
 export async function generateReasoningPlan(userPrompt, history, binding, options = {}) {
   const correctionPrompt = String(options.correctionPrompt || '').trim()
-  const plannerContext = buildReasoningPlannerMessages(history, userPrompt, binding, correctionPrompt, options.contextSelection || {})
-  const recentContextArtifact = buildReasoningRecentContextArtifact(plannerContext.projectMemory, plannerContext.replayableMessages, 'model')
-  const deterministicPlan = buildReasoningFallbackPlan(userPrompt, history, binding, options.contextSelection || {})
+  const requestDecision = await resolveReasoningRequestDecision(userPrompt, {
+    sessionId: options.sessionId || null,
+    signal: options.signal || null,
+    timeoutMs: options.timeoutMs,
+    contextSelection: options.contextSelection || {}
+  })
+  const deterministicPlan = requestDecision.decision?.type === 'capability_status_inspection'
+    ? buildProjectCapabilityStatusPlan(userPrompt)
+    : buildReasoningFallbackPlan(userPrompt, history, binding, options.contextSelection || {})
   const inferredDirPath = inferWorkspaceDirectoryFromPrompt(userPrompt)
   const inferredContextDirPaths = inferredDirPath ? [] : inferWorkspaceDirectoriesFromRecentContext(userPrompt, history)
+  const readOnlyProductionTest = Boolean(options.contextSelection?.productionTest)
+    && isLikelyReadOnlyReasoningPrompt(userPrompt)
 
   const planMatchCtx = {
     history,
@@ -49,26 +112,53 @@ export async function generateReasoningPlan(userPrompt, history, binding, option
     inferredContextDirPaths,
   }
   const matchedPlanIntent = findIntentForPlan(userPrompt, planMatchCtx)
-  if (matchedPlanIntent) {
+  if (shouldUseDeterministicPlanForDecision(requestDecision.decision) || matchedPlanIntent || readOnlyProductionTest) {
+    const recentContextArtifact = {
+      replayedMessageCount: 0,
+      selectedMemorySources: [],
+      loadedMemorySources: [],
+      plannerSource: 'request_decision',
+      requestDecision: requestDecision.decision
+    }
     return {
       plan: normalizeReasoningPlan(deterministicPlan, userPrompt, history, binding, options.contextSelection || {}),
       source: 'fallback',
-      intentId: matchedPlanIntent.id,
+      intentId: matchedPlanIntent?.id || null,
       usage: null,
       recentContextArtifact,
       outboundPreview: buildStructuredOutboundPreview({
         binding,
-        messages: plannerContext.messages,
-        purpose: 'reasoning-plan',
+        messages: requestDecision.messages,
+        purpose: 'reasoning-request-decision',
         mode: 'reasoning',
         userPrompt,
-        replayedMessageCount: plannerContext.replayableMessages.length,
+        replayedMessageCount: 0,
         contextSelection: options.contextSelection || {},
         history
       }),
-      rawResponsePreview: truncateReasoningPreview(JSON.stringify(deterministicPlan, null, 2), 2400)
+      rawResponsePreview: truncateReasoningPreview(JSON.stringify({
+        reason: readOnlyProductionTest
+          ? 'production_test_read_only_fallback_plan'
+          : (matchedPlanIntent ? `matched_intent_${matchedPlanIntent.id}` : 'matched_request_decision'),
+        requestDecision: requestDecision.decision,
+        plan: deterministicPlan
+      }, null, 2), 2400)
     }
   }
+
+  const plannerContext = buildReasoningPlannerMessages(
+    history,
+    userPrompt,
+    binding,
+    correctionPrompt,
+    {
+      ...(options.contextSelection || {}),
+      requestDecision: requestDecision.decision
+    },
+    options.priorArtifacts || null
+  )
+  const recentContextArtifact = buildReasoningRecentContextArtifact(plannerContext.projectMemory, plannerContext.replayableMessages, 'model')
+  recentContextArtifact.requestDecision = requestDecision.decision
 
   const controller = new AbortController()
   const timeoutMs = Number(options.timeoutMs || HERMES_REASONING_TASK_HARD_TIMEOUT_MS)
@@ -85,25 +175,15 @@ export async function generateReasoningPlan(userPrompt, history, binding, option
   }
 
   try {
-    const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-      method: 'POST',
+    const data = await requestHermesChatCompletion({
+      sessionId: options.sessionId || null,
+      phase: 'reasoning_plan',
+      messages: plannerContext.messages,
+      maxTokens: 260,
+      temperature: 0.1,
       signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'hermes-agent',
-        messages: plannerContext.messages,
-        max_tokens: 260,
-        temperature: 0.1
-      })
+      timeoutMs
     })
-
-    if (!response.ok) {
-      throw new Error(`reasoning_plan_http_${response.status}_${response.statusText}`)
-    }
-
-    const data = await response.json()
     const content = data.choices?.[0]?.message?.content || ''
     let parsed = null
     let source = 'model'
@@ -199,24 +279,14 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
   }
 
   try {
-    const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
-      method: 'POST',
+    const data = await requestHermesChatCompletion({
+      sessionId,
+      phase: 'reasoning_answer',
+      messages: answerMessages,
+      maxTokens: 220,
       signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'hermes-agent',
-        messages: answerMessages,
-        max_tokens: 220
-      })
+      timeoutMs: HERMES_CHAT_REQUEST_TIMEOUT_MS
     })
-
-    if (!response.ok) {
-      throw new Error(`reasoning_model_http_${response.status}_${response.statusText}`)
-    }
-
-    const data = await response.json()
     return {
       reply: data.choices?.[0]?.message?.content || JSON.stringify(data),
       usage: data.usage || null,
@@ -229,7 +299,8 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
         userPrompt,
         replayedMessageCount: collectReplayableHermesMessages(history, {
           excludeRequestId: sessionId,
-          limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
+          limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0)),
+          userPrompt
         }).length,
         contextSelection: options.contextSelection || {},
         history
@@ -254,7 +325,8 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
         userPrompt,
         replayedMessageCount: collectReplayableHermesMessages(history, {
           excludeRequestId: sessionId,
-          limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
+          limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0)),
+          userPrompt
         }).length,
         contextSelection: options.contextSelection || {},
         history

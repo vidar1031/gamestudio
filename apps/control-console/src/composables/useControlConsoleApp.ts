@@ -2,7 +2,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { getReasoningSessionElapsedSeconds } from '../lib/reasoning'
+import { getReasoningEventData, getReasoningEventPreviewBlocks, getReasoningSessionElapsedSeconds } from '../lib/reasoning'
 import {
   clearAgentMemoryRecords,
   getAgentConfig,
@@ -25,6 +25,7 @@ import {
   cancelReasoningSessionRequest,
   clearReasoningSessionRecord,
   createReasoningSession,
+  getActiveProductionTestSession,
   getReasoningCapabilities,
   getReasoningSession,
 } from '../services/reasoningApi'
@@ -351,6 +352,11 @@ type MemoryClearTarget = {
   value: string
   label: string
   description: string
+  impactLevel?: 'safe' | 'caution' | 'high' | 'critical'
+  impactLabel?: string
+  impactSummary?: string
+  sizeBytes?: number
+  sizeLabel?: string
 }
 
 type ReasoningPlanStep = {
@@ -385,6 +391,23 @@ type ChatHistoryEntry = {
   role: string
   content: string
   tokens?: any
+  transient?: boolean
+  sourceKey?: string
+}
+
+type ReasoningSelfReview = {
+  verdict: 'approve' | 'repair' | 'human_review'
+  summary: string
+  issues: string[]
+  strengths: string[]
+  correctionPrompt: string
+  reusableSections?: string[]
+  promotableLesson?: {
+    category: string
+    summary: string
+    candidateText: string
+    recommendedActions: string[]
+  } | null
 }
 
 type ReasoningReview = {
@@ -435,10 +458,22 @@ type ReasoningSession = {
     projectRoot?: string
     storyIndex?: ReasoningStoryIndexItem[]
     finalAnswer?: string
+    finalAnswerPersisted?: boolean
     workspaceStructure?: Record<string, unknown>
     writtenFiles?: Array<Record<string, unknown>>
     pendingWrites?: Record<string, unknown>
     tasks?: Record<string, unknown>
+    qualityGateAttempt?: number
+    latestAnswerAssessment?: {
+      score: number
+      passed: boolean
+      source: string
+      summary: string
+      issues: string[]
+      strengths: string[]
+      correctionPrompt: string
+    } | null
+    latestSelfReview?: ReasoningSelfReview | null
   }
   error?: string | null
 }
@@ -701,11 +736,20 @@ export function useControlConsoleApp() {
   const inspectingLeft = ref(false)
   const inspectingRight = ref(false)
   const chatHistory = ref<ChatHistoryEntry[]>([])
+  const persistedChatHistory = ref<ChatHistoryEntry[]>([])
+  const pendingReasoningUserPrompt = ref('')
   let logInterval: ReturnType<typeof setInterval> | null = null
   let chatUiClockInterval: ReturnType<typeof setInterval> | null = null
   let memoryRecordPollInterval: ReturnType<typeof setInterval> | null = null
   let chatHistoryPollTimer: ReturnType<typeof setTimeout> | null = null
   let reasoningPollTimer: ReturnType<typeof setTimeout> | null = null
+  let productionTestPollInterval: ReturnType<typeof setInterval> | null = null
+  let productionTestFollowPausedUntil = 0
+  let logsRequestInFlight = false
+  let memoryRecordsRequestInFlight = false
+  let contextCandidatesRequestInFlight = false
+  let chatHistoryRequestInFlight = false
+  let productionTestRequestInFlight = false
 
   const sourceEditorExtensions = computed(() => /\.json$/i.test(selectedContextSource.value?.filePath || '') ? [...editorTheme, json()] : [...editorTheme, markdown()])
   const memoryRecordEditorExtensions = computed(() => /\.json$/i.test(memoryRecordFile.value?.filePath || '') ? [...editorTheme, json()] : [...editorTheme, markdown()])
@@ -959,6 +1003,121 @@ export function useControlConsoleApp() {
     else window.localStorage.removeItem(ACTIVE_REASONING_SESSION_STORAGE_KEY)
   }
   function readPersistedActiveReasoningSessionId() { return typeof window === 'undefined' ? '' : (window.localStorage.getItem(ACTIVE_REASONING_SESSION_STORAGE_KEY) || '') }
+  function normalizeChatContent(value: string) {
+    return String(value || '').replace(/\s+/g, ' ').trim()
+  }
+  function buildChatEntryKey(role: string, content: string) {
+    return `${role}:${normalizeChatContent(content).slice(0, 400)}`
+  }
+  function appendLocalChatEntry(entry: ChatHistoryEntry) {
+    persistedChatHistory.value = [...persistedChatHistory.value, { ...entry, transient: false }]
+    rebuildDisplayedChatHistory()
+  }
+  function formatReasoningPlanStepsForChat(steps: unknown) {
+    if (!Array.isArray(steps) || steps.length === 0) return ''
+    return steps
+      .map((step, index) => {
+        if (!step || typeof step !== 'object') return ''
+        const title = typeof (step as { title?: unknown }).title === 'string' ? String((step as { title?: unknown }).title).trim() : `步骤 ${index + 1}`
+        const action = typeof (step as { action?: unknown }).action === 'string' ? String((step as { action?: unknown }).action).trim() : ''
+        const tool = typeof (step as { tool?: unknown }).tool === 'string' ? String((step as { tool?: unknown }).tool).trim() : ''
+        return `- ${index + 1}. ${title}${action ? ` | action=${action}` : ''}${tool ? ` | tool=${tool}` : ''}`
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  function buildReasoningTransientChatEntries(session: ReasoningSession | null, baseHistory: ChatHistoryEntry[]) {
+    const entries: ChatHistoryEntry[] = []
+    const seen = new Set(baseHistory.map((entry) => buildChatEntryKey(entry.role, entry.content)))
+    const pushEntry = (role: string, content: string, sourceKey: string) => {
+      const normalizedContent = String(content || '').trim()
+      if (!normalizedContent) return
+      const dedupeKey = buildChatEntryKey(role, normalizedContent)
+      if (seen.has(dedupeKey)) return
+      seen.add(dedupeKey)
+      entries.push({ role, content: normalizedContent, transient: true, sourceKey })
+    }
+
+    if (pendingReasoningUserPrompt.value.trim()) {
+      pushEntry('user', pendingReasoningUserPrompt.value.trim(), 'reasoning-pending-user')
+    }
+    if (!session) return entries
+
+    if (session.userPrompt.trim() && !(session.status === 'completed' && session.artifacts?.finalAnswerPersisted)) {
+      pushEntry('user', session.userPrompt.trim(), `reasoning-user:${session.sessionId}`)
+    }
+
+    let planCount = 0
+    let executionStepIndex = 0
+    for (const event of Array.isArray(session.events) ? session.events : []) {
+      const data = getReasoningEventData(event)
+      if (event.type === 'plan_created') {
+        planCount += 1
+        executionStepIndex = 0
+        const lines = [
+          planCount > 1 ? '1 任务修订' : '1 任务制定',
+          event.summary,
+          typeof data?.goal === 'string' && data.goal.trim() ? `目标：${data.goal.trim()}` : '',
+          typeof data?.strategy === 'string' && data.strategy.trim() ? `策略：${data.strategy.trim()}` : '',
+          formatReasoningPlanStepsForChat(data?.steps)
+        ].filter(Boolean)
+        pushEntry('hermes', lines.join('\n\n'), `reasoning-plan:${event.eventId}`)
+        continue
+      }
+
+      if (event.type === 'planning_started' && /重新规划/.test(event.title)) {
+        pushEntry('hermes', ['1 任务修订准备', event.summary].filter(Boolean).join('\n\n'), `reasoning-replan:${event.eventId}`)
+        continue
+      }
+
+      if (event.type === 'step_completed') {
+        const action = typeof data?.action === 'string' ? data.action : ''
+        if (action === 'generate_default_answer' || /最终回答/.test(event.summary)) continue
+        executionStepIndex += 1
+        pushEntry('hermes', [`2.${executionStepIndex} 执行输出`, event.title, event.summary].filter(Boolean).join('\n\n'), `reasoning-step:${event.eventId}`)
+        continue
+      }
+
+      if (event.type === 'final_answer_ready' && event.title === '最终回答') {
+        if (session.status === 'completed' && session.artifacts?.finalAnswerPersisted) continue
+        const previewBlocks = getReasoningEventPreviewBlocks(event)
+        const answerText = previewBlocks.find((block) => /最终回答/.test(block.title))?.content || (typeof data?.finalAnswer === 'string' ? data.finalAnswer : '')
+        pushEntry('hermes', ['3 回答输出', answerText || event.summary].filter(Boolean).join('\n\n'), `reasoning-answer:${event.eventId}`)
+        continue
+      }
+
+      if (event.type === 'final_answer_ready' && event.title === '最终答案质检') {
+        const score = typeof data?.score === 'number' ? `评分：${data.score}/100` : ''
+        pushEntry('hermes', ['4 自动质检', event.summary, score].filter(Boolean).join('\n\n'), `reasoning-quality:${event.eventId}`)
+        continue
+      }
+
+      if (event.type === 'self_review_completed') {
+        const verdict = typeof data?.verdict === 'string' ? `结论：${data.verdict}` : ''
+        const issues = Array.isArray(data?.issues) && data.issues.length > 0 ? `问题：${data.issues.join('；')}` : ''
+        const lesson = data?.promotableLesson && typeof data.promotableLesson === 'object'
+          ? `强化候选：${String((data.promotableLesson as { summary?: unknown }).summary || (data.promotableLesson as { category?: unknown }).category || '').trim()}`
+          : ''
+        pushEntry('hermes', ['5 自我审查结论', event.summary, verdict, issues, lesson].filter(Boolean).join('\n\n'), `reasoning-self-review:${event.eventId}`)
+        continue
+      }
+
+      if (event.type === 'quality_review_required') {
+        pushEntry('hermes', ['等待人工确认', event.summary].filter(Boolean).join('\n\n'), `reasoning-human-review:${event.eventId}`)
+        continue
+      }
+
+      if (event.type === 'self_improvement_candidate_recorded') {
+        pushEntry('hermes', ['强化升级记录', event.summary].filter(Boolean).join('\n\n'), `reasoning-improvement:${event.eventId}`)
+      }
+    }
+
+    return entries
+  }
+  function rebuildDisplayedChatHistory() {
+    const baseHistory = persistedChatHistory.value.map((entry) => ({ ...entry, transient: false }))
+    chatHistory.value = [...baseHistory, ...buildReasoningTransientChatEntries(activeReasoningSession.value, baseHistory)]
+  }
   function syncReasoningSessionUi(session: ReasoningSession | null) {
     const normalizedSession = session ? {
       ...session,
@@ -967,9 +1126,11 @@ export function useControlConsoleApp() {
       runtimeTaskGraph: session.runtimeTaskGraph ?? session.plan,
       plan: session.runtimeTaskGraph ?? session.plan,
     } : null
+    if (normalizedSession) pendingReasoningUserPrompt.value = ''
     activeReasoningSession.value = normalizedSession
     persistActiveReasoningSessionId(normalizedSession?.sessionId || null)
     reasoningBusy.value = Boolean(normalizedSession && (normalizedSession.status === 'planning' || normalizedSession.status === 'running'))
+    rebuildDisplayedChatHistory()
   }
   function stopChatHistoryPolling() { if (chatHistoryPollTimer) { clearTimeout(chatHistoryPollTimer); chatHistoryPollTimer = null } }
   function stopReasoningPolling() { if (reasoningPollTimer) { clearTimeout(reasoningPollTimer); reasoningPollTimer = null } }
@@ -1045,6 +1206,8 @@ export function useControlConsoleApp() {
 
   async function fetchLogs() {
     if (!selectedAgentId.value) return
+    if (logsRequestInFlight) return
+    logsRequestInFlight = true
     try {
       const res = await getAgentLogs(selectedAgentId.value)
       const data = await res.json()
@@ -1054,6 +1217,7 @@ export function useControlConsoleApp() {
         if (currentLineCount < clearedLogLineCount.value) clearedLogLineCount.value = 0
       }
     } catch {}
+    finally { logsRequestInFlight = false }
   }
 
   async function actOnModel(side: 'left' | 'right', action: 'load' | 'unload') {
@@ -1261,6 +1425,8 @@ export function useControlConsoleApp() {
 
   async function loadMemoryRecords() {
     if (!selectedAgentId.value) return
+    if (memoryRecordsRequestInFlight) return
+    memoryRecordsRequestInFlight = true
     const showBusy = memoryRecords.value.length === 0
     if (showBusy) memoryRecordsBusy.value = true
     try {
@@ -1275,6 +1441,7 @@ export function useControlConsoleApp() {
       memoryRecordsError.value = caught instanceof Error ? caught.message : String(caught)
     } finally {
       memoryRecordsBusy.value = false
+      memoryRecordsRequestInFlight = false
     }
   }
 
@@ -1367,6 +1534,10 @@ export function useControlConsoleApp() {
 
   async function clearSelectedMemoryRecords() {
     await clearMemoryRecords(memoryClearSelection.value)
+  }
+
+  async function clearMemoryTarget(target: string) {
+    await clearMemoryRecords([target])
   }
 
   async function clearAllMemoryRecords() {
@@ -1570,6 +1741,8 @@ export function useControlConsoleApp() {
   async function restartGlobalRuntime() { await executeGlobalRuntimeAction('all-restart') }
 
   async function loadContextCandidates() {
+    if (contextCandidatesRequestInFlight) return
+    contextCandidatesRequestInFlight = true
     contextCandidatesBusy.value = true
     contextCandidatesError.value = ''
     try {
@@ -1582,6 +1755,7 @@ export function useControlConsoleApp() {
       contextCandidatesError.value = caught instanceof Error ? caught.message : String(caught)
     } finally {
       contextCandidatesBusy.value = false
+      contextCandidatesRequestInFlight = false
     }
   }
 
@@ -1790,10 +1964,11 @@ export function useControlConsoleApp() {
     reasoningError.value = ''
     reasoningReviewDraft.value = ''
     sandboxPrompt.value = ''
+    productionTestFollowPausedUntil = Date.now() + 10 * 60 * 1000
     stopChatHistoryPolling()
     resetChatUiStatus()
     stopReasoningPolling()
-    chatHistory.value.push({ role: 'user', content: userText })
+    pendingReasoningUserPrompt.value = userText
     syncReasoningSessionUi(null)
     try {
       const response = await createReasoningSession('hermes-manager', {
@@ -1809,13 +1984,15 @@ export function useControlConsoleApp() {
     } catch (caught) {
       reasoningBusy.value = false
       reasoningError.value = caught instanceof Error ? caught.message : String(caught)
-      chatHistory.value.push({ role: 'error', content: reasoningError.value })
+      pendingReasoningUserPrompt.value = ''
+      appendLocalChatEntry({ role: 'user', content: userText })
+      appendLocalChatEntry({ role: 'error', content: reasoningError.value })
     }
   }
 
   async function performChatSubmission(userText: string, submissionContext: Record<string, unknown>) {
     let shouldPollHistory = false
-    chatHistory.value.push({ role: 'user', content: userText })
+    appendLocalChatEntry({ role: 'user', content: userText })
     sandboxPrompt.value = ''
     sandboxBusy.value = true
     stopChatHistoryPolling()
@@ -1828,7 +2005,7 @@ export function useControlConsoleApp() {
         chatContextInfo.value = payload.contextSources || null
         stopChatHistoryPolling()
         chatUiStatus.value = { kind: 'idle', message: '', activeRequest: null, recovery: null }
-        chatHistory.value.push({ role: 'hermes', content: payload.reply, tokens: payload.raw?.usage })
+        appendLocalChatEntry({ role: 'hermes', content: payload.reply, tokens: payload.raw?.usage })
       } else {
         chatContextInfo.value = payload.contextSources || chatContextInfo.value
         const recovery = payload.recovery || null
@@ -1840,11 +2017,11 @@ export function useControlConsoleApp() {
         if (recovery?.detail) parts.push(recovery.detail)
         chatUiStatus.value = { kind: statusKind, message: parts.filter(Boolean).join(' | '), activeRequest, recovery }
         shouldPollHistory = payload.error === 'chat_timeout' || Boolean(payload.pending)
-        if (payload.error !== 'chat_timeout') chatHistory.value.push({ role: 'error', content: parts.filter(Boolean).join('\n') })
+        if (payload.error !== 'chat_timeout') appendLocalChatEntry({ role: 'error', content: parts.filter(Boolean).join('\n') })
       }
     } catch (caught) {
       chatUiStatus.value = { kind: 'error', message: caught instanceof Error ? caught.message : String(caught), activeRequest: null, recovery: null }
-      chatHistory.value.push({ role: 'error', content: chatUiStatus.value.message })
+      appendLocalChatEntry({ role: 'error', content: chatUiStatus.value.message })
     } finally {
       sandboxBusy.value = false
       if (!shouldPollHistory) stopChatHistoryPolling()
@@ -1938,6 +2115,29 @@ export function useControlConsoleApp() {
     if (session.status === 'planning' || session.status === 'running') scheduleReasoningPolling()
   }
 
+  async function loadActiveProductionTestSession() {
+    try {
+      if (Date.now() < productionTestFollowPausedUntil) return
+      if (productionTestRequestInFlight) return
+      productionTestRequestInFlight = true
+      const response = await getActiveProductionTestSession('hermes-manager')
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok || !payload.activeSession?.sessionId) return
+      const sessionId = String(payload.activeSession.sessionId)
+      const currentSession = activeReasoningSession.value
+      if (currentSession?.sessionId === sessionId) return
+      if (currentSession && !['completed', 'failed', 'cancelled'].includes(currentSession.status)) return
+      const session = await loadReasoningSession(sessionId)
+      if (!session) return
+      dashboardActiveTab.value = 'reasoning'
+      if (session.status === 'planning' || session.status === 'running') scheduleReasoningPolling(500)
+    } catch {
+      // Production test polling is best-effort; normal control console use should not surface this as an error.
+    } finally {
+      productionTestRequestInFlight = false
+    }
+  }
+
   async function sendObservableReasoningChat() { if (sandboxPrompt.value.trim()) await openSubmitGate('reasoning') }
   async function sendChat() { if (sandboxPrompt.value.trim()) await openSubmitGate('chat') }
 
@@ -1983,12 +2183,15 @@ export function useControlConsoleApp() {
   }
 
   async function loadChatHistory() {
+    if (chatHistoryRequestInFlight) return null
+    chatHistoryRequestInFlight = true
     try {
       const response = await getChatHistoryRequest('hermes-manager')
       if (response.ok) {
         const payload = await response.json()
         if (payload.ok && Array.isArray(payload.history)) {
-          chatHistory.value = payload.history.map((message: any) => ({ role: message.role, content: message.content, tokens: message.tokens }))
+          persistedChatHistory.value = payload.history.map((message: any) => ({ role: message.role, content: message.content, tokens: message.tokens, transient: false }))
+          rebuildDisplayedChatHistory()
           chatMemoryFile.value = payload.file || null
           if (payload.activeRequest?.contextSources) chatContextInfo.value = payload.activeRequest.contextSources
           return payload
@@ -1996,6 +2199,8 @@ export function useControlConsoleApp() {
       }
     } catch (caught) {
       console.error('Failed to load chat history:', caught)
+    } finally {
+      chatHistoryRequestInFlight = false
     }
     return null
   }
@@ -2059,10 +2264,49 @@ export function useControlConsoleApp() {
     }
   }
 
+  async function clearChatWindowHistory() {
+    if (chatMemorySaveBusy.value || chatMemoryBusy.value) return
+    if (typeof window !== 'undefined' && !window.confirm('确认清空当前 Hermes 窗口聊天记录吗？这只会重置聊天存档，不会删除长期记忆、状态/任务/决策或上下文池。')) return
+    chatMemorySaveBusy.value = true
+    chatMemoryError.value = ''
+    chatMemorySaveMessage.value = ''
+    chatMemoryOpenMessage.value = ''
+    try {
+      productionTestFollowPausedUntil = Date.now() + 10 * 60 * 1000
+      stopChatHistoryPolling()
+      stopReasoningPolling()
+      pendingReasoningUserPrompt.value = ''
+      activeReasoningSession.value = null
+      persistActiveReasoningSessionId(null)
+      reasoningBusy.value = false
+      reasoningError.value = ''
+      reasoningReviewDraft.value = ''
+      await fetch('/api/control/agents/hermes-manager/production-test-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: '' })
+      }).catch(() => null)
+      const response = await saveChatHistoryFile('hermes-manager', '[]')
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok || !payload?.file) throw new Error(payload?.error || `clear_chat_history_http_${response.status}`)
+      chatMemoryFile.value = { filePath: payload.file.filePath, exists: payload.file.exists, sizeChars: payload.file.sizeChars, updatedAt: payload.file.updatedAt }
+      chatMemoryDraft.value = payload.file.content || '[]'
+      chatMemoryLoadedContent.value = chatMemoryDraft.value
+      persistedChatHistory.value = []
+      rebuildDisplayedChatHistory()
+      chatMemorySaveMessage.value = '窗口聊天记录已清空；长期记忆和上下文池未受影响。'
+    } catch (caught) {
+      chatMemoryError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      chatMemorySaveBusy.value = false
+    }
+  }
+
   onMounted(() => {
     logInterval = setInterval(fetchLogs, 1500)
     chatUiClockInterval = setInterval(() => { chatUiNow.value = Date.now() }, 1000)
     memoryRecordPollInterval = setInterval(() => { void loadMemoryRecords() }, 5000)
+    productionTestPollInterval = setInterval(() => { void loadActiveProductionTestSession() }, 1500)
     window.addEventListener('keydown', handleEditorModalWindowKeydown, true)
     void loadContextCandidates()
     void (async () => {
@@ -2098,6 +2342,7 @@ export function useControlConsoleApp() {
     if (logInterval) clearInterval(logInterval)
     if (chatUiClockInterval) clearInterval(chatUiClockInterval)
     if (memoryRecordPollInterval) clearInterval(memoryRecordPollInterval)
+    if (productionTestPollInterval) clearInterval(productionTestPollInterval)
     stopChatHistoryPolling()
     stopReasoningPolling()
     window.removeEventListener('keydown', handleEditorModalWindowKeydown, true)
@@ -2261,7 +2506,9 @@ export function useControlConsoleApp() {
     chatMemorySaveMessage,
     chatScrollContainer,
     chatUiStatus,
+    clearChatWindowHistory,
     clearAllMemoryRecords,
+    clearMemoryTarget,
     clearSelectedMemoryRecords,
     clearReasoningSession,
     clearVisibleLogs,

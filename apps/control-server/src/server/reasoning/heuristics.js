@@ -13,8 +13,10 @@ import { resolveWorkspacePathFromInput } from '../workspace/inspectors.js'
 // Prompt detectors / inference
 // ----------------------------------------------------------------------------
 
-const REASONING_DIRECTORY_KEYWORDS = /目录|文件|有哪些|哪些|列表|列出|查看|包括|包含/i
+const REASONING_DIRECTORY_KEYWORDS = /目录|文件|有哪些|哪些|列表|列出|查看|包括|包含|找出|盘点/i
 const REASONING_DIRECTORY_SEARCH_PREFIXES = ['', 'apps', 'packages', 'storage', 'docs', 'scripts', 'ai', 'config', 'monitor', 'state', 'utils', 'test']
+
+const REASONING_PROJECT_LISTING_KEYWORDS = /storage\/projects|当前已有项目|当前项目|已有项目|现有项目|列出项目|找出项目|盘点项目/i
 
 export function normalizeWorkspaceRelativePath(inputPath) {
   return String(inputPath || '').trim().replace(/\\/g, '/')
@@ -22,6 +24,13 @@ export function normalizeWorkspaceRelativePath(inputPath) {
 
 export function isDirectoryListingPrompt(userPrompt) {
   return REASONING_DIRECTORY_KEYWORDS.test(String(userPrompt || ''))
+}
+
+export function isProjectListingPrompt(userPrompt) {
+  const prompt = String(userPrompt || '').trim()
+  if (!prompt) return false
+  if (REASONING_PROJECT_LISTING_KEYWORDS.test(prompt)) return true
+  return /项目/i.test(prompt) && /当前|已有|现有|哪些|列表|列出|找出|盘点/i.test(prompt)
 }
 
 export function inferWorkspaceDirectoryFromPrompt(userPrompt) {
@@ -522,7 +531,9 @@ export function evaluateWorkspaceDirectoryQuestionAnswerQuality(userPrompt, answ
   const readFilePaths = new Set(Object.keys(fileContents).map((filePath) => normalizeWorkspaceRelativePath(path.relative(GAMESTUDIO_ROOT, filePath))))
   const issues = []
   const strengths = []
-  let score = 25
+  let score = 20
+  let completeEvidenceChains = 0
+  let explainedDirectoryResponsibilities = 0
 
   for (const dirPath of dirPaths) {
     if (normalized.includes(dirPath.toLowerCase())) {
@@ -533,21 +544,33 @@ export function evaluateWorkspaceDirectoryQuestionAnswerQuality(userPrompt, answ
     }
 
     if (directoryListings[dirPath]) {
-      score += 10
+      score += 12
       strengths.push(`已列出 ${dirPath} 目录作为证据`)
     } else {
       issues.push(`缺少 ${dirPath} 的 list_directory_contents 证据`)
     }
 
     if (readFilePaths.has(`${dirPath}/package.json`)) {
-      score += 8
+      score += 12
       strengths.push(`已读取 ${dirPath}/package.json`)
     }
 
     const hasEntryEvidence = Array.from(readFilePaths).some((filePath) => filePath.startsWith(`${dirPath}/src/`))
     if (hasEntryEvidence) {
-      score += 8
+      score += 12
       strengths.push(`已读取 ${dirPath} 的 src 入口证据`)
+    }
+
+    if (directoryListings[dirPath] && (readFilePaths.has(`${dirPath}/package.json`) || hasEntryEvidence)) {
+      completeEvidenceChains += 1
+    }
+
+    if (answerExplainsDirectoryResponsibility(dirPath, text)) {
+      score += 18
+      explainedDirectoryResponsibilities += 1
+      strengths.push(`已说明 ${dirPath} 的职责语义`)
+    } else {
+      issues.push(`没有说明 ${dirPath} 的职责语义`)
     }
   }
 
@@ -574,6 +597,22 @@ export function evaluateWorkspaceDirectoryQuestionAnswerQuality(userPrompt, answ
     issues.push('答案不应把 README 缺失作为停止分析的主要结论')
   }
 
+  const unsupportedFileClaims = findUnsupportedReadFileClaims(text, dirPaths, readFilePaths)
+  if (unsupportedFileClaims.length > 0) {
+    score -= Math.min(45, unsupportedFileClaims.length * 25)
+    issues.push(`答案声称读取或基于未观测文件：${unsupportedFileClaims.join('、')}`)
+  }
+
+  if (/上一版|上一次|前一轮|重新规划|质量评分|自动质检|校准样本/i.test(text)) {
+    score -= 15
+    issues.push('最终答案不应把内部质检、重试或上一版回答暴露给用户')
+  }
+
+  if (dirPaths.length > 0 && completeEvidenceChains === dirPaths.length && explainedDirectoryResponsibilities === dirPaths.length && issues.length === 0) {
+    score += 10
+    strengths.push('所有指定目录都有完整证据链和职责解释')
+  }
+
   score = Math.max(0, Math.min(100, score))
   const passed = score >= HERMES_REASONING_MIN_ACCEPT_SCORE
   return {
@@ -587,6 +626,68 @@ export function evaluateWorkspaceDirectoryQuestionAnswerQuality(userPrompt, answ
       ? '当前答案已通过质量门槛。'
       : '必须基于 list_directory_contents、package.json 和入口文件证据，分别说明每个指定目录的职责；不要因为 README 缺失而停止分析。'
   }
+}
+
+function findUnsupportedReadFileClaims(answerText, dirPaths, readFilePaths) {
+  const text = String(answerText || '')
+  const pathTokens = [...new Set((text.match(/`?([A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+\.[A-Za-z0-9]+)`?/g) || [])
+    .map((token) => token.replace(/`/g, '').replace(/[).,;，。；：]+$/g, ''))
+    .filter(Boolean))]
+  const unsupported = []
+
+  for (const token of pathTokens) {
+    const candidates = normalizeMentionedFilePathCandidates(token, dirPaths)
+    const supported = candidates.some((candidate) => readFilePaths.has(candidate))
+    const nearbyClaimPattern = new RegExp(`(读取|读了|查看|检查|基于|证据|核心文件)[^。\n]{0,80}${escapeRegExp(token)}|${escapeRegExp(token)}[^。\n]{0,80}(读取|读了|查看|检查|基于|证据|核心文件)`, 'i')
+    if (!supported && nearbyClaimPattern.test(text)) {
+      unsupported.push(candidates[0] || token)
+    }
+  }
+
+  return [...new Set(unsupported)]
+}
+
+function normalizeMentionedFilePathCandidates(token, dirPaths) {
+  const cleaned = normalizeWorkspaceRelativePath(token).replace(/^\.\//, '').replace(/^\/+/, '')
+  const candidates = [cleaned]
+  for (const dirPath of dirPaths) {
+    if (!cleaned.startsWith(`${dirPath}/`)) {
+      candidates.push(`${dirPath}/${cleaned}`)
+    }
+  }
+  return [...new Set(candidates)]
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function answerExplainsDirectoryResponsibility(dirPath, answerText) {
+  const text = String(answerText || '')
+  if (!/职责|负责|作用|用途|控制|服务|前端|后端|编辑器|运行时|接口|路由|管理|存储|生成|构建|schema|配置|文档|脚本|监控/i.test(text)) {
+    return false
+  }
+
+  const directoryRolePatterns = {
+    'apps/control-server': /控制平面|控制服务|control\s*server|http\s*控制|api|路由|hono|reasoning|推理|会话|生命周期|runtime/i,
+    'apps/control-console': /控制台|control\s*console|前端|vue|vite|界面|可观测|审核|操作/i,
+    'apps/editor': /编辑器|前端|react|vite|h5|交互|故事|studio|用户界面/i,
+    'apps/server': /后端|业务服务|api|hono|存储|故事|项目|生成|路由/i,
+    storage: /存储|项目数据|demo|素材|内容|state|持久化/i,
+    docs: /文档|说明|规范|计划|报告|设计/i,
+    scripts: /脚本|自动化|测试|启动|停止|构建|生命周期/i,
+    packages: /包|共享|runtime|schema|builder|库|模块/i,
+    config: /配置|hermes|模型|技能|intent|状态/i,
+    monitor: /监控|dashboard|openclaw|观测|状态/i,
+    ai: /记忆|agent|工作流|chat|memory|任务|状态/i
+  }
+
+  const exactPattern = directoryRolePatterns[dirPath]
+  if (exactPattern) return exactPattern.test(text)
+
+  const prefix = Object.keys(directoryRolePatterns).find((key) => dirPath === key || dirPath.startsWith(`${key}/`))
+  if (prefix) return directoryRolePatterns[prefix].test(text)
+  return /职责|负责|作用|用途|用于|模块|目录/i.test(text)
 }
 
 export function evaluateImageServiceAnswerQuality(answer, artifacts) {
