@@ -8,27 +8,6 @@
   },
   {
     "role": "user",
-    "content": "查找control-console目录包括什么?",
-    "createdAt": "2026-04-28T01:48:59.617Z",
-    "requestId": "reasoning_1777340939616_85351c2f",
-    "chatSessionId": "chat_1777340716275_fb26cb83"
-  },
-  {
-    "role": "user",
-    "content": "查找control-console目录包括什么?",
-    "createdAt": "2026-04-28T01:53:55.996Z",
-    "requestId": "reasoning_1777341235995_e9940750",
-    "chatSessionId": "chat_1777341233843_423d48d7"
-  },
-  {
-    "role": "user",
-    "content": "查找control-console目录包括什么?",
-    "createdAt": "2026-04-28T01:57:02.063Z",
-    "requestId": "reasoning_1777341422062_86fb8857",
-    "chatSessionId": "chat_1777341419948_2f974156"
-  },
-  {
-    "role": "user",
     "content": "control 的前端和后端分别在哪里？",
     "createdAt": "2026-04-28T03:04:40.092Z",
     "requestId": "reasoning_1777345480091_008c2280",
@@ -54,27 +33,6 @@
     "chatSessionId": "chat_1777346528090_2a69921e"
   },
   {
-    "role": "user",
-    "content": "列表包含的文件?",
-    "createdAt": "2026-04-28T03:51:05.209Z",
-    "requestId": "reasoning_1777348265208_7c8858d1",
-    "chatSessionId": "chat_1777348257023_53d9e8e1"
-  },
-  {
-    "role": "user",
-    "content": "列表包含的文件?",
-    "createdAt": "2026-04-28T04:06:10.597Z",
-    "requestId": "reasoning_1777349170596_5b7187c5",
-    "chatSessionId": "chat_1777349153961_316e5510"
-  },
-  {
-    "role": "user",
-    "content": "列表包含的文件?",
-    "createdAt": "2026-04-28T04:06:55.499Z",
-    "requestId": "reasoning_1777349215498_0e5a5126",
-    "chatSessionId": "chat_1777349204158_64fc8567"
-  },
-  {
     "role": "hermes",
     "content": "根据当前可观测目录扫描结果，列表包含以下直接子项：\n\n## apps/control-console\n路径：/Volumes/ovokit2t/aiwork/gamestudio/apps/control-console\n直接子项数量：9\n1. [dir] dist\n2. [dir] node_modules\n3. [dir] src\n4. [file] index.html\n5. [file] package.json\n6. [file] rewrite.js\n7. [file] tsconfig.json\n8. [file] update_app_btn.cjs\n9. [file] vite.config.ts\n\n## apps/control-server\n路径：/Volumes/ovokit2t/aiwork/gamestudio/apps/control-server\n直接子项数量：2\n1. [dir] src\n2. [file] package.json\n\n以上只包含已执行 list_directory_contents 返回的直接子项，不包含递归展开。\n\n本次问题：列表包含的文件?",
     "createdAt": "2026-04-28T04:07:01.150Z",
@@ -98,41 +56,12 @@
     "chatSessionId": "chat_1777349204158_64fc8567"
   },
   {
-    "role": "user",
-    "content": "GameStudio 的编辑器前端目录在哪里？",
-    "createdAt": "2026-04-28T04:22:20.552Z",
-    "requestId": "reasoning_1777350140551_578b173b",
-    "chatSessionId": "chat_1777350130141_0841010a"
-  },
-  {
-    "role": "hermes",
-    "content": "根据当前可观测目录扫描结果，列表包含以下直接子项：\n\n## apps/control-console\n路径：/Volumes/ovokit2t/aiwork/gamestudio/apps/control-console\n直接子项数量：9\n1. [dir] dist\n2. [dir] node_modules\n3. [dir] src\n4. [file] index.html\n5. [file] package.json\n6. [file] rewrite.js\n7. [file] tsconfig.json\n8. [file] update_app_btn.cjs\n9. [file] vite.config.ts\n\n## apps/control-server\n路径：/Volumes/ovokit2t/aiwork/gamestudio/apps/control-server\n直接子项数量：2\n1. [dir] src\n2. [file] package.json\n\n以上只包含已执行 list_directory_contents 返回的直接子项，不包含递归展开。\n\n本次问题：GameStudio 的编辑器前端目录在哪里？",
-    "createdAt": "2026-04-28T04:22:26.197Z",
-    "requestId": "reasoning_1777350140551_578b173b",
-    "tokens": null,
-    "chatSessionId": "chat_1777350130141_0841010a"
-  },
-  {
-    "role": "user",
-    "content": "GameStudio 的编辑器前端目录在哪里？",
-    "createdAt": "2026-04-28T04:24:30.352Z",
-    "requestId": "reasoning_1777350270351_afe7505e",
-    "chatSessionId": "chat_1777350247815_adc85970"
-  },
-  {
     "role": "hermes",
     "content": "GameStudio 的编辑器前端目录是：`apps/editor`\n绝对路径：/Volumes/ovokit2t/aiwork/gamestudio/apps/editor\n\n以上结论来自本轮 `locate_project` 的 workspaceStructure 可观测结果。",
     "createdAt": "2026-04-28T04:27:06.443Z",
     "requestId": "reasoning_1777350270351_afe7505e",
     "tokens": null,
     "chatSessionId": "chat_1777350247815_adc85970"
-  },
-  {
-    "role": "user",
-    "content": "GameStudio 的编辑器前端目录在哪里？",
-    "createdAt": "2026-04-28T05:19:17.435Z",
-    "requestId": "reasoning_1777353557434_c73629c1",
-    "chatSessionId": "chat_1777353537288_f4b713fe"
   },
   {
     "role": "hermes",
@@ -144,13 +73,6 @@
       "completion_tokens": 82,
       "total_tokens": 18727
     },
-    "chatSessionId": "chat_1777353537288_f4b713fe"
-  },
-  {
-    "role": "user",
-    "content": "control 的前端和后端分别在哪里？",
-    "createdAt": "2026-04-28T05:19:58.334Z",
-    "requestId": "reasoning_1777353598334_acadb6cb",
     "chatSessionId": "chat_1777353537288_f4b713fe"
   },
   {
@@ -200,34 +122,12 @@
     "chatSessionId": "chat_1777353537288_f4b713fe"
   },
   {
-    "role": "user",
-    "content": "查看ai目录下有那些目录及文件?",
-    "createdAt": "2026-04-28T05:47:18.850Z",
-    "requestId": "reasoning_1777355238849_6fd03b28",
-    "chatSessionId": "chat_1777355197312_80b492d0"
-  },
-  {
     "role": "hermes",
     "content": "根据当前可观测目录扫描结果，列表包含以下直接子项：\n\n## ai\n路径：/Volumes/ovokit2t/aiwork/gamestudio/ai\n直接子项数量：8\n1. [dir] chat\n2. [dir] memory\n3. [file] AGENTS.md\n4. [file] control_architecture.md\n5. [file] interactive_story_editor.contract.md\n6. [file] MEMORY.md\n7. [file] TOOLS.md\n8. [file] USER.md\n\n以上只包含已执行 list_directory_contents 返回的直接子项，不包含递归展开。\n\n本次问题：查看ai目录下有那些目录及文件?",
     "createdAt": "2026-04-28T05:47:23.463Z",
     "requestId": "reasoning_1777355238849_6fd03b28",
     "tokens": null,
     "chatSessionId": "chat_1777355197312_80b492d0"
-  },
-  {
-    "role": "user",
-    "content": "查看ai目录下有那些目录及文件?",
-    "createdAt": "2026-04-28T05:48:07.321Z",
-    "requestId": "reasoning_1777355287320_8fa747a4",
-    "chatSessionId": "chat_1777355272928_2f2e734e"
-  },
-  {
-    "role": "hermes",
-    "content": "根据当前可观测目录扫描结果，列表包含以下直接子项：\n\n## ai\n路径：/Volumes/ovokit2t/aiwork/gamestudio/ai\n直接子项数量：8\n1. [dir] chat\n2. [dir] memory\n3. [file] AGENTS.md\n4. [file] control_architecture.md\n5. [file] interactive_story_editor.contract.md\n6. [file] MEMORY.md\n7. [file] TOOLS.md\n8. [file] USER.md\n\n以上只包含已执行 list_directory_contents 返回的直接子项，不包含递归展开。\n\n本次问题：查看ai目录下有那些目录及文件?",
-    "createdAt": "2026-04-28T05:48:11.959Z",
-    "requestId": "reasoning_1777355287320_8fa747a4",
-    "tokens": null,
-    "chatSessionId": "chat_1777355272928_2f2e734e"
   },
   {
     "role": "user",
@@ -244,13 +144,6 @@
     "chatSessionId": "chat_1777355272928_2f2e734e"
   },
   {
-    "role": "user",
-    "content": "ai/memory/TASK_QUEUE.md 和 ai/memory/LONG_TASKS.md 分别负责什么？",
-    "createdAt": "2026-04-28T06:13:24.505Z",
-    "requestId": "reasoning_1777356804504_21966438",
-    "chatSessionId": "chat_1777356767062_413e0a17"
-  },
-  {
     "role": "hermes",
     "content": "这两个文件分别负责 **短期可执行任务** 和 **长期业务主线**，配合构成 GameStudio 的业务后端任务管理体系：\n\n---\n\n### 1. `ai/memory/TASK_QUEUE.md` —— 短任务队列（短期/执行层）\n\n**定位：** 当前时刻具体要做的操作步骤，关注“下一步做什么、怎么做、验证标准是什么”。\n\n**负责内容：**\n- **Ready（待办）**：列出具体的端到端测试、Contract 固化、记忆闭环验证等可执行项。每项包含明确的验收标准。\n- **In Progress（进行中）**：当前正在推进的关键任务（如“收敛 control / hermes 的记忆闭环”）。\n- **Blocked（阻塞）**：被前置条件卡住的任务，明确写出阻塞原因（如“依赖记忆闭环实测通过与前两项 contract 固化”）。\n\n**核心特点：** 短周期、可快速验证、带明确验收标准、状态随进展动态更新。\n\n---\n\n### 2. `ai/memory/LONG_TASKS.md` —— 长任务主线（长期/业务层）\n\n**定位：** 项目的宏观业务目标，关注“整个后端要建成什么、交付物是什么、怎么算做完”。\n\n**负责内容（LT-01 到 LT-06 对应业务后端的六大核心模块）：**\n\n| 编号 | 主线目标 | 期望产物 |\n|------|----------|----------|\n| **LT-01** | 控制驱动的故事项目创建 | 项目目录、基础元数据、初始 story/scripts/blueprint 文件 |\n| **LT-02** | 项目配置与模板装配 | 可重复使用的配置输入结构与项目内持久化配置 |\n| **LT-03** | 故事文本与结构生成 | 从 brief 生成 story/scripts/blueprint 的端到端链路 |\n| **LT-04** | 图片与资产生成回填 | 图片生成任务链、资产入库规则、引用回填规则 |\n| **LT-05** | 项目验证与交付 | 验证清单、PASS/FAIL 结论格式、导出路径说明 |\n| **LT-06** | 运行时记忆自维护闭环 | 多步骤任务后自动维护 `STATUS.md`、`TASK_QUEUE.md`、`DECISIONS.md` 等记忆文件 |\n\n**核心特点：** 长周期、端到端链路、产出物驱动、关注业务价值而非单点测试。\n\n---\n\n### 两者关系\n\n```\nLONG_TASKS.md (宏观目标)  →  拆解为  →  TASK_QUEUE.md (具体步骤)\n        LT-01~LT-06                          Ready / In Progress / Blocked\n```\n\n- **LONG_TASKS.md** 定义\"要盖什么楼\"（业务目标 + 完成标准）\n- **TASK_QUEUE.md** 定义\"今天搬哪块砖\"（具体操作 + 验收标准）\n- 短任务完成后，对应的长线任务节点即可标记为完成；长线任务推进后，可再拆出新的短任务放入 `TASK_QUEUE.md`。",
     "createdAt": "2026-04-28T06:15:38.077Z",
@@ -261,13 +154,6 @@
       "total_tokens": 20678
     },
     "chatSessionId": "chat_1777356767062_413e0a17"
-  },
-  {
-    "role": "user",
-    "content": "ai/memory/TASK_QUEUE.md 和 ai/memory/LONG_TASKS.md 分别负责什么？",
-    "createdAt": "2026-04-28T06:16:30.362Z",
-    "requestId": "reasoning_1777356990361_97cf0259",
-    "chatSessionId": "chat_1777356978655_8ad1ea65"
   },
   {
     "role": "hermes",
@@ -294,20 +180,6 @@
     "createdAt": "2026-04-28T06:27:53.854Z",
     "requestId": "reasoning_1777357496089_19fc0bd7",
     "chatSessionId": "chat_1777356978655_8ad1ea65"
-  },
-  {
-    "role": "user",
-    "content": "分析apps/editor、apps/server两者分别负责什么？",
-    "createdAt": "2026-04-28T06:50:30.668Z",
-    "requestId": "reasoning_1777359030667_2f61e78d",
-    "chatSessionId": "chat_1777358986211_83ac4897"
-  },
-  {
-    "role": "user",
-    "content": "分析apps/editor、apps/server两者分别负责什么？",
-    "createdAt": "2026-04-28T09:30:52.700Z",
-    "requestId": "reasoning_1777368652699_4506c88c",
-    "chatSessionId": "chat_1777368405086_80453442"
   },
   {
     "role": "hermes",

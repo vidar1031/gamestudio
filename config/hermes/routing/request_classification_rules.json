@@ -1,0 +1,143 @@
+{
+  "version": "2026-05-08",
+  "fallback": {
+    "requestType": "contextual_plan_answer",
+    "reason": "rule_table_unmatched",
+    "needsContext": true,
+    "route": "plan_then_answer"
+  },
+  "rules": [
+    {
+      "ruleId": "R012_gamestudio_bootstrap_execute",
+      "requestType": "gamestudio_bootstrap_execute",
+      "priority": 130,
+      "detector": "gamestudio_bootstrap_execute",
+      "reason": "gamestudio_startup_settings_diagnose_request",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": true,
+      "route": "workflow_execute"
+    },
+    {
+      "ruleId": "R008_write_or_invoke_review",
+      "requestType": "write_or_invoke_review",
+      "priority": 110,
+      "detector": "write_or_invoke_review",
+      "reason": "explicit_mutation_or_invoke_request",
+      "needsContext": true,
+      "requiresHumanReview": true,
+      "deterministicPlan": false,
+      "route": "write_or_invoke_review"
+    },
+    {
+      "ruleId": "R007_story_workflow_execute",
+      "requestType": "story_workflow_execute",
+      "priority": 120,
+      "detector": "story_workflow_execute",
+      "reason": "story_project_automation_request",
+      "needsContext": true,
+      "requiresHumanReview": false,
+      "deterministicPlan": true,
+      "route": "workflow_execute"
+    },
+    {
+      "ruleId": "R010_contextual_plan_answer",
+      "requestType": "contextual_plan_answer",
+      "priority": 95,
+      "detector": "contextual_plan_answer",
+      "reason": "contextual_or_planning_prompt",
+      "needsContext": true,
+      "requiresHumanReview": false,
+      "deterministicPlan": false,
+      "route": "plan_then_answer"
+    },
+    {
+      "ruleId": "R002_project_structure_inspection",
+      "requestType": "project_structure_inspection",
+      "priority": 90,
+      "detector": "project_structure_inspection",
+      "reason": "project_structure_inspection_prompt",
+      "needsContext": true,
+      "requiresHumanReview": false,
+      "deterministicPlan": false,
+      "route": "plan_then_answer"
+    },
+    {
+      "ruleId": "R001_project_listing",
+      "requestType": "project_listing",
+      "priority": 80,
+      "detector": "project_listing",
+      "reason": "project_listing_prompt",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": true,
+      "route": "plan_then_answer"
+    },
+    {
+      "ruleId": "R004_file_inspection",
+      "requestType": "file_inspection",
+      "priority": 70,
+      "detector": "file_inspection",
+      "reason": "workspace_file_prompt",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": true,
+      "route": "plan_then_answer"
+    },
+    {
+      "ruleId": "R005_directory_inspection",
+      "requestType": "directory_inspection",
+      "priority": 65,
+      "detector": "directory_inspection",
+      "reason": "workspace_directory_question_prompt",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": true,
+      "route": "plan_then_answer"
+    },
+    {
+      "ruleId": "R003_directory_listing",
+      "requestType": "directory_listing",
+      "priority": 60,
+      "detector": "directory_listing",
+      "reason": "directory_listing_prompt",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": true,
+      "route": "plan_then_answer"
+    },
+    {
+      "ruleId": "R006_surface_location",
+      "requestType": "surface_location",
+      "priority": 55,
+      "detector": "surface_location",
+      "reason": "workspace_surface_location_prompt",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": true,
+      "route": "plan_then_answer"
+    },
+    {
+      "ruleId": "R009_capability_status_inspection",
+      "requestType": "capability_status_inspection",
+      "priority": 40,
+      "detector": "capability_status_inspection",
+      "reason": "project_capability_status_prompt",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": true,
+      "route": "inspect_then_answer"
+    },
+    {
+      "ruleId": "R011_answer_only",
+      "requestType": "answer_only",
+      "priority": 20,
+      "detector": "answer_only",
+      "reason": "general_explanation_prompt",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": false,
+      "route": "answer_only"
+    }
+  ]
+}

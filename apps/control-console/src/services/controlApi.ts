@@ -89,6 +89,14 @@ export function runRuntimeAction(agentId: string, body: unknown) {
   })
 }
 
+export function switchAgentModel(agentId: string, body: unknown) {
+  return fetch(`/api/control/agents/${agentId}/switch-model`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+}
+
 export function runModelAction(action: 'load' | 'unload', body: unknown) {
   return fetch(`/api/control/models/${action}`, {
     method: 'POST',

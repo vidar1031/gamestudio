@@ -134,6 +134,231 @@ export const REASONING_TOOLS = {
     description: '执行工作区内允许范围的脚本路径，确认后才允许触发。',
     routes: ['internal:reasoning/runtime.workspaceScript']
   },
+  'gamestudio.bootstrap.ensureRunning': {
+    tool: 'gamestudio.bootstrap.ensureRunning',
+    title: '启动或确认 GameStudio',
+    category: 'gamestudio-bootstrap',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '确认 GameStudio Server/Editor 可用；服务未启动时调用白名单启动脚本 start_project.sh --detached。',
+    routes: ['internal:gamestudio/bootstrap.ensureRunning']
+  },
+  'gamestudio.bootstrap.openEditor': {
+    tool: 'gamestudio.bootstrap.openEditor',
+    title: '打开 GameStudio Editor',
+    category: 'gamestudio-bootstrap',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '返回 GameStudio Editor URL，并在本机 macOS 上尝试打开浏览器。',
+    routes: ['internal:gamestudio/bootstrap.openEditor']
+  },
+  'gamestudio.bootstrap.readSettings': {
+    tool: 'gamestudio.bootstrap.readSettings',
+    title: '读取 Studio Settings',
+    category: 'gamestudio-bootstrap',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '读取 GameStudio 当前 settings 与 effective 配置。',
+    routes: ['internal:gamestudio/studio.settings.get']
+  },
+  'gamestudio.bootstrap.configureLocalProduction': {
+    tool: 'gamestudio.bootstrap.configureLocalProduction',
+    title: '写入本地生产配置',
+    category: 'gamestudio-bootstrap',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '写入本地 OMLX 文本模型与 ComfyUI 图片 provider 的非密钥生产默认配置。',
+    routes: ['internal:gamestudio/studio.settings.put']
+  },
+  'gamestudio.bootstrap.selfCheck': {
+    tool: 'gamestudio.bootstrap.selfCheck',
+    title: '执行 GameStudio 自检',
+    category: 'gamestudio-bootstrap',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '调用 GameStudio health、settings、diagnose 和 image preflight，并把结果回写 Control artifacts。',
+    routes: ['internal:gamestudio/studio.diagnose']
+  },
+  'gamestudio.bootstrap.answer': {
+    tool: 'gamestudio.bootstrap.answer',
+    title: '汇总 GameStudio 打开结果',
+    category: 'gamestudio-bootstrap',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '基于已观测的 GameStudio bootstrap artifacts 生成确定性汇总。',
+    routes: ['internal:gamestudio/bootstrap.answer']
+  },
+  'gamestudio.story.createProject': {
+    tool: 'gamestudio.story.createProject',
+    title: '创建互动故事项目',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '通过 GameStudio Server 创建标准互动故事项目骨架，并返回 storage/projects 证据。',
+    routes: ['internal:gamestudio/projects.create']
+  },
+  'gamestudio.story.createAiProject': {
+    tool: 'gamestudio.story.createAiProject',
+    title: 'AI 创建故事草稿',
+    category: 'story-workflow',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'required',
+    description: '由 Control 调用 GameStudio Server 的 AI 创建故事接口，生成 scripts 与 blueprint 证据。',
+    routes: ['internal:gamestudio/projects.aiCreate']
+  },
+  'gamestudio.story.configureProject': {
+    tool: 'gamestudio.story.configureProject',
+    title: '写入故事生成配置',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '把题材、风格、受众、输出语言和结构公式写入项目配置并读回验证。',
+    routes: ['internal:gamestudio/projects.update']
+  },
+  'gamestudio.story.inspectProject': {
+    tool: 'gamestudio.story.inspectProject',
+    title: '检查故事项目证据',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '读取项目目录、配置、故事、脚本、蓝图、资源和导出产物摘要。',
+    routes: ['internal:gamestudio/projects.inspect']
+  },
+  'gamestudio.story.generateScriptsCandidate': {
+    tool: 'gamestudio.story.generateScriptsCandidate',
+    title: '生成故事脚本候选',
+    category: 'story-workflow',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'auto',
+    description: '通过 Hermes/OMLX 生成受 schema 约束的 scripts.json 候选。',
+    routes: ['internal:hermes/story.scripts.candidate']
+  },
+  'gamestudio.story.writeScripts': {
+    tool: 'gamestudio.story.writeScripts',
+    title: '写入故事脚本',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '把已验证脚本候选写入 GameStudio 项目 scripts.json，并读回验证。',
+    routes: ['internal:gamestudio/projects.scripts.put']
+  },
+  'gamestudio.story.compileBlueprint': {
+    tool: 'gamestudio.story.compileBlueprint',
+    title: '编译故事蓝图',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '调用 GameStudio Server 将脚本层编译为蓝图层，并返回校验报告。',
+    routes: ['internal:gamestudio/projects.compileBlueprint']
+  },
+  'gamestudio.story.analyzeScripts': {
+    tool: 'gamestudio.story.analyzeScripts',
+    title: '分析故事脚本',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '调用 GameStudio Server 分析 scripts，并返回蓝图分支建议和结构检查。',
+    routes: ['internal:gamestudio/projects.analyzeScripts']
+  },
+  'gamestudio.story.reviewBlueprintAgent': {
+    tool: 'gamestudio.story.reviewBlueprintAgent',
+    title: '智能体评审蓝图',
+    category: 'story-workflow',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'auto',
+    description: 'Control 结合 GameStudio 规则、确定性门禁和 Hermes/OMLX 评分评审交互故事蓝图。',
+    routes: ['internal:hermes/story.blueprint.review']
+  },
+  'gamestudio.story.repairBlueprintIfNeeded': {
+    tool: 'gamestudio.story.repairBlueprintIfNeeded',
+    title: '必要时修复蓝图',
+    category: 'story-workflow',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'required',
+    description: '当蓝图智能体评审要求修复时，调用 GameStudio AI 修复脚本并重新编译蓝图。',
+    routes: ['internal:gamestudio/projects.fixScripts']
+  },
+  'gamestudio.story.compileCompose': {
+    tool: 'gamestudio.story.compileCompose',
+    title: '编译可运行故事',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '调用 GameStudio Server 将蓝图层编译为 project/story 合成层。',
+    routes: ['internal:gamestudio/projects.compileCompose']
+  },
+  'gamestudio.story.generateAssetCandidate': {
+    tool: 'gamestudio.story.generateAssetCandidate',
+    title: '生成故事资产候选',
+    category: 'story-workflow',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'required',
+    description: '检查图片 provider 并尝试生成背景或角色资产候选；失败时返回明确阶段。',
+    routes: ['internal:gamestudio/projects.assets.generate']
+  },
+  'gamestudio.story.preflightImageProvider': {
+    tool: 'gamestudio.story.preflightImageProvider',
+    title: '检查图片 Provider 前置条件',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '调用 GameStudio Server 的 image preflight，确认 ComfyUI/provider、节点和模型条件。',
+    routes: ['internal:gamestudio/studio.image.preflight']
+  },
+  'gamestudio.story.createBible': {
+    tool: 'gamestudio.story.createBible',
+    title: '生成 Story Bible',
+    category: 'story-workflow',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'required',
+    description: '调用 GameStudio Server 显式生成 Story Bible，并将结果写回项目 state.aiBackground。',
+    routes: ['internal:gamestudio/projects.story.bible', 'internal:gamestudio/projects.update']
+  },
+  'gamestudio.story.createAssetPlan': {
+    tool: 'gamestudio.story.createAssetPlan',
+    title: '创建故事资产计划',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '基于项目和 Story Bible 创建并保存故事资产计划，缺少 Story Bible 时明确阻断。',
+    routes: ['internal:gamestudio/projects.assets.plan']
+  },
+  'gamestudio.story.generateLockAssetReferences': {
+    tool: 'gamestudio.story.generateLockAssetReferences',
+    title: '绘制锁定事物参考图',
+    category: 'story-workflow',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'required',
+    description: '基于故事资产计划逐个生成并选择必须锁定事物的主参考图。',
+    routes: ['internal:gamestudio/projects.assets.reference', 'internal:gamestudio/projects.assets.reference.select']
+  },
+  'gamestudio.story.lockTest': {
+    tool: 'gamestudio.story.lockTest',
+    title: '执行事物锁定出图测试',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '通过 ComfyUI SDXL 对故事资产计划中的目标事物执行锁定出图测试，验证 checkpoint/LoRA/IP-Adapter 组合可用性。',
+    routes: ['internal:gamestudio/projects.story.lock.test']
+  },
+  'gamestudio.story.validateProject': {
+    tool: 'gamestudio.story.validateProject',
+    title: '校验互动故事项目',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '校验蓝图、合成层和最小项目文件集合，输出 deterministic evaluator verdict。',
+    routes: ['internal:gamestudio/projects.validate']
+  },
+  'gamestudio.story.exportProject': {
+    tool: 'gamestudio.story.exportProject',
+    title: '导出互动故事项目',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '调用 GameStudio Server 导出 H5，并返回 distUrl 与本地产物证据。',
+    routes: ['internal:gamestudio/projects.export']
+  },
   'planner.default': {
     tool: 'planner.default',
     title: '整理问题',

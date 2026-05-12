@@ -1,0 +1,47 @@
+{
+  "id": "gamestudio.story_workflow_evidence",
+  "version": 1,
+  "source": "json",
+  "priority": 84,
+  "description": "Quality gate: story workflow answers must cite project evidence instead of treating GameStudio execution as a silent black box.",
+  "match": {
+    "anyRegex": [
+      "story\\s*workflow",
+      "互动故事|故事项目|故事生产|生产闭环",
+      "创建.*项目|配置.*项目|脚本|蓝图|校验|导出"
+    ]
+  },
+  "evaluation": {
+    "requireArtifactKey": "storyProduction",
+    "minScore": 82,
+    "scoreBase": 20,
+    "perRequiredHit": 14,
+    "perOptionalHit": 6,
+    "perEvidenceHit": 12,
+    "perForbiddenHit": -30,
+    "mustInclude": [
+      "projectId",
+      "storage/projects"
+    ],
+    "optional": [
+      "scripts",
+      "blueprint",
+      "story",
+      "evaluator",
+      "PASS",
+      "导出"
+    ],
+    "evidenceRegex": [
+      "storage/projects/[A-Za-z0-9_.-]+",
+      "projectId|项目标识",
+      "scripts\\.json|blueprint\\.json|story\\.json|project\\.json"
+    ],
+    "forbidden": [
+      "无法确认",
+      "没有证据",
+      "可能已经",
+      "应该已经"
+    ],
+    "correctionPrompt": "回答 story workflow / 互动故事生产任务时，必须基于 storyProduction artifacts 给出 projectId、storage/projects 路径和关键文件/校验/导出证据；不能用猜测替代项目证据。"
+  }
+}

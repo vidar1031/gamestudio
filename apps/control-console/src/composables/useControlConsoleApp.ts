@@ -2,7 +2,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { getReasoningEventData, getReasoningEventPreviewBlocks, getReasoningSessionElapsedSeconds } from '../lib/reasoning'
+import { getReasoningSessionElapsedSeconds } from '../lib/reasoning'
 import {
   clearAgentMemoryRecords,
   getAgentConfig,
@@ -18,6 +18,7 @@ import {
   runModelAction,
   runPreflightCheck,
   runRuntimeAction,
+  switchAgentModel,
   saveAgentConfig,
   saveAgentMemoryRecordFile,
 } from '../services/controlApi'
@@ -36,7 +37,6 @@ import {
   getContextCandidates,
   getSubmissionPreview,
   openChatHistoryFile,
-  pingModel,
   saveChatHistoryFile,
 } from '../services/chatApi'
 
@@ -260,6 +260,7 @@ type ReasoningCapabilities = {
     controlPlaneName: string
     workflowTerm: string
     taskGraphTerm: string
+    domains?: string[]
     frontend: {
       root: string
       entryFile: string
@@ -273,6 +274,7 @@ type ReasoningCapabilities = {
       submissionPreview: string
       contextDraft: string
       sessions: string
+      [key: string]: string
     }
   }
   behaviorChecks: Array<{
@@ -293,36 +295,6 @@ type EditableFileRecord = {
   content: string
   sizeChars: number
   updatedAt: string | null
-}
-
-type ChatActiveRequest = {
-  requestId?: string
-  startedAt: string
-  activeForMs: number
-  promptChars: number
-  contextSources?: ChatContextInfo | null
-  outboundRequest?: {
-    totalMessages: number
-    systemMessageCount: number
-    replayedMessageCount: number
-    userMessageCount: number
-    userPromptChars: number
-  } | null
-}
-
-type ChatRecoveryInfo = {
-  attempted: boolean
-  ok: boolean
-  reason: string
-  durationMs?: number
-  detail?: string
-}
-
-type ChatUiStatus = {
-  kind: 'idle' | 'pending' | 'busy' | 'recovering' | 'timeout' | 'error'
-  message: string
-  activeRequest: ChatActiveRequest | null
-  recovery: ChatRecoveryInfo | null
 }
 
 type ChatMemoryFileSummary = {
@@ -346,6 +318,12 @@ type MemoryRecordItem = {
   empty: boolean
   itemCount: number | null
   canOpen: boolean
+  required?: boolean
+  optionalMissingOk?: boolean
+  usage?: string
+  howToUse?: string
+  contextRole?: string
+  cleanupPolicy?: string
 }
 
 type MemoryClearTarget = {
@@ -385,6 +363,15 @@ type ReasoningEvent = {
   title: string
   summary: string
   data?: Record<string, unknown>
+}
+
+type ReasoningWorkflowPhase = {
+  phaseId: 'planning' | 'executing' | 'answering' | 'quality_review' | string
+  title: string
+  status: 'pending' | 'running' | 'waiting_review' | 'completed' | 'failed' | 'cancelled' | string
+  summary?: string | null
+  currentOperation?: string | null
+  evidence?: string | null
 }
 
 type ChatHistoryEntry = {
@@ -451,6 +438,7 @@ type ReasoningSession = {
   updatedAt: string
   plan: ReasoningPlan | null
   runtimeTaskGraph?: ReasoningPlan | null
+  workflowProgress?: ReasoningWorkflowPhase[]
   currentStepId: string | null
   review?: ReasoningReview | null
   events: ReasoningEvent[]
@@ -479,10 +467,13 @@ type ReasoningSession = {
 }
 
 const ACTIVE_REASONING_SESSION_STORAGE_KEY = 'gamestudio.activeReasoningSessionId'
+const REASONING_AUTO_APPROVE_STORAGE_KEY = 'gamestudio.reasoningAutoApproveEnabled'
 
 type ModelInspection = {
   model: string
   accessible: boolean
+  loaded?: boolean | null
+  isLoading?: boolean | null
   status: 'ok' | 'error'
   detail: string
   checkedAt: string
@@ -617,7 +608,6 @@ export function useControlConsoleApp() {
   const sandboxPrompt = ref('')
   const dashboardActiveTab = ref('reasoning')
   const brainActiveTab = ref<'left' | 'right'>('left')
-  const sandboxBusy = ref(false)
   const skillProposalsList = ref<any[]>([])
   const skillIntentsActive = ref<any[]>([])
   const skillProposalsBusy = ref(false)
@@ -627,7 +617,6 @@ export function useControlConsoleApp() {
   const smartStartBusy = ref(false)
   const smartStartMessage = ref('')
   const chatContextInfo = ref<ChatContextInfo | null>(null)
-  const chatUiStatus = ref<ChatUiStatus>({ kind: 'idle', message: '', activeRequest: null, recovery: null })
   const chatMemoryFile = ref<ChatMemoryFileSummary | null>(null)
   const chatMemoryEditorOpen = ref(false)
   const chatMemoryDraft = ref('[]')
@@ -644,7 +633,7 @@ export function useControlConsoleApp() {
   const reasoningStopBusy = ref(false)
   const reasoningReviewBusy = ref(false)
   const reasoningReviewDraft = ref('')
-  const reasoningAutoApproveEnabled = ref(false)
+  const reasoningAutoApproveEnabled = ref(readPersistedReasoningAutoApproveEnabled())
   const memoryConfig = ref<MemoryConfig | null>(null)
   const memoryConfigBusy = ref(false)
   const memoryConfigError = ref('')
@@ -653,6 +642,8 @@ export function useControlConsoleApp() {
   const configSaving = ref(false)
   const configSaveMessage = ref('')
   const configSaveError = ref('')
+  const modelSwitchBusy = ref(false)
+  const modelSwitchMessage = ref('')
   const skillFilesText = ref('')
   const shortTermMinContextTokens = ref(65536)
   const controlState = ref<HermesControlState | null>(null)
@@ -735,13 +726,15 @@ export function useControlConsoleApp() {
   const rightInspection = ref<ModelInspection | null>(null)
   const inspectingLeft = ref(false)
   const inspectingRight = ref(false)
+  const logClearBusy = ref(false)
+  const logClearMessage = ref('')
+  const reasoningClearMessage = ref('')
   const chatHistory = ref<ChatHistoryEntry[]>([])
   const persistedChatHistory = ref<ChatHistoryEntry[]>([])
   const pendingReasoningUserPrompt = ref('')
   let logInterval: ReturnType<typeof setInterval> | null = null
   let chatUiClockInterval: ReturnType<typeof setInterval> | null = null
   let memoryRecordPollInterval: ReturnType<typeof setInterval> | null = null
-  let chatHistoryPollTimer: ReturnType<typeof setTimeout> | null = null
   let reasoningPollTimer: ReturnType<typeof setTimeout> | null = null
   let productionTestPollInterval: ReturnType<typeof setInterval> | null = null
   let productionTestFollowPausedUntil = 0
@@ -784,8 +777,14 @@ export function useControlConsoleApp() {
   const runtimeActionLabel = computed(() => runtimePrimaryAction.value === 'pause' ? '暂停引擎' : runtimePrimaryAction.value === 'resume' ? '恢复引擎' : runtimePrimaryAction.value === 'start' ? '启动引擎' : '启动引擎')
   const canAllRestartRuntime = computed(() => Boolean(runtimeState.value?.availableActions?.includes('all-restart')))
   const persistedModelLoaded = computed(() => controlState.value?.model?.status === 'loaded' && controlState.value.model.model === leftBrain.value.model && controlState.value.model.provider === leftBrain.value.provider && controlState.value.model.baseUrl === leftBrain.value.baseUrl)
-  const leftSelectedModelLoaded = computed(() => persistedModelLoaded.value || (!!leftBrain.value.model && leftInspection.value?.model === leftBrain.value.model && leftInspection.value?.accessible === true))
+  const leftSelectedModelLoaded = computed(() => persistedModelLoaded.value || (!!leftBrain.value.model && leftInspection.value?.model === leftBrain.value.model && leftInspection.value?.loaded === true))
   const leftBrainSummary = computed(() => ({ providerLabel: leftBrain.value.provider === 'ollama' ? 'Ollama' : 'OMLX (Local)', baseUrlLabel: leftBrain.value.baseUrl || '默认', modelLabel: leftBrain.value.model || '未选择模型', tokenLabel: leftInspection.value?.usage?.totalTokens ?? '-', statusLabel: leftSelectedModelLoaded.value ? '已启动' : '未启动' }))
+  const leftBrainSwitchNeeded = computed(() => {
+    if (!leftBrain.value.model) return false
+    return String(controlState.value?.model?.provider || '') !== String(leftBrain.value.provider || '')
+      || String(controlState.value?.model?.baseUrl || '') !== String(leftBrain.value.baseUrl || '')
+      || String(controlState.value?.model?.model || '') !== String(leftBrain.value.model || '')
+  })
   const leftBrainConfigSignature = computed(() => JSON.stringify(buildLeftBrainConfigPayload()))
   const leftBrainConfigSaved = computed(() => !!persistedLeftBrainConfigSignature.value && leftBrainConfigSignature.value === persistedLeftBrainConfigSignature.value && controlState.value?.config?.saved === true)
   const effectivePreflightReady = computed(() => Boolean(preflightResult.value?.ready) || (controlState.value?.preflight?.ready === true && controlState.value.preflight.configFingerprint === leftBrainConfigSignature.value))
@@ -797,8 +796,14 @@ export function useControlConsoleApp() {
     if (!effectivePreflightReady.value) return controlState.value?.preflight?.detail || '尚未完成左脑自检。'
     return ''
   })
+  const reasoningSubmitBlockedReason = computed(() => {
+    if (selectedAgent.value?.definition.runtime !== 'hermes') return ''
+    if (runtimeBusy.value || memoryConfigBusy.value || configSaving.value || smartStartBusy.value) return '控制面处理中，请稍候。'
+    if (!leftBrainRunning.value || runtimeState.value?.state !== 'running') return 'Hermes 未启动，请先启动引擎。'
+    return ''
+  })
   const chatMemoryDirty = computed(() => chatMemoryDraft.value !== chatMemoryLoadedContent.value)
-  const reasoningStatusLabel = computed(() => !activeReasoningSession.value ? '未开始' : activeReasoningSession.value.status === 'planning' ? '构建运行任务中' : activeReasoningSession.value.status === 'running' ? '执行中' : activeReasoningSession.value.status === 'waiting_review' ? '待审核' : activeReasoningSession.value.status === 'completed' ? '已完成' : activeReasoningSession.value.status === 'cancelled' ? '已停止' : '失败')
+  const reasoningStatusLabel = computed(() => !activeReasoningSession.value ? '未开始' : activeReasoningSession.value.status === 'planning' ? '制定任务中' : activeReasoningSession.value.status === 'running' ? '执行中' : activeReasoningSession.value.status === 'waiting_review' ? '待人工确认' : activeReasoningSession.value.status === 'completed' ? '已完成' : activeReasoningSession.value.status === 'cancelled' ? '已停止' : '失败')
   const reasoningPendingReview = computed(() => activeReasoningSession.value?.status === 'waiting_review' && activeReasoningSession.value.review ? activeReasoningSession.value.review : null)
   const reasoningReviewTargetLabel = computed(() => {
     const review = reasoningPendingReview.value
@@ -824,21 +829,11 @@ export function useControlConsoleApp() {
     return '通过并继续'
   })
   const reasoningReviewEvidence = computed(() => reasoningPendingReview.value?.evidence || null)
-  const chatActiveRequestElapsedSeconds = computed(() => {
-    const activeRequest = chatUiStatus.value.activeRequest
-    if (!activeRequest) return 0
-    const startedAtMs = new Date(activeRequest.startedAt).getTime()
-    if (Number.isNaN(startedAtMs)) return Math.max(0, Math.round(activeRequest.activeForMs / 1000))
-    return Math.max(0, Math.round((chatUiNow.value - startedAtMs) / 1000))
-  })
   const reasoningElapsedSeconds = computed(() => getReasoningSessionElapsedSeconds(activeReasoningSession.value, chatUiNow.value))
   const reasoningSessionInForeground = computed(() => ['planning', 'running', 'waiting_review'].includes(activeReasoningSession.value?.status || ''))
   const canClearReasoningSession = computed(() => ['completed', 'failed', 'cancelled'].includes(activeReasoningSession.value?.status || ''))
-  const showChatStatusBanner = computed(() => chatUiStatus.value.kind !== 'idle' && !reasoningSessionInForeground.value)
-  const composerPrefersReasoning = computed(() => dashboardActiveTab.value === 'reasoning')
   const reviewModeLabel = computed(() => reasoningAutoApproveEnabled.value ? '自动直跑模式' : '人工全审模式')
-  const primaryComposerActionLabel = computed(() => composerPrefersReasoning.value ? (reasoningBusy.value ? '推理中...' : '开始可观测执行') : (sandboxBusy.value ? '发送中...' : '直接聊天'))
-  const secondaryComposerActionLabel = computed(() => composerPrefersReasoning.value ? (sandboxBusy.value ? '直接聊天中...' : '直接聊天') : (reasoningBusy.value ? '推理中...' : '可观测执行'))
+  const primaryComposerActionLabel = computed(() => reasoningBusy.value ? '执行中...' : reasoningAutoApproveEnabled.value ? '直接开始任务流' : '开始任务执行')
   const shortTermMemoryHint = computed(() => String(leftBrain.value.model || '').trim().toLowerCase().includes('gemma-4-26b-a4b') ? 'Gemma-4-26B-A4B 当前 OMLX 配置应填写为：短期记忆最小窗口 65536。该项只校验上下文窗口；最大输出 token 4096 由模型服务配置控制，不在这里填写。' : '这里填写的是模型最小上下文窗口要求。要通过自检，模型的上下文窗口必须大于等于该值；最大输出 token 由模型服务自身配置控制。')
 
   function buildLeftBrainConfigPayload() {
@@ -954,7 +949,43 @@ export function useControlConsoleApp() {
   function getPreviewPlannerHints(value: unknown) { return parseStructuredOutboundPreview(value)?.plannerHints || null }
   function formatActionHintLine(hint: { keywords: string[]; requiredActions: string[]; answerAction: string }) { return `${hint.keywords.join(' | ')} => ${[...hint.requiredActions, hint.answerAction].filter(Boolean).join(', ')}` }
   function validateJsonEditorContent(filePath: string, content: string) { if (/\.json$/i.test(filePath)) JSON.parse(content) }
-  function clearVisibleLogs() { clearedLogLineCount.value = (rawLiveLogs.value ? rawLiveLogs.value.split('\n').filter((line) => line.length > 0) : []).length }
+  function formatClearArchiveMessage(payload: any) {
+    const archiveDir = String(payload?.archive?.archiveDir || '').trim()
+    const archivedFileCount = Number(payload?.archive?.archivedFileCount || 0)
+    if (!archiveDir) return '已完成清理分析；本次没有生成归档包。'
+    return `已备份 ${archivedFileCount} 个文件到 ${archiveDir}。`
+  }
+
+  async function clearVisibleLogs() {
+    if (logClearBusy.value || memoryClearBusy.value) return
+    const lineCount = rawLiveLogs.value ? rawLiveLogs.value.split('\n').filter((line) => line.length > 0).length : 0
+    const message = [
+      '确认清空后台日志窗口吗？',
+      '系统会先分析并归档 Hermes 运行日志和当日日志，然后清空日志文件。',
+      '不会删除长期记忆、上下文池、项目文件或已归档 session。',
+      lineCount > 0 ? `当前窗口约 ${lineCount} 行日志。` : '当前窗口没有可见日志。'
+    ].join('\n')
+    if (typeof window !== 'undefined' && !window.confirm(message)) return
+    logClearBusy.value = true
+    logClearMessage.value = ''
+    memoryRecordsError.value = ''
+    try {
+      const response = await clearAgentMemoryRecords(selectedAgentId.value || 'hermes-manager', { targets: ['logs'], reason: 'manual-log-window-clear' })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `clear_logs_http_${response.status}`)
+      memoryRecords.value = Array.isArray(payload.records) ? payload.records : memoryRecords.value
+      memoryClearTargets.value = Array.isArray(payload.clearTargets) ? payload.clearTargets : memoryClearTargets.value
+      syncMemoryClearSelection()
+      rawLiveLogs.value = ''
+      clearedLogLineCount.value = 0
+      await fetchLogs()
+      logClearMessage.value = `日志窗口已安全清空；${formatClearArchiveMessage(payload)}`
+    } catch (caught) {
+      memoryRecordsError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      logClearBusy.value = false
+    }
+  }
   function getMemoryRecordVersion(record: MemoryRecordItem) { return `${record.exists ? '1' : '0'}:${record.updatedAt || 'null'}:${record.sizeChars}:${record.itemCount ?? ''}` }
   function resetMemoryRecordState() {
     memoryRecords.value = []
@@ -984,6 +1015,7 @@ export function useControlConsoleApp() {
   }
   function isMemoryRecordUpdated(recordKey: string) { return Boolean(memoryRecordUpdatedKeys.value[recordKey]) }
   function getMemoryRecordStatusLabel(record: MemoryRecordItem) {
+    if (!record.exists && record.optionalMissingOk) return '可选未创建'
     if (!record.exists) return '缺失'
     if (isMemoryRecordUpdated(record.key)) return '有更新'
     if (record.empty) return '空'
@@ -991,18 +1023,29 @@ export function useControlConsoleApp() {
     return '正常'
   }
   function getMemoryRecordStatusTone(record: MemoryRecordItem) {
+    if (!record.exists && record.optionalMissingOk) return 'var(--c-text-muted)'
     if (!record.exists) return 'var(--c-error-dim)'
     if (isMemoryRecordUpdated(record.key)) return 'var(--c-accent)'
     if (record.empty) return 'var(--c-text-muted)'
     return 'var(--c-success-dim)'
   }
-  function resetChatUiStatus() { chatUiStatus.value = { kind: 'idle', message: '', activeRequest: null, recovery: null } }
   function persistActiveReasoningSessionId(sessionId: string | null) {
     if (typeof window === 'undefined') return
     if (sessionId) window.localStorage.setItem(ACTIVE_REASONING_SESSION_STORAGE_KEY, sessionId)
     else window.localStorage.removeItem(ACTIVE_REASONING_SESSION_STORAGE_KEY)
   }
   function readPersistedActiveReasoningSessionId() { return typeof window === 'undefined' ? '' : (window.localStorage.getItem(ACTIVE_REASONING_SESSION_STORAGE_KEY) || '') }
+  function persistReasoningAutoApproveEnabled(enabled: boolean) {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(REASONING_AUTO_APPROVE_STORAGE_KEY, enabled ? 'true' : 'false')
+  }
+  function readPersistedReasoningAutoApproveEnabled() {
+    if (typeof window === 'undefined') return true
+    const raw = window.localStorage.getItem(REASONING_AUTO_APPROVE_STORAGE_KEY)
+    if (raw === 'false') return false
+    if (raw === 'true') return true
+    return true
+  }
   function normalizeChatContent(value: string) {
     return String(value || '').replace(/\s+/g, ' ').trim()
   }
@@ -1012,19 +1055,6 @@ export function useControlConsoleApp() {
   function appendLocalChatEntry(entry: ChatHistoryEntry) {
     persistedChatHistory.value = [...persistedChatHistory.value, { ...entry, transient: false }]
     rebuildDisplayedChatHistory()
-  }
-  function formatReasoningPlanStepsForChat(steps: unknown) {
-    if (!Array.isArray(steps) || steps.length === 0) return ''
-    return steps
-      .map((step, index) => {
-        if (!step || typeof step !== 'object') return ''
-        const title = typeof (step as { title?: unknown }).title === 'string' ? String((step as { title?: unknown }).title).trim() : `步骤 ${index + 1}`
-        const action = typeof (step as { action?: unknown }).action === 'string' ? String((step as { action?: unknown }).action).trim() : ''
-        const tool = typeof (step as { tool?: unknown }).tool === 'string' ? String((step as { tool?: unknown }).tool).trim() : ''
-        return `- ${index + 1}. ${title}${action ? ` | action=${action}` : ''}${tool ? ` | tool=${tool}` : ''}`
-      })
-      .filter(Boolean)
-      .join('\n')
   }
   function buildReasoningTransientChatEntries(session: ReasoningSession | null, baseHistory: ChatHistoryEntry[]) {
     const entries: ChatHistoryEntry[] = []
@@ -1046,70 +1076,12 @@ export function useControlConsoleApp() {
     if (session.userPrompt.trim() && !(session.status === 'completed' && session.artifacts?.finalAnswerPersisted)) {
       pushEntry('user', session.userPrompt.trim(), `reasoning-user:${session.sessionId}`)
     }
-
-    let planCount = 0
-    let executionStepIndex = 0
-    for (const event of Array.isArray(session.events) ? session.events : []) {
-      const data = getReasoningEventData(event)
-      if (event.type === 'plan_created') {
-        planCount += 1
-        executionStepIndex = 0
-        const lines = [
-          planCount > 1 ? '1 任务修订' : '1 任务制定',
-          event.summary,
-          typeof data?.goal === 'string' && data.goal.trim() ? `目标：${data.goal.trim()}` : '',
-          typeof data?.strategy === 'string' && data.strategy.trim() ? `策略：${data.strategy.trim()}` : '',
-          formatReasoningPlanStepsForChat(data?.steps)
-        ].filter(Boolean)
-        pushEntry('hermes', lines.join('\n\n'), `reasoning-plan:${event.eventId}`)
-        continue
-      }
-
-      if (event.type === 'planning_started' && /重新规划/.test(event.title)) {
-        pushEntry('hermes', ['1 任务修订准备', event.summary].filter(Boolean).join('\n\n'), `reasoning-replan:${event.eventId}`)
-        continue
-      }
-
-      if (event.type === 'step_completed') {
-        const action = typeof data?.action === 'string' ? data.action : ''
-        if (action === 'generate_default_answer' || /最终回答/.test(event.summary)) continue
-        executionStepIndex += 1
-        pushEntry('hermes', [`2.${executionStepIndex} 执行输出`, event.title, event.summary].filter(Boolean).join('\n\n'), `reasoning-step:${event.eventId}`)
-        continue
-      }
-
-      if (event.type === 'final_answer_ready' && event.title === '最终回答') {
-        if (session.status === 'completed' && session.artifacts?.finalAnswerPersisted) continue
-        const previewBlocks = getReasoningEventPreviewBlocks(event)
-        const answerText = previewBlocks.find((block) => /最终回答/.test(block.title))?.content || (typeof data?.finalAnswer === 'string' ? data.finalAnswer : '')
-        pushEntry('hermes', ['3 回答输出', answerText || event.summary].filter(Boolean).join('\n\n'), `reasoning-answer:${event.eventId}`)
-        continue
-      }
-
-      if (event.type === 'final_answer_ready' && event.title === '最终答案质检') {
-        const score = typeof data?.score === 'number' ? `评分：${data.score}/100` : ''
-        pushEntry('hermes', ['4 自动质检', event.summary, score].filter(Boolean).join('\n\n'), `reasoning-quality:${event.eventId}`)
-        continue
-      }
-
-      if (event.type === 'self_review_completed') {
-        const verdict = typeof data?.verdict === 'string' ? `结论：${data.verdict}` : ''
-        const issues = Array.isArray(data?.issues) && data.issues.length > 0 ? `问题：${data.issues.join('；')}` : ''
-        const lesson = data?.promotableLesson && typeof data.promotableLesson === 'object'
-          ? `强化候选：${String((data.promotableLesson as { summary?: unknown }).summary || (data.promotableLesson as { category?: unknown }).category || '').trim()}`
-          : ''
-        pushEntry('hermes', ['5 自我审查结论', event.summary, verdict, issues, lesson].filter(Boolean).join('\n\n'), `reasoning-self-review:${event.eventId}`)
-        continue
-      }
-
-      if (event.type === 'quality_review_required') {
-        pushEntry('hermes', ['等待人工确认', event.summary].filter(Boolean).join('\n\n'), `reasoning-human-review:${event.eventId}`)
-        continue
-      }
-
-      if (event.type === 'self_improvement_candidate_recorded') {
-        pushEntry('hermes', ['强化升级记录', event.summary].filter(Boolean).join('\n\n'), `reasoning-improvement:${event.eventId}`)
-      }
+    if (session.status !== 'completed' || !session.artifacts?.finalAnswerPersisted) {
+      const finalAnswer = String(session.artifacts?.finalAnswer || '').trim()
+      if (finalAnswer) pushEntry('hermes', finalAnswer, `reasoning-answer:${session.sessionId}`)
+    }
+    if ((session.status === 'failed' || session.status === 'cancelled') && session.error) {
+      pushEntry('error', session.error, `reasoning-error:${session.sessionId}`)
     }
 
     return entries
@@ -1132,7 +1104,7 @@ export function useControlConsoleApp() {
     reasoningBusy.value = Boolean(normalizedSession && (normalizedSession.status === 'planning' || normalizedSession.status === 'running'))
     rebuildDisplayedChatHistory()
   }
-  function stopChatHistoryPolling() { if (chatHistoryPollTimer) { clearTimeout(chatHistoryPollTimer); chatHistoryPollTimer = null } }
+  function stopChatHistoryPolling() {}
   function stopReasoningPolling() { if (reasoningPollTimer) { clearTimeout(reasoningPollTimer); reasoningPollTimer = null } }
   function closeSubmitGate() { submitGateOpen.value = false; submitGateMode.value = null }
   function closeEditorModal() { editorModalOpen.value = false; editorModalKind.value = null }
@@ -1175,8 +1147,7 @@ export function useControlConsoleApp() {
     if (event.key !== 'Enter') return
     if (event.metaKey || event.ctrlKey) {
       event.preventDefault()
-      if (composerPrefersReasoning.value) void sendObservableReasoningChat()
-      else void sendChat()
+      void sendObservableReasoningChat()
     }
   }
 
@@ -1199,10 +1170,19 @@ export function useControlConsoleApp() {
     await nextTick()
     const container = chatScrollContainer.value
     if (!container) return
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    if (distanceFromBottom > 96) return
     container.scrollTop = container.scrollHeight
   }, { deep: true })
   watch(editorModalOpen, (isOpen) => { document.body.style.overflow = isOpen ? 'hidden' : ''; if (isOpen) focusActiveEditorInModal() })
-  watch(leftBrainConfigSignature, (nextValue, previousValue) => { if (!previousValue || loadingEngineConfig.value || nextValue === previousValue) return; configSaveMessage.value = ''; configSaveError.value = ''; resetPreflightState() })
+  watch(reasoningAutoApproveEnabled, (enabled) => { persistReasoningAutoApproveEnabled(Boolean(enabled)) })
+  watch(leftBrainConfigSignature, (nextValue, previousValue) => {
+    if (!previousValue || loadingEngineConfig.value || nextValue === previousValue) return
+    configSaveMessage.value = ''
+    configSaveError.value = ''
+    modelSwitchMessage.value = ''
+    resetPreflightState()
+  })
 
   async function fetchLogs() {
     if (!selectedAgentId.value) return
@@ -1569,6 +1549,54 @@ export function useControlConsoleApp() {
     }
   }
 
+  async function switchLeftBrainModel() {
+    if (!selectedAgentId.value) return
+    if (!leftBrain.value.model) {
+      error.value = '请先选择要切换到的模型。'
+      return
+    }
+
+    modelSwitchBusy.value = true
+    modelSwitchMessage.value = ''
+    leftError.value = ''
+    error.value = ''
+    try {
+      const response = await switchAgentModel(selectedAgentId.value, { config: buildLeftBrainConfigPayload() })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) {
+        if (payload?.state) applyControlState(payload.state)
+        if (payload?.runtimeStatus) runtimeState.value = payload.runtimeStatus
+        if (payload?.preflight) preflightResult.value = payload.preflight
+        if (payload?.readiness) configReadiness.value = payload.readiness
+        const activeExecutions = Array.isArray(payload?.activeExecutions)
+          ? payload.activeExecutions.map((item: any) => `${item.sessionId}${item.phase ? ` / ${item.phase}` : ''}`).join('；')
+          : ''
+        throw new Error(activeExecutions || payload?.recoveryDetail || payload?.detail || payload?.error || `switch_model_http_${response.status}`)
+      }
+
+      if (payload?.state) applyControlState(payload.state)
+      if (payload?.runtimeStatus) runtimeState.value = payload.runtimeStatus
+      if (payload?.preflight) {
+        preflightResult.value = payload.preflight
+        configReadiness.value = payload.preflight?.readiness || configReadiness.value
+        if (payload.preflight?.inspection) leftInspection.value = payload.preflight.inspection
+      }
+      modelSwitchMessage.value = payload?.detail || '左脑模型已切换。'
+      configSaveMessage.value = payload?.detail || '左脑模型已切换。'
+      if (payload?.runtimeStatus?.state === 'running') {
+        leftBrainRunning.value = true
+        await loadHermesSelfCheck()
+      }
+      await fetchLocalModels('left')
+      await fetchLogs()
+    } catch (caught) {
+      leftError.value = caught instanceof Error ? caught.message : String(caught)
+      await fetchLogs()
+    } finally {
+      modelSwitchBusy.value = false
+    }
+  }
+
   async function refreshHermesRuntimeState() {
     const response = await getRuntimeStatus('hermes-manager')
     if (!response.ok) throw new Error(`runtime_status_http_${response.status}`)
@@ -1759,9 +1787,13 @@ export function useControlConsoleApp() {
     }
   }
 
-  async function openSubmitGate(mode: 'chat' | 'reasoning') {
+  async function openSubmitGate(mode: 'reasoning' = 'reasoning') {
     const prompt = sandboxPrompt.value.trim()
     if (!prompt) return
+    if (reasoningSubmitBlockedReason.value) {
+      reasoningError.value = reasoningSubmitBlockedReason.value
+      return
+    }
     submitGateOpen.value = true
     submitGateMode.value = mode
     submitPromptDraft.value = sandboxPrompt.value
@@ -1782,7 +1814,7 @@ export function useControlConsoleApp() {
     submitDraftError.value = ''
     contextPoolSaveMessage.value = ''
     try {
-      const response = await getSubmissionPreview('hermes-manager', { mode: submitGateMode.value, prompt: submitPromptDraft.value, selectedSourceIds: submitSelectedSourceIds.value, selectedContextPoolIds: submitSelectedContextPoolIds.value })
+      const response = await getSubmissionPreview('hermes-manager', { mode: 'reasoning', prompt: submitPromptDraft.value, selectedSourceIds: submitSelectedSourceIds.value, selectedContextPoolIds: submitSelectedContextPoolIds.value })
       const payload = await response.json().catch(() => null)
       if (!response.ok || !payload?.ok || !payload?.preview) throw new Error(payload?.error || `submission_preview_http_${response.status}`)
       submitDraftResult.value = payload.preview
@@ -1960,13 +1992,16 @@ export function useControlConsoleApp() {
   }
 
   async function performReasoningSubmission(userText: string, submissionContext: Record<string, unknown>) {
+    if (reasoningSubmitBlockedReason.value) {
+      reasoningError.value = reasoningSubmitBlockedReason.value
+      return
+    }
     reasoningBusy.value = true
     reasoningError.value = ''
     reasoningReviewDraft.value = ''
     sandboxPrompt.value = ''
     productionTestFollowPausedUntil = Date.now() + 10 * 60 * 1000
     stopChatHistoryPolling()
-    resetChatUiStatus()
     stopReasoningPolling()
     pendingReasoningUserPrompt.value = userText
     syncReasoningSessionUi(null)
@@ -1990,71 +2025,17 @@ export function useControlConsoleApp() {
     }
   }
 
-  async function performChatSubmission(userText: string, submissionContext: Record<string, unknown>) {
-    let shouldPollHistory = false
-    appendLocalChatEntry({ role: 'user', content: userText })
-    sandboxPrompt.value = ''
-    sandboxBusy.value = true
-    stopChatHistoryPolling()
-    chatUiStatus.value = { kind: 'pending', message: '请求已发出，等待 Hermes / OMLX 返回。', activeRequest: { startedAt: new Date().toISOString(), activeForMs: 0, promptChars: userText.length, contextSources: chatContextInfo.value, outboundRequest: null }, recovery: null }
-    scheduleChatHistoryPolling(500)
-    try {
-      const response = await pingModel('hermes-manager', { prompt: userText, ...submissionContext })
-      const payload = await response.json()
-      if (payload.ok) {
-        chatContextInfo.value = payload.contextSources || null
-        stopChatHistoryPolling()
-        chatUiStatus.value = { kind: 'idle', message: '', activeRequest: null, recovery: null }
-        appendLocalChatEntry({ role: 'hermes', content: payload.reply, tokens: payload.raw?.usage })
-      } else {
-        chatContextInfo.value = payload.contextSources || chatContextInfo.value
-        const recovery = payload.recovery || null
-        const activeRequest = payload.activeRequest || null
-        const statusKind = payload.error === 'chat_busy' ? 'busy' : payload.error === 'chat_timeout' ? 'timeout' : recovery?.attempted ? 'recovering' : 'error'
-        const parts = [payload.error]
-        if (payload.details) parts.push(payload.details)
-        if (activeRequest?.activeForMs != null) parts.push(`当前请求已运行 ${Math.round(activeRequest.activeForMs / 1000)} 秒`)
-        if (recovery?.detail) parts.push(recovery.detail)
-        chatUiStatus.value = { kind: statusKind, message: parts.filter(Boolean).join(' | '), activeRequest, recovery }
-        shouldPollHistory = payload.error === 'chat_timeout' || Boolean(payload.pending)
-        if (payload.error !== 'chat_timeout') appendLocalChatEntry({ role: 'error', content: parts.filter(Boolean).join('\n') })
-      }
-    } catch (caught) {
-      chatUiStatus.value = { kind: 'error', message: caught instanceof Error ? caught.message : String(caught), activeRequest: null, recovery: null }
-      appendLocalChatEntry({ role: 'error', content: chatUiStatus.value.message })
-    } finally {
-      sandboxBusy.value = false
-      if (!shouldPollHistory) stopChatHistoryPolling()
-    }
-  }
-
   async function confirmSubmitGate() {
     if (!submitGateMode.value || !submitPromptDraft.value.trim()) return
+    if (reasoningSubmitBlockedReason.value) {
+      submitDraftError.value = reasoningSubmitBlockedReason.value
+      return
+    }
     const submissionContext: Record<string, unknown> = { selectedSourceIds: submitSelectedSourceIds.value, selectedContextPoolIds: submitSelectedContextPoolIds.value }
     if (submitConfirmedSummary.value.trim()) submissionContext.confirmedContextSummary = submitConfirmedSummary.value
-    const mode = submitGateMode.value
     const prompt = submitPromptDraft.value
     closeSubmitGate()
-    if (mode === 'reasoning') await performReasoningSubmission(prompt, submissionContext)
-    else await performChatSubmission(prompt, submissionContext)
-  }
-
-  function scheduleChatHistoryPolling(delayMs = 4000) {
-    stopChatHistoryPolling()
-    chatHistoryPollTimer = setTimeout(async () => {
-      const payload = await loadChatHistory()
-      if (payload?.activeRequest) {
-        if (payload.activeRequest.contextSources) chatContextInfo.value = payload.activeRequest.contextSources
-        if (chatUiStatus.value.kind === 'timeout' || chatUiStatus.value.kind === 'pending') {
-          chatUiStatus.value = { kind: chatUiStatus.value.kind, message: chatUiStatus.value.message, activeRequest: payload.activeRequest, recovery: null }
-        }
-        scheduleChatHistoryPolling(delayMs)
-        return
-      }
-      if (chatUiStatus.value.kind === 'timeout' || chatUiStatus.value.kind === 'pending') {
-        chatUiStatus.value = { kind: 'idle', message: '', activeRequest: null, recovery: null }
-      }
-    }, delayMs)
+    await performReasoningSubmission(prompt, submissionContext)
   }
 
   async function loadReasoningSession(sessionId: string) {
@@ -2090,13 +2071,15 @@ export function useControlConsoleApp() {
   async function clearReasoningSession() {
     const sessionId = activeReasoningSession.value?.sessionId
     if (!sessionId || !canClearReasoningSession.value || reasoningStopBusy.value) return
-    if (typeof window !== 'undefined' && !window.confirm('确认清理当前可观测推理链记录吗？清理后当前时间线和结果将不再保留。')) return
+    if (typeof window !== 'undefined' && !window.confirm('确认清理当前可观测推理链记录吗？\n仅已结束任务可清理。后端会先备份 session JSON 和清理报告，再从当前时间线移除。')) return
     reasoningStopBusy.value = true
     reasoningError.value = ''
+    reasoningClearMessage.value = ''
     try {
       const response = await clearReasoningSessionRecord('hermes-manager', sessionId)
       const payload = await response.json().catch(() => null)
       if (!response.ok || !payload?.ok) throw new Error(payload?.error || `reasoning_clear_http_${response.status}`)
+      reasoningClearMessage.value = `推理链记录已归档清理；${formatClearArchiveMessage(payload)}`
       stopReasoningPolling()
       syncReasoningSessionUi(null)
       reasoningReviewDraft.value = ''
@@ -2138,8 +2121,15 @@ export function useControlConsoleApp() {
     }
   }
 
-  async function sendObservableReasoningChat() { if (sandboxPrompt.value.trim()) await openSubmitGate('reasoning') }
-  async function sendChat() { if (sandboxPrompt.value.trim()) await openSubmitGate('chat') }
+  async function sendObservableReasoningChat() {
+    const prompt = sandboxPrompt.value.trim()
+    if (!prompt) return
+    if (reasoningAutoApproveEnabled.value) {
+      await performReasoningSubmission(prompt, {})
+      return
+    }
+    await openSubmitGate('reasoning')
+  }
 
   async function submitReasoningReview(decision: 'approve' | 'reject' | 'back', options: { skipManualDraft?: boolean } = {}) {
     const sessionId = activeReasoningSession.value?.sessionId
@@ -2266,7 +2256,7 @@ export function useControlConsoleApp() {
 
   async function clearChatWindowHistory() {
     if (chatMemorySaveBusy.value || chatMemoryBusy.value) return
-    if (typeof window !== 'undefined' && !window.confirm('确认清空当前 Hermes 窗口聊天记录吗？这只会重置聊天存档，不会删除长期记忆、状态/任务/决策或上下文池。')) return
+    if (typeof window !== 'undefined' && !window.confirm('确认清空当前 Hermes 回答窗口吗？\n系统会先分析并归档当天聊天缓冲 JSON，再清空窗口。\n不会删除长期记忆、状态/任务/决策、上下文池或项目文件。')) return
     chatMemorySaveBusy.value = true
     chatMemoryError.value = ''
     chatMemorySaveMessage.value = ''
@@ -2286,15 +2276,19 @@ export function useControlConsoleApp() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: '' })
       }).catch(() => null)
-      const response = await saveChatHistoryFile('hermes-manager', '[]')
+      const response = await clearAgentMemoryRecords(selectedAgentId.value || 'hermes-manager', { targets: ['chat-history'], reason: 'manual-answer-window-clear' })
       const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload?.ok || !payload?.file) throw new Error(payload?.error || `clear_chat_history_http_${response.status}`)
-      chatMemoryFile.value = { filePath: payload.file.filePath, exists: payload.file.exists, sizeChars: payload.file.sizeChars, updatedAt: payload.file.updatedAt }
-      chatMemoryDraft.value = payload.file.content || '[]'
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `clear_chat_history_http_${response.status}`)
+      memoryRecords.value = Array.isArray(payload.records) ? payload.records : memoryRecords.value
+      memoryClearTargets.value = Array.isArray(payload.clearTargets) ? payload.clearTargets : memoryClearTargets.value
+      syncMemoryClearSelection()
+      const chatRecord = Array.isArray(payload.records) ? payload.records.find((record: any) => record.key === 'chat-history') : null
+      if (chatRecord) chatMemoryFile.value = { filePath: chatRecord.filePath, exists: chatRecord.exists, sizeChars: chatRecord.sizeChars, updatedAt: chatRecord.updatedAt }
+      chatMemoryDraft.value = '[]\n'
       chatMemoryLoadedContent.value = chatMemoryDraft.value
       persistedChatHistory.value = []
       rebuildDisplayedChatHistory()
-      chatMemorySaveMessage.value = '窗口聊天记录已清空；长期记忆和上下文池未受影响。'
+      chatMemorySaveMessage.value = `回答窗口已安全清空；${formatClearArchiveMessage(payload)} 长期记忆和上下文池未受影响。`
     } catch (caught) {
       chatMemoryError.value = caught instanceof Error ? caught.message : String(caught)
     } finally {
@@ -2490,7 +2484,6 @@ export function useControlConsoleApp() {
     canAllRestartRuntime,
     canClearReasoningSession,
     cancelReasoningSession,
-    chatActiveRequestElapsedSeconds,
     chatMemoryBusy,
     chatContextInfo,
     chatHistory,
@@ -2505,7 +2498,6 @@ export function useControlConsoleApp() {
     chatMemorySaveBusy,
     chatMemorySaveMessage,
     chatScrollContainer,
-    chatUiStatus,
     clearChatWindowHistory,
     clearAllMemoryRecords,
     clearMemoryTarget,
@@ -2514,11 +2506,12 @@ export function useControlConsoleApp() {
     clearVisibleLogs,
     closeEditorModal,
     closeSubmitGate,
-    composerPrefersReasoning,
     configReadiness,
     configSaveError,
     configSaveMessage,
     configSaving,
+    modelSwitchBusy,
+    modelSwitchMessage,
     confirmSubmitGate,
     connectSelectedAgent,
     connecting,
@@ -2566,9 +2559,11 @@ export function useControlConsoleApp() {
     inspectingRight,
     leftBrain,
     leftBrainBlockedReason,
+    reasoningSubmitBlockedReason,
     leftBrainConfigSaved,
     leftBrainRunning,
     leftBrainSummary,
+    leftBrainSwitchNeeded,
     leftError,
     leftInspection,
     leftSelectedModelLoaded,
@@ -2581,6 +2576,8 @@ export function useControlConsoleApp() {
     loadHermesSelfCheck,
     loadMemoryRecords,
     loadReasoningCapabilities,
+    logClearBusy,
+    logClearMessage,
     logContainer,
     managerHealth,
     memoryClearBusy,
@@ -2617,6 +2614,7 @@ export function useControlConsoleApp() {
     reasoningCapabilities,
     reasoningCapabilitiesBusy,
     reasoningCapabilitiesError,
+    reasoningClearMessage,
     reasoningElapsedSeconds,
     reasoningError,
     reasoningPendingReview,
@@ -2637,12 +2635,12 @@ export function useControlConsoleApp() {
     rightError,
     rightInspection,
     runLeftBrainPreflight,
+    switchLeftBrainModel,
     runtimeActionLabel,
     runtimeBusy,
     runtimePrimaryAction,
     runtimeState,
     runtimeStatus,
-    sandboxBusy,
     sandboxPrompt,
     saveMemoryRecordFile,
     saveChatMemoryFile,
@@ -2650,7 +2648,6 @@ export function useControlConsoleApp() {
     saveContextPoolEntryEdits,
     saveContextSourceFile,
     saveLeftBrainConfig,
-    secondaryComposerActionLabel,
     selectedAgent,
     selectedAgentId,
     selectedAgentLabel,
@@ -2659,14 +2656,12 @@ export function useControlConsoleApp() {
     selectedContextSource,
     selectedContextSourceId,
     selfCheck,
-    sendChat,
     sendObservableReasoningChat,
     getMemoryRecordStatusLabel,
     getMemoryRecordStatusTone,
     isMemoryRecordUpdated,
     shortTermMemoryHint,
     shortTermMinContextTokens,
-    showChatStatusBanner,
     skillConfig,
     skillFilesText,
     sourceEditorBusy,

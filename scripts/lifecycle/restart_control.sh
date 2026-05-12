@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin:/bin:/usr/bin:${PATH}"
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN_DIR="${ROOT}/.run"
 
@@ -11,6 +13,17 @@ CONTROL_SERVER_LOG="${RUN_DIR}/control-server.log"
 CONTROL_CONSOLE_LOG="${RUN_DIR}/control-console.log"
 CONTROL_SERVER_PID_FILE="${RUN_DIR}/control-server.pid"
 CONTROL_CONSOLE_PID_FILE="${RUN_DIR}/control-console.pid"
+
+if [ -x "/opt/homebrew/bin/node" ]; then
+  NODE_BIN="/opt/homebrew/bin/node"
+elif [ -x "/usr/local/bin/node" ]; then
+  NODE_BIN="/usr/local/bin/node"
+elif command -v node >/dev/null 2>&1; then
+  NODE_BIN="$(command -v node)"
+else
+  echo "❌ 未找到 node，可执行 control-server 启动失败" >&2
+  exit 1
+fi
 
 listener_pid() {
   local port="$1"
@@ -93,7 +106,7 @@ stop_listener_if_needed "control-console" "${CONTROL_CONSOLE_PORT}" "${CONTROL_C
 rm -f "${CONTROL_SERVER_LOG}" "${CONTROL_CONSOLE_LOG}"
 
 echo "▶ 启动 control-server :${CONTROL_SERVER_PORT}"
-spawn_detached "env CONTROL_SERVER_PORT='${CONTROL_SERVER_PORT}' npm --workspace @game-studio/control-server run dev" "${CONTROL_SERVER_LOG}" >/dev/null
+spawn_detached "env CONTROL_SERVER_PORT='${CONTROL_SERVER_PORT}' '${NODE_BIN}' apps/control-server/src/index.js" "${CONTROL_SERVER_LOG}" >/dev/null
 
 if ! wait_for_http_ready "http://127.0.0.1:${CONTROL_SERVER_PORT}/api/health" 30; then
   echo "❌ control-server 未在预期时间内就绪，请检查日志: ${CONTROL_SERVER_LOG}" >&2

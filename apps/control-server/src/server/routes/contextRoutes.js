@@ -125,7 +125,7 @@ export function registerContextRoutes(app, context) {
       return c.json({ ok: false, error: 'prompt_required' }, 400)
     }
 
-    const mode = String(body.mode || 'chat') === 'reasoning' ? 'reasoning' : 'chat'
+    const mode = 'reasoning'
     const binding = buildHermesBinding()
     const history = readHermesChatHistory({ includeAllSessions: true })
     const contextSelection = {
@@ -134,48 +134,26 @@ export function registerContextRoutes(app, context) {
       confirmedContextSummary: body.confirmedContextSummary
     }
 
-    if (mode === 'reasoning') {
-      const plannerContext = buildReasoningPlannerMessages(history, prompt, binding, '', contextSelection)
-      return c.json({
-        ok: true,
-        preview: {
-          mode,
-          summary: `当前仅预览 Hermes 生成 reasoning plan 时将发送给 OMLX 的消息，不会真正调用模型。最后一条 user 消息是本次输入；前面 ${plannerContext.replayableMessages.length} 条为历史重放。`,
-          outboundPreview: buildStructuredOutboundPreview({
-            binding,
-            messages: plannerContext.messages,
-            purpose: 'reasoning-plan-preview',
-            mode,
-            userPrompt: prompt,
-            replayedMessageCount: plannerContext.replayableMessages.length,
-            contextSelection,
-            history
-          }),
-          contextSources: buildChatContextSourcesPayload({
-            replayedMessageCount: plannerContext.replayableMessages.length,
-            projectMemory: plannerContext.projectMemory
-          }, binding)
-        }
-      })
-    }
-
-    const chatContext = buildHermesChatMessages(history, prompt, binding, contextSelection)
+    const plannerContext = buildReasoningPlannerMessages(history, prompt, binding, '', contextSelection)
     return c.json({
       ok: true,
       preview: {
         mode,
-        summary: `当前仅预览 Hermes 将发送给 OMLX 的聊天消息，不会真正调用模型。最后一条 user 消息是本次输入；前面 ${chatContext.replayedMessageCount} 条为历史重放。`,
+        summary: `当前仅预览 Control 提交给 Hermes 制定 agentRuntime 任务图时使用的消息，不会真正调用模型。最后一条 user 消息是本次输入；前面 ${plannerContext.replayableMessages.length} 条为历史重放。`,
         outboundPreview: buildStructuredOutboundPreview({
           binding,
-          messages: chatContext.messages,
-          purpose: 'chat-preview',
+          messages: plannerContext.messages,
+          purpose: 'reasoning-plan-preview',
           mode,
           userPrompt: prompt,
-          replayedMessageCount: chatContext.replayedMessageCount,
+          replayedMessageCount: plannerContext.replayableMessages.length,
           contextSelection,
           history
         }),
-        contextSources: buildChatContextSourcesPayload(chatContext, binding)
+        contextSources: buildChatContextSourcesPayload({
+          replayedMessageCount: plannerContext.replayableMessages.length,
+          projectMemory: plannerContext.projectMemory
+        }, binding)
       }
     })
   })

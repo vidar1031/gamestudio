@@ -148,13 +148,248 @@ export const REASONING_ACTIONS = {
     paramsSpec: [
       'scriptPath: 工作区内脚本相对路径，允许 scripts/ 下脚本和仓库根目录常用 .sh/.js/.mjs/.cjs 文件。'
     ]
+  },
+  gamestudio_ensure_running: {
+    title: '启动或确认 GameStudio',
+    tool: REASONING_TOOLS['gamestudio.bootstrap.ensureRunning'].tool,
+    category: 'gamestudio-bootstrap',
+    description: '确认 GameStudio Server/Editor 可用；服务未启动时调用白名单启动脚本。',
+    paramsSpec: ['startIfNeeded?: 是否在未运行时启动。', 'serverUrl?: Server URL。', 'editorUrl?: Editor URL。']
+  },
+  gamestudio_open_editor: {
+    title: '打开 GameStudio Editor',
+    tool: REASONING_TOOLS['gamestudio.bootstrap.openEditor'].tool,
+    category: 'gamestudio-bootstrap',
+    description: '返回 Editor URL，并在本机 macOS 上尝试打开浏览器。',
+    paramsSpec: ['editorUrl?: Editor URL。', 'openBrowser?: 是否尝试打开浏览器。', 'openTarget?: ai-create-story 时直接打开 AI 创建故事弹窗。', 'openNewTabFallback?: 找不到可复用标签时是否允许新开标签。']
+  },
+  gamestudio_read_settings: {
+    title: '读取 Studio Settings',
+    tool: REASONING_TOOLS['gamestudio.bootstrap.readSettings'].tool,
+    category: 'gamestudio-bootstrap',
+    description: '读取 GameStudio settings 与 effective 配置。',
+    paramsSpec: []
+  },
+  gamestudio_configure_local_production: {
+    title: '写入本地生产配置',
+    tool: REASONING_TOOLS['gamestudio.bootstrap.configureLocalProduction'].tool,
+    category: 'gamestudio-bootstrap',
+    description: '写入本地 OMLX 与 ComfyUI 的非密钥生产默认配置。',
+    paramsSpec: ['model?: OMLX 模型名。', 'localModelBaseUrl?: OMLX OpenAI-compatible base URL。', 'comfyuiBaseUrl?: ComfyUI URL。']
+  },
+  gamestudio_self_check: {
+    title: '执行 GameStudio 自检',
+    tool: REASONING_TOOLS['gamestudio.bootstrap.selfCheck'].tool,
+    category: 'gamestudio-bootstrap',
+    description: '调用 health、settings、diagnose 和 image preflight，并把结果反馈给 Control artifacts。',
+    paramsSpec: ['imagePreflight?: 是否执行图片 preflight。', 'timeoutMs?: 自检超时时间。']
+  },
+  gamestudio_bootstrap_answer: {
+    title: '汇总 GameStudio 打开结果',
+    tool: REASONING_TOOLS['gamestudio.bootstrap.answer'].tool,
+    category: 'gamestudio-bootstrap',
+    description: '基于 Control 观测到的 GameStudio 启动、打开、自检结果生成确定性汇总。',
+    paramsSpec: []
+  },
+  story_create_project: {
+    title: '创建互动故事项目',
+    tool: REASONING_TOOLS['gamestudio.story.createProject'].tool,
+    category: 'story-workflow',
+    description: '通过 GameStudio Server 创建标准项目骨架，并记录 storage/projects 证据。',
+    paramsSpec: ['title: 项目标题。']
+  },
+  story_create_ai_project: {
+    title: 'AI 创建故事草稿',
+    tool: REASONING_TOOLS['gamestudio.story.createAiProject'].tool,
+    category: 'story-workflow',
+    description: 'Control 调用 GameStudio AI 创建故事接口，生成 scripts 与 blueprint 并记录证据。',
+    paramsSpec: ['title: 项目标题。', 'prompt: 故事生成提示词。', 'choicePoints?: 选择点数量。', 'optionsPerChoice?: 每个选择点选项数。', 'endings?: 结局数量。']
+  },
+  story_configure_project: {
+    title: '写入故事生成配置',
+    tool: REASONING_TOOLS['gamestudio.story.configureProject'].tool,
+    category: 'story-workflow',
+    description: '写入题材、风格、目标受众、输出语言和结构公式，并读回验证。',
+    paramsSpec: ['projectId?: 项目标识，缺省时使用当前 session 项目或最新项目。', 'config: 生成配置对象。']
+  },
+  story_inspect_project: {
+    title: '检查故事项目证据',
+    tool: REASONING_TOOLS['gamestudio.story.inspectProject'].tool,
+    category: 'story-workflow',
+    description: '读取项目目录、配置、故事、脚本、蓝图、资源和导出产物摘要。',
+    paramsSpec: ['projectId?: 项目标识，缺省时使用当前 session 项目或最新项目。']
+  },
+  story_generate_scripts_candidate: {
+    title: '生成故事脚本候选',
+    tool: REASONING_TOOLS['gamestudio.story.generateScriptsCandidate'].tool,
+    category: 'story-workflow',
+    description: '通过 Hermes/OMLX 生成受 schema 约束的 scripts.json 候选。',
+    paramsSpec: ['projectId?: 项目标识。', 'brief: 用户故事 brief。', 'title?: 项目标题。']
+  },
+  story_write_scripts: {
+    title: '写入故事脚本',
+    tool: REASONING_TOOLS['gamestudio.story.writeScripts'].tool,
+    category: 'story-workflow',
+    description: '将已验证脚本候选写入项目 scripts.json，并读回验证。',
+    paramsSpec: ['projectId?: 项目标识。']
+  },
+  story_compile_blueprint: {
+    title: '编译故事蓝图',
+    tool: REASONING_TOOLS['gamestudio.story.compileBlueprint'].tool,
+    category: 'story-workflow',
+    description: '调用 GameStudio Server 将脚本层编译为蓝图层。',
+    paramsSpec: ['projectId?: 项目标识。']
+  },
+  story_analyze_scripts: {
+    title: '分析故事脚本',
+    tool: REASONING_TOOLS['gamestudio.story.analyzeScripts'].tool,
+    category: 'story-workflow',
+    description: '调用 GameStudio Server 分析 scripts，并返回蓝图分支建议。',
+    paramsSpec: ['projectId?: 项目标识。']
+  },
+  story_review_blueprint_agent: {
+    title: '智能体评审蓝图',
+    tool: REASONING_TOOLS['gamestudio.story.reviewBlueprintAgent'].tool,
+    category: 'story-workflow',
+    description: '结合 GameStudio 规则、Control 确定性门禁和 Hermes/OMLX 对蓝图进行交互故事评分。',
+    paramsSpec: ['projectId?: 项目标识。']
+  },
+  story_repair_blueprint_if_needed: {
+    title: '必要时修复蓝图',
+    tool: REASONING_TOOLS['gamestudio.story.repairBlueprintIfNeeded'].tool,
+    category: 'story-workflow',
+    description: '蓝图评分不足时调用 GameStudio AI 修复脚本并重新编译蓝图；评分通过时跳过。',
+    paramsSpec: ['projectId?: 项目标识。']
+  },
+  story_compile_compose: {
+    title: '编译可运行故事',
+    tool: REASONING_TOOLS['gamestudio.story.compileCompose'].tool,
+    category: 'story-workflow',
+    description: '调用 GameStudio Server 将蓝图层编译为可运行 story/project 合成层。',
+    paramsSpec: ['projectId?: 项目标识。']
+  },
+  story_generate_asset_candidate: {
+    title: '生成故事资产候选',
+    tool: REASONING_TOOLS['gamestudio.story.generateAssetCandidate'].tool,
+    category: 'story-workflow',
+    description: '检查图片 provider 并尝试生成背景或角色资产候选，失败时返回明确阶段。',
+    paramsSpec: ['projectId?: 项目标识。', 'assetKind: background | character。', 'prompt: 资产生成描述。']
+  },
+  story_preflight_image_provider: {
+    title: '检查图片 Provider 前置条件',
+    tool: REASONING_TOOLS['gamestudio.story.preflightImageProvider'].tool,
+    category: 'story-workflow',
+    description: '调用 GameStudio Server image preflight，确认 ComfyUI/provider、节点和模型条件。',
+    paramsSpec: ['mode?: basic | storyboard。', 'timeoutMs?: 超时时间。']
+  },
+  story_create_bible: {
+    title: '生成 Story Bible',
+    tool: REASONING_TOOLS['gamestudio.story.createBible'].tool,
+    category: 'story-workflow',
+    description: '通过 GameStudio Server 显式生成 Story Bible，并将结果写回项目 state.aiBackground。',
+    paramsSpec: ['projectId?: 项目标识。', 'timeoutMs?: 生成超时时间。']
+  },
+  story_create_asset_plan: {
+    title: '创建故事资产计划',
+    tool: REASONING_TOOLS['gamestudio.story.createAssetPlan'].tool,
+    category: 'story-workflow',
+    description: '基于项目和 Story Bible 创建并保存故事资产计划；缺少 Story Bible 时明确阻断。',
+    paramsSpec: ['projectId?: 项目标识。', 'rebuild?: 是否重建资产计划。']
+  },
+  story_generate_lock_asset_references: {
+    title: '绘制锁定事物参考图',
+    tool: REASONING_TOOLS['gamestudio.story.generateLockAssetReferences'].tool,
+    category: 'story-workflow',
+    description: '基于资产计划逐个生成故事必须锁定事物的候选参考图，并自动选择主参考。',
+    paramsSpec: ['projectId?: 项目标识。', 'maxAssets?: 最大锁定事物数量。', 'batchSize?: 每个事物候选图数量。']
+  },
+  story_lock_test: {
+    title: '执行事物锁定出图测试',
+    tool: REASONING_TOOLS['gamestudio.story.lockTest'].tool,
+    category: 'story-workflow',
+    description: '通过 ComfyUI SDXL 对故事资产计划中选出的事物执行锁定出图测试，验证 checkpoint/LoRA 组合可用并返回测试图像和评审结果。',
+    paramsSpec: ['projectId?: 项目标识。', 'model?: ComfyUI checkpoint 文件名。', 'maxAttempts?: 最大尝试次数（1-4）。', 'style?: 风格（picture_book）。']
+  },
+  story_validate_project: {
+    title: '校验互动故事项目',
+    tool: REASONING_TOOLS['gamestudio.story.validateProject'].tool,
+    category: 'story-workflow',
+    description: '校验蓝图、合成层和最小项目文件集合，输出 deterministic evaluator verdict。',
+    paramsSpec: ['projectId?: 项目标识。']
+  },
+  story_export_project: {
+    title: '导出互动故事项目',
+    tool: REASONING_TOOLS['gamestudio.story.exportProject'].tool,
+    category: 'story-workflow',
+    description: '调用 GameStudio Server 导出 H5，并返回 distUrl 与本地产物证据。',
+    paramsSpec: ['projectId?: 项目标识。']
   }
 }
 
 export const REASONING_ALLOWED_ACTION_NAMES = Object.keys(REASONING_ACTIONS)
 
+export const REASONING_STORY_WORKFLOW_ACTION_NAMES = [
+  'story_create_project',
+  'story_create_ai_project',
+  'story_configure_project',
+  'story_inspect_project',
+  'story_generate_scripts_candidate',
+  'story_write_scripts',
+  'story_compile_blueprint',
+  'story_analyze_scripts',
+  'story_review_blueprint_agent',
+  'story_repair_blueprint_if_needed',
+  'story_compile_compose',
+  'story_preflight_image_provider',
+  'story_create_bible',
+  'story_create_asset_plan',
+  'story_generate_lock_asset_references',
+  'story_lock_test',
+  'story_generate_asset_candidate',
+  'story_validate_project',
+  'story_export_project'
+]
+
+export const REASONING_GAMESTUDIO_BOOTSTRAP_ACTION_NAMES = [
+  'gamestudio_ensure_running',
+  'gamestudio_open_editor',
+  'gamestudio_read_settings',
+  'gamestudio_configure_local_production',
+  'gamestudio_self_check'
+]
+
+export const REASONING_STORY_MUTATION_ACTION_NAMES = [
+  'story_create_project',
+  'story_create_ai_project',
+  'story_configure_project',
+  'story_write_scripts',
+  'story_compile_blueprint',
+  'story_repair_blueprint_if_needed',
+  'story_compile_compose',
+  'story_create_bible',
+  'story_create_asset_plan',
+  'story_generate_lock_asset_references',
+  'story_lock_test',
+  'story_generate_asset_candidate',
+  'story_export_project'
+]
+
+export function isReasoningStoryWorkflowAction(action) {
+  return REASONING_STORY_WORKFLOW_ACTION_NAMES.includes(String(action || ''))
+}
+
+export function isReasoningStoryMutationAction(action) {
+  return REASONING_STORY_MUTATION_ACTION_NAMES.includes(String(action || ''))
+}
+
 export function isReasoningWriteAction(action) {
-  return action === 'edit_workspace_file' || action === 'create_workspace_file' || action === 'rename_workspace_path' || action === 'delete_workspace_path' || action === 'write_memory_file' || action === 'update_task_queue'
+  return action === 'edit_workspace_file'
+    || action === 'create_workspace_file'
+    || action === 'rename_workspace_path'
+    || action === 'delete_workspace_path'
+    || action === 'write_memory_file'
+    || action === 'update_task_queue'
+    || isReasoningStoryMutationAction(action)
 }
 
 export function isReasoningInvokeAction(action) {

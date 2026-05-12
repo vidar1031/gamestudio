@@ -20,7 +20,6 @@ const {
   brainActiveTab,
   canClearReasoningSession,
   cancelReasoningSession,
-  chatActiveRequestElapsedSeconds,
   chatMemoryBusy,
   chatContextInfo,
   chatHistory,
@@ -34,17 +33,17 @@ const {
   chatMemorySaveBusy,
   chatMemorySaveMessage,
   chatScrollContainer,
-  chatUiStatus,
   clearChatWindowHistory,
   clearMemoryTarget,
   clearReasoningSession,
   clearVisibleLogs,
   closeEditorModal,
   closeSubmitGate,
-  composerPrefersReasoning,
   configSaveError,
   configSaveMessage,
   configSaving,
+  modelSwitchBusy,
+  modelSwitchMessage,
   confirmSubmitGate,
   contextCandidatesBusy,
   contextCandidatesError,
@@ -84,6 +83,7 @@ const {
   leftBrainConfigSaved,
   leftBrainRunning,
   leftBrainSummary,
+  leftBrainSwitchNeeded,
   leftError,
   leftInspection,
   loadMemoryRecords,
@@ -116,6 +116,8 @@ const {
   openMemoryRecordInEditor,
   preflightBusy,
   primaryComposerActionLabel,
+  logClearBusy,
+  logClearMessage,
   rawLiveLogs,
   logContainer,
   runtimeBusy,
@@ -124,6 +126,7 @@ const {
   reasoningCapabilities,
   reasoningCapabilitiesBusy,
   reasoningCapabilitiesError,
+  reasoningClearMessage,
   reasoningElapsedSeconds,
   reasoningError,
   reasoningPendingReview,
@@ -134,6 +137,7 @@ const {
   reasoningReviewDraft,
   reasoningReviewEvidence,
   reasoningReviewTargetLabel,
+  reasoningSubmitBlockedReason,
   reasoningStatusLabel,
   reasoningStopBusy,
   reasoningTimelineRef,
@@ -141,6 +145,7 @@ const {
   rightBrain,
   rightInspection,
   runLeftBrainPreflight,
+  switchLeftBrainModel,
   runtimePrimaryAction,
   runtimeState,
   saveChatMemoryFile,
@@ -149,22 +154,18 @@ const {
   saveContextPoolEntryEdits,
   saveContextSourceFile,
   saveLeftBrainConfig,
-  secondaryComposerActionLabel,
   selectedAgent,
   selectedContextPoolEntry,
   selectedContextPoolEntryId,
   selectedContextSource,
   selectedContextSourceId,
-  sandboxBusy,
   sandboxPrompt,
-  sendChat,
   sendObservableReasoningChat,
   getMemoryRecordStatusLabel,
   getMemoryRecordStatusTone,
   isMemoryRecordUpdated,
   shortTermMemoryHint,
   shortTermMinContextTokens,
-  showChatStatusBanner,
   skillConfig,
   skillFilesText,
   sourceEditorBusy,
@@ -238,6 +239,35 @@ const chatHeaderContextItems = computed(() => {
     runtimeLabel: info?.runtime ? `${info.runtime.provider} / ${info.runtime.model || '未选模型'}` : '未连接',
   }
 })
+
+const workflowProgressPhases = computed(() => {
+  const session = unref(activeReasoningSession)
+  const phases = Array.isArray(session?.workflowProgress) ? session.workflowProgress : []
+  if (phases.length > 0) return phases
+  return [
+    { phaseId: 'planning', title: '任务制定', status: session ? 'running' : 'pending', summary: '提交后由 Hermes 制定运行任务图。' },
+    { phaseId: 'executing', title: '工作流执行', status: 'pending', summary: '按任务图执行工具并记录证据。' },
+    { phaseId: 'answering', title: 'Hermes 生成答案', status: 'pending', summary: '汇总证据并生成最终回答。' },
+    { phaseId: 'quality_review', title: '答案自检', status: 'pending', summary: '提交答案和评分规则给 Hermes 自检。' }
+  ]
+})
+
+function getWorkflowPhaseLabel(status: string) {
+  if (status === 'running') return '进行中'
+  if (status === 'waiting_review') return '待确认'
+  if (status === 'completed') return '完成'
+  if (status === 'failed') return '失败'
+  if (status === 'cancelled') return '已停止'
+  return '等待'
+}
+
+function getWorkflowPhaseTone(status: string) {
+  if (status === 'completed') return 'completed'
+  if (status === 'running') return 'running'
+  if (status === 'waiting_review') return 'review'
+  if (status === 'failed' || status === 'cancelled') return 'failed'
+  return 'pending'
+}
 </script>
 
 <template>
@@ -265,10 +295,12 @@ const chatHeaderContextItems = computed(() => {
       <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; background: rgba(100,100,100,0.2); padding: 4px 8px; min-height: 28px;">
         <div class="panel-title" style="font-size: 13px;">📜 后台日志与决策轨 (Real-time Logs & Trajectory)</div>
         <div style="display: flex; justify-content: flex-end;">
-          <button class="action-btn outline" @click="clearVisibleLogs" style="padding: 2px 10px; font-size: 12px;">清空窗口</button>
+          <button class="action-btn outline" @click="clearVisibleLogs" :disabled="logClearBusy || memoryClearBusy" style="padding: 2px 10px; font-size: 12px;" title="先归档 Hermes 运行日志和当日日志，再清空当前日志窗口。不会删除长期记忆或项目文件。">{{ logClearBusy ? '归档清空中...' : '清空窗口' }}</button>
         </div>
       </summary>
       <div class="panel-content" style="padding: 0;">
+        <div style="padding: 6px 10px; font-size: 12px; color: var(--c-text-muted); border-bottom: 1px solid rgba(255,255,255,0.06);">清空会先生成归档包和清理报告，只移除运行日志显示与日志文件内容，不影响长期记忆、上下文池或项目产物。</div>
+        <div v-if="logClearMessage" class="message-banner tip" style="margin: 6px 8px; font-size: 12px; line-height: 1.5;">{{ logClearMessage }}</div>
         <div ref="logContainer" style="width:100%; height: 350px; background: #111; font-family: monospace; font-size: 11px; padding: 4px; border-top: 1px solid #333; resize: vertical; outline: none; overflow: auto; white-space: pre-wrap; word-break: break-all;">
           <div v-if="visibleLogLines.length === 0" style="color: var(--c-text-muted);">等待日志回放...</div>
           <div v-for="(line, index) in visibleLogLines" :key="`${index}-${line}`" :style="{ color: getLogLineColor(line), marginBottom: '1px', lineHeight: '1.2' }">{{ line }}</div>
@@ -338,15 +370,27 @@ const chatHeaderContextItems = computed(() => {
                   <button @click="fetchLocalModels('left')" :disabled="fetchingLeft" :style="{ background: fetchingLeft ? undefined : 'rgba(94,204,255,0.12)', borderColor: 'var(--c-accent)', color: 'var(--c-accent)', minWidth: '56px' }">{{ fetchingLeft ? '刷新中...' : '🔄 刷新' }}</button>
                   <button @click="actOnModel('left', 'load')" :disabled="!leftBrain.model || fetchingLeft || inspectingLeft || leftBrainSummary.statusLabel === '已启动'">➕加载</button>
                   <button @click="actOnModel('left', 'unload')" :disabled="!leftBrain.model || fetchingLeft || inspectingLeft || leftBrainSummary.statusLabel !== '已启动'">➖卸载</button>
+                  <button
+                    class="action-btn"
+                    @click="switchLeftBrainModel"
+                    :disabled="!leftBrain.model || !leftBrainSwitchNeeded || modelSwitchBusy || runtimeBusy || configSaving || preflightBusy || fetchingLeft || inspectingLeft"
+                    :style="{ background: !leftBrainSwitchNeeded ? undefined : 'rgba(77,214,140,0.16)', borderColor: 'rgba(77,214,140,0.42)', color: 'var(--c-success-dim)' }"
+                    title="安全切换左脑模型：先检查是否还有推理请求，再由 Control Server 停止 Hermes、卸载旧模型、保存新配置、自检并恢复 runtime。"
+                  >{{ modelSwitchBusy ? '切换中...' : '🔁 切换并应用' }}</button>
                 </div>
               </div>
               <div v-if="availableLeftModels.length === 0 && !fetchingLeft && !leftError" style="margin-top: 6px; font-size: 12px; color: var(--c-text-muted);">未获取到模型列表，请确认推理服务已启动后点击「刷新」。</div>
+              <div v-if="modelSwitchMessage" style="margin-top: 6px; font-size: 12px; color: var(--c-success-dim);">{{ modelSwitchMessage }}</div>
+              <div v-else-if="leftBrainSwitchNeeded" style="margin-top: 6px; font-size: 12px; color: var(--c-text-muted);">当前选择与运行绑定不一致，点击「切换并应用」后由 Control 统一执行停机、卸载、自检和恢复。</div>
             </div>
             <div v-if="leftInspection" style="margin-top: 8px; font-size: 12px; color: var(--c-text-muted); padding: 6px 12px; border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; background: rgba(0,0,0,0.15);">
-              探测: <span :style="{color: leftInspection.accessible ? 'var(--c-success-dim)' : 'var(--c-error-dim)'}">{{ leftInspection.accessible ? '就绪' : '异常' }}</span>
+              探测:
+              <span :style="{color: leftInspection.loaded === true ? 'var(--c-success-dim)' : leftInspection.accessible ? 'var(--c-warn)' : 'var(--c-error-dim)'}">
+                {{ leftInspection.loaded === true ? '已加载' : leftInspection.isLoading ? '加载中' : leftInspection.accessible ? '未加载' : '异常' }}
+              </span>
               | 上下文窗口: {{ leftInspection.contextLength || '-' }}
               | Tokens: {{ leftInspection.usage?.totalTokens || '-' }}
-              <span v-if="!leftInspection.accessible && leftInspection.detail" style="margin-left: 8px; color: var(--c-error-dim);">· {{ leftInspection.detail }}</span>
+              <span v-if="leftInspection.detail" style="margin-left: 8px;" :style="{ color: leftInspection.loaded === true ? 'var(--c-success-dim)' : leftInspection.accessible ? 'var(--c-warn)' : 'var(--c-error-dim)' }">· {{ leftInspection.detail }}</span>
             </div>
             <div v-if="leftError" class="text-error" style="margin-top: 8px; font-size: 12px; padding: 6px 10px; border-radius: 6px; background: rgba(255,80,80,0.08);">{{ leftError }}</div>
             <div v-if="leftBrainBlockedReason && !leftBrainRunning" style="margin-top: 10px; font-size: 12px; color: var(--c-warn); padding: 6px 10px; border: 1px solid rgba(246,201,78,0.2); border-radius: 6px; background: rgba(246,201,78,0.06);">⚠ {{ leftBrainBlockedReason }}</div>
@@ -385,7 +429,8 @@ const chatHeaderContextItems = computed(() => {
 
             <!-- Short-term memory records — always visible -->
             <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-              <div style="font-size: 13px; color: var(--c-text); font-weight: 600;">短期记忆与上下文缓冲</div>
+              <div style="font-size: 13px; color: var(--c-text); font-weight: 600;">短期上下文与人工上下文池</div>
+              <div class="chat-memory-desc">这些记录会影响当前或下一次任务的输入上下文。生产任务前重点确认会话缓冲是否需要清空、上下文池是否需要复用。</div>
               <div v-if="memoryRecordsBusy && memoryRecords.length === 0" class="chat-memory-desc">读取记录中...</div>
               <div v-else-if="memoryRecordsByScope('short-term').filter((item: any) => item.key !== 'runtime-log' && item.key !== 'daily-log').length === 0 && memoryRecordsByScope('context-pool').length === 0" class="chat-memory-desc">当前还没有可显示的短期记忆记录。</div>
               <div v-else class="submit-source-list">
@@ -395,10 +440,15 @@ const chatHeaderContextItems = computed(() => {
                       <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
                         <strong>{{ record.label }}</strong>
                         <span class="reasoning-plan-step-chip" :style="{ color: getMemoryRecordStatusTone(record), borderColor: getMemoryRecordStatusTone(record) }">{{ getMemoryRecordStatusLabel(record) }}</span>
+                        <span v-if="record.required" class="reasoning-plan-step-chip">必需</span>
                         <span v-if="record.itemCount" class="chat-memory-desc">{{ record.itemCount }} 项</span>
                         <span v-if="isMemoryRecordUpdated(record.key)" class="chat-memory-desc" style="color: var(--c-accent);">已变化</span>
                       </div>
                       <div class="chat-memory-desc">{{ formatMemoryRecordMeta(record) }}</div>
+                      <div v-if="record.usage" class="chat-memory-desc" style="white-space: pre-wrap; color: var(--c-text);"><strong>作用：</strong>{{ record.usage }}</div>
+                      <div v-if="record.contextRole" class="chat-memory-desc" style="white-space: pre-wrap;"><strong>进入任务：</strong>{{ record.contextRole }}</div>
+                      <div v-if="record.howToUse" class="chat-memory-desc" style="white-space: pre-wrap;"><strong>如何使用：</strong>{{ record.howToUse }}</div>
+                      <div v-if="record.cleanupPolicy" class="chat-memory-desc" style="white-space: pre-wrap; color: var(--c-accent);"><strong>清理策略：</strong>{{ record.cleanupPolicy }}</div>
                       <div v-if="record.preview" class="chat-memory-desc" style="white-space: pre-wrap; color: var(--c-text);">{{ record.preview }}</div>
                     </div>
                     <button v-if="record.canOpen" class="action-btn outline" type="button" @click="openMemoryRecordInEditor(record.key)">编辑/打开</button>
@@ -409,7 +459,8 @@ const chatHeaderContextItems = computed(() => {
 
             <!-- Long-term memory records — always visible -->
             <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-              <div style="font-size: 13px; color: var(--c-text); font-weight: 600;">长期记忆与日志</div>
+              <div style="font-size: 13px; color: var(--c-text); font-weight: 600;">长期生产记忆与运行观测</div>
+              <div class="chat-memory-desc">长期生产记忆会直接影响 Hermes 的判断；运行日志只用于排障观测；当日日志是可选人工日记，未创建不是故障。</div>
               <div v-if="memoryRecordsByScope('long-term').length === 0 && memoryRecordsByScope('short-term').filter((item: any) => item.key === 'runtime-log' || item.key === 'daily-log').length === 0" class="chat-memory-desc">当前还没有长期记忆文件状态，请点击「刷新状态」。</div>
               <div v-else class="submit-source-list">
                 <div v-for="record in [...memoryRecordsByScope('long-term'), ...memoryRecordsByScope('short-term').filter((item: any) => item.key === 'runtime-log' || item.key === 'daily-log')]" :key="record.key" class="submit-source-item">
@@ -418,8 +469,13 @@ const chatHeaderContextItems = computed(() => {
                       <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
                         <strong>{{ record.label }}</strong>
                         <span class="reasoning-plan-step-chip" :style="{ color: getMemoryRecordStatusTone(record), borderColor: getMemoryRecordStatusTone(record) }">{{ getMemoryRecordStatusLabel(record) }}</span>
+                        <span v-if="record.required" class="reasoning-plan-step-chip">必需</span>
                       </div>
                       <div class="chat-memory-desc">{{ formatMemoryRecordMeta(record) }}</div>
+                      <div v-if="record.usage" class="chat-memory-desc" style="white-space: pre-wrap; color: var(--c-text);"><strong>作用：</strong>{{ record.usage }}</div>
+                      <div v-if="record.contextRole" class="chat-memory-desc" style="white-space: pre-wrap;"><strong>进入任务：</strong>{{ record.contextRole }}</div>
+                      <div v-if="record.howToUse" class="chat-memory-desc" style="white-space: pre-wrap;"><strong>如何使用：</strong>{{ record.howToUse }}</div>
+                      <div v-if="record.cleanupPolicy" class="chat-memory-desc" style="white-space: pre-wrap; color: var(--c-accent);"><strong>清理策略：</strong>{{ record.cleanupPolicy }}</div>
                       <div v-if="record.preview" class="chat-memory-desc" style="white-space: pre-wrap; color: var(--c-text);">{{ record.preview }}</div>
                     </div>
                     <button v-if="record.canOpen" class="action-btn outline" type="button" @click="openMemoryRecordInEditor(record.key)">编辑/打开</button>
@@ -457,25 +513,32 @@ const chatHeaderContextItems = computed(() => {
     <details class="panel" open style="margin-bottom: 24px;">
       <summary class="panel-header chat-panel-header-summary">
         <div class="chat-panel-header-title">
-          <div class="panel-title">💬 Hermes 直连对话 (Chat & Token Monitor)</div>
+          <div class="panel-title">Hermes 任务执行台</div>
           <div class="chat-panel-header-chips">
             <button class="chat-header-chip" type="button" @click.stop="switchDashboardTab('context')"><span>当前上下文</span><strong>{{ chatHeaderContextItems.contextLabel }}</strong></button>
             <button class="chat-header-chip" type="button" @click.stop="switchDashboardTab('pool')"><span>上下文池</span><strong>{{ chatHeaderContextItems.poolLabel }}</strong></button>
-            <button class="chat-header-chip" type="button" @click.stop="switchDashboardTab('history')"><span>聊天记录</span><strong>{{ chatHeaderContextItems.historyLabel }}</strong></button>
+            <button class="chat-header-chip" type="button" @click.stop="switchDashboardTab('history')"><span>最终回答存档</span><strong>{{ chatHeaderContextItems.historyLabel }}</strong></button>
             <span class="chat-header-chip static"><span>运行时</span><strong>{{ chatHeaderContextItems.runtimeLabel }}</strong></span>
           </div>
         </div>
-        <button class="action-btn outline chat-clear-btn" type="button" @click.stop="clearChatWindowHistory" :disabled="chatMemorySaveBusy || chatMemoryBusy || sandboxBusy || reasoningBusy">{{ chatMemorySaveBusy ? '清空中...' : '清空窗口聊天' }}</button>
+        <button class="action-btn outline chat-clear-btn" type="button" @click.stop="clearChatWindowHistory" :disabled="chatMemorySaveBusy || chatMemoryBusy || reasoningBusy" title="先归档当天聊天缓冲 JSON，再清空回答窗口。不会删除长期记忆、上下文池或项目文件。">{{ chatMemorySaveBusy ? '归档清空中...' : '清空回答窗口' }}</button>
       </summary>
       <div class="panel-content chat-panel-shell">
-        <div v-if="showChatStatusBanner" class="message-banner" :class="chatUiStatus.kind === 'error' ? 'error' : 'tip'" style="margin-bottom: 12px; font-size: 12px; line-height: 1.5;">
-          <div><strong>{{ chatUiStatus.kind === 'pending' ? '聊天请求进行中' : chatUiStatus.kind === 'busy' ? '聊天请求排队保护' : chatUiStatus.kind === 'recovering' ? '聊天超时自动恢复' : chatUiStatus.kind === 'timeout' ? '聊天等待超时，后台继续处理' : '聊天请求异常' }}</strong></div>
-          <div style="margin-top: 4px; color: var(--c-text);">{{ chatUiStatus.message }}</div>
-          <div v-if="chatUiStatus.activeRequest" style="margin-top: 4px; color: var(--c-text);">活动请求: 已运行 {{ chatActiveRequestElapsedSeconds }} 秒 · 提示长度 {{ chatUiStatus.activeRequest.promptChars }} 字符</div>
+        <div class="chat-memory-desc" style="margin-bottom: 8px;">清空回答窗口会先备份当天聊天缓冲，只重置当前任务输入/最终回答显示；长期记忆、状态任务、上下文池和项目文件不会被删除。</div>
+        <div v-if="chatMemorySaveMessage" class="message-banner tip" style="font-size: 12px; line-height: 1.5; margin-bottom: 8px;">{{ chatMemorySaveMessage }}</div>
+        <div class="workflow-progress-panel">
+          <div v-for="(phase, index) in workflowProgressPhases" :key="phase.phaseId || index" class="workflow-phase" :data-tone="getWorkflowPhaseTone(phase.status)">
+            <div class="workflow-phase-index">{{ index + 1 }}</div>
+            <div class="workflow-phase-body">
+              <div class="workflow-phase-header"><strong>{{ phase.title }}</strong><span>{{ getWorkflowPhaseLabel(phase.status) }}</span></div>
+              <div class="workflow-phase-summary">{{ phase.currentOperation || phase.summary }}</div>
+              <div v-if="phase.evidence" class="workflow-phase-evidence">{{ phase.evidence }}</div>
+            </div>
+          </div>
         </div>
         <div ref="chatScrollContainer" class="chat-thread-resizable">
           <div class="chat-thread">
-            <div v-if="chatHistory.length === 0" class="chat-empty-state"><div class="chat-empty-title">Hermes 对话已就绪</div><div class="chat-empty-copy">输入消息后使用 Cmd/Ctrl + Enter 触发当前标签页主动作，Enter 可直接换行。可观测推理链标签页会优先走 observable reasoning。</div></div>
+            <div v-if="chatHistory.length === 0" class="chat-empty-state"><div class="chat-empty-title">等待任务输出</div><div class="chat-empty-copy">这里只显示用户任务、最终回答和错误信息；任务图、工具调用和自检过程在上方进度与下方时间线查看。</div></div>
             <div v-for="(msg, i) in chatHistory" :key="i" class="chat-row" :data-role="msg.role">
               <div class="chat-bubble" :data-role="msg.role">
                 <div class="chat-role">{{ msg.role.toUpperCase() }}</div>
@@ -486,22 +549,20 @@ const chatHeaderContextItems = computed(() => {
           </div>
         </div>
         <div class="chat-composer">
-          <textarea v-model="sandboxPrompt" class="chat-composer-input" rows="3" @keydown="handleChatComposerKeydown" placeholder="直接发送指令给 Hermes..." />
+          <textarea v-model="sandboxPrompt" class="chat-composer-input" rows="3" @keydown="handleChatComposerKeydown" placeholder="输入任务，Control 会创建 agentRuntime 可观测执行链..." />
           <div class="chat-composer-footer">
-            <div class="chat-composer-hint">Enter 换行，Cmd/Ctrl + Enter 触发当前标签页主动作。当前{{ composerPrefersReasoning ? '优先开始可观测执行' : '优先直接聊天' }}。</div>
+            <div class="chat-composer-hint">Enter 换行，Cmd/Ctrl + Enter 开始任务执行。所有模型调用统一提交给 Hermes。</div>
             <div class="chat-composer-actions">
               <label class="reasoning-auto-approve-toggle"><input v-model="reasoningAutoApproveEnabled" type="checkbox" /><span>{{ reviewModeLabel }}</span></label>
-              <button v-if="composerPrefersReasoning" class="action-btn" @click="sendObservableReasoningChat" :disabled="sandboxBusy || reasoningBusy || !sandboxPrompt.trim()">{{ primaryComposerActionLabel }}</button>
-              <button v-else class="action-btn outline" @click="sendObservableReasoningChat" :disabled="sandboxBusy || reasoningBusy || !sandboxPrompt.trim()">{{ secondaryComposerActionLabel }}</button>
+              <button class="action-btn" @click="sendObservableReasoningChat" :disabled="reasoningBusy || !sandboxPrompt.trim() || !!reasoningSubmitBlockedReason" :title="reasoningSubmitBlockedReason || ''">{{ primaryComposerActionLabel }}</button>
               <button v-if="reasoningBusy && activeReasoningSession" class="action-btn outline" @click="cancelReasoningSession" :disabled="reasoningStopBusy">{{ reasoningStopBusy ? '停止中...' : '停止' }}</button>
-              <button v-if="composerPrefersReasoning" class="action-btn outline" @click="sendChat" :disabled="sandboxBusy || reasoningBusy || !sandboxPrompt.trim()">{{ secondaryComposerActionLabel }}</button>
-              <button v-else class="action-btn" @click="sendChat" :disabled="sandboxBusy || reasoningBusy || !sandboxPrompt.trim()">{{ primaryComposerActionLabel }}</button>
             </div>
           </div>
         </div>
+        <div v-if="reasoningSubmitBlockedReason" class="message-banner error" style="margin-top: 8px; font-size: 12px;">{{ reasoningSubmitBlockedReason }}</div>
 
         <div v-if="submitGateOpen" class="chat-context-panel submit-gate-panel">
-          <div class="chat-context-summary-line"><strong>提交前确认</strong><span>{{ submitGateMode === 'reasoning' ? '可观测执行' : '直接发送' }}</span><span>可先预览 Control 提交包、Hermes 当前运行时路由和命中的 skill/action hints，再决定是否发送</span></div>
+          <div class="chat-context-summary-line"><strong>提交前确认</strong><span>agentRuntime 可观测执行</span><span>可先预览 Control 提交包、Hermes 当前运行时路由和命中的 skill/action hints，再决定是否发送</span></div>
           <div class="submit-gate-block"><div class="chat-memory-title">本次问题</div><textarea v-model="submitPromptDraft" class="chat-memory-editor" rows="3" spellcheck="false" /></div>
           <div class="submit-gate-grid">
             <div class="submit-gate-block">
@@ -529,7 +590,7 @@ const chatHeaderContextItems = computed(() => {
           </div>
           <div class="submit-gate-block" style="margin-top: 12px;"><div class="chat-memory-title">原始上下文文件编辑器</div><div v-if="sourceEditorError" class="message-banner error" style="font-size: 12px;">{{ sourceEditorError }}</div><div v-if="selectedContextSource && sourceEditorFile" class="chat-memory-desc">当前已选择 {{ selectedContextSource.label }}。点击上方“查看/编辑”会用弹窗打开编辑器，快捷键将锁定在编辑器内。</div><div v-else class="chat-memory-desc">如有手工附加源，点击上方“查看/编辑”即可在弹窗中在线打开文件。</div></div>
           <div class="submit-gate-block" style="margin-top: 12px;"><div class="chat-memory-title">压缩后的运行上下文</div><div class="chat-memory-desc">点击“查看发送预览”后会自动生成本轮上下文压缩摘要。你可以直接修改，确认后会随本次 agentRuntime 任务一起注入。</div><textarea v-model="submitConfirmedSummary" class="chat-memory-editor" rows="5" spellcheck="false" placeholder="这里会自动填入本轮上下文压缩摘要；也可以手工改写后再提交。" /><div class="reasoning-review-actions" style="margin-top: 8px;"><button class="action-btn outline" @click="saveConfirmedContextPoolEntry" :disabled="contextPoolSaveBusy || !submitConfirmedSummary.trim()">{{ contextPoolSaveBusy ? '保存中...' : '保存到上下文池' }}</button></div><div v-if="contextPoolSaveMessage" class="chat-memory-desc" style="margin-top: 6px;">{{ contextPoolSaveMessage }}</div></div>
-          <div class="reasoning-review-actions" style="margin-top: 12px;"><button class="action-btn outline" @click="generateSubmitContextDraft" :disabled="submitDraftBusy || contextCandidatesBusy || !submitPromptDraft.trim()">{{ submitDraftBusy ? '预览中...' : '查看发送预览' }}</button><button class="action-btn outline" @click="closeSubmitGate" :disabled="submitDraftBusy || contextPoolSaveBusy">取消</button><button class="action-btn" @click="confirmSubmitGate" :disabled="submitDraftBusy || contextPoolSaveBusy || !submitPromptDraft.trim()">{{ submitGateMode === 'reasoning' ? '确认开始可观测执行' : '确认直接发送' }}</button></div>
+          <div class="reasoning-review-actions" style="margin-top: 12px;"><button class="action-btn outline" @click="generateSubmitContextDraft" :disabled="submitDraftBusy || contextCandidatesBusy || !submitPromptDraft.trim() || !!reasoningSubmitBlockedReason">{{ submitDraftBusy ? '预览中...' : '查看发送预览' }}</button><button class="action-btn outline" @click="closeSubmitGate" :disabled="submitDraftBusy || contextPoolSaveBusy">取消</button><button class="action-btn" @click="confirmSubmitGate" :disabled="submitDraftBusy || contextPoolSaveBusy || !submitPromptDraft.trim() || !!reasoningSubmitBlockedReason" :title="reasoningSubmitBlockedReason || ''">确认开始任务执行</button></div>
           <div v-if="contextCandidatesError || submitDraftError" class="message-banner error" style="margin-top: 8px; font-size: 12px;">{{ contextCandidatesError || submitDraftError }}</div>
           <div v-if="submitDraftResult" class="reasoning-review-box" style="margin-top: 12px;">
             <div class="reasoning-plan-title">提交流程预览</div>
@@ -545,13 +606,14 @@ const chatHeaderContextItems = computed(() => {
         <div class="dashboard-tabs">
           <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'reasoning' }" @click="dashboardActiveTab = 'reasoning'">可观测推理链</button>
           <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'plan' }" @click="dashboardActiveTab = 'plan'">Agent Runtime</button>
-          <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'history' }" @click="dashboardActiveTab = 'history'">聊天记录存档</button>
+          <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'history' }" @click="dashboardActiveTab = 'history'">最终回答存档</button>
           <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'skills' }" @click="dashboardActiveTab = 'skills'">技能提案</button>
         </div>
 
         <div class="dashboard-tab-content" v-show="dashboardActiveTab === 'reasoning'">
-          <div v-if="activeReasoningSession || reasoningError" class="reasoning-panel">
-            <div class="reasoning-panel-header"><div><div class="chat-memory-title">agentRuntime 可观测任务链</div><div class="reasoning-subtitle"><span v-if="reasoningBusy" class="reasoning-busy-dot"></span>状态 {{ reasoningStatusLabel }}<span v-if="activeReasoningSession"> · Session {{ activeReasoningSession.sessionId }} · 总计时 {{ formatDurationSeconds(reasoningElapsedSeconds) }}</span></div></div><div class="reasoning-panel-actions"><button class="action-btn outline" @click="clearReasoningSession" :disabled="!canClearReasoningSession || reasoningStopBusy">{{ reasoningStopBusy && canClearReasoningSession ? '清理中...' : '清理记录' }}</button></div></div>
+          <div v-if="activeReasoningSession || reasoningError || reasoningClearMessage" class="reasoning-panel">
+            <div class="reasoning-panel-header"><div><div class="chat-memory-title">agentRuntime 可观测任务链</div><div class="reasoning-subtitle"><span v-if="reasoningBusy" class="reasoning-busy-dot"></span>状态 {{ reasoningStatusLabel }}<span v-if="activeReasoningSession"> · Session {{ activeReasoningSession.sessionId }} · 总计时 {{ formatDurationSeconds(reasoningElapsedSeconds) }}</span></div><div class="chat-memory-desc">清理记录仅对已结束任务生效；后端会先备份 session JSON 和清理报告，再从当前时间线移除。</div></div><div class="reasoning-panel-actions"><button class="action-btn outline" @click="clearReasoningSession" :disabled="!canClearReasoningSession || reasoningStopBusy" title="先归档当前已结束 session，再清理当前可观测时间线。">{{ reasoningStopBusy && canClearReasoningSession ? '归档清理中...' : '清理记录' }}</button></div></div>
+            <div v-if="reasoningClearMessage" class="message-banner tip" style="font-size: 12px; line-height: 1.5;">{{ reasoningClearMessage }}</div>
             <div v-if="activeReasoningSession?.runtimeTaskGraph || activeReasoningSession?.plan" class="reasoning-plan-box"><div class="reasoning-plan-title">运行任务图</div><div class="reasoning-plan-goal">{{ (activeReasoningSession.runtimeTaskGraph || activeReasoningSession.plan)?.goal }}</div><div class="reasoning-plan-steps"><div v-for="step in (activeReasoningSession.runtimeTaskGraph || activeReasoningSession.plan)?.steps || []" :key="step.stepId" class="reasoning-plan-step" :class="{ active: activeReasoningSession.currentStepId === step.stepId, review: activeReasoningSession.review?.stepId === step.stepId }"><strong>{{ step.title }}</strong><span class="reasoning-plan-step-chip">{{ step.action }}</span><span class="reasoning-plan-step-chip">{{ step.tool }}</span></div></div></div>
             <div v-if="activeReasoningSession?.artifacts?.recentContext || activeReasoningSession?.submissionContext?.selectedContextPoolIds?.length" class="reasoning-plan-box">
               <div class="reasoning-plan-title">本轮上下文注入</div>
@@ -633,6 +695,16 @@ const chatHeaderContextItems = computed(() => {
             <div v-else-if="!reasoningCapabilities" class="chat-memory-desc" style="margin-top: 8px;">等待读取 Agent Runtime 注册信息。</div>
             <template v-else-if="reasoningCapabilities">
               <div class="chat-memory-desc" style="margin-top: 8px;">这里展示当前 control 中的 {{ reasoningCapabilities.runtime.controlPlaneName }} / {{ reasoningCapabilities.runtime.runtimeName }} 语义、运行行为检查、基础工具、动作映射和已加载 skill。后续新增工具或动作时，只需在 server capability registry 中登记即可被这里展示。</div>
+              <div class="chat-context-sources-list" style="margin-top: 10px;">
+                <div v-if="reasoningCapabilities.runtime.domains?.length" class="chat-context-source-line">
+                  <strong class="chat-context-source-label">覆盖范围</strong>
+                  <span v-for="domain in reasoningCapabilities.runtime.domains" :key="domain" class="reasoning-plan-step-chip">{{ domain }}</span>
+                </div>
+                <div v-if="reasoningCapabilities.runtime.routes" class="chat-context-source-line">
+                  <strong class="chat-context-source-label">运行路由</strong>
+                  <span v-for="(route, key) in reasoningCapabilities.runtime.routes" :key="key">{{ key }}={{ route }}</span>
+                </div>
+              </div>
               <div class="transport-preview-grid" style="margin-top: 12px;">
                 <div class="transport-preview-card controller">
                   <div class="transport-preview-card-title">运行面入口</div>

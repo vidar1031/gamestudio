@@ -96,7 +96,13 @@ function buildMemoryRecord(readUtf8FileRecord, options) {
     preview: buildTextPreview(previewSource, options.previewMode || 'head'),
     empty: !file.exists || file.sizeChars === 0 || countNonEmptyLines(file.content) === 0,
     itemCount: Number.isFinite(Number(options.itemCount)) ? Number(options.itemCount) : null,
-    canOpen: true
+    canOpen: true,
+    required: Boolean(options.required),
+    optionalMissingOk: Boolean(options.optionalMissingOk),
+    usage: String(options.usage || ''),
+    howToUse: String(options.howToUse || ''),
+    contextRole: String(options.contextRole || ''),
+    cleanupPolicy: String(options.cleanupPolicy || '')
   }
 }
 
@@ -145,6 +151,10 @@ function buildMemoryRecordsPayload(context, binding) {
       scope: 'short-term',
       filePath: chatHistoryFilePath,
       previewContent: getHermesChatFileRecord({ includeContent: true }).content,
+      usage: '保存当前回答窗口的用户输入、最终回答和错误信息。',
+      howToUse: '生产任务前可清空，避免旧对话被历史重放带入本轮；清空会先归档。',
+      contextRole: '会作为短期历史重放参与 Hermes 规划与回答上下文。',
+      cleanupPolicy: '可按任务轮次清空，不影响长期记忆。',
       itemCount: (() => {
         try {
           const parsed = JSON.parse(getHermesChatFileRecord({ includeContent: true }).content || '[]')
@@ -159,57 +169,101 @@ function buildMemoryRecordsPayload(context, binding) {
       label: 'Hermes 运行日志',
       scope: 'short-term',
       filePath: HERMES_RUNTIME_LOG_FILE,
-      previewMode: 'tail'
+      previewMode: 'tail',
+      usage: '记录 Control 与 Hermes runtime 的启动、自检、模型、错误和清理动作。',
+      howToUse: '用于排障和确认按钮动作是否真正执行；生产任务前可归档清空。',
+      contextRole: '不进入 Hermes 任务上下文，只用于实时观测和故障复盘。',
+      cleanupPolicy: '安全清空项，会先归档。'
     }),
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'daily-log',
-      label: '当日日志',
+      label: '当日日志（可选）',
       scope: 'short-term',
       filePath: todayDailyLogFile,
       previewMode: 'tail',
+      optionalMissingOk: true,
+      usage: '当天人工补充的工作日记，不由系统自动写入。',
+      howToUse: '需要把当天人工结论带入任务时再创建并编辑；不需要时保持未创建即可。',
+      contextRole: '只有文件存在时，才作为 Latest Daily Log 注入项目状态、任务、进度类问题。',
+      cleanupPolicy: '属于日志清空项；未创建不是错误。',
       itemCount: dailyLogFiles.length
     }),
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'agent-definition',
       label: 'Agent 定义',
       scope: 'long-term',
-      filePath: memoryConfig.agentDefinitionFile
+      filePath: memoryConfig.agentDefinitionFile,
+      required: true,
+      usage: '定义 Hermes/Control 的身份、边界、职责和协作规则。',
+      howToUse: '只在稳定规则变化时编辑；不要放一次性任务流水。',
+      contextRole: '会进入基础项目记忆，影响模型对自身职责和边界的理解。',
+      cleanupPolicy: '不应清空。'
     }),
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'user-memory',
       label: '用户长期记忆',
       scope: 'long-term',
-      filePath: memoryConfig.userFile
+      filePath: memoryConfig.userFile,
+      required: true,
+      usage: '保存用户偏好、协作约定和长期目标。',
+      howToUse: '只保存可长期复用的偏好与规则；错误信息应修正或归档。',
+      contextRole: '会进入基础项目记忆，影响回答风格和任务取舍。',
+      cleanupPolicy: '严重影响项，仅明确重置时清空。'
     }),
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'project-memory',
       label: '项目长期记忆',
       scope: 'long-term',
-      filePath: memoryConfig.memoryFile
+      filePath: memoryConfig.memoryFile,
+      required: true,
+      usage: '保存 GameStudio 的稳定架构、目录、生产闭环和能力边界。',
+      howToUse: '记录稳定事实；不要写临时测试日志或过期阶段口径。',
+      contextRole: '会进入基础项目记忆，影响工作流和工具选择。',
+      cleanupPolicy: '严重影响项，仅明确重置时清空。'
     }),
       buildMemoryRecord(readUtf8FileRecord, {
         key: 'long-tasks',
         label: '长任务主线',
         scope: 'long-term',
-        filePath: memoryConfig.longTasksFile
+        filePath: memoryConfig.longTasksFile,
+        required: true,
+        usage: '保存跨多轮的端到端生产主线和验收目标。',
+        howToUse: '用于判断下一步该推进哪条长期链路；保持短而稳定。',
+        contextRole: '任务、进度、闭环类问题会优先读取。',
+        cleanupPolicy: '不建议清空，可人工整理。'
       }),
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'project-status',
       label: '项目状态记录',
       scope: 'long-term',
-      filePath: memoryConfig.statusFile
+      filePath: memoryConfig.statusFile,
+      required: true,
+      usage: '保存当前系统状态、已完成能力、缺口和阻塞。',
+      howToUse: '每次生产级推进后更新事实状态，避免模型沿用旧判断。',
+      contextRole: '状态、进度、缺口类问题会优先读取。',
+      cleanupPolicy: '严重影响项，仅明确重置时清空。'
     }),
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'task-queue',
       label: '任务队列记录',
       scope: 'long-term',
-      filePath: memoryConfig.taskQueueFile
+      filePath: memoryConfig.taskQueueFile,
+      required: true,
+      usage: '保存下一步任务、验收项和待处理工作。',
+      howToUse: '生产任务结束后保留下一步，不堆历史流水。',
+      contextRole: '任务、下一步、排期类问题会优先读取。',
+      cleanupPolicy: '严重影响项，仅明确重置时清空。'
     }),
     buildMemoryRecord(readUtf8FileRecord, {
       key: 'decisions',
       label: '决策记录',
       scope: 'long-term',
-      filePath: memoryConfig.decisionsFile
+      filePath: memoryConfig.decisionsFile,
+      required: true,
+      usage: '保存已经生效的架构和产品决策。',
+      howToUse: '只写稳定决策和原因，避免重复争论已定方向。',
+      contextRole: '决策、边界、取舍类问题会优先读取。',
+      cleanupPolicy: '严重影响项，仅明确重置时清空。'
     }),
     ...contextPoolEntries.map((entry) => buildMemoryRecord(readUtf8FileRecord, {
       key: `context-pool:${entry.entryId}`,
@@ -218,6 +272,10 @@ function buildMemoryRecordsPayload(context, binding) {
       kind: 'context-pool-entry',
       filePath: entry.filePath,
       previewContent: entry.summary,
+      usage: '保存用户确认过的上下文摘要。',
+      howToUse: '提交任务前可手选注入，避免重复解释同一背景。',
+      contextRole: '只有被用户选择时才进入本轮提交上下文。',
+      cleanupPolicy: '高影响项，清空会影响后续任务复用。'
     }))
   ]
 
@@ -363,6 +421,89 @@ function resolveMemoryRecordPath(context, binding, recordKey) {
 function resetFile(fs, path, filePath, content) {
   ensureParentDirectory(fs, path, filePath)
   fs.writeFileSync(filePath, String(content ?? ''), 'utf8')
+}
+
+function toRelativeArchivePath(path, rootDir, filePath) {
+  const relative = path.relative(rootDir, filePath)
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return path.basename(filePath)
+  }
+  return relative
+}
+
+function createManualClearArchive(context, targets, targetDetails) {
+  const timestamp = new Date().toISOString()
+  const safeTimestamp = timestamp.replace(/[:.]/g, '-')
+  const archiveDir = context.path.join(context.GAMESTUDIO_ROOT, 'state', 'memory-archive', 'manual-clear', `clear_${safeTimestamp}`)
+  context.fs.mkdirSync(context.path.join(archiveDir, 'files'), { recursive: true })
+  return {
+    archiveDir,
+    createdAt: timestamp,
+    targets,
+    targetDetails,
+    files: []
+  }
+}
+
+function archiveFileForManualClear(fs, path, rootDir, archive, filePath, kind) {
+  if (!filePath || !fs.existsSync(filePath)) return false
+  let stat = null
+  try {
+    stat = fs.statSync(filePath)
+  } catch {
+    return false
+  }
+  if (!stat.isFile()) return false
+  const relativeSource = toRelativeArchivePath(path, rootDir, filePath)
+  const targetPath = path.join(archive.archiveDir, 'files', relativeSource)
+  ensureParentDirectory(fs, path, targetPath)
+  fs.copyFileSync(filePath, targetPath)
+  archive.files.push({
+    kind,
+    source: relativeSource,
+    archivePath: toRelativeArchivePath(path, rootDir, targetPath),
+    sizeBytes: stat.size
+  })
+  return true
+}
+
+function archiveAndClearTerminalRuntimeSessionFiles(fs, path, rootDir, directoryPath, archive) {
+  if (!directoryPath || !fs.existsSync(directoryPath)) return 0
+  let clearedCount = 0
+  for (const fileName of fs.readdirSync(directoryPath)) {
+    if (!fileName.endsWith('.json')) continue
+    const filePath = path.join(directoryPath, fileName)
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+      if (parsed?.status === 'completed' || parsed?.status === 'failed' || parsed?.status === 'cancelled') {
+        archiveFileForManualClear(fs, path, rootDir, archive, filePath, 'runtime-session')
+        fs.unlinkSync(filePath)
+        clearedCount += 1
+      }
+    } catch {
+      // Keep unreadable session files for manual inspection.
+    }
+  }
+  return clearedCount
+}
+
+function writeManualClearReport(fs, path, rootDir, archive, extra = {}) {
+  const reportPath = path.join(archive.archiveDir, 'clear-report.json')
+  const report = {
+    createdAt: archive.createdAt,
+    completedAt: new Date().toISOString(),
+    targets: archive.targets,
+    targetDetails: archive.targetDetails,
+    archivedFileCount: archive.files.length,
+    archivedFiles: archive.files,
+    ...extra
+  }
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
+  return {
+    archiveDir: toRelativeArchivePath(path, rootDir, archive.archiveDir),
+    reportFile: toRelativeArchivePath(path, rootDir, reportPath),
+    archivedFileCount: archive.files.length
+  }
 }
 
 export function registerConfigRoutes(app, context) {
@@ -692,6 +833,9 @@ export function registerConfigRoutes(app, context) {
 
     const binding = buildHermesBinding()
     const memoryConfig = binding.memory
+    const beforePayload = buildMemoryRecordsPayload(context, binding)
+    const targetDetails = beforePayload.clearTargets.filter((item) => targets.includes(item.value))
+    const archive = createManualClearArchive(context, targets, targetDetails)
     const dailyLogFiles = listDailyLogFiles(memoryConfig, context.fs, path)
     const stateRoot = path.join(context.GAMESTUDIO_ROOT, 'state')
     const runtimeTraceFiles = [...new Set([
@@ -705,31 +849,40 @@ export function registerConfigRoutes(app, context) {
     const cleared = []
 
     const clearChatHistory = () => {
+      archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, getHermesChatFilePath(), 'chat-history')
       resetFile(context.fs, path, getHermesChatFilePath(), '[]\n')
       cleared.push('chat-history')
     }
     const clearContextPool = () => {
       for (const entry of listContextPoolEntries()) {
         if (context.fs.existsSync(entry.filePath)) {
+          archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, entry.filePath, 'context-pool')
           context.fs.unlinkSync(entry.filePath)
         }
       }
       cleared.push('context-pool')
     }
     const clearLongTermMemory = () => {
+      archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, memoryConfig.userFile, 'long-term-memory')
+      archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, memoryConfig.memoryFile, 'long-term-memory')
       resetFile(context.fs, path, memoryConfig.userFile, '# User Preferences\n\n')
       resetFile(context.fs, path, memoryConfig.memoryFile, '# Project Memory\n\n')
       cleared.push('long-term-memory')
     }
     const clearStateRecords = () => {
+      archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, memoryConfig.statusFile, 'state-record')
+      archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, memoryConfig.taskQueueFile, 'state-record')
+      archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, memoryConfig.decisionsFile, 'state-record')
       resetFile(context.fs, path, memoryConfig.statusFile, '# Project Status\n\n')
       resetFile(context.fs, path, memoryConfig.taskQueueFile, '# Task Queue\n\n')
       resetFile(context.fs, path, memoryConfig.decisionsFile, '# Decisions\n\n')
       cleared.push('state-records')
     }
     const clearLogs = () => {
+      archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, HERMES_RUNTIME_LOG_FILE, 'runtime-log')
       resetFile(context.fs, path, HERMES_RUNTIME_LOG_FILE, '')
       for (const filePath of dailyLogFiles) {
+        archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, filePath, 'daily-log')
         resetFile(context.fs, path, filePath, '')
       }
       if (dailyLogFiles.length === 0) {
@@ -740,9 +893,10 @@ export function registerConfigRoutes(app, context) {
     }
     const clearRuntimeTraces = () => {
       assertRuntimeTracesClearable(context.fs, path, stateRoot)
-      const agentSessionsCleared = clearTerminalRuntimeSessionFiles(context.fs, path, path.join(stateRoot, 'agent-runtime-sessions'))
-      const legacySessionsCleared = clearTerminalRuntimeSessionFiles(context.fs, path, path.join(stateRoot, 'reasoning-sessions'))
+      const agentSessionsCleared = archiveAndClearTerminalRuntimeSessionFiles(context.fs, path, context.GAMESTUDIO_ROOT, path.join(stateRoot, 'agent-runtime-sessions'), archive)
+      const legacySessionsCleared = archiveAndClearTerminalRuntimeSessionFiles(context.fs, path, context.GAMESTUDIO_ROOT, path.join(stateRoot, 'reasoning-sessions'), archive)
       for (const filePath of runtimeTraceFiles) {
+        archiveFileForManualClear(context.fs, path, context.GAMESTUDIO_ROOT, archive, filePath, 'runtime-trace')
         resetFile(context.fs, path, filePath, '')
       }
       cleared.push(`runtime-traces:${agentSessionsCleared + legacySessionsCleared}`)
@@ -762,14 +916,17 @@ export function registerConfigRoutes(app, context) {
       }
 
       const payload = buildMemoryRecordsPayload(context, buildHermesBinding())
+      const archiveSummary = writeManualClearReport(context.fs, path, context.GAMESTUDIO_ROOT, archive, { cleared })
       return c.json({
         ok: true,
         target: targets[0],
         targets,
         cleared,
+        archive: archiveSummary,
+        analysis: { targets: targetDetails },
         message: targets.length > 1
-            ? `已清空 ${targets.length} 类记录。`
-            : '已清空所选记录。',
+            ? `已归档并清空 ${targets.length} 类记录。`
+            : '已归档并清空所选记录。',
         ...payload
       })
     } catch (error) {

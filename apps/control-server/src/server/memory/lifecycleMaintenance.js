@@ -33,12 +33,16 @@ export function normalizeMemoryLifecycleRecord(record, defaults = {}) {
   }
 }
 
-export function runMemoryLifecycleMaintenance({ fs, rootDir, contextPoolDir, chatDir, sessionDir, now = new Date() }) {
+export function runMemoryLifecycleMaintenance({ fs, rootDir, contextPoolDir, chatDir, sessionDirs = [], sessionDir, now = new Date() }) {
+  const normalizedSessionDirs = Array.from(new Set([
+    ...sessionDirs,
+    sessionDir,
+  ].map((value) => String(value || '').trim()).filter(Boolean)))
   const report = {
     ranAt: now.toISOString(),
     contextPool: maintainContextPool({ fs, contextPoolDir, now }),
     chatHistory: maintainChatHistory({ fs, chatDir, rootDir, now }),
-    reasoningSessions: indexReasoningSessions({ fs, rootDir, sessionDir, now })
+    reasoningSessions: indexReasoningSessions({ fs, rootDir, sessionDirs: normalizedSessionDirs, now })
   }
   writeMaintenanceReport({ fs, rootDir, report })
   return report
@@ -123,47 +127,53 @@ function maintainChatHistory({ fs, chatDir, rootDir, now }) {
   return result
 }
 
-function indexReasoningSessions({ fs, rootDir, sessionDir, now }) {
+function indexReasoningSessions({ fs, rootDir, sessionDirs, now }) {
   const result = { scanned: 0, indexed: 0, sleeping: 0, archived: 0, errors: [] }
-  if (!sessionDir || !fs.existsSync(sessionDir)) return result
+  const normalizedSessionDirs = Array.from(new Set((Array.isArray(sessionDirs) ? sessionDirs : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)))
+  if (normalizedSessionDirs.length === 0) return result
   const index = []
 
-  for (const name of fs.readdirSync(sessionDir).filter((item) => item.endsWith('.json'))) {
-    const filePath = path.join(sessionDir, name)
-    result.scanned += 1
-    try {
-      const session = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-      const lifecycleRecord = normalizeMemoryLifecycleRecord({
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        lifecycle: session.lifecycle,
-      }, {
-        kind: MEMORY_RECORD_KINDS.REASONING_SESSION,
-        state: MEMORY_LIFECYCLE_STATES.EPHEMERAL,
-        importance: session.status === 'completed' ? 50 : 30,
-        confidence: session.status === 'completed' ? 70 : 40,
-        relatedCaseIds: [session.submissionContext?.caseId].filter(Boolean),
-        relatedSessionIds: [session.sessionId].filter(Boolean)
-      })
-      const next = evaluateMemoryLifecycle(lifecycleRecord, now)
-      if (next.state === MEMORY_LIFECYCLE_STATES.SLEEPING) result.sleeping += 1
-      if (next.state === MEMORY_LIFECYCLE_STATES.ARCHIVED) result.archived += 1
-      index.push({
-        sessionId: session.sessionId,
-        status: session.status,
-        userPrompt: session.userPrompt,
-        caseId: session.submissionContext?.caseId || null,
-        stageId: session.submissionContext?.stageId || null,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        lifecycleState: next.state,
-        lifecycleReason: next.reason,
-        finalAnswerChars: String(session.artifacts?.finalAnswer || '').length,
-        filePath
-      })
-      result.indexed += 1
-    } catch (error) {
-      result.errors.push(`${name}:${error instanceof Error ? error.message : String(error)}`)
+  for (const sessionDir of normalizedSessionDirs) {
+    if (!fs.existsSync(sessionDir)) continue
+    for (const name of fs.readdirSync(sessionDir).filter((item) => item.endsWith('.json'))) {
+      const filePath = path.join(sessionDir, name)
+      result.scanned += 1
+      try {
+        const session = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+        const lifecycleRecord = normalizeMemoryLifecycleRecord({
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          lifecycle: session.lifecycle,
+        }, {
+          kind: MEMORY_RECORD_KINDS.REASONING_SESSION,
+          state: MEMORY_LIFECYCLE_STATES.EPHEMERAL,
+          importance: session.status === 'completed' ? 50 : 30,
+          confidence: session.status === 'completed' ? 70 : 40,
+          relatedCaseIds: [session.submissionContext?.caseId].filter(Boolean),
+          relatedSessionIds: [session.sessionId].filter(Boolean)
+        })
+        const next = evaluateMemoryLifecycle(lifecycleRecord, now)
+        if (next.state === MEMORY_LIFECYCLE_STATES.SLEEPING) result.sleeping += 1
+        if (next.state === MEMORY_LIFECYCLE_STATES.ARCHIVED) result.archived += 1
+        index.push({
+          sessionId: session.sessionId,
+          status: session.status,
+          userPrompt: session.userPrompt,
+          caseId: session.submissionContext?.caseId || null,
+          stageId: session.submissionContext?.stageId || null,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          lifecycleState: next.state,
+          lifecycleReason: next.reason,
+          finalAnswerChars: String(session.artifacts?.finalAnswer || '').length,
+          filePath
+        })
+        result.indexed += 1
+      } catch (error) {
+        result.errors.push(`${name}:${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
 

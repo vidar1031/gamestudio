@@ -1,6 +1,49 @@
 export function registerRuntimeRoutes(app, context) {
   let runtimeActionInFlight = null
 
+  function buildSavedConfigState(config, detail = '已保存左脑配置') {
+    return {
+      saved: true,
+      savedAt: new Date().toISOString(),
+      savedFingerprint: getHermesControlConfigFingerprint(config),
+      lastSavedModel: config.model,
+      detail
+    }
+  }
+
+  function buildRecordedPreflightState(config, preflight) {
+    return {
+      ready: preflight.ready,
+      checkedAt: preflight.checkedAt,
+      configFingerprint: getHermesControlConfigFingerprint(config),
+      detail: preflight.ready ? '左脑自检通过' : '左脑自检未通过',
+      checks: preflight.checks,
+      inspection: preflight.inspection || null
+    }
+  }
+
+  function synchronizeSwitchConfig(config) {
+    const workflow = config?.workflow && typeof config.workflow === 'object' ? config.workflow : {}
+    const modelRouting = workflow?.modelRouting && typeof workflow.modelRouting === 'object' ? workflow.modelRouting : {}
+    return {
+      ...config,
+      workflow: {
+        ...workflow,
+        modelRouting: {
+          ...modelRouting,
+          defaultRoute: {
+            ...(modelRouting.defaultRoute && typeof modelRouting.defaultRoute === 'object' ? modelRouting.defaultRoute : {}),
+            provider: config.provider,
+            baseUrl: config.baseUrl,
+            model: config.model,
+            transport: 'hermes',
+            strict: false
+          }
+        }
+      }
+    }
+  }
+
   const {
     CONTROL_RESTART_SCRIPT,
     GAMESTUDIO_ROOT,
@@ -13,14 +56,20 @@ export function registerRuntimeRoutes(app, context) {
     fetchLocalModelCatalog,
     fs,
     getHermesControlConfigFingerprint,
+    getHermesControlState,
     getHermesRuntimeState,
     getPersistedHermesControlConfig,
     hermesAgentDefinition,
     inspectModelAccess,
+    inspectProviderModelState,
+    listActiveReasoningExecutions,
+    loadProviderModel,
     mergeHermesControlConfig,
+    setHermesControlConfig,
     spawn,
     startHermesRuntime,
     stopHermesRuntime,
+    unloadProviderModel,
     updateHermesControlState,
     buildHermesBindingFromConfig,
   } = context
@@ -132,6 +181,21 @@ export function registerRuntimeRoutes(app, context) {
 
       appendHermesLog('[START] Preparing left-brain model preflight')
       const preflight = await buildHermesPreflight(existing, { appendLogs: true })
+      if (preflight.ready) {
+        appendHermesLog(`[START] Loading provider model before runtime start: ${preflight.selectedModel}`)
+        const loadResult = await loadProviderModel({
+          provider: existing.provider,
+          baseUrl: existing.baseUrl,
+          model: preflight.selectedModel
+        })
+        if (!loadResult.ok) {
+          appendHermesLog(`[START][ERROR] Provider load failed: ${loadResult.detail}`)
+          return c.json({ ok: false, error: 'provider_load_failed', detail: loadResult.detail, preflight }, 409)
+        }
+      }
+      const loadedInspection = preflight.ready
+        ? await inspectProviderModelState({ provider: existing.provider, baseUrl: existing.baseUrl, model: preflight.selectedModel })
+        : preflight.inspection
       updateHermesControlState({
         preflight: {
           ready: preflight.ready,
@@ -145,7 +209,7 @@ export function registerRuntimeRoutes(app, context) {
           provider: existing.provider,
           baseUrl: existing.baseUrl,
           model: preflight.selectedModel,
-          inspection: preflight.inspection,
+          inspection: loadedInspection,
           lastAction: 'load'
         })
       })
@@ -193,6 +257,235 @@ export function registerRuntimeRoutes(app, context) {
     }
   })
 
+  app.post('/api/control/agents/:agentId/switch-model', async (c) => {
+    const { agentId } = c.req.param()
+    if (agentId !== hermesAgentDefinition.id) {
+      return c.json({ ok: false, error: 'agent_not_found' }, 404)
+    }
+
+    if (runtimeActionInFlight) {
+      return c.json({
+        ok: false,
+        error: 'runtime_action_busy',
+        activeAction: runtimeActionInFlight.action,
+        startedAt: runtimeActionInFlight.startedAt
+      }, 409)
+    }
+
+    const activeExecutions = listActiveReasoningExecutions()
+    if (activeExecutions.length > 0) {
+      return c.json({
+        ok: false,
+        error: 'reasoning_in_progress',
+        detail: '当前仍有模型请求在执行，禁止切换左脑模型。',
+        activeExecutions
+      }, 409)
+    }
+
+    const body = await c.req.json().catch(() => ({}))
+    const persistedConfig = getPersistedHermesControlConfig()
+    const currentConfig = synchronizeSwitchConfig(persistedConfig)
+    const nextConfig = synchronizeSwitchConfig(mergeHermesControlConfig(persistedConfig, body.config || {}))
+    const currentRuntime = getHermesRuntimeState()
+    const shouldRestartRuntime = currentRuntime.state === 'running'
+    const switchTarget = `${nextConfig.provider || 'unknown'} / ${nextConfig.model || 'unknown'}`
+    const currentConfigNeedsSync = getHermesControlConfigFingerprint(persistedConfig) !== getHermesControlConfigFingerprint(currentConfig)
+
+    if (!String(nextConfig.model || '').trim()) {
+      return c.json({ ok: false, error: 'missing_target_model', detail: '请先选择要切换到的模型。' }, 400)
+    }
+
+    if (
+      String(currentConfig.provider || '') === String(nextConfig.provider || '')
+      && String(currentConfig.baseUrl || '') === String(nextConfig.baseUrl || '')
+      && String(currentConfig.model || '') === String(nextConfig.model || '')
+    ) {
+      if (currentConfigNeedsSync) {
+        const preflight = await buildHermesPreflight(currentConfig, { appendLogs: true })
+        const loadedInspection = await inspectProviderModelState({
+          provider: currentConfig.provider,
+          baseUrl: currentConfig.baseUrl,
+          model: currentConfig.model
+        })
+        setHermesControlConfig(currentConfig)
+        const state = updateHermesControlState({
+          config: buildSavedConfigState(currentConfig, '已修正左脑 routing 配置'),
+          preflight: buildRecordedPreflightState(currentConfig, preflight),
+          model: buildModelStateSnapshot({
+            provider: currentConfig.provider,
+            baseUrl: currentConfig.baseUrl,
+            model: preflight.selectedModel,
+            inspection: loadedInspection,
+            lastAction: 'sync'
+          })
+        })
+        return c.json({
+          ok: true,
+          switched: false,
+          detail: `当前已在使用 ${switchTarget}，并已修正 routing 绑定。`,
+          preflight,
+          runtimeStatus: currentRuntime,
+          state
+        })
+      }
+      return c.json({
+        ok: true,
+        switched: false,
+        detail: `当前已在使用 ${switchTarget}。`,
+        runtimeStatus: currentRuntime,
+        state: getHermesControlState()
+      })
+    }
+
+    runtimeActionInFlight = {
+      action: 'switch-model',
+      startedAt: new Date().toISOString()
+    }
+
+    let runtimeStatus = currentRuntime
+    try {
+      appendHermesLog(`[MODEL][SWITCH] validating target=${switchTarget}`)
+      const preflight = await buildHermesPreflight(nextConfig, { appendLogs: true })
+      if (!preflight.ready) {
+        appendHermesLog(`[MODEL][SWITCH][ERROR] preflight_failed target=${switchTarget}`)
+        return c.json({
+          ok: false,
+          error: 'preflight_failed',
+          detail: '目标模型自检未通过，已阻止切换。',
+          readiness: preflight.readiness,
+          preflight,
+          runtimeStatus,
+          state: getHermesControlState()
+        }, 409)
+      }
+
+      if (shouldRestartRuntime) {
+        appendHermesLog(`[MODEL][SWITCH] stopping runtime before switching target=${switchTarget}`)
+        runtimeStatus = await stopHermesRuntime()
+        updateHermesControlState({ runtime: buildRuntimeStateSnapshot(runtimeStatus, 'stop') })
+      }
+
+      let unloadResult = { ok: true, attempted: false, skipped: true, reason: 'same_model', detail: '无需卸载旧模型。' }
+      const previousModelChanged = String(currentConfig.model || '') !== String(nextConfig.model || '')
+        || String(currentConfig.provider || '') !== String(nextConfig.provider || '')
+        || String(currentConfig.baseUrl || '') !== String(nextConfig.baseUrl || '')
+      if (previousModelChanged && String(currentConfig.model || '').trim()) {
+        unloadResult = await unloadProviderModel({
+          provider: currentConfig.provider,
+          baseUrl: currentConfig.baseUrl,
+          model: currentConfig.model
+        })
+        if (!unloadResult.ok) {
+          throw new Error(`provider_unload_failed:${unloadResult.detail}`)
+        }
+      }
+
+      const loadResult = await loadProviderModel({
+        provider: nextConfig.provider,
+        baseUrl: nextConfig.baseUrl,
+        model: nextConfig.model
+      })
+      if (!loadResult.ok) {
+        throw new Error(`provider_load_failed:${loadResult.detail}`)
+      }
+
+      const loadedInspection = await inspectProviderModelState({
+        provider: nextConfig.provider,
+        baseUrl: nextConfig.baseUrl,
+        model: nextConfig.model
+      })
+
+      setHermesControlConfig(nextConfig)
+      const state = updateHermesControlState({
+        config: buildSavedConfigState(nextConfig, '已保存并切换左脑配置'),
+        preflight: buildRecordedPreflightState(nextConfig, preflight),
+        model: buildModelStateSnapshot({
+          provider: nextConfig.provider,
+          baseUrl: nextConfig.baseUrl,
+          model: preflight.selectedModel,
+          inspection: loadedInspection,
+          lastAction: 'switch'
+        })
+      })
+
+      if (shouldRestartRuntime) {
+        appendHermesLog(`[MODEL][SWITCH] starting runtime on target=${switchTarget}`)
+        runtimeStatus = await startHermesRuntime()
+        updateHermesControlState({ runtime: buildRuntimeStateSnapshot(runtimeStatus, 'start') })
+      }
+
+      appendHermesLog(`[MODEL][SWITCH][OK] target=${switchTarget} restarted=${shouldRestartRuntime}`)
+      return c.json({
+        ok: true,
+        switched: true,
+        restartedRuntime: shouldRestartRuntime,
+        detail: shouldRestartRuntime
+          ? `已切换到 ${switchTarget}，Hermes 已按新模型重启。`
+          : `已切换到 ${switchTarget}，Hermes 当前未运行。`,
+        unloadResult,
+        preflight,
+        runtimeStatus,
+        state
+      })
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      appendHermesLog(`[MODEL][SWITCH][ERROR] target=${switchTarget} detail=${detail}`)
+
+      let recovered = false
+      let recoveryDetail = ''
+      try {
+        setHermesControlConfig(currentConfig)
+        const rollbackPreflight = await buildHermesPreflight(currentConfig, { appendLogs: true })
+        const rollbackLoad = await loadProviderModel({
+          provider: currentConfig.provider,
+          baseUrl: currentConfig.baseUrl,
+          model: currentConfig.model
+        })
+        if (!rollbackLoad.ok) {
+          throw new Error(`provider_recovery_load_failed:${rollbackLoad.detail}`)
+        }
+        const rollbackInspection = await inspectProviderModelState({
+          provider: currentConfig.provider,
+          baseUrl: currentConfig.baseUrl,
+          model: currentConfig.model
+        })
+        updateHermesControlState({
+          config: buildSavedConfigState(currentConfig, '已回滚到切换前左脑配置'),
+          preflight: buildRecordedPreflightState(currentConfig, rollbackPreflight),
+          model: buildModelStateSnapshot({
+            provider: currentConfig.provider,
+            baseUrl: currentConfig.baseUrl,
+            model: rollbackPreflight.selectedModel,
+            inspection: rollbackInspection,
+            lastAction: 'rollback'
+          })
+        })
+        if (shouldRestartRuntime) {
+          runtimeStatus = await startHermesRuntime()
+          updateHermesControlState({ runtime: buildRuntimeStateSnapshot(runtimeStatus, 'resume') })
+        }
+        recovered = true
+        recoveryDetail = shouldRestartRuntime ? '已回滚旧配置并恢复 Hermes。' : '已回滚旧配置。'
+        appendHermesLog(`[MODEL][SWITCH][RECOVERED] detail=${recoveryDetail}`)
+      } catch (recoveryError) {
+        recoveryDetail = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+        appendHermesLog(`[MODEL][SWITCH][RECOVERY_ERROR] detail=${recoveryDetail}`)
+      }
+
+      return c.json({
+        ok: false,
+        error: 'model_switch_failed',
+        detail,
+        recovered,
+        recoveryDetail,
+        runtimeStatus,
+        state: getHermesControlState()
+      }, 500)
+    } finally {
+      runtimeActionInFlight = null
+    }
+  })
+
   app.get('/api/control/local-models', async (c) => {
     const provider = c.req.query('provider') || 'omlx'
     const requestedBaseUrl = c.req.query('baseUrl') || undefined
@@ -203,7 +496,7 @@ export function registerRuntimeRoutes(app, context) {
     const provider = String(c.req.query('provider') || 'omlx')
     const model = String(c.req.query('model') || '').trim()
     const baseUrl = c.req.query('baseUrl') || undefined
-    return c.json({ ok: true, inspection: await inspectModelAccess({ provider, baseUrl, model }) })
+    return c.json({ ok: true, inspection: await inspectProviderModelState({ provider, baseUrl, model }) })
   })
 
   app.get('/api/control/agents/:agentId/self-check', async (c) => {

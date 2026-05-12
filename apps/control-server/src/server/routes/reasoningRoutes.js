@@ -1,3 +1,6 @@
+import { enqueueHumanCorrectionProposal } from '../intents/proposals.js'
+import { classifyReasoningRequest } from '../reasoning/requestClassifier.js'
+
 export function registerReasoningRoutes(app, context) {
   let activeProductionTestSession = null
 
@@ -13,7 +16,11 @@ export function registerReasoningRoutes(app, context) {
     continueReasoningSessionFromStep,
     createReasoningSession,
     deleteReasoningSessionRecord,
+    buildConfigValidation,
     getHermesRuntimeState,
+    getHermesControlConfigFingerprint,
+    getHermesControlState,
+    getPersistedHermesControlConfig,
     hermesAgentDefinition,
     markReasoningSessionFailed,
     persistHermesChatPrompt,
@@ -39,15 +46,64 @@ export function registerReasoningRoutes(app, context) {
     return activeProductionTestSession
   }
 
+  const enqueueHumanCorrectionIfUseful = (sessionId, decision, review, correctionPrompt) => {
+    const correction = String(correctionPrompt || '').trim()
+    if (!correction) return null
+    const session = readReasoningSession(sessionId)
+    if (!session) return null
+    const result = enqueueHumanCorrectionProposal({
+      sessionId,
+      decision,
+      userPrompt: session.userPrompt,
+      correctionPrompt: correction,
+      review,
+      finalAnswer: session.artifacts?.finalAnswer || null
+    })
+    appendReasoningEvent(sessionId, 'review_correction_proposal', review.title || '人工修正', result.written.length > 0 ? '人工修正已整理为待审核强化提案。' : '人工修正已记录，未生成新的强化提案。', {
+      stepId: review.stepId || undefined,
+      data: {
+        decision,
+        targetType: review.targetType,
+        reviewPhase: review.reviewPhase,
+        written: result.written,
+        skipped: result.skipped
+      }
+    })
+    return result
+  }
+
+  const buildReasoningStartBlocker = () => {
+    const config = getPersistedHermesControlConfig()
+    const binding = buildHermesBinding()
+    const controlState = getHermesControlState()
+    const configFingerprint = getHermesControlConfigFingerprint(config)
+    const configSaved = controlState.config?.saved === true && controlState.config?.savedFingerprint === configFingerprint
+    const modelLoaded = controlState.model?.status === 'loaded'
+      && String(controlState.model?.provider || '') === String(config.provider || '')
+      && String(controlState.model?.baseUrl || '') === String(config.baseUrl || '')
+      && String(controlState.model?.model || '') === String(config.model || '')
+    const validation = buildConfigValidation(config, binding, controlState.model?.inspection || null)
+    const preflightReady = controlState.preflight?.ready === true && controlState.preflight?.configFingerprint === configFingerprint
+
+    if (!configSaved) {
+      return { error: 'left_brain_config_not_saved', details: '未保存左脑配置，请先保存后再提交任务。' }
+    }
+    if (!modelLoaded) {
+      return { error: 'left_brain_model_not_loaded', details: controlState.model?.detail || '模型未启动，请先加载模型。' }
+    }
+    if (!validation.ready) {
+      return { error: 'left_brain_config_invalid', details: '左脑配置校验未通过，请先修复配置项。', readiness: validation }
+    }
+    if (!preflightReady) {
+      return { error: 'left_brain_preflight_not_ready', details: controlState.preflight?.detail || '尚未完成左脑自检。' }
+    }
+    return null
+  }
+
   const createRuntimeSession = async (c) => {
     const { agentId } = c.req.param()
     if (agentId !== hermesAgentDefinition.id) {
       return c.json({ ok: false, error: 'agent_not_found' }, 404)
-    }
-
-    const runtimeStatus = getHermesRuntimeState()
-    if (runtimeStatus.state !== 'running') {
-      return c.json({ ok: false, error: 'runtime_not_running', runtimeStatus }, 409)
     }
 
     const body = await c.req.json().catch(() => ({}))
@@ -56,24 +112,53 @@ export function registerReasoningRoutes(app, context) {
     if (!userPrompt) {
       return c.json({ ok: false, error: 'prompt_required' }, 400)
     }
+
+    const productionTest = Boolean(body.productionTest || body.submissionContext?.productionTest)
+    const requireModelAnswer = Boolean(body.requireModelAnswer || body.requireHermesModelAnswer || body.submissionContext?.requireModelAnswer || body.submissionContext?.requireHermesModelAnswer)
+    const requestDecision = classifyReasoningRequest(userPrompt, { contextSelection: { productionTest } })
+    const allowDeterministicStoryRuntimeBypass = productionTest
+      && !requireModelAnswer
+      && requestDecision.type === 'story_workflow_execute'
+      && requestDecision.deterministicPlan
+    const allowDeterministicGameStudioBootstrapBypass = !requireModelAnswer
+      && requestDecision.type === 'gamestudio_bootstrap_execute'
+      && requestDecision.deterministicPlan
+    const allowDeterministicRuntimeBypass = allowDeterministicStoryRuntimeBypass || allowDeterministicGameStudioBootstrapBypass
+
+    const runtimeStatus = getHermesRuntimeState()
+    if (runtimeStatus.state !== 'running' && !allowDeterministicRuntimeBypass) {
+      return c.json({ ok: false, error: 'runtime_not_running', runtimeStatus }, 409)
+    }
+
+    const startBlocker = buildReasoningStartBlocker()
+    if (startBlocker && !allowDeterministicRuntimeBypass) {
+      return c.json({ ok: false, ...startBlocker, runtimeStatus, controlState: getHermesControlState() }, 409)
+    }
+
     if (parentSessionId && !readReasoningSession(parentSessionId)) {
       return c.json({ ok: false, error: 'parent_reasoning_session_not_found' }, 404)
     }
 
     const binding = buildHermesBinding()
     const history = readHermesChatHistory({ includeAllSessions: true })
+    const disableQualityAutoRetry = body.disableQualityAutoRetry ?? body.submissionContext?.disableQualityAutoRetry
     const session = await createReasoningSession(agentId, userPrompt, {
       parentSessionId,
+      reviewMode: String(body.reviewMode || body.submissionContext?.reviewMode || '').trim().toLowerCase() === 'auto' ? 'auto' : 'manual',
       childGoals: body.childGoals,
       selectedSourceIds: body.selectedSourceIds,
       selectedContextPoolIds: body.selectedContextPoolIds,
       confirmedContextSummary: body.confirmedContextSummary,
-      productionTest: Boolean(body.productionTest || body.submissionContext?.productionTest),
-      disableMemorySync: Boolean(body.disableMemorySync || body.submissionContext?.disableMemorySync),
-      disableQualityAutoRetry: Boolean(body.disableQualityAutoRetry || body.submissionContext?.disableQualityAutoRetry),
+      productionTest,
+      requireModelAnswer,
+      disableMemorySync: Boolean(body.disableMemorySync || body.submissionContext?.disableMemorySync || allowDeterministicGameStudioBootstrapBypass),
+      ...(disableQualityAutoRetry === undefined ? {} : { disableQualityAutoRetry: Boolean(disableQualityAutoRetry) }),
       stageId: String(body.stageId || body.submissionContext?.stageId || '').trim() || null,
       caseId: String(body.caseId || body.submissionContext?.caseId || '').trim() || null,
       title: String(body.title || body.submissionContext?.title || '').trim() || userPrompt,
+      expectations: body.expectations && typeof body.expectations === 'object'
+        ? body.expectations
+        : (body.submissionContext?.expectations && typeof body.submissionContext.expectations === 'object' ? body.submissionContext.expectations : null),
       forceFreshRun: Boolean(body.forceFreshRun || body.submissionContext?.forceFreshRun)
     })
     persistHermesChatPrompt(session.sessionId, userPrompt)
@@ -203,6 +288,67 @@ export function registerReasoningRoutes(app, context) {
   app.post('/api/control/agents/:agentId/reasoning-sessions/:sessionId/cancel', cancelRuntimeSession)
   app.post('/api/control/agents/:agentId/agent-runtime-sessions/:sessionId/cancel', cancelRuntimeSession)
 
+  const recoverRuntimeSession = async (c) => {
+    const { agentId, sessionId } = c.req.param()
+    if (agentId !== hermesAgentDefinition.id) {
+      return c.json({ ok: false, error: 'agent_not_found' }, 404)
+    }
+
+    const session = readReasoningSession(sessionId)
+    if (!session) {
+      return c.json({ ok: false, error: 'reasoning_session_not_found' }, 404)
+    }
+    if (session.status !== 'failed' || !/orphaned by server restart/i.test(String(session.error || ''))) {
+      return c.json({ ok: false, error: 'reasoning_session_not_recoverable', status: session.status, detail: session.error || null }, 409)
+    }
+
+    const runtimeStatus = getHermesRuntimeState()
+    if (runtimeStatus.state !== 'running') {
+      return c.json({ ok: false, error: 'runtime_not_running', runtimeStatus }, 409)
+    }
+
+    const startBlocker = buildReasoningStartBlocker()
+    if (startBlocker) {
+      return c.json({ ok: false, ...startBlocker, runtimeStatus, controlState: getHermesControlState() }, 409)
+    }
+
+    const body = await c.req.json().catch(() => ({}))
+    const requestedStepIndex = Number(body.stepIndex)
+    const savedStepIndex = Number(session.artifacts?.nextStepIndex ?? session.review?.stepIndex ?? 0)
+    const stepIndex = Number.isInteger(requestedStepIndex) && requestedStepIndex >= 0
+      ? requestedStepIndex
+      : Math.max(0, Number.isFinite(savedStepIndex) ? savedStepIndex : 0)
+    const correctionPrompt = String(body.correctionPrompt || '').trim()
+    const binding = buildHermesBinding()
+    const history = readHermesChatHistory({ includeAllSessions: true })
+
+    clearReasoningReview(sessionId)
+    updateReasoningSession(sessionId, (current) => ({
+      ...current,
+      status: 'running',
+      currentStepId: null,
+      error: null,
+      artifacts: {
+        ...current.artifacts,
+        nextStepIndex: stepIndex,
+        recoveredFromOrphanAt: new Date().toISOString(),
+        recoveredFromOrphanReason: current.error || null
+      }
+    }))
+    appendReasoningEvent(sessionId, 'session_recovered', '恢复中断任务', `服务器重启中断的 session 已从第 ${stepIndex + 1} 步继续。`, {
+      data: { stepIndex, correctionPrompt: correctionPrompt || null }
+    })
+
+    void runAllReasoningStepsFrom(sessionId, binding, history, stepIndex, { correctionPrompt }).catch((error) => {
+      markReasoningSessionFailed(sessionId, error)
+    })
+
+    return c.json({ ok: true, session: readReasoningSession(sessionId), stepIndex })
+  }
+
+  app.post('/api/control/agents/:agentId/reasoning-sessions/:sessionId/recover', recoverRuntimeSession)
+  app.post('/api/control/agents/:agentId/agent-runtime-sessions/:sessionId/recover', recoverRuntimeSession)
+
   const reviewRuntimeSession = async (c) => {
     const { agentId, sessionId } = c.req.param()
     if (agentId !== hermesAgentDefinition.id) {
@@ -228,6 +374,7 @@ export function registerReasoningRoutes(app, context) {
     const binding = buildHermesBinding()
     const history = readHermesChatHistory({ includeAllSessions: true })
     const review = session.review
+    enqueueHumanCorrectionIfUseful(sessionId, decision, review, correctionPrompt)
 
     if (decision === 'approve') {
       if (review.targetType === 'answer' && review.reviewPhase === 'quality_override') {
@@ -337,10 +484,10 @@ export function registerReasoningRoutes(app, context) {
         })
       }
 
-      persistReasoningReviewDecision(sessionId, 'approve', review)
-      appendReasoningEvent(sessionId, 'review_approved', review.title, '用户已确认，继续执行。', {
+      persistReasoningReviewDecision(sessionId, 'approve', review, correctionPrompt)
+      appendReasoningEvent(sessionId, 'review_approved', review.title, correctionPrompt ? '用户已确认，并提供后续修正条件。' : '用户已确认，继续执行。', {
         stepId: review.stepId || undefined,
-        data: { targetType: review.targetType, stepIndex: review.stepIndex ?? null }
+        data: { targetType: review.targetType, stepIndex: review.stepIndex ?? null, correctionPrompt: correctionPrompt || null }
       })
       clearReasoningReview(sessionId)
       const approvedStepIndex = Number.isInteger(review.stepIndex) ? review.stepIndex : -1
@@ -354,7 +501,7 @@ export function registerReasoningRoutes(app, context) {
         artifacts: { ...current.artifacts, nextStepIndex }
       }))
       void runAllReasoningStepsFrom(sessionId, binding, history, nextStepIndex, {
-        correctionPrompt: review.correctionPrompt || ''
+        correctionPrompt: correctionPrompt || review.correctionPrompt || ''
       })
       return c.json({ ok: true, session: readReasoningSession(sessionId) })
     }

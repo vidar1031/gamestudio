@@ -71,6 +71,14 @@ user-invocable: false
 - 业务后端|后端目录|server目录|backend directory|apps/server => locate_project, generate_default_answer
 - control|Hermes|管理器|reasoning|对话|聊天|后端文件|主要后端|backend => locate_project, inspect_control_backend_surfaces, generate_default_answer
 - 图片生成|出图|image|background|comfyui|服务端入口 => locate_project, inspect_server_image_entrypoints, generate_default_answer
+- 启动 GameStudio|打开 Editor|settings|本地生产配置|自检|diagnose => gamestudio_ensure_running, gamestudio_read_settings, gamestudio_self_check, generate_default_answer
+- 配置本地 OMLX|配置 ComfyUI|图片 provider 预检 => gamestudio_read_settings, gamestudio_configure_local_production, gamestudio_self_check, generate_default_answer
+- 创建互动故事|story workflow|故事项目生产|文本故事闭环 => story_create_project, story_inspect_project, generate_default_answer
+- 写入故事配置|生成 scripts|编译蓝图|编译合成层|校验项目|导出 H5 => story_configure_project, story_generate_scripts_candidate, story_write_scripts, story_compile_blueprint, story_compile_compose, story_validate_project, story_export_project, generate_default_answer
+- 资产计划|角色资产|背景图资产|图片资产闭环 => story_preflight_image_provider, story_create_asset_plan, story_generate_asset_candidate, story_validate_project, generate_default_answer
+- 记忆状态|任务队列|决策记录|上下文池|清理记录 => read_recent_context, generate_default_answer
+- 生产测试|L1|L4|L5|control_production_test => run_workspace_script, generate_default_answer
+- 可观测执行|黑盒|gamestudio_observer|endpoint 证据 => story_inspect_project, generate_default_answer
 
 ## 迭代原则
 

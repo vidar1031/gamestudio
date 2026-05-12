@@ -69,13 +69,12 @@ type ModelMemory = Record<ModelSection, Record<string, ModelMemoryEntry>>
 type UrlMemory = Record<TextSection, Record<string, string>>
 const OPENAI_MODEL_PRESETS = ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4o-mini']
 const SDWEBUI_MODEL_PRESETS = [
-  'dreamshaper_8.safetensors [879db523c3]',
+  'ivisionIllustration_ivision10.safetensors',
+  'sd_xl_base_1.0.safetensors',
   'hellocartoonfilm_V30p.safetensors [a606a40b56]',
   'meinapastel_v6Pastel.safetensors [4679331655]',
   'nigi3d_v20.safetensors [4cb6bd041b]',
-  'sd_xl_base_1.0.safetensors',
-  'svd_xt.safetensors',
-  'v1-5-pruned-emaonly-fp16.safetensors'
+  'svd_xt.safetensors'
 ]
 
 function textProviderModelPlaceholder(provider: string | null | undefined) {
@@ -989,21 +988,11 @@ export default function StudioSettingsModal(props: Props) {
                 </div>
                 <div className="ai-modal-hint">ControlNet 目录：{String(imgPreflightDiag?.checks?.hints?.comfyuiControlnetDir || 'ComfyUI/models/controlnet')}</div>
                 {String(imgPreflightDiag?.checks?.disk?.controlnetExtDir || '') ? (
-                  <div className="ai-modal-hint">检测到 SD-WebUI ControlNet 扩展模型目录：{String(imgPreflightDiag.checks.disk.controlnetExtDir)}</div>
+                  <div className="ai-modal-hint">检测到旧 SD-WebUI ControlNet 扩展模型目录：{String(imgPreflightDiag.checks.disk.controlnetExtDir)}</div>
                 ) : null}
                 <div className="ai-modal-hint">IP-Adapter 目录：{String(imgPreflightDiag?.checks?.hints?.comfyuiIpadapterDir || 'ComfyUI/models/ipadapter')}</div>
-                <div className="ai-modal-hint">提示：`control_v11*_sd15_*.pth` 是 SD1.5 ControlNet，适用于 SD1.5 checkpoint（如 dreamshaper_8）。若使用 SDXL checkpoint，需要 SDXL 对应 ControlNet。</div>
-                {Boolean(imgPreflightDiag?.checks?.disk?.controlnetExtDir) && !imgPreflightDiag?.checks?.extras?.controlnet?.modelsSupported ? (
-                  <div style={{ marginTop: 10 }}>
-                    <div className="hint">快速修复（软链共享 ControlNet 模型）</div>
-                    <pre className="ai-modal-hint" style={{ whiteSpace: 'pre-wrap', userSelect: 'text' }}>{`mkdir -p "${String(imgPreflightDiag?.checks?.hints?.comfyuiControlnetDir || '').trim() || 'ComfyUI/models/controlnet'}"
-for f in "${String(imgPreflightDiag.checks.disk.controlnetExtDir)}"/control_v11*_sd15_*.pth; do
-  [ -e "$f" ] || continue
-  ln -sf "$f" "${String(imgPreflightDiag?.checks?.hints?.comfyuiControlnetDir || '').trim() || 'ComfyUI/models/controlnet'}/"
-done`}</pre>
-                    <div className="ai-modal-hint">软链后建议重启 ComfyUI，再点“重新体检”。</div>
-                  </div>
-                ) : null}
+                <div className="ai-modal-hint">SDXL 锁定工作流：{imgPreflightDiag?.checks?.extras?.storyLock?.ok ? 'ok' : 'missing'} checkpoint={String(imgPreflightDiag?.checks?.extras?.storyLock?.checkpointModel || '-')}</div>
+                <div className="ai-modal-hint">提示：当前默认使用 SDXL checkpoint + IP-Adapter 进行锁定事物和连续分镜；ControlNet 仅作为线稿增强项，不再提示或软链 SD1.5 ControlNet。</div>
               </div>
             ) : null}
 

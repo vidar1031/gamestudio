@@ -50,9 +50,12 @@ export function runWorkspaceTextSearch(query, options = {}) {
   const startDir = resolveWorkspacePathFromInput(options.startDir || GAMESTUDIO_ROOT)
   if (!startDir.startsWith(GAMESTUDIO_ROOT)) throw new Error('search_workspace_text_path_outside_workspace')
   const maxResults = Math.min(100, Math.max(1, Number(options.maxResults || 20)))
+  const queryTerms = normalizedQuery.split('|').map((item) => item.trim()).filter(Boolean)
+  const searchTerms = queryTerms.length > 1 ? queryTerms : [normalizedQuery]
   const rgLookup = spawnSync('which', ['rg'], { encoding: 'utf8' })
   if (rgLookup.status === 0) {
-    const result = spawnSync('rg', ['-n', '--no-heading', '--color', 'never', '-F', normalizedQuery, startDir, '-g', '!.git', '-g', '!node_modules', '-g', '!dist', '-g', '!.run'], {
+    const termArgs = searchTerms.flatMap((term) => ['-e', term])
+    const result = spawnSync('rg', ['-n', '--no-heading', '--color', 'never', '-F', ...termArgs, startDir, '-g', '!.git', '-g', '!node_modules', '-g', '!dist', '-g', '!.run'], {
       cwd: GAMESTUDIO_ROOT,
       encoding: 'utf8'
     })
@@ -86,7 +89,7 @@ export function runWorkspaceTextSearch(query, options = {}) {
     const raw = fs.readFileSync(currentPath, 'utf8')
     const lines = raw.split('\n')
     for (let index = 0; index < lines.length; index++) {
-      if (lines[index].includes(normalizedQuery)) {
+      if (searchTerms.some((term) => lines[index].includes(term))) {
         matches.push({ filePath: currentPath, lineNumber: index + 1, preview: lines[index].trim() })
         if (matches.length >= maxResults) return
       }

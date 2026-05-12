@@ -1,0 +1,39 @@
+{
+  "id": "human_correction_99a09ebfa6",
+  "version": 1,
+  "source": "proposal",
+  "priority": 70,
+  "description": "Auto-generated from one human review correction. Requires human promotion before it can affect runtime behavior.",
+  "match": {
+    "anyRegex": [
+      "请通过",
+      "Control",
+      "接管项目",
+      "16b20103-3000-4e8b-ab03-f4224eb63ad1",
+      "分析脚本",
+      "蓝图智能体评分"
+    ]
+  },
+  "evaluation": {
+    "minScore": 75,
+    "scoreBase": 40,
+    "perRequiredHit": 12,
+    "perOptionalHit": 6,
+    "perEvidenceHit": 10,
+    "perForbiddenHit": -25,
+    "mustInclude": [],
+    "optional": [],
+    "forbidden": [],
+    "evidenceRegex": [],
+    "correctionPrompt": "已确认 compose 前置步骤包含锁定事物分析、ComfyUI 确认和 SDXL storyboard preflight。"
+  },
+  "provenance": {
+    "sourceType": "human_review_correction",
+    "sessionId": "reasoning_1778502957907_b9f166e4",
+    "decision": "approve",
+    "targetType": "answer",
+    "reviewPhase": "quality_override",
+    "sampleUserPrompt": "请通过 Control 接管项目 16b20103-3000-4e8b-ab03-f4224eb63ad1：分析脚本、蓝图智能体评分、必要时修复；进入合成前先执行锁定事物绘图分析、确认或启动 ComfyUI、运行 SDXL 连续分镜出图 preflight，然后再合成并校验。",
+    "generatedAt": "2026-05-11T12:39:06.495Z"
+  }
+}

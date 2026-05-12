@@ -31,7 +31,7 @@ import { loadEnv } from './env.js'
 import { diagnoseOpenAI, isOpenAICompatibleProvider, reviewBlueprintViaOpenAI } from './ai/openai.js'
 import { reviewBlueprintLocally } from './ai/blueprintReviewLocal.js'
 import dns from 'node:dns/promises'
-import { getEffectiveStudioConfig, redactStudioSettingsForClient, writeStudioSettings } from './studio/settings.js'
+import { getEffectiveStudioConfig, redactEffectiveStudioConfigForClient, redactStudioSettingsForClient, writeStudioSettings } from './studio/settings.js'
 import { normalizeProjectDoc } from './studio/projectState.js'
 import { getStudioSecret } from './studio/secrets.js'
 
@@ -259,7 +259,7 @@ function extractStringListFromUnknown(raw) {
 
 app.get('/api/studio/settings', async (c) => {
   const { settings, effective } = await getEffectiveStudioConfig(ROOT)
-  return c.json({ success: true, settings: redactStudioSettingsForClient(settings) || null, effective })
+  return c.json({ success: true, settings: redactStudioSettingsForClient(settings) || null, effective: redactEffectiveStudioConfigForClient(effective) })
 })
 
 app.put('/api/studio/settings', async (c) => {
@@ -769,11 +769,14 @@ app.post('/api/studio/image/preflight', async (c) => {
     requiredNodes,
     missingNodes: [],
     extras: {
-      // For storyboard continuity we expect ControlNet + IP-Adapter to be available.
+      // SDXL storyboard continuity uses the lock/reference workflow as the hard gate.
+      // ControlNet is treated as an optional lineart enhancer because this local SDXL
+      // setup already supports successful storyboard drawing without SD1.5 ControlNet.
       // Note: `extCount` is for SD-WebUI ControlNet extension models, which are not
       // automatically visible to ComfyUI unless the user links/copies/configures paths.
       controlnet: { ok: false, missingNodes: [], modelsOk: false, modelsSupported: false, modelsCount: 0, diskCount: 0, extCount: 0 },
-      ipadapter: { ok: false, missingNodes: [], modelsOk: false, modelsSupported: false, modelsCount: 0, diskCount: 0 }
+      ipadapter: { ok: false, missingNodes: [], modelsOk: false, modelsSupported: false, modelsCount: 0, diskCount: 0 },
+      storyLock: { ok: false, checkpointOk: false, checkpointModel: String(effective.image.model || '').trim() || null, checkpointCount: 0, loraCount: 0 }
     },
     hints: {
       comfyuiModelsRoot: modelsRoot || null,
@@ -781,6 +784,7 @@ app.post('/api/studio/image/preflight', async (c) => {
       comfyuiLoraDir: 'ComfyUI/models/loras',
       comfyuiControlnetDir: 'ComfyUI/models/controlnet',
       comfyuiIpadapterDir: 'ComfyUI/models/ipadapter',
+      sdxlStoryboardHint: 'SDXL storyboard lock requires a ComfyUI checkpoint and IP-Adapter; ControlNet is optional for lineart enhancement.',
       restartHint: 'if you add/remove models, restart ComfyUI to refresh cache',
       managerHint: 'recommended: install ComfyUI-Manager to manage custom nodes'
     },
@@ -827,6 +831,15 @@ app.post('/api/studio/image/preflight', async (c) => {
       if (ipaDir) check.hints.comfyuiIpadapterDir = ipaDir
       check.disk.checkpointsDir = ckptDir || check.disk.checkpointsDir
       check.disk.lorasDir = loraDir || check.disk.lorasDir
+      if (ckptDir) {
+        const disk = await hasAnyModelFile(ckptDir)
+        check.extras.storyLock.checkpointCount = disk.ok ? disk.count : 0
+        check.disk.modelFileFound = disk.ok && disk.count > 0
+      }
+      if (loraDir) {
+        const disk = await hasAnyModelFile(loraDir)
+        check.extras.storyLock.loraCount = disk.ok ? disk.count : 0
+      }
       check.disk.controlnetDir = cnDir || null
       check.disk.ipadapterDir = ipaDir || null
       if (cnExtDir) check.disk.controlnetExtDir = cnExtDir
@@ -893,11 +906,25 @@ app.post('/api/studio/image/preflight', async (c) => {
           check.extras.ipadapter.modelsOk = false
         }
         check.extras.ipadapter.ok = ipaMissing.length === 0 && check.extras.ipadapter.modelsOk
+
+        const configuredCheckpoint = String(effective.image.model || '').trim()
+        const comfyCheckpoints = Array.isArray(cap.models) ? cap.models.map((x) => String(x || '').trim()).filter(Boolean) : []
+        const normalizedConfigured = normalizeComfyModelKey(configuredCheckpoint)
+        const checkpointKnownToComfy = normalizedConfigured
+          ? comfyCheckpoints.some((item) => {
+            const key = normalizeComfyModelKey(item)
+            return key === normalizedConfigured || key.includes(normalizedConfigured) || normalizedConfigured.includes(key)
+          })
+          : comfyCheckpoints.length > 0
+        const checkpointOnDisk = Boolean(check.disk.modelFileFound || check.extras.storyLock.checkpointCount > 0)
+        check.extras.storyLock.checkpointOk = Boolean(checkpointKnownToComfy || checkpointOnDisk)
+        check.extras.storyLock.checkpointModel = configuredCheckpoint || (comfyCheckpoints[0] || null)
+        check.extras.storyLock.ok = Boolean(check.extras.storyLock.checkpointOk && check.extras.ipadapter.ok)
       } finally {
         clearTimeout(t2)
       }
 
-      if (!check.extras.controlnet.ok || !check.extras.ipadapter.ok) {
+      if (!check.extras.storyLock.ok) {
         check.reason = 'missing_storyboard_extras'
         return c.json({ success: false, error: 'preflight_failed', checks: check }, 400)
       }
@@ -1134,7 +1161,7 @@ app.post('/api/studio/diagnose', async (c) => {
   const out = {
     ok: true,
     checkedAt: new Date().toISOString(),
-    effective,
+    effective: redactEffectiveStudioConfigForClient(effective),
     services: {
       server: { ok: true, note: 'health_ok' },
       scripts: { ok: true, provider: effective.scripts.provider, model: effective.scripts.model, note: '' },
@@ -3801,6 +3828,7 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
   const id = c.req.param('id')
   const dir = projectDir(id)
   if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const body = await c.req.json().catch(() => ({}))
 
   const cachePath = path.join(dir, 'ai_blueprint_review.json')
   let meta = null
@@ -3817,9 +3845,12 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
   const validation = validateBlueprintDoc(compiled.blueprint)
 
   const studio = await getEffectiveStudioConfig(ROOT)
-  const provider = String(studio.effective.scripts.provider || process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
-  const model = studio.effective.scripts.model || undefined
-  const apiUrl = studio.effective.scripts.apiUrl || undefined
+  const routeOverride = body && body.modelRoute && typeof body.modelRoute === 'object'
+    ? body.modelRoute
+    : (body && typeof body === 'object' ? body : {})
+  const provider = String(routeOverride.provider || studio.effective.scripts.provider || process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
+  const model = routeOverride.model || studio.effective.scripts.model || undefined
+  const apiUrl = routeOverride.apiUrl || studio.effective.scripts.apiUrl || undefined
   const startedAt = Date.now()
   if (!isOpenAICompatibleProvider(provider)) {
     const review = reviewBlueprintLocally({ formula: expectedFormula, report: compiled.report, validation })
@@ -3854,9 +3885,14 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
       apiUrl,
       model
     })
+    const reviewMeta = {
+      ...(ai.meta || {}),
+      routeId: routeOverride.routeId || null,
+      strictRoute: Boolean(routeOverride.strict)
+    }
     try {
       console.log(
-        `[gamestudio] ai.blueprint_review project=${id} provider=${ai?.meta?.provider || provider || 'localoxml'} model=${ai?.meta?.model || '-'} api=${ai?.meta?.api || '-'} ms=${ai?.meta?.durationMs || 0}`
+        `[gamestudio] ai.blueprint_review project=${id} provider=${reviewMeta.provider || provider || 'localoxml'} model=${reviewMeta.model || '-'} api=${reviewMeta.api || '-'} routeId=${reviewMeta.routeId || 'default'} ms=${reviewMeta.durationMs || 0}`
       )
     } catch (_) {}
     try {
@@ -3867,10 +3903,10 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
         scriptsUpdatedAt: String(scripts && scripts.updatedAt || ''),
         formula: expectedFormula || null,
         review: ai.review,
-        meta: ai.meta
+        meta: reviewMeta
       })
     } catch (_) {}
-    return c.json({ success: true, review: ai.review, meta: ai.meta, report: compiled.report, validation })
+    return c.json({ success: true, review: ai.review, meta: reviewMeta, report: compiled.report, validation })
   } catch (e) {
     try {
       console.error('[gamestudio] ai blueprint review failed:', e instanceof Error ? e.message : String(e))

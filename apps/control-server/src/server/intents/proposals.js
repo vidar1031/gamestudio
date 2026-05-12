@@ -160,6 +160,66 @@ export function enqueueSelfReviewOperatorProposals(record) {
   return { written, skipped }
 }
 
+export function enqueueHumanCorrectionProposal(record) {
+  ensureIntentDirs()
+  const correctionPrompt = String(record?.correctionPrompt || '').trim()
+  const userPrompt = String(record?.userPrompt || record?.prompt || '').trim()
+  if (!correctionPrompt || !userPrompt) return { written: [], skipped: ['missing_prompt_or_correction'] }
+
+  const keywords = extractKeywords(userPrompt).slice(0, MAX_KEYWORDS_PER_PROPOSAL)
+  if (keywords.length === 0) return { written: [], skipped: ['missing_keywords'] }
+
+  const id = safeProposalId(`human_correction_${shortHash(`${userPrompt}\n${correctionPrompt}`)}`)
+  if (proposalAlreadyExists(id)) return { written: [], skipped: [`${id}:exists`] }
+
+  const proposal = {
+    id,
+    version: 1,
+    source: 'proposal',
+    priority: 70,
+    description: 'Auto-generated from one human review correction. Requires human promotion before it can affect runtime behavior.',
+    match: {
+      anyRegex: keywords.slice(0, 6).map((kw) => escapeRegex(kw))
+    },
+    evaluation: {
+      minScore: 75,
+      scoreBase: 40,
+      perRequiredHit: 12,
+      perOptionalHit: 6,
+      perEvidenceHit: 10,
+      perForbiddenHit: -25,
+      mustInclude: [],
+      optional: [],
+      forbidden: [],
+      evidenceRegex: [],
+      correctionPrompt
+    },
+    provenance: {
+      sourceType: 'human_review_correction',
+      sessionId: String(record?.sessionId || '').trim() || null,
+      decision: String(record?.decision || '').trim() || null,
+      targetType: String(record?.review?.targetType || '').trim() || null,
+      reviewPhase: String(record?.review?.reviewPhase || '').trim() || null,
+      sampleUserPrompt: userPrompt.slice(0, 240),
+      generatedAt: new Date().toISOString()
+    }
+  }
+
+  const target = path.join(INTENTS_INBOX_DIR, `${id}.json`)
+  try {
+    compileJsonIntent(proposal)
+  } catch (error) {
+    return { written: [], skipped: [`${id}:invalid:${error instanceof Error ? error.message : String(error)}`] }
+  }
+
+  try {
+    fs.writeFileSync(target, JSON.stringify(proposal, null, 2), 'utf8')
+    return { written: [target], skipped: [] }
+  } catch (error) {
+    return { written: [], skipped: [`${id}:write_failed:${error instanceof Error ? error.message : String(error)}`] }
+  }
+}
+
 export function scanProposals({ minOccurrence = 2 } = {}) {
   ensureIntentDirs()
   const records = readReviewRecords()

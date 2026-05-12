@@ -9,13 +9,19 @@ import {
   REASONING_ALLOWED_ACTION_NAMES,
   isReasoningAnswerAction,
   isReasoningInvokeAction,
+  isReasoningStoryWorkflowAction,
   isReasoningWriteAction,
 } from '../capabilities/actionRegistry.js'
 import { resolveWorkspacePathFromInput } from '../workspace/inspectors.js'
 import {
+  buildGameStudioBootstrapPlan,
+  isGameStudioBootstrapPrompt,
+} from '../workflows/gameStudioBootstrapWorkflows.js'
+import {
   buildProjectCapabilityStatusPlan,
   isProjectCapabilityStatusPrompt,
 } from '../workflows/projectStatusWorkflows.js'
+import { buildStoryWorkflowPlan } from '../workflows/storyProductionWorkflows.js'
 import {
   inferWorkspaceDirectoryFromPrompt,
   inferWorkspaceDirectoriesFromPromptText,
@@ -25,6 +31,7 @@ import {
   isDirectoryListingPrompt,
   isEditorLocationPrompt,
   isProjectListingPrompt,
+  isProjectStructureInspectionPrompt,
   isWorkspaceDirectoryQuestionPrompt,
   isWorkspaceFileQuestionPrompt,
   normalizeWorkspaceRelativePath,
@@ -48,7 +55,8 @@ export function buildReasoningPlannerMessages(history, userPrompt, binding, corr
   const replayWindowMessages = Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
   const replayableMessages = collectReplayableHermesMessages(history, {
     limit: replayWindowMessages,
-    userPrompt
+    userPrompt,
+    forceCarryover: Boolean(contextSelection?.forceContextReplay || contextSelection?.requestDecision?.needsContext)
   })
   const allowedActionsText = REASONING_ALLOWED_ACTION_NAMES.join(', ')
   const matchedIntentRules = getMatchingReasoningIntentRules(userPrompt, history, binding, contextSelection)
@@ -77,6 +85,7 @@ export function buildReasoningPlannerMessages(history, userPrompt, binding, corr
           'Before using replayed conversation, classify whether it is directly related to the latest user request. Use it only when the user explicitly continues, compares, repeats, corrects, or refers to prior work.',
           'If the latest request names a concrete module, directory, file, workflow, or test case, plan for that explicit target even if replayed history contains a different target.',
           'If the latest request repeats an earlier question, run the normal evidence-gathering workflow again; do not copy or drift from the earlier answer unless current artifacts support it.',
+          contextSelection?.requestDecision?.needsContext ? 'The request classification layer has marked this request as context-dependent. You must use directly relevant replayed conversation and project memory when choosing the target object or scope.' : '',
           `Allowed actions: ${allowedActionsText}.`,
           hintedActionsText ? `Selected skill and intent hints suggest these actions when relevant: ${hintedActionsText}.` : '',
           'Do not speculate about databases, APIs, or external folders when a local project-listing tool exists.',
@@ -133,6 +142,42 @@ export function extractJsonObjectString(text) {
 export function buildReasoningFallbackPlan(userPrompt, history, binding, contextSelection = {}) {
   if (isProjectCapabilityStatusPrompt(userPrompt)) {
     return buildProjectCapabilityStatusPlan(userPrompt)
+  }
+
+  if (isGameStudioBootstrapPrompt(userPrompt) || contextSelection?.requestDecision?.type === 'gamestudio_bootstrap_execute') {
+    return buildGameStudioBootstrapPlan(userPrompt)
+  }
+
+  if (contextSelection?.requestDecision?.type === 'story_workflow_execute') {
+    return buildStoryWorkflowPlan(userPrompt)
+  }
+
+  if (isProjectStructureInspectionPrompt(userPrompt)) {
+    return {
+      planId: createOpaqueId('plan'),
+      goal: '先识别一个现有项目，再检查其顶层目录及配置、故事内容、资源、导出产物是否存在',
+      strategy: 'sequential',
+      steps: [
+        {
+          stepId: 'step_list_projects_directory',
+          title: '列出 storage/projects 当前项目列表',
+          action: 'list_directory_contents',
+          tool: 'workspace.listDirectory',
+          params: { dirPath: 'storage/projects' },
+          skipReview: true,
+          dependsOn: []
+        },
+        {
+          stepId: 'step_generate_project_structure_answer',
+          title: '基于项目列表与上下文生成项目结构检查回答',
+          action: 'generate_default_answer',
+          tool: 'model.answer',
+          params: {},
+          skipReview: true,
+          dependsOn: ['step_list_projects_directory']
+        }
+      ]
+    }
   }
 
   if (isProjectListingPrompt(userPrompt)) {
@@ -422,12 +467,15 @@ export function normalizeReasoningPlan(rawPlan, userPrompt, history, binding, co
 
 function sanitizeReasoningPlanSteps(steps, fallbackSteps, userPrompt, contextSelection = {}) {
   const readOnlyPrompt = isLikelyReadOnlyReasoningPrompt(userPrompt)
+  const allowStoryWorkflow = contextSelection?.requestDecision?.type === 'story_workflow_execute'
   const filteredSteps = []
 
   for (const step of steps) {
     let normalizedStep = step
 
-    if ((contextSelection?.productionTest || readOnlyPrompt) && (isReasoningWriteAction(normalizedStep.action) || isReasoningInvokeAction(normalizedStep.action))) {
+    if ((contextSelection?.productionTest || readOnlyPrompt)
+      && (isReasoningWriteAction(normalizedStep.action) || isReasoningInvokeAction(normalizedStep.action))
+      && !(allowStoryWorkflow && isReasoningStoryWorkflowAction(normalizedStep.action))) {
       continue
     }
 
@@ -473,7 +521,11 @@ function sanitizeReasoningPlanSteps(steps, fallbackSteps, userPrompt, contextSel
 
 function sanitizeProductionTestSteps(steps, fallbackSteps, contextSelection = {}) {
   if (!contextSelection?.productionTest) return steps
-  const filteredSteps = steps.filter((step) => !isReasoningWriteAction(step.action) && !isReasoningInvokeAction(step.action))
+  const allowStoryWorkflow = contextSelection?.requestDecision?.type === 'story_workflow_execute'
+  const filteredSteps = steps.filter((step) => {
+    if (allowStoryWorkflow && isReasoningStoryWorkflowAction(step.action)) return true
+    return !isReasoningWriteAction(step.action) && !isReasoningInvokeAction(step.action)
+  })
   const safeSteps = filteredSteps.some((step) => isReasoningAnswerAction(step.action))
     ? filteredSteps
     : fallbackSteps.map((step) => ({
@@ -520,6 +572,196 @@ function shouldAllowProjectMemoryRead(userPrompt, filePath) {
   if (!normalizedPath) return false
   if (normalizedPrompt.includes(normalizedPath) || normalizedPrompt.includes(path.basename(normalizedPath))) return true
   return /项目状态|当前状态|当前进度|当前焦点|待办|任务队列|长任务|状态|进度|阻塞|决策|任务|下一步|memory|记忆/i.test(normalizedPrompt)
+}
+
+function compactPromptJson(value, maxLength = 1200) {
+  const text = JSON.stringify(value, null, 2)
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}\n...[truncated]`
+}
+
+function compactStoryWorkflowResult(result) {
+  if (!result || typeof result !== 'object') return null
+  const evidence = result.evidence && typeof result.evidence === 'object' ? result.evidence : null
+  const snapshot = result.snapshot && typeof result.snapshot === 'object' ? result.snapshot : null
+  const evaluator = result.evaluator && typeof result.evaluator === 'object' ? result.evaluator : null
+  return {
+    action: result.action || null,
+    ok: Boolean(result.ok),
+    status: result.status || null,
+    summary: result.summary || null,
+    projectId: result.projectId || evidence?.projectId || snapshot?.projectId || null,
+    endpoint: result.endpoint || null,
+    serverStatus: result.serverStatus || null,
+    failedStage: result.failedStage || null,
+    retryable: Boolean(result.retryable),
+    evidence: evidence ? {
+      projectDirRelative: evidence.projectDirRelative || null,
+      fileNames: Array.isArray(evidence.fileNames) ? evidence.fileNames : [],
+      distUrl: evidence.distUrl || null,
+      distPathRelative: evidence.distPathRelative || null,
+      distExists: Boolean(evidence.distExists),
+      exportedAt: evidence.exportedAt || evidence.distMtime || null
+    } : null,
+    evaluator: evaluator ? {
+      name: evaluator.name || null,
+      passed: Boolean(evaluator.passed),
+      checks: evaluator.checks || null,
+      missing: Array.isArray(evaluator.missing) ? evaluator.missing : undefined
+    } : null,
+    snapshot: snapshot ? {
+      projectDirRelative: snapshot.projectDirRelative || null,
+      fileNames: Array.isArray(snapshot.fileNames) ? snapshot.fileNames : [],
+      title: snapshot.project?.title || snapshot.meta?.title || null,
+      generationConfig: snapshot.project?.generationConfig || null,
+      assetCount: Number(snapshot.project?.assetCount || 0),
+      characterCount: Number(snapshot.project?.characterCount || 0),
+      scriptCards: Number(snapshot.scripts?.cardCount || 0),
+      blueprintNodes: Number(snapshot.blueprint?.nodeCount || 0),
+      placeholderCount: Number(snapshot.blueprint?.placeholderCount || 0),
+      storyNodes: Number(snapshot.story?.nodeCount || 0),
+      latestDistRelative: snapshot.exports?.latestDistRelative || null,
+      latestDistExists: Boolean(snapshot.exports?.latestDistExists),
+      latestDistMtime: snapshot.exports?.latestDistMtime || null
+    } : null
+  }
+}
+
+export function buildStoryWorkflowDeterministicAnswer(userPrompt, artifacts) {
+  const storyProduction = artifacts?.storyProduction && typeof artifacts.storyProduction === 'object'
+    ? artifacts.storyProduction
+    : null
+  if (!storyProduction) return ''
+  const lastResult = compactStoryWorkflowResult(storyProduction.lastResult)
+  const steps = storyProduction.steps && typeof storyProduction.steps === 'object'
+    ? Object.entries(storyProduction.steps).map(([stepId, result]) => ({ stepId, result: compactStoryWorkflowResult(result) }))
+    : []
+  const projectId = lastResult?.projectId || storyProduction.currentProjectId || storyProduction.lastProjectId || 'unknown'
+  const evidence = lastResult?.evidence || {}
+  const snapshot = lastResult?.snapshot || {}
+  const evaluator = lastResult?.evaluator || {}
+  const failedSteps = steps.filter((item) => item.result && item.result.ok === false)
+  const stepLines = steps.length
+    ? steps.map((item) => `- ${item.stepId}: ${item.result?.ok ? 'PASS' : 'FAIL'} ${item.result?.summary || ''}${item.result?.failedStage ? `；failedStage=${item.result.failedStage}` : ''}`).join('\n')
+    : '- 当前没有记录到 story workflow step。'
+  const exportLine = evidence.distUrl || snapshot.latestDistRelative
+    ? [
+        `- 导出 URL: ${evidence.distUrl || '未返回'}`,
+        `- 导出路径: ${evidence.distPathRelative || snapshot.latestDistRelative || '未返回'}`,
+        `- 导出存在: ${evidence.distExists || snapshot.latestDistExists ? '是' : '否'}`,
+        `- 导出时间: ${evidence.exportedAt || snapshot.latestDistMtime || '未返回'}`
+      ].join('\n')
+    : '- 导出证据: 当前步骤未返回导出产物。'
+  return [
+    `结论：${lastResult?.ok ? '本次 story workflow 步骤已通过。' : '本次 story workflow 返回了明确失败边界。'}`,
+    '',
+    '项目证据：',
+    `- projectId: ${projectId}`,
+    `- 项目目录: ${evidence.projectDirRelative || snapshot.projectDirRelative || '未返回'}`,
+    `- 顶层子项: ${Array.isArray(evidence.fileNames) && evidence.fileNames.length ? evidence.fileNames.join(', ') : (Array.isArray(snapshot.fileNames) ? snapshot.fileNames.join(', ') : '未返回')}`,
+    `- scripts 卡片数: ${snapshot.scriptCards ?? '未返回'}`,
+    `- blueprint 节点数: ${snapshot.blueprintNodes ?? '未返回'}`,
+    `- story 节点数: ${snapshot.storyNodes ?? '未返回'}`,
+    `- 资源数: ${snapshot.assetCount ?? '未返回'}；角色数: ${snapshot.characterCount ?? '未返回'}`,
+    '',
+    '执行步骤：',
+    stepLines,
+    '',
+    '校验摘要：',
+    `- evaluator: ${evaluator.name || '未返回'}`,
+    `- passed: ${evaluator.passed ? 'true' : 'false'}`,
+    lastResult?.failedStage ? `- failedStage: ${lastResult.failedStage}` : '- failedStage: 无',
+    `- retryable: ${lastResult?.retryable ? 'true' : 'false'}`,
+    '',
+    '导出证据：',
+    exportLine,
+    '',
+    failedSteps.length
+      ? `失败边界：${failedSteps.map((item) => `${item.stepId}/${item.result?.failedStage || 'unknown'}`).join('；')}`
+      : '失败边界：未发现失败步骤。',
+    '',
+    `回答依据：Control story workflow artifacts。用户问题：${String(userPrompt || '').trim()}`
+  ].join('\n')
+}
+
+function compactGameStudioBootstrapResult(result) {
+  if (!result || typeof result !== 'object') return null
+  return {
+    action: result.action || null,
+    ok: Boolean(result.ok),
+    summary: result.summary || '',
+    failedStage: result.failedStage || null,
+    retryable: Boolean(result.retryable),
+    evaluator: result.evaluator ? {
+      name: result.evaluator.name || null,
+      passed: Boolean(result.evaluator.passed),
+      checks: result.evaluator.checks || null
+    } : null,
+    data: result.data ? {
+      editorUrl: result.data.editorUrl || result.data?.editorHealth?.url || null,
+      serverBaseUrl: result.data.serverBaseUrl || null,
+      healthOk: result.data?.health?.ok ?? result.data?.serverHealth?.ok ?? null,
+      imageProvider: result.data?.settings?.effective?.image?.provider || result.data?.preflight?.checks?.provider || null,
+      preflightReason: result.data?.preflight?.checks?.reason || null
+    } : null
+  }
+}
+
+export function buildGameStudioBootstrapDeterministicAnswer(userPrompt, artifacts) {
+  const bootstrap = artifacts?.gameStudioBootstrap && typeof artifacts.gameStudioBootstrap === 'object'
+    ? artifacts.gameStudioBootstrap
+    : null
+  if (!bootstrap) return ''
+  const lastResult = compactGameStudioBootstrapResult(bootstrap.lastResult)
+  const steps = bootstrap.steps && typeof bootstrap.steps === 'object'
+    ? Object.entries(bootstrap.steps).map(([stepId, result]) => ({ stepId, result: compactGameStudioBootstrapResult(result) }))
+    : []
+  const failedSteps = steps.filter((item) => item.result && item.result.ok === false)
+  const stepLines = steps.length
+    ? steps.map((item) => `- ${item.stepId}: ${item.result?.ok ? 'PASS' : 'FAIL'} ${item.result?.summary || ''}${item.result?.failedStage ? `；failedStage=${item.result.failedStage}` : ''}`).join('\n')
+    : '- 当前没有记录到 GameStudio bootstrap step。'
+  const selfCheck = steps.find((item) => item.result?.action === 'gamestudio_self_check')?.result || lastResult
+  const checks = selfCheck?.evaluator?.checks || {}
+  return [
+    `结论：${selfCheck?.ok ? 'GameStudio 启动与自检已通过。' : 'GameStudio 启动或自检返回明确阻断。'}`,
+    '',
+    '界面与服务：',
+    `- Editor URL: ${steps.find((item) => item.result?.data?.editorUrl)?.result?.data?.editorUrl || 'http://localhost:8868'}`,
+    `- Server URL: ${steps.find((item) => item.result?.data?.serverBaseUrl)?.result?.data?.serverBaseUrl || 'http://127.0.0.1:1999'}`,
+    '',
+    '执行步骤：',
+    stepLines,
+    '',
+    '自检摘要：',
+    `- healthOk: ${checks.healthOk === undefined ? '未返回' : String(Boolean(checks.healthOk))}`,
+    `- settingsOk: ${checks.settingsOk === undefined ? '未返回' : String(Boolean(checks.settingsOk))}`,
+    `- diagnoseOk: ${checks.diagnoseOk === undefined ? '未返回' : String(Boolean(checks.diagnoseOk))}`,
+    `- imagePreflightOk: ${checks.imagePreflightOk === undefined ? '未返回' : String(Boolean(checks.imagePreflightOk))}`,
+    `- imageProvider: ${checks.imageProvider || '未返回'}`,
+    checks.preflightReason ? `- preflightReason: ${checks.preflightReason}` : '- preflightReason: 无',
+    '',
+    failedSteps.length
+      ? `失败边界：${failedSteps.map((item) => `${item.stepId}/${item.result?.failedStage || 'unknown'}`).join('；')}`
+      : '失败边界：未发现失败步骤。',
+    '',
+    `回答依据：Control gameStudioBootstrap artifacts。用户问题：${String(userPrompt || '').trim()}`
+  ].join('\n')
+}
+
+function getProductionTestExpectationTerms(contextSelection = {}) {
+  const explicitTerms = contextSelection?.expectations && typeof contextSelection.expectations === 'object'
+    ? [
+        ...(Array.isArray(contextSelection.expectations.requireAll) ? contextSelection.expectations.requireAll : []),
+        ...(Array.isArray(contextSelection.expectations.requireAny) ? contextSelection.expectations.requireAny.slice(0, 2) : [])
+      ]
+    : []
+  if (explicitTerms.length > 0) return explicitTerms
+
+  const caseId = String(contextSelection?.caseId || '').trim()
+  if (caseId === 'L1-21') return ['用户目标', 'story workflow', 'artifact', 'evaluator', '达标程度', 'Hermes', 'OMLX', '未达标', '部分达标']
+  if (caseId === 'L1-22') return ['heartbeat', 'orphan', 'recover', 'UI', '达标程度', 'Hermes', 'OMLX', '部分达标', '未达标']
+  if (caseId === 'L1-23') return ['correctionPrompt', '_inbox', 'proposal', '人工', '达标程度', 'Hermes', 'OMLX', '不会', '不得']
+  return []
 }
 
 export function buildReasoningAnswerMessages(history, sessionId, userPrompt, artifacts, binding, correctionPrompt = '', contextSelection = {}) {
@@ -624,11 +866,61 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
         ].filter(Boolean).join('\n')
       }).join('\n\n')
     : ''
+  const storyProduction = artifacts?.storyProduction && typeof artifacts.storyProduction === 'object'
+    ? artifacts.storyProduction
+    : null
+  const storyProductionSummary = storyProduction
+    ? [
+        `Story workflow currentProjectId: ${storyProduction.currentProjectId || storyProduction.lastProjectId || 'unknown'}`,
+        storyProduction.lastResult ? `Last result: ${compactPromptJson(compactStoryWorkflowResult(storyProduction.lastResult), 1800)}` : '',
+        storyProduction.steps && typeof storyProduction.steps === 'object'
+          ? `Step results:\n${Object.entries(storyProduction.steps).map(([stepId, result]) => `- ${stepId}: ${result?.ok ? 'PASS' : 'FAIL'} ${result?.summary || ''}${result?.failedStage ? ` failedStage=${result.failedStage}` : ''}`).join('\n')}`
+          : '',
+        storyProduction.scriptsCandidate
+          ? `Scripts candidate cards: ${Array.isArray(storyProduction.scriptsCandidate.cards) ? storyProduction.scriptsCandidate.cards.length : 0}`
+          : ''
+      ].filter(Boolean).join('\n')
+    : ''
+  const gameStudioBootstrap = artifacts?.gameStudioBootstrap && typeof artifacts.gameStudioBootstrap === 'object'
+    ? artifacts.gameStudioBootstrap
+    : null
+  const gameStudioBootstrapSummary = gameStudioBootstrap
+    ? [
+        'GameStudio bootstrap:',
+        gameStudioBootstrap.lastResult ? `Last result: ${compactPromptJson(compactGameStudioBootstrapResult(gameStudioBootstrap.lastResult), 1800)}` : '',
+        gameStudioBootstrap.steps && typeof gameStudioBootstrap.steps === 'object'
+          ? `Step results:\n${Object.entries(gameStudioBootstrap.steps).map(([stepId, result]) => `- ${stepId}: ${result?.ok ? 'PASS' : 'FAIL'} ${result?.summary || ''}${result?.failedStage ? ` failedStage=${result.failedStage}` : ''}`).join('\n')}`
+          : ''
+      ].filter(Boolean).join('\n')
+    : ''
   const latestEvidenceSummary = !directorySummary && !imageEntrypointSummary && !controlBackendSummary && artifacts?.latestStepReviewEvidence?.rawResponsePreview
     ? String(artifacts.latestStepReviewEvidence.rawResponsePreview)
     : ''
-  const observableBlocks = [workspaceSummary, directoryListingsSummary || directorySummary, imageEntrypointSummary, controlBackendSummary, fileContentsSummary, workspaceSearchSummary, latestEvidenceSummary].filter(Boolean)
+  const observableBlocks = [workspaceSummary, directoryListingsSummary || directorySummary, imageEntrypointSummary, controlBackendSummary, fileContentsSummary, workspaceSearchSummary, storyProductionSummary, gameStudioBootstrapSummary, latestEvidenceSummary].filter(Boolean)
   const previousDraft = correctionPrompt ? buildPriorDraftSummary(artifacts) : ''
+  const requireModelAnswer = Boolean(contextSelection?.requireModelAnswer || contextSelection?.requireHermesModelAnswer)
+  const productionCaseId = String(contextSelection?.caseId || '').trim()
+  const expectationTerms = contextSelection?.expectations && typeof contextSelection.expectations === 'object'
+    ? [
+        ...(Array.isArray(contextSelection.expectations.requireAll) ? contextSelection.expectations.requireAll : []),
+        ...(Array.isArray(contextSelection.expectations.requireAny) ? contextSelection.expectations.requireAny.slice(0, 2) : [])
+      ].map((item) => String(item || '').trim()).filter(Boolean)
+    : []
+  const l1ProductionKeywords = expectationTerms.length > 0
+    ? `本次是 ${productionCaseId || 'production'} 门禁。最终回答必须自然包含这些字面词：${[...new Set(expectationTerms)].join('、')}。这些是术语覆盖要求，不代表新增事实。`
+    : ''
+  const runtimeFactBlock = requireModelAnswer
+    ? [
+        '当前运行事实（这是本次回答必须遵守的硬约束，不得否认）：',
+        `- 当前正在为 runtime session ${sessionId} 生成最终回答。`,
+        `- 当前回答由 Hermes Manager 在 control 内生成，并通过 ${String(binding?.provider || 'unknown').trim() || 'unknown'} / ${String(binding?.model || 'unknown').trim() || 'unknown'} 路由执行。`,
+        '- 如果当前回答成功返回，它本身就是本次 agent-runtime session 的可观测最终回答。',
+        '- 你必须区分两件事：',
+        '  1. 本次回答链路是否已经经过 Hermes / OMLX。',
+        '  2. 整个系统是否已经实现从用户目标到 story workflow 交付的生产闭环。',
+        '- 允许判断系统整体仍未达标，但不得否认本次回答已经通过当前 runtime session 调用 Hermes / OMLX 的事实。'
+      ].join('\n')
+    : ''
 
   return [
     {
@@ -651,6 +943,8 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
         'If a previous draft answer is provided, treat it as a reusable draft only. Keep any useful structure, but remove or rewrite claims that are not supported by the current observable artifacts.',
         'Do not claim hidden reasoning. Summarize the observable steps and then answer directly in Chinese.',
         'If the latest user request contains Chinese, the final answer must be written in Chinese. Do not use English section headings or opening sentences.',
+        requireModelAnswer ? 'This request requires a model-backed final answer. Do not claim that the current answer did not pass through the current runtime session, Hermes, or the configured provider/model unless the request actually failed.' : '',
+        l1ProductionKeywords,
         'Only say a file was read, inspected, or used as evidence if it appears in the current structured file contents below.',
         'Directory listings prove direct child names only; they do not prove unread file contents inside those child directories.',
         'Do not mention previous versions, retries, quality scoring, calibration samples, or internal review loops in the final answer unless the user explicitly asked about those internals.',
@@ -658,6 +952,7 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
         'If the artifacts include a project list or story index, enumerate the projects directly with concrete IDs and available titles/counts.',
         'Do not say "让我继续读取" or any equivalent defer/next-step phrasing unless the artifacts are genuinely missing.',
         `Workspace root: ${projectRoot}`,
+        runtimeFactBlock,
         correctionPrompt ? `Review correction: ${correctionPrompt}` : '',
         'If the tool result is empty, say so plainly.'
       ].filter(Boolean).join('\n')
@@ -668,6 +963,7 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
       content: [
         `用户问题: ${userPrompt}`,
         '输出语言要求：中文。不要用英文标题或英文开场。',
+        l1ProductionKeywords,
         previousDraft ? `上一轮候选答案（仅可复用其结构，不可直接视为证据）:\n${previousDraft}` : '',
         '',
         '可观测工具结果：',

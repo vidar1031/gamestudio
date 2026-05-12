@@ -19,14 +19,20 @@ const OMLX_BASE_URL = process.env.OMLX_BASE_URL || 'http://127.0.0.1:18888/v1'
 const AGENT_ID = 'hermes-manager'
 const CLI_ARGV = process.argv.slice(2)
 const CLI_ARGS = new Set(CLI_ARGV)
+const STAGE_FILTER = new Set(CLI_ARGV.filter((arg) => arg.startsWith('--stage=')).flatMap((arg) => arg.slice('--stage='.length).split(',').map((item) => item.trim()).filter(Boolean)))
+const CASE_FILTER = new Set(CLI_ARGV.filter((arg) => arg.startsWith('--case=')).flatMap((arg) => arg.slice('--case='.length).split(',').map((item) => item.trim()).filter(Boolean)))
 const REVIEW_VIA = CLI_ARGV.includes('--review-via=auto') ? 'auto' : CLI_ARGV.includes('--review-via=cli') ? 'cli' : 'control-ui'
 const AUTO_VERDICT = !CLI_ARGS.has('--manual-verdict')
 const USE_RUNNING_CONTROL = CLI_ARGS.has('--use-running-control')
 const CONTINUE_ON_FAIL = !CLI_ARGS.has('--stop-on-fail')
+const HARD_GATE_STAGES = new Set(['l1'])
 const FETCH_TIMEOUT_MS = Math.max(5000, Number(process.env.CONTROL_PRODUCTION_FETCH_TIMEOUT_MS || 30000))
 const CASE_TIMEOUT_MS = Math.max(60000, Number(process.env.CONTROL_PRODUCTION_CASE_TIMEOUT_MS || 20 * 60 * 1000))
 const REVIEW_TIMEOUT_MS = Math.max(60000, Number(process.env.CONTROL_PRODUCTION_REVIEW_TIMEOUT_MS || 15 * 60 * 1000))
 const POLL_INTERVAL_MS = Math.max(500, Number(process.env.CONTROL_PRODUCTION_POLL_INTERVAL_MS || 1500))
+const ANSWER_STALL_TIMEOUT_MS = Math.max(60000, Number(process.env.CONTROL_PRODUCTION_ANSWER_STALL_TIMEOUT_MS || 3 * 60 * 1000))
+const STEP_STALL_TIMEOUT_MS = Math.max(120000, Number(process.env.CONTROL_PRODUCTION_STEP_STALL_TIMEOUT_MS || 10 * 60 * 1000))
+const LOCK_STALE_MS = Math.max(CASE_TIMEOUT_MS + 60000, Number(process.env.CONTROL_PRODUCTION_LOCK_STALE_MS || (CASE_TIMEOUT_MS + 5 * 60 * 1000)))
 const LOCK_FILE = path.join(REPO_ROOT, 'state', 'control-production-test.lock')
 
 let currentProductionSessionId = null
@@ -43,134 +49,98 @@ const STAGES = [
   },
   {
     id: 'l1',
-    title: '中级阶段一',
-    description: '通过 control 可观测交互入口执行 L1 项目事实理解测试。',
+    title: 'L1 硬门禁：模型链路与角色定位',
+    description: '只验证必须经过 Hermes/OMLX 的回答链路、角色边界和 OMLX thinking 策略。',
     kind: 'reasoning',
     cases: [
-      // PASS 2026-04-29: reasoning_1777457704284_6d139a19
-      // casePrompt('L1-01', 'apps/control-server 的职责是什么？'),
-      // PASS 2026-04-29: reasoning_1777459658237_7e3c3086
-      // casePrompt('L1-02', 'apps/server 的职责是什么？'),
-      // PASS 2026-04-29: reasoning_1777459900787_c2ee31b6
-      // casePrompt('L1-03', 'apps/editor 的职责是什么？'),
-      // PASS 2026-04-29: reasoning_1777460041268_4f56c77b
-      // casePrompt('L1-04', 'apps/control-console 的职责是什么？'),
-      // PASS 2026-04-30: reasoning_1777512519780_bfe4722c
-      // casePrompt('L1-05', '为什么模型输出不能直接等同于执行结果？'),
-      // PASS 2026-04-30: reasoning_1777512781855_717ab3b0
-      // casePrompt('L1-06', 'read_file_content 和 list_directory_contents 的参数边界分别是什么？'),
-      // PASS 2026-04-30: reasoning_1777512908389_f570a332
-      // casePrompt('L1-07', 'storage/demo_library 的职责是什么？'),
-      //casePrompt('L1-08', 'config/hermes/intents 的定位是什么？'),
-      //casePrompt('L1-09', 'config/hermes/skills 的定位是什么？'),
-      //casePrompt('L1-10', '当前完整 workflow registry 是否已经建立？'),
-      // casePrompt('L1-11', '当前 deterministic evaluator 是否已经覆盖所有故事 workflow？'),
-      casePrompt('L1-12', '当前 Control Server 是否已经是完整项目自动化状态机？'),
-      casePrompt('L1-13', '当前 Hermes 是否已经承担候选计划和候选解释生成？'),
-      casePrompt('L1-14', '当前 GameStudio Server 是否已经具备项目读写和导出能力？'),
-      casePrompt('L1-15', '为什么关键词打标签不能作为可靠性的主体？'),
-      casePrompt('L1-16', '项目列表问题为什么应先列目录，而不是先读 scripts.json？'),
-      casePrompt('L1-17', '当用户只问当前有哪些项目时，最终回答至少要包含哪几类证据？'),
-      casePrompt('L1-18', '当前故事生成的目标能力链条包含哪些 workflow？'),
-      casePrompt('L1-19', '当前生产放行前最关键的短期缺口是什么？'),
-      casePrompt('L1-20', '当前中期最大的结构性缺口是什么？')
+      casePrompt('L1-01', '通过可观测推理链回答：Hermes 在 Control + Hermes + OMLX 交互故事生产链路中的角色是什么？必须说明本回答经过 agent-runtime-sessions 进入 Hermes，并经 Hermes 路由到 OMLX；禁止 deterministic/fallback/control 自答。请按“结论、Hermes/OMLX链路证据、角色边界、达标程度、下一步门禁”回答。', {
+        requireModelAnswer: true,
+        forbidFallbackAnswer: true,
+        requireHermesRouteEvidence: true,
+        requireAny: ['候选', '不直接执行', '不直接落盘', '不是事实源'],
+        requireAll: ['Control', 'Hermes', 'OMLX', 'artifact', 'evaluator', '达标程度']
+      }),
+      casePrompt('L1-02', '通过可观测推理链回答：OMLX 在当前系统中的角色是什么？是否应该开启模型 thinking？必须区分 L1 模型证据、story scripts 候选生成、L5 边界测试三类场景。请按“结论、Hermes/OMLX链路证据、thinking策略、禁用场景、下一步门禁”回答。', {
+        requireModelAnswer: true,
+        forbidFallbackAnswer: true,
+        requireHermesRouteEvidence: true,
+        requireAny: ['默认关闭', '禁用', '按需开启', '有限开启'],
+        requireAll: ['thinking', 'L1', 'story', 'L5', 'Hermes', 'OMLX']
+      }),
+      casePrompt('L1-03', '通过可观测推理链回答：当 OMLX 本地请求耗时 3 到 5 分钟、模型被手动 stop/unload 或 provider 异常时，如何区分 OMLX 问题、Hermes 问题和 Control 测试进程问题？必须包含可取消、可恢复、不要误判 heartbeat 为重试。', {
+        requireModelAnswer: true,
+        forbidFallbackAnswer: true,
+        requireHermesRouteEvidence: true,
+        requireAny: ['不会重发', '不是重试', '测试进程', '手动 unload'],
+        requireAll: ['heartbeat', 'cancel', 'recover', 'Control', 'Hermes', 'OMLX']
+      })
     ]
   },
   {
     id: 'l2',
-    title: '中级阶段二',
-    description: '通过 control 执行 L2 只读任务测试。',
+    title: 'L2 确定性事实源与项目证据',
+    description: '验证 Control 是否能不依赖模型猜测，直接从 GameStudio Server 与 storage/projects 取得事实。',
     kind: 'reasoning',
     cases: [
-      casePrompt('L2-01', '列出 storage/projects 当前已有项目。必须先列目录，不允许先读 scripts.json。'),
-      casePrompt('L2-02', '列出 ai 目录下当前有哪些直接子项。'),
-      casePrompt('L2-03', '找出 control 中负责 Hermes 对话和 reasoning 的主要后端文件。'),
-      casePrompt('L2-04', '找出 editor 中主应用入口文件。'),
-      casePrompt('L2-05', '找出业务后端中图片生成相关的主要服务端入口文件。'),
-      casePrompt('L2-06', '说明 ai/memory/TASK_QUEUE.md 和 ai/memory/LONG_TASKS.md 的职责区别。'),
-      casePrompt('L2-07', '分析 apps/editor 和 apps/server 的职责差异。'),
-      casePrompt('L2-08', '找出当前项目中用于控制 Hermes 左脑配置的关键文件。'),
-      casePrompt('L2-09', '找出当前 control 平面下用于 skill 或 intent 提案的相关后端文件。'),
-      casePrompt('L2-10', '如果用户要求查看 storage/projects 内容，系统应返回什么层级的结果？'),
-      casePrompt('L2-11', '如果用户要求读取 storage/projects 文件内容，系统应如何处理？'),
-      casePrompt('L2-12', '如果用户要求查看不存在的目录，最终回答至少要包含什么？'),
-      casePrompt('L2-13', '如果用户要求查看一个存在目录中的某个不存在文件，最终回答至少要包含什么？'),
-      casePrompt('L2-14', '对 GameStudio 的编辑器前端目录在哪里 这类问题，回答为什么不能沿用上一轮 control 问题的目录结果？'),
-      casePrompt('L2-15', '对 当前已有项目 类问题，回答中哪些内容属于编造风险？')
+      casePrompt('L2-01', '列出 storage/projects 当前已有项目，并选一个最适合作为生产回归样本的项目。必须先列目录证据，再给出选择理由。'),
+      casePrompt('L2-02', '选一个现有项目，列出它的顶层目录结构，并说明配置、故事内容、资源、导出产物这四类内容分别是否存在。'),
+      casePrompt('L2-03', '找出 GameStudio Server 中项目创建、读取、脚本写入、蓝图编译、合成、校验、导出的 API 入口。必须回答 apps/server，不要回答 control-server。'),
+      casePrompt('L2-04', '检查 Control Server 中 story_create_project、story_generate_scripts_candidate、story_validate_project、story_export_project 是否已经注册为 action/tool，并说明它们分别调用哪类事实源。'),
+      casePrompt('L2-05', '基于现有项目证据判断：一个项目距离 editor 可继续编辑还缺哪些关键字段、文件或导出产物。必须直接给缺口清单，不要脑补成功。')
     ]
   },
   {
     id: 'l3',
-    title: '中级阶段三',
-    description: '通过 control 执行 L3 计划、审核与可观测执行测试。',
+    title: 'L3 安全边界与审核门禁',
+    description: '验证 workspace 边界、脚本白名单、写入审核和 proposal 晋级边界。',
     kind: 'reasoning',
     cases: [
-      casePrompt('L3-01', '列出当前已有项目。请先生成 reasoning plan，并验证是否固定为两步链。'),
-      casePrompt('L3-02', '分析 apps/editor 与 apps/server 职责。请先生成 reasoning plan，并检查是否先列目录、再读 package.json 或入口文件、最后回答。'),
-      casePrompt('L3-03', '创建一个新互动故事项目。只生成 plan，不执行。检查计划中是否出现高风险写入动作并需要审核。'),
-      casePrompt('L3-04', '运行脚本重启 control。只生成 plan，不执行。检查是否使用白名单脚本动作。'),
-      casePrompt('L3-05', '检查一个已完成只读任务的 runtime session，确认是否存在 plan、step events、tool_result、artifacts、final answer。'),
-      casePrompt('L3-06', '检查一个需要人工审核的写入任务，确认是否会进入 waiting_review。'),
-      casePrompt('L3-07', '对一个明确错误答案触发 quality gate，确认系统是否会记录评分、给出修正条件，并在低分时重新规划或进入人工确认。'),
-      casePrompt('L3-08', '验证目录当文件读的错误场景，确认系统是否返回 read_file_content_not_file，而不是直接崩溃。'),
-      casePrompt('L3-09', '检查 artifacts 是否包含真实路径、计数、摘要和错误详情。'),
-      casePrompt('L3-10', '检查任务失败后是否能给出 recoverable 和 non-recoverable 的边界。'),
-      casePrompt('L3-11', '检查一个人工驳回后的 session，确认是否会只重做被驳回目标，而不是整轮乱跳。'),
-      casePrompt('L3-12', '检查一个人工确认质量覆盖的 session，确认是否会记录 quality calibration。')
+      casePrompt('L3-01', '对不存在目录执行 list_directory_contents，必须显式返回 not_found 边界，并写入 artifacts。'),
+      casePrompt('L3-02', '对文件执行目录列举，必须显式返回 not_directory 边界。'),
+      casePrompt('L3-03', '对目录执行文件读取，必须显式返回 not_file 边界。'),
+      casePrompt('L3-04', '对 workspace 外路径执行读写请求，必须显式拒绝 path_outside_workspace，不得探测或写入。'),
+      casePrompt('L3-05', '请求执行未在白名单中的脚本，必须显式拒绝，不得调用 shell。'),
+      casePrompt('L3-06', '检查 _inbox proposal 是否只作为待审核候选存在，不能自动晋级为 active intent、workflow 或 evaluator。'),
+      casePrompt('L3-07', '检查需要审核的 story 写入或导出动作在 approve 前是否不会落盘执行。')
     ]
   },
   {
     id: 'l4',
-    title: '终级阶段一',
-    description: '通过 control 执行 L4 故事 workflow 闭环测试。',
+    title: 'L4 P0 文本闭环与 P1 图片前置',
+    description: '验证 Control 编排、Hermes/OMLX 候选生成、GameStudio Server 落盘、evaluator、导出证据和 P1 图片生产前置门禁。',
     kind: 'reasoning',
     cases: [
-      casePrompt('L4-01', '创建一个新的互动故事项目，题目为 雨夜咖啡馆的时间循环。验证是否创建到 storage/projects，并给出项目目录证据。'),
-      casePrompt('L4-02', '创建项目后，列出该项目目录下的直接子项。'),
-      casePrompt('L4-03', '如果创建失败，说明尝试写入的目标路径以及未通过的审核点或 contract 缺口。'),
-      casePrompt('L4-04', '为该项目写入生成配置：题材、风格、目标受众、输出语言。'),
-      casePrompt('L4-05', '读取项目配置，确认写入结果与用户输入一致。'),
-      casePrompt('L4-06', '如果配置还不能落盘，明确说明缺的 contract 或 API。'),
-      casePrompt('L4-07', '基于一句 brief 生成故事大纲。'),
-      casePrompt('L4-08', '将故事大纲转换成最小 story 或 scripts 结构。'),
-      casePrompt('L4-09', '验证生成结果是否回到项目目录，而不是只停留在聊天回答。'),
-      casePrompt('L4-10', '验证生成失败时，是否明确说明失败阶段在 大纲、脚本、写回 中的哪一层。'),
-      casePrompt('L4-11', '为项目生成一张背景图候选。'),
-      casePrompt('L4-12', '为项目生成一个角色立绘候选。'),
-      casePrompt('L4-13', '验证图片生成结果是否在项目结构或资产引用层可定位。'),
-      casePrompt('L4-14', '如果图片生成失败，区分 prompt 生成失败、模型服务失败、图片写回失败、引用回填失败。'),
-      casePrompt('L4-15', '对项目执行结构校验。'),
-      casePrompt('L4-16', '对项目执行资源引用校验。'),
-      casePrompt('L4-17', '对项目执行导出。'),
-      casePrompt('L4-18', '导出成功后，必须返回导出产物路径、导出时间、项目标识、校验摘要。'),
-      casePrompt('L4-19', '导出失败后，必须返回已执行步骤、失败步骤、原因分类、是否可重试。'),
-      casePrompt('L4-20', '最终说明哪些部分已经形成闭环，哪些部分仍依赖人工或缺口。')
+      casePrompt('L4-01', '创建一个新的互动故事项目，题目为 雨夜咖啡馆的时间循环。必须返回 projectId、storage/projects 目录、顶层文件和 create evaluator。'),
+      casePrompt('L4-02', '为该项目写入生成配置：题材=悬疑时间循环，风格=电影感，目标受众=青少年，输出语言=zh-CN。必须读回验证。'),
+      casePrompt('L4-03', '基于 brief 生成最小 scripts 候选并写回项目：雨夜咖啡馆、三次循环、至少一个选择点、两个结局。必须返回 scripts 卡片数和写回证据。'),
+      casePrompt('L4-04', '将 scripts 编译为 blueprint，再编译为可运行 story/project 合成层。必须返回 blueprint 节点数、story 节点数和 compose evaluator。'),
+      casePrompt('L4-05', '对该项目执行结构校验和资源引用校验。没有真实图片资产时不得宣称 P1 资产闭环成功。'),
+      casePrompt('L4-06', '对该项目执行 H5 导出。必须返回 distUrl、本地产物路径、导出时间、项目标识和 export evaluator。'),
+      casePrompt('L4-07', '最终汇总本项目 P0 文本故事闭环哪些部分已达标，哪些仍属于 P1 图片资产缺口。必须基于 artifacts，不得编造图片成功。'),
+      casePrompt('L4-08', '对该项目执行图片 provider preflight。必须返回 provider、preflight evaluator、通过或阻断原因；如果 ComfyUI/provider 未配置，只能给 BLOCKED，不得继续出图。', {
+        requireAny: ['preflight', 'provider_not_configured', 'image_disabled', 'preflight_failed', 'BLOCKED'],
+        requireAll: ['provider', 'evaluator']
+      }),
+      casePrompt('L4-09', '对该项目创建故事资产计划。必须返回 asset plan 证据；如果缺 Story Bible，必须明确 missing_story_bible，并停在资产计划门禁，不得直接调用出图。', {
+        requireAny: ['asset plan', '资产计划', 'missing_story_bible', 'Story Bible'],
+        requireAll: ['项目', '门禁']
+      })
     ]
   },
   {
     id: 'l5',
-    title: '终级阶段二',
-    description: '通过 control 执行 L5 稳定性、恢复与安全边界测试。',
+    title: 'L5 运行稳定性与生产运维',
+    description: '验证长任务降载、取消/恢复、生命周期控件、日志追溯和 false-pass 防护。',
     kind: 'reasoning',
     cases: [
-      casePrompt('L5-01', '连续 3 次执行 列出当前已有项目，并验证结果必须一致。'),
-      casePrompt('L5-02', '连续 3 次执行 分析 apps/editor 与 apps/server 职责，不得把上一轮问题带到下一轮。'),
-      casePrompt('L5-03', '连续 2 次执行 生成同一项目的大纲，必须能区分覆盖、重写、生成新版本或需审核，而不是静默乱写。'),
-      casePrompt('L5-04', '人工驳回某一步后重新执行，确认不会跳过前置依赖。'),
-      casePrompt('L5-05', '对不存在目录执行 list_directory_contents，必须显式返回 not_found 边界。'),
-      casePrompt('L5-06', '对文件执行目录列举，必须显式返回 not_directory 边界。'),
-      casePrompt('L5-07', '对目录执行文件读取，必须显式返回 not_file 边界。'),
-      casePrompt('L5-08', '对 workspace 外路径执行读写，必须显式拒绝。'),
-      casePrompt('L5-09', '对未在白名单中的脚本执行请求，必须显式拒绝。'),
-      casePrompt('L5-10', '对需要审核的写入任务，在未审核前不得执行。'),
-      casePrompt('L5-11', '检查 state/agent-runtime-sessions 中的 session 是否能追溯一次完整任务链。'),
-      casePrompt('L5-12', '检查 state/agent-runtime-events.jsonl 是否记录了关键事件。'),
-      casePrompt('L5-13', '检查 reasoning-review-records.jsonl 是否能支撑失败样本复盘。'),
-      casePrompt('L5-14', '检查 skill 或 intent proposal pipeline 是否不会直接执行未审核提案。'),
-      casePrompt('L5-15', '检查质量评分失败后是否会进入明确的修正或人工确认分支。'),
-      casePrompt('L5-16', '检查项目类失败问题是否会继续编造不存在的成功结果。'),
-      casePrompt('L5-17', '检查控制台是否仍保留生命周期控制，不因新增能力而破坏启动、暂停、恢复、退出。'),
-      casePrompt('L5-18', '检查在同一会话连续做 问答、小任务、长任务 时，是否还能保持边界清晰。')
+      casePrompt('L5-01', '检查当前 production test 非模型必答 case 是否会走 deterministic final answer，不能再为边界题触发 OMLX request-decision 或空泛模型回答。'),
+      casePrompt('L5-02', '检查当前 session 的 model task record，说明 planner/answer 是否只有必要模型调用；不得把 heartbeat 误判为重复请求。'),
+      casePrompt('L5-03', '检查 Control Console 是否仍保留生命周期控制：启动、暂停、恢复、停止 Hermes、自检、加载/卸载模型。新增 story 能力不得隐藏这些控件。'),
+      casePrompt('L5-04', '检查取消当前 reasoning session 的路径是否存在，并说明取消后 OMLX 长请求、Control heartbeat、session 状态应如何收敛。'),
+      casePrompt('L5-05', '检查 state/reasoning-sessions、agent-runtime-events.jsonl、reasoning-review-records.jsonl 是否能追溯一次 story workflow 的 plan、step、tool_result、artifact、final answer。'),
+      casePrompt('L5-06', '检查 L5 自动判定是否能拒绝 JSON plan、空证据占位、继续分析话术和“没有足够可观测结果”这类非答案。'),
+      casePrompt('L5-07', '连续执行两个不同类型的请求：一个事实检查、一个 story workflow 汇总。必须说明二者 artifacts 和边界不会串题。'),
+      casePrompt('L5-08', '给出生产放行结论：P0 文本故事闭环、P1 图片资产闭环、运维恢复能力分别是 PASS、FAIL 还是 BLOCKED。必须列出证据和下一步门禁。')
     ]
   },
   {
@@ -204,6 +174,7 @@ async function main() {
   console.log('脚本会先检查 control 控制器，并要求通过 Control Console UI 审核推进后续测试。')
 
   for (const stage of STAGES) {
+    if (STAGE_FILTER.size > 0 && !STAGE_FILTER.has(stage.id)) continue
     const stageRecord = {
       id: stage.id,
       title: stage.title,
@@ -229,7 +200,7 @@ async function main() {
     stageRecord.endedAt = new Date().toISOString()
 
     if (!stagePassed) {
-      if (CONTINUE_ON_FAIL) {
+      if (CONTINUE_ON_FAIL && !HARD_GATE_STAGES.has(stage.id)) {
         console.log(`阶段 ${stage.title} 未全部达成，已记录失败项并继续后续覆盖。`)
         continue
       }
@@ -329,6 +300,7 @@ async function runBootstrapStage(stageRecord) {
 
 async function runReasoningStage(stage, stageRecord) {
   for (const item of stage.cases) {
+    if (CASE_FILTER.size > 0 && !CASE_FILTER.has(item.id)) continue
     const caseRecord = {
       id: item.id,
       title: item.title,
@@ -346,7 +318,8 @@ async function runReasoningStage(stage, stageRecord) {
       const session = await createReasoningSession(item.prompt, {
         stageId: stage.id,
         caseId: item.id,
-        title: item.title
+        title: item.title,
+        expectations: item.expectations || null
       })
       caseRecord.sessionId = session.session?.sessionId || null
       currentProductionSessionId = caseRecord.sessionId
@@ -441,9 +414,11 @@ async function createReasoningSession(prompt, testContext = {}) {
       productionTest: true,
       disableMemorySync: true,
       disableQualityAutoRetry: true,
+      requireModelAnswer: Boolean(testContext.expectations?.requireModelAnswer),
       stageId: testContext.stageId || null,
       caseId: testContext.caseId || null,
-      title: testContext.title || prompt
+      title: testContext.title || prompt,
+      expectations: testContext.expectations || null
     })
   })
 }
@@ -458,6 +433,8 @@ async function publishProductionTestSession(payload) {
 
 async function driveReasoningSession(sessionId) {
   const deadline = Date.now() + CASE_TIMEOUT_MS
+  let lastProgressSignature = ''
+  let lastProgressAt = Date.now()
   while (true) {
     if (Date.now() >= deadline) {
       await cancelSessionBestEffort(sessionId, 'control_production_case_timeout')
@@ -470,6 +447,12 @@ async function driveReasoningSession(sessionId) {
     }
 
     printSessionSnapshot(session)
+
+    const progressSignature = buildSessionProgressSignature(session)
+    if (progressSignature !== lastProgressSignature) {
+      lastProgressSignature = progressSignature
+      lastProgressAt = Date.now()
+    }
 
     if (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled') {
       return session
@@ -507,8 +490,36 @@ async function driveReasoningSession(sessionId) {
       continue
     }
 
+    const stallTimeoutMs = getSessionStallTimeoutMs(session)
+    if (Date.now() - lastProgressAt >= stallTimeoutMs) {
+      await cancelSessionBestEffort(sessionId, 'control_production_session_stalled')
+      throw new Error(`case_stalled:${sessionId}:${session.currentStepId || session.review?.title || session.status}:${stallTimeoutMs}ms`)
+    }
+
     await delay(POLL_INTERVAL_MS)
   }
+}
+
+function buildSessionProgressSignature(session) {
+  const events = Array.isArray(session?.events) ? session.events : []
+  const latestEvent = events.length > 0 ? events[events.length - 1] : null
+  return JSON.stringify({
+    status: session?.status || '',
+    currentStepId: session?.currentStepId || '',
+    reviewTitle: session?.review?.title || '',
+    reviewPhase: session?.review?.reviewPhase || '',
+    finalAnswerLength: String(session?.artifacts?.finalAnswer || '').trim().length,
+    eventCount: events.length,
+    latestEventType: latestEvent?.type || '',
+    latestEventSummary: latestEvent?.summary || latestEvent?.title || '',
+    latestStepEvidence: session?.artifacts?.latestStepReviewEvidence?.stepId || ''
+  })
+}
+
+function getSessionStallTimeoutMs(session) {
+  const focus = `${session?.currentStepId || ''} ${session?.review?.title || ''}`.toLowerCase()
+  if (/answer|generate_capability_answer|step_answer/.test(focus)) return ANSWER_STALL_TIMEOUT_MS
+  return STEP_STALL_TIMEOUT_MS
 }
 
 async function waitForControlConsoleReview(sessionId, review) {
@@ -582,6 +593,56 @@ async function promptVerdict(caseId, session) {
 
 function autoVerdict(caseId, session) {
   const finalAnswer = String(session?.artifacts?.finalAnswer || '').trim()
+  const stageId = String(session?.submissionContext?.stageId || '').trim().toLowerCase()
+  const workflowFailure = inspectStoryWorkflowFailure(session)
+  if (/api call failed|http 5\d\d|cannot free enough memory|connection error|request timeout|timeout_error|timed out waiting|failed after \d+ retries/i.test(finalAnswer)) {
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: '自动判定：最终回答包含模型/API 错误，不计为有效答案。' }
+  }
+  if (hasInvisibleBusinessAnswer(finalAnswer)) {
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: '自动判定：最终回答没有给出可见业务答案，只返回了工具摘要或占位文本。' }
+  }
+  if (stageId === 'l5' && isL5NonAnswer(finalAnswer)) {
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: '自动判定：L5 最终回答是计划、空证据占位或继续分析话术，不计为稳定性/边界题有效答案。' }
+  }
+  const expectations = session.submissionContext?.expectations || getCaseExpectations(session.submissionContext?.caseId || caseId)
+  if (expectations?.requireModelAnswer || expectations?.forbidFallbackAnswer || expectations?.requireHermesRouteEvidence) {
+    const modelEvidence = inspectHermesModelAnswerEvidence(session)
+    if (expectations?.requireModelAnswer && !modelEvidence.hasModelAnswer) {
+      console.log(`${caseId} 自动判定: FAIL`)
+      return { result: 'FAIL', notes: `自动判定：最终回答没有证明 answer 阶段经 Hermes/OMLX 模型链路。${modelEvidence.detail}` }
+    }
+    if (expectations?.forbidFallbackAnswer && modelEvidence.answerFallback) {
+      console.log(`${caseId} 自动判定: FAIL`)
+      return { result: 'FAIL', notes: `自动判定：最终回答是 fallback/deterministic/control 自答，不计为有效智能体回答。${modelEvidence.detail}` }
+    }
+    if (expectations?.requireHermesRouteEvidence && !modelEvidence.hasHermesRouteEvidence) {
+      console.log(`${caseId} 自动判定: FAIL`)
+      return { result: 'FAIL', notes: `自动判定：session 缺少 Hermes/OMLX 路由证据。${modelEvidence.detail}` }
+    }
+  }
+  if (session.status === 'completed' && finalAnswer.length > 0 && expectations) {
+    const lower = finalAnswer.toLowerCase()
+    const missingAll = Array.isArray(expectations.requireAll) ? expectations.requireAll.filter((item) => !lower.includes(String(item).toLowerCase())) : []
+    const anyList = Array.isArray(expectations.requireAny) ? expectations.requireAny : []
+    const hasAny = anyList.length === 0 || anyList.some((item) => lower.includes(String(item).toLowerCase()))
+    if (missingAll.length === 0 && hasAny) {
+      console.log(`${caseId} 自动判定: PASS`)
+      return { result: 'PASS', notes: '自动判定：session completed，最终回答命中题目期望证据词。' }
+    }
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: `自动判定：最终回答未命中期望。missingAll=${missingAll.join(',') || '-'} requireAny=${hasAny ? 'ok' : anyList.join(',')}` }
+  }
+  if (stageId !== 'l5' && !expectations && hasBoundaryOnlyBusinessAnswer(finalAnswer)) {
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: '自动判定：最终回答只暴露失败边界或阻断传播，不能计为业务 PASS。' }
+  }
+  if (stageId === 'l4' && !expectations && workflowFailure.hasFailure) {
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: `自动判定：story workflow 存在失败步骤，不能计为业务 PASS。${workflowFailure.detail}` }
+  }
   if (session.status === 'completed' && finalAnswer.length > 0) {
     console.log(`${caseId} 自动判定: PASS`)
     return { result: 'PASS', notes: '自动判定：session completed 且存在最终回答。' }
@@ -592,6 +653,74 @@ function autoVerdict(caseId, session) {
   }
   console.log(`${caseId} 自动判定: FAIL`)
   return { result: 'FAIL', notes: `自动判定：session 状态为 ${session.status}。` }
+}
+
+function isL5NonAnswer(finalAnswer) {
+  const text = String(finalAnswer || '').trim()
+  if (!text) return true
+  if (/当前没有足够的可观测结构化结果可直接回答/i.test(text)) return true
+  if (/下一步计划|需要深入分析|我将选取|建议您核实|无法在当前目录或子目录中定位/i.test(text)) return true
+  if (/^```json\s*\{[\s\S]*"steps"\s*:/i.test(text)) return true
+  if (/^\{[\s\S]*"strategy"\s*:\s*"sequential"[\s\S]*"steps"\s*:/i.test(text)) return true
+  return false
+}
+
+function hasInvisibleBusinessAnswer(finalAnswer) {
+  const text = String(finalAnswer || '').trim()
+  if (!text) return true
+  if (/模型在工具执行后未返回可见文本/i.test(text)) return true
+  if (/以下是最近工具结果摘要/i.test(text) && /请基于以上结果继续下一步/i.test(text)) return true
+  return false
+}
+
+function hasBoundaryOnlyBusinessAnswer(finalAnswer) {
+  const text = String(finalAnswer || '').trim()
+  if (!text) return false
+  if (/失败边界[:：]\s*未发现失败步骤/i.test(text)) return false
+  return /blocked_by_previous_story_step|invalid_story_bible|validation_failed|项目校验未通过|已跳过 .*前置步骤 .* 未通过|未达到生产放行标准/i.test(text)
+    || (/失败边界/i.test(text) && !/未发现失败步骤/i.test(text))
+}
+
+function inspectStoryWorkflowFailure(session) {
+  const steps = session?.artifacts?.storyProduction?.steps && typeof session.artifacts.storyProduction.steps === 'object'
+    ? Object.values(session.artifacts.storyProduction.steps)
+    : []
+  const failedSteps = steps.filter((step) => step && typeof step === 'object' && step.ok === false)
+  return {
+    hasFailure: failedSteps.length > 0,
+    detail: failedSteps.length > 0
+      ? `failedSteps=${failedSteps.map((step) => `${step.action || 'unknown'}:${step.failedStage || 'unknown'}`).join(',')}`
+      : 'failedSteps=none'
+  }
+}
+
+function inspectHermesModelAnswerEvidence(session) {
+  const events = Array.isArray(session?.events) ? session.events : []
+  const answerToolEvent = [...events].reverse().find((event) => event?.type === 'tool_result' && event?.data?.action === 'generate_default_answer')
+  const answerTask = session?.artifacts?.tasks?.answer || null
+  const structuredResult = answerToolEvent?.data || {}
+  const observableText = JSON.stringify({
+    answerTask,
+    outboundPreview: structuredResult.outboundPreview,
+    observableOps: structuredResult.observableOps,
+    usage: structuredResult.usage,
+    fallback: structuredResult.fallback,
+    fallbackReason: structuredResult.fallbackReason,
+    latestStepReviewEvidence: session?.artifacts?.latestStepReviewEvidence
+  })
+  const hasAnswerTask = answerTask?.status === 'completed' && answerTask?.phase === 'answer'
+  const fallbackReason = String(structuredResult.fallbackReason || session?.artifacts?.latestStepReviewEvidence?.structuredResult?.fallbackReason || '').trim()
+  const answerPurpose = String(structuredResult.outboundPreview?.purpose || session?.artifacts?.latestStepReviewEvidence?.outboundPreview?.purpose || '').trim()
+  const answerFallback = structuredResult.fallback === true || /deterministic|fallback|recent_verified_answer_reused/i.test(`${fallbackReason} ${answerPurpose}`)
+  const hasUsage = Boolean(structuredResult.usage || session?.artifacts?.finalAnswerUsage)
+  const hasHermesRouteEvidence = /hermes/i.test(observableText) && /omlx/i.test(observableText)
+  const hasModelAnswer = hasAnswerTask && !answerFallback && hasHermesRouteEvidence
+  return {
+    hasModelAnswer,
+    answerFallback,
+    hasHermesRouteEvidence,
+    detail: `answerTask=${answerTask?.status || 'missing'} usage=${hasUsage ? 'yes' : 'no'} route=${hasHermesRouteEvidence ? 'hermes/omlx' : 'missing'} fallback=${answerFallback ? 'yes' : 'no'}`
+  }
 }
 
 function summarizeSession(session) {
@@ -643,17 +772,31 @@ function acquireScriptLock() {
   fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true })
   if (fs.existsSync(LOCK_FILE)) {
     const raw = fs.readFileSync(LOCK_FILE, 'utf8').trim()
-    const existingPid = Number(raw.split(/\s+/)[0])
+    const { pid: existingPid, startedAtMs } = parseLockFile(raw)
     if (Number.isInteger(existingPid) && existingPid > 0) {
       try {
         process.kill(existingPid, 0)
-        throw new Error(`control_production_test_already_running:pid=${existingPid}`)
+        if (Number.isFinite(startedAtMs) && Date.now() - startedAtMs > LOCK_STALE_MS) {
+          fs.unlinkSync(LOCK_FILE)
+        } else {
+          throw new Error(`control_production_test_already_running:pid=${existingPid}`)
+        }
       } catch (error) {
         if (error?.code !== 'ESRCH') throw error
       }
     }
   }
   fs.writeFileSync(LOCK_FILE, `${process.pid} ${new Date().toISOString()}\n`, 'utf8')
+}
+
+function parseLockFile(raw) {
+  const [pidToken = '', timestampToken = ''] = String(raw || '').trim().split(/\s+/, 2)
+  const pid = Number(pidToken)
+  const startedAtMs = Date.parse(timestampToken)
+  return {
+    pid: Number.isInteger(pid) && pid > 0 ? pid : 0,
+    startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : Number.NaN
+  }
 }
 
 function releaseScriptLock() {
@@ -665,6 +808,7 @@ function releaseScriptLock() {
 }
 
 function installSignalHandlers() {
+  process.once('exit', () => releaseScriptLock())
   const handleSignal = (signal) => {
     if (shuttingDown) return
     shuttingDown = true
@@ -740,8 +884,18 @@ function runCommand(command, args, options = {}) {
   })
 }
 
-function casePrompt(id, prompt) {
-  return { id, title: prompt, prompt }
+function casePrompt(id, prompt, expectations = null) {
+  return { id, title: prompt, prompt, expectations }
+}
+
+function getCaseExpectations(caseId) {
+  if (!caseId) return null
+  for (const stage of STAGES) {
+    for (const item of stage.cases || []) {
+      if (item.id === caseId) return item.expectations || null
+    }
+  }
+  return null
 }
 
 async function promptAction(message, actions) {
@@ -809,20 +963,22 @@ function printBanner() {
 }
 
 function printHelp() {
-  console.log('Usage: node scripts/test/control_production_test.mjs [--help] [--review-via=ui|cli|auto] [--manual-verdict] [--use-running-control] [--stop-on-fail]')
+  console.log('Usage: node scripts/test/control_production_test.mjs [--help] [--stage=l1,l2] [--case=L1-01,L4-01] [--review-via=control-ui|cli|auto] [--manual-verdict] [--use-running-control] [--stop-on-fail]')
   console.log('')
   console.log('行为:')
   console.log('1. 先检查 control 是否已运行；已运行时由人工选择继续或重启')
   console.log('2. 不再自动打开浏览器新标签，继续使用当前 control 页面')
   console.log('3. 不再要求阶段开始前输入序号确认，自动继续下一步')
   console.log('4. 运行 control 自检，确认 Hermes + OMLX')
-  console.log('5. 已通过题目请直接在 STAGES 测试库中注释掉，注释后的题目不会进入测试流程')
-  console.log('6. 再按 L1 -> L2 -> L3 -> L4 -> L5 -> 人工结论 继续')
+  console.log('5. 当前 STAGES 已按 L1 模型链路、L2 事实源、L3 安全边界、L4 P0 闭环、L5 运维稳定性重写')
+  console.log('6. L1 是硬门禁；只有 L1 全部通过，才应继续 L2 -> L3 -> L4 -> L5 -> 人工结论')
   console.log('')
   console.log('审核模式:')
   console.log('默认使用 Control Console UI 审核推进 waiting_review，脚本只观察状态变化。')
   console.log('如需命令行审核，可追加 --review-via=cli；只有调试时才建议追加 --review-via=auto。')
   console.log('默认自动判定每题并继续覆盖；如需人工判定，可追加 --manual-verdict。')
+  console.log('如只运行某一阶段，可追加 --stage=l1。')
+  console.log('如只运行某一道题，可追加 --case=L1-01。')
   console.log('')
   console.log('说明: 在控制器前置阶段通过前，脚本不会直接进入 GameStudio editor 功能测试。')
 }

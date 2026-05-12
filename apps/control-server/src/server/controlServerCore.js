@@ -90,6 +90,7 @@ import {
   buildReasoningFallbackPlan,
   buildReasoningPlannerMessages,
   extractJsonObjectString,
+  isLikelyReadOnlyReasoningPrompt,
   normalizeReasoningPlan,
 } from './reasoning/promptBuilders.js'
 import { buildReasoningRecentContextArtifact } from './reasoning/memory.js'
@@ -106,12 +107,15 @@ import {
   buildReasoningActionCatalog,
   isReasoningAnswerAction,
   isReasoningInvokeAction,
+  isReasoningStoryMutationAction,
   isReasoningWriteAction,
   REASONING_ACTIONS,
   REASONING_ALLOWED_ACTION_NAMES,
+  REASONING_GAMESTUDIO_BOOTSTRAP_ACTION_NAMES,
+  REASONING_STORY_MUTATION_ACTION_NAMES,
+  REASONING_STORY_WORKFLOW_ACTION_NAMES,
 } from './capabilities/actionRegistry.js'
 import { buildReasoningToolCatalog } from './capabilities/toolRegistry.js'
-import { registerChatRequestRoutes } from './routes/chatRequestRoutes.js'
 import { registerChatRoutes } from './routes/chatRoutes.js'
 import { registerConfigRoutes } from './routes/configRoutes.js'
 import { registerContextRoutes } from './routes/contextRoutes.js'
@@ -138,8 +142,18 @@ import { runMemoryLifecycleMaintenance } from './memory/lifecycleMaintenance.js'
 import { createChatService } from './services/chatService.js'
 import { createConfigService } from './services/configService.js'
 import { createContextService } from './services/contextService.js'
+import { gameStudioServerClient } from './services/gameStudioServerClient.js'
 import { createReasoningService } from './services/reasoningService.js'
 import { createRuntimeService } from './services/runtimeService.js'
+import {
+  buildProjectCapabilityStatusAnswer,
+  shouldUseDeterministicCapabilityStatusAnswer,
+} from './workflows/projectStatusWorkflows.js'
+import {
+  extractProjectIdFromPrompt,
+  extractStoryTitleFromPrompt,
+  inferStoryConfigFromPrompt,
+} from './workflows/storyProductionWorkflows.js'
 
 let activeHermesChatRequest = null
 let activeHermesChatRecovery = null
@@ -148,6 +162,7 @@ const activeHermesReasoningExecutions = new Map()
 // 心跳事件只用于 UI 展示「仍在执行 X 秒」，不会触发任何 OMLX 调用。
 // 之前 10s 节奏让人误以为 OMLX 在频繁返回；改回 30s 仅减少 UI 噪音，不影响 120s 单次等待 + 12 次续租契约。
 const HERMES_REASONING_TASK_HEARTBEAT_MS = Math.max(3000, Number(process.env.HERMES_REASONING_TASK_HEARTBEAT_MS || 30000))
+const STORY_PRODUCTION_STATE_FILE = path.join(GAMESTUDIO_ROOT, 'state', 'story-production', 'current-project.json')
 let currentHermesChatSessionId = createOpaqueId('chat')
 
 function getActiveHermesChatRequest() {
@@ -430,7 +445,10 @@ function normalizeModelBaseUrl(baseUrl, provider) {
 function getProviderApiKey(provider) {
   const normalizedProvider = normalizeProviderName(provider)
   if (normalizedProvider === 'ollama') return ''
-  return getEnvValue('LOCALOXML_API_KEY') || getEnvValue('STUDIO_AI_API_KEY') || getEnvValue('OPENAI_API_KEY') || 'omlx123'
+  if (normalizedProvider === 'omlx') {
+    return getEnvValue('LOCALOXML_API_KEY') || getEnvValue('STUDIO_AI_API_KEY') || 'omlx123'
+  }
+  return getEnvValue('OPENAI_API_KEY') || getEnvValue('STUDIO_AI_API_KEY') || ''
 }
 
 function getProviderAccess(provider, baseUrl) {
@@ -491,8 +509,8 @@ function normalizeUsage(usage) {
   }
 }
 
-// Per ownership rule: control 必须只通过队列 + Hermes 与模型交互，禁止任何代码路径在队列外直接对 OMLX 发起 /chat/completions 推理探测。
-// 因此本探测改为只读的 /models 列表查询，且当任意 reasoning session 活跃时，跳过本探测，直接返回上次缓存的结果，避免与受控 reasoning 任务争抢 OMLX。
+// Control can read the provider model catalog for configuration/self-check only.
+// Inference still goes through Hermes; this path must never call /chat/completions.
 const inspectModelAccessCache = new Map() // key=`${provider}|${baseUrl}|${model}` → 上次探测结果
 
 function buildInspectModelCacheKey({ provider, baseUrl, model }) {
@@ -503,6 +521,7 @@ async function inspectModelAccess({ provider, baseUrl, model }) {
   const metadata = getModelMetadata(model)
   const access = getProviderAccess(provider, baseUrl)
   const checkedAt = new Date().toISOString()
+  const cacheKey = buildInspectModelCacheKey({ provider, baseUrl, model })
 
   if (!model) {
     return {
@@ -516,83 +535,40 @@ async function inspectModelAccess({ provider, baseUrl, model }) {
     }
   }
 
-  // 当存在活跃的 reasoning session 时，禁止任何 control 端的旁路探测：
-  // 这是为了防止「队列外直连 OMLX」与正在进行的受控推理任务并行竞争模型，
-  // 也防止「上一题没答完就触发下一题/旁路任务」。
-  const cacheKey = buildInspectModelCacheKey({ provider, baseUrl, model })
-  if (activeHermesReasoningSessionIds.size > 0) {
-    const cached = inspectModelAccessCache.get(cacheKey)
-    if (cached) {
-      return { ...cached, checkedAt: cached.checkedAt, deferredDuringReasoning: true }
-    }
-    return {
-      model,
-      accessible: false,
-      status: 'deferred',
-      detail: '存在活跃的可观测推理任务，已跳过 control 旁路探测以避免与队列任务争抢模型',
-      checkedAt,
-      usage: normalizeUsage(null),
-      deferredDuringReasoning: true,
-      ...metadata
-    }
-  }
-
   try {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 5000)
-    const resp = await fetch(`${access.baseUrl}/models`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        ...access.headers
-      },
-      signal: controller.signal
-    })
-    clearTimeout(timeout)
-
-    const data = await resp.json().catch(() => null)
-    if (!resp.ok) {
-      const msg = data?.error?.message || data?.message || `HTTP ${resp.status}`
+    const catalog = await fetchLocalModelCatalog({ provider: access.provider, baseUrl: access.baseUrl })
+    if (!catalog.ok) {
       const failure = {
         model,
         accessible: false,
         status: 'error',
-        detail: String(msg),
+        detail: catalog.error || '模型目录读取失败',
         checkedAt,
         usage: normalizeUsage(null),
+        provider: access.provider,
+        baseUrl: access.baseUrl,
+        probedProvider: true,
         ...metadata
       }
       inspectModelAccessCache.set(cacheKey, failure)
       return failure
     }
 
-    const entries = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : [])
-    const presentInCatalog = entries.some((entry) => {
-      if (!entry) return false
-      if (typeof entry === 'string') return entry === model
-      const id = String(entry.id || entry.name || entry.model || '').trim()
-      return id === model
-    })
-
-    const result = presentInCatalog
-      ? {
-          model,
-          accessible: true,
-          status: 'ok',
-          detail: '模型已出现在 OMLX /models 目录中（只读探测，不触发推理）',
-          checkedAt,
-          usage: normalizeUsage(null),
-          ...metadata
-        }
-      : {
-          model,
-          accessible: false,
-          status: 'error',
-          detail: `模型未出现在 OMLX /models 目录中：${model}`,
-          checkedAt,
-          usage: normalizeUsage(null),
-          ...metadata
-        }
+    const presentInCatalog = catalog.models.some((entry) => String(entry?.id || '').trim() === model)
+    const result = {
+      model,
+      accessible: presentInCatalog,
+      status: presentInCatalog ? 'ok' : 'error',
+      detail: presentInCatalog
+        ? '模型已出现在 provider /models 目录中（只读自检，不触发推理）。'
+        : `模型未出现在 provider /models 目录中：${model}`,
+      checkedAt,
+      usage: normalizeUsage(null),
+      provider: catalog.provider,
+      baseUrl: catalog.baseUrl,
+      probedProvider: true,
+      ...metadata
+    }
     inspectModelAccessCache.set(cacheKey, result)
     return result
   } catch (err) {
@@ -603,10 +579,365 @@ async function inspectModelAccess({ provider, baseUrl, model }) {
       detail: err instanceof Error ? err.message : String(err),
       checkedAt,
       usage: normalizeUsage(null),
+      provider: access.provider,
+      baseUrl: access.baseUrl,
+      probedProvider: true,
       ...metadata
     }
     inspectModelAccessCache.set(cacheKey, failure)
     return failure
+  }
+}
+
+function buildProviderAdminBaseUrl(baseUrl, provider) {
+  const normalizedProvider = normalizeProviderName(provider)
+  const normalizedBaseUrl = normalizeModelBaseUrl(baseUrl, normalizedProvider)
+  try {
+    const url = new URL(normalizedBaseUrl)
+    url.pathname = '/admin'
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/+$/, '')
+  } catch {
+    return String(normalizedBaseUrl || '').replace(/\/v1\/?$/i, '') + '/admin'
+  }
+}
+
+function readCookieHeaderFromResponse(response) {
+  if (response?.headers && typeof response.headers.getSetCookie === 'function') {
+    const cookies = response.headers.getSetCookie()
+    if (Array.isArray(cookies) && cookies.length > 0) {
+      return cookies.map((item) => String(item || '').split(';')[0]).filter(Boolean).join('; ')
+    }
+  }
+
+  const raw = String(response?.headers?.get('set-cookie') || '').trim()
+  if (!raw) return ''
+  return raw.split(';')[0].trim()
+}
+
+async function createProviderAdminSession({ provider, baseUrl }) {
+  const access = getProviderAccess(provider, baseUrl)
+  const checkedAt = new Date().toISOString()
+  if (access.provider !== 'omlx') {
+    return {
+      ok: false,
+      checkedAt,
+      detail: `${access.provider} 当前不支持 Control admin session。`
+    }
+  }
+
+  if (!access.apiKey) {
+    return {
+      ok: false,
+      checkedAt,
+      detail: '缺少 OMLX API key，无法建立 admin session。'
+    }
+  }
+
+  const adminBaseUrl = buildProviderAdminBaseUrl(access.baseUrl, access.provider)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8000)
+  try {
+    const response = await fetch(`${adminBaseUrl}/api/login`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ api_key: access.apiKey, remember: false }),
+      signal: controller.signal
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+      return {
+        ok: false,
+        checkedAt,
+        detail: payload?.detail || payload?.message || `admin_login_http_${response.status}`
+      }
+    }
+
+    const cookieHeader = readCookieHeaderFromResponse(response)
+    if (!cookieHeader) {
+      return {
+        ok: false,
+        checkedAt,
+        detail: 'OMLX admin 登录成功，但未返回 session cookie。'
+      }
+    }
+
+    return {
+      ok: true,
+      checkedAt,
+      provider: access.provider,
+      baseUrl: access.baseUrl,
+      adminBaseUrl,
+      cookieHeader
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      checkedAt,
+      detail: err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function fetchProviderModelStatus({ provider, baseUrl, model = '' }) {
+  const access = getProviderAccess(provider, baseUrl)
+  const checkedAt = new Date().toISOString()
+  const selectedModel = String(model || '').trim()
+  if (access.provider !== 'omlx') {
+    return {
+      ok: false,
+      unsupported: true,
+      checkedAt,
+      provider: access.provider,
+      baseUrl: access.baseUrl,
+      detail: `${access.provider} 当前没有统一的 /models/status 接口。`,
+      models: [],
+      entry: null
+    }
+  }
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 5000)
+  try {
+    const response = await fetch(`${access.baseUrl}/models/status`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...access.headers
+      },
+      signal: controller.signal
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+      return {
+        ok: false,
+        checkedAt,
+        provider: access.provider,
+        baseUrl: access.baseUrl,
+        detail: payload?.error?.message || payload?.detail || payload?.message || `HTTP ${response.status}`,
+        models: [],
+        entry: null
+      }
+    }
+
+    const models = Array.isArray(payload?.models) ? payload.models : []
+    const entry = selectedModel
+      ? models.find((item) => String(item?.id || '').trim() === selectedModel) || null
+      : null
+    return {
+      ok: true,
+      checkedAt,
+      provider: access.provider,
+      baseUrl: access.baseUrl,
+      models,
+      entry,
+      payload
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      checkedAt,
+      provider: access.provider,
+      baseUrl: access.baseUrl,
+      detail: err instanceof Error ? err.message : String(err),
+      models: [],
+      entry: null
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function waitForProviderModelLoadState({ provider, baseUrl, model, shouldBeLoaded, maxAttempts = 20, intervalMs = 500 }) {
+  let lastStatus = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const status = await fetchProviderModelStatus({ provider, baseUrl, model })
+    lastStatus = status
+    const entry = status.entry || null
+    const loaded = entry?.loaded === true
+    const isLoading = entry?.is_loading === true
+    const settled = shouldBeLoaded ? (loaded && !isLoading) : (!loaded && !isLoading)
+    if (status.ok && settled) {
+      return { ok: true, checkedAt: status.checkedAt, runtimeStatus: status }
+    }
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
+  }
+
+  return {
+    ok: false,
+    checkedAt: lastStatus?.checkedAt || new Date().toISOString(),
+    detail: shouldBeLoaded
+      ? `provider 已响应，但 ${model} 仍未进入 loaded 状态。`
+      : `provider 已响应，但 ${model} 仍未完全退出 loaded 状态。`,
+    runtimeStatus: lastStatus
+  }
+}
+
+async function inspectProviderModelState({ provider, baseUrl, model }) {
+  const inspection = await inspectModelAccess({ provider, baseUrl, model })
+  if (!inspection.accessible) {
+    return {
+      ...inspection,
+      loaded: false,
+      isLoading: false
+    }
+  }
+
+  const status = await fetchProviderModelStatus({ provider, baseUrl, model })
+  if (!status.ok || status.unsupported) {
+    return {
+      ...inspection,
+      loaded: null,
+      isLoading: null,
+      runtimeStatusKnown: false,
+      runtimeStatusDetail: status.detail || null
+    }
+  }
+
+  const entry = status.entry || null
+  const loaded = entry?.loaded === true
+  const isLoading = entry?.is_loading === true
+  return {
+    ...inspection,
+    checkedAt: status.checkedAt || inspection.checkedAt,
+    loaded,
+    isLoading,
+    runtimeStatusKnown: true,
+    runtimeStatusDetail: loaded
+      ? '模型已通过 provider 接口载入。'
+      : isLoading
+        ? '模型正在 provider 中载入。'
+        : '模型已存在，但当前未载入。',
+    detail: loaded
+      ? '模型已通过 provider 接口载入。'
+      : isLoading
+        ? '模型正在 provider 中载入。'
+        : '模型已存在，但当前未载入。'
+  }
+}
+
+async function loadProviderModel({ provider, baseUrl, model }) {
+  const normalizedModel = String(model || '').trim()
+  if (!normalizedModel) {
+    return { ok: false, attempted: false, detail: '未指定要加载的模型。' }
+  }
+
+  const access = getProviderAccess(provider, baseUrl)
+  if (access.provider !== 'omlx') {
+    return {
+      ok: true,
+      attempted: false,
+      skipped: true,
+      reason: 'provider_unmanaged',
+      detail: `${access.provider} 当前不走 Control 的 provider load。`
+    }
+  }
+
+  const session = await createProviderAdminSession({ provider: access.provider, baseUrl: access.baseUrl })
+  if (!session.ok) {
+    return { ok: false, attempted: false, detail: session.detail }
+  }
+
+  try {
+    const response = await fetch(`${session.adminBaseUrl}/api/models/${encodeURIComponent(normalizedModel)}/load`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        Cookie: session.cookieHeader
+      }
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+      const detail = payload?.error?.message || payload?.detail || payload?.message || `HTTP ${response.status}`
+      return { ok: false, attempted: true, detail: String(detail), status: response.status, payload }
+    }
+
+    const settled = await waitForProviderModelLoadState({ provider: access.provider, baseUrl: access.baseUrl, model: normalizedModel, shouldBeLoaded: true })
+    if (!settled.ok) {
+      return { ok: false, attempted: true, detail: settled.detail, payload, runtimeStatus: settled.runtimeStatus }
+    }
+
+    return {
+      ok: true,
+      attempted: true,
+      detail: payload?.message || `${normalizedModel} 已通过 provider 接口加载。`,
+      payload,
+      runtimeStatus: settled.runtimeStatus
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      attempted: true,
+      detail: err instanceof Error ? err.message : String(err)
+    }
+  }
+}
+
+async function unloadProviderModel({ provider, baseUrl, model }) {
+  const normalizedModel = String(model || '').trim()
+  if (!normalizedModel) {
+    return { ok: true, attempted: false, skipped: true, reason: 'missing_model', detail: '未指定要卸载的模型。' }
+  }
+
+  const access = getProviderAccess(provider, baseUrl)
+  if (access.provider !== 'omlx') {
+    return {
+      ok: true,
+      attempted: false,
+      skipped: true,
+      reason: 'provider_unmanaged',
+      detail: `${access.provider} 当前不走 Control 的 provider unload。`
+    }
+  }
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8000)
+  try {
+    const response = await fetch(`${access.baseUrl}/models/${encodeURIComponent(normalizedModel)}/unload`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        ...access.headers
+      },
+      signal: controller.signal
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+      const detail = payload?.error?.message || payload?.detail || payload?.message || `HTTP ${response.status}`
+      if (/not loaded/i.test(String(detail))) {
+        return { ok: true, attempted: true, skipped: true, reason: 'already_unloaded', detail: `${normalizedModel} 当前已处于未加载状态。`, status: response.status, payload }
+      }
+      return { ok: false, attempted: true, detail: String(detail), status: response.status, payload }
+    }
+
+    const settled = await waitForProviderModelLoadState({ provider: access.provider, baseUrl: access.baseUrl, model: normalizedModel, shouldBeLoaded: false })
+    if (!settled.ok) {
+      return { ok: false, attempted: true, detail: settled.detail, payload, runtimeStatus: settled.runtimeStatus }
+    }
+
+    return {
+      ok: true,
+      attempted: true,
+      detail: payload?.message || `${normalizedModel} 已通过 provider 接口卸载。`,
+      payload,
+      runtimeStatus: settled.runtimeStatus
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      attempted: true,
+      detail: err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    clearTimeout(timeout)
   }
 }
 
@@ -704,14 +1035,12 @@ async function waitForHermesApiReady(timeoutMs = 12000, intervalMs = 400) {
 
   while (Date.now() < deadline) {
     try {
-      const access = getProviderAccess('omlx', HERMES_API_SERVER_BASE_URL)
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 1500)
-      const response = await fetch(`${access.baseUrl}/models`, {
+      const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/models`, {
         method: 'GET',
         headers: {
           Accept: 'application/json',
-          ...access.headers,
         },
         signal: controller.signal,
       })
@@ -1045,17 +1374,25 @@ function updateHermesControlState(patch = {}) {
 function getDefaultHermesControlConfig() {
   const aiRoot = path.join(GAMESTUDIO_ROOT, 'ai')
   const aiMemoryRoot = path.join(aiRoot, 'memory')
+  const defaultProvider = 'omlx'
+  const defaultBaseUrl = 'http://127.0.0.1:18888/v1'
+  const defaultModel = 'gpt-oss-20b-MXFP4-Q8'
   return {
-    provider: 'omlx',
-    baseUrl: 'http://127.0.0.1:18888/v1',
-    model: 'gpt-oss-20b-MXFP4-Q8',
+    provider: defaultProvider,
+    baseUrl: defaultBaseUrl,
+    model: defaultModel,
     shortTerm: {
       minContextTokens: 65536
     },
     workflow: {
       memoryOverlayMode: 'references-only',
       replayWindowMessages: 24,
-      reasoningReplayWindowMessages: 8
+      reasoningReplayWindowMessages: 8,
+      modelRouting: buildDefaultModelRoutingConfig({
+        provider: defaultProvider,
+        baseUrl: defaultBaseUrl,
+        model: defaultModel
+      })
     },
     memory: {
       agentDefinitionFile: path.join(aiRoot, 'AGENTS.md'),
@@ -1084,6 +1421,164 @@ function normalizeStringList(value) {
     .filter(Boolean)
 }
 
+function normalizeModelRoutingKey(value) {
+  return String(value || '').trim()
+}
+
+function normalizeModelRouteEntry(route, fallbackRoute) {
+  const fallback = fallbackRoute && typeof fallbackRoute === 'object'
+    ? fallbackRoute
+    : { provider: 'omlx', baseUrl: 'http://127.0.0.1:18888/v1', model: '', transport: 'hermes', strict: false }
+  const raw = route && typeof route === 'object' ? route : {}
+  const provider = normalizeProviderName(raw.provider || fallback.provider)
+  const baseUrl = normalizeModelBaseUrl(raw.baseUrl || fallback.baseUrl, provider)
+  const model = String(raw.model || fallback.model || '').trim()
+  const requestedTransport = String(raw.transport || fallback.transport || 'hermes').trim().toLowerCase()
+  let transport = requestedTransport === 'direct' ? 'direct' : 'hermes'
+  if (transport !== 'direct' && (provider !== fallback.provider || baseUrl !== fallback.baseUrl || model !== fallback.model)) {
+    transport = 'direct'
+  }
+  return {
+    provider,
+    baseUrl,
+    model,
+    transport,
+    strict: raw.strict === undefined ? Boolean(fallback.strict) : Boolean(raw.strict)
+  }
+}
+
+function buildDefaultModelRoutingConfig({ provider, baseUrl, model }) {
+  const defaultRoute = normalizeModelRouteEntry({ provider, baseUrl, model, transport: 'hermes', strict: false }, {
+    provider,
+    baseUrl,
+    model,
+    transport: 'hermes',
+    strict: false
+  })
+  return {
+    defaultRoute,
+    phaseRoutes: {
+      story_scripts_candidate: normalizeModelRouteEntry({ model: 'Qwen3.6-35B', transport: 'direct', strict: true }, defaultRoute),
+      story_blueprint_review: normalizeModelRouteEntry({ model: 'Qwen3.6-35B', transport: 'direct', strict: true }, defaultRoute)
+    },
+    actionRoutes: {},
+    strictRouteRequiredPhases: ['story_scripts_candidate', 'story_blueprint_review']
+  }
+}
+
+function normalizeModelRoutingMap(rawRoutes, defaultRoute, seededRoutes = {}) {
+  const normalized = { ...seededRoutes }
+  if (!rawRoutes || typeof rawRoutes !== 'object') return normalized
+  for (const [key, route] of Object.entries(rawRoutes)) {
+    const normalizedKey = normalizeModelRoutingKey(key)
+    if (!normalizedKey) continue
+    normalized[normalizedKey] = normalizeModelRouteEntry(route, normalized[normalizedKey] || defaultRoute)
+  }
+  return normalized
+}
+
+function normalizeModelRoutingConfig(rawRouting, fallbackRoute) {
+  const defaults = buildDefaultModelRoutingConfig(fallbackRoute)
+  const raw = rawRouting && typeof rawRouting === 'object' ? rawRouting : {}
+  const defaultRoute = normalizeModelRouteEntry(raw.defaultRoute, defaults.defaultRoute)
+  return {
+    defaultRoute,
+    phaseRoutes: normalizeModelRoutingMap(raw.phaseRoutes, defaultRoute, defaults.phaseRoutes),
+    actionRoutes: normalizeModelRoutingMap(raw.actionRoutes, defaultRoute, defaults.actionRoutes),
+    strictRouteRequiredPhases: normalizeStringList(raw.strictRouteRequiredPhases).length > 0
+      ? normalizeStringList(raw.strictRouteRequiredPhases)
+      : defaults.strictRouteRequiredPhases
+  }
+}
+
+function buildBindingForResolvedModelRoute(binding, route, access = null) {
+  const provider = normalizeProviderName(access?.provider || route?.provider || binding?.provider)
+  const baseUrl = normalizeModelBaseUrl(access?.baseUrl || route?.baseUrl || binding?.baseUrl, provider)
+  const model = String(route?.model || binding?.model || '').trim()
+  const metadata = getModelMetadata(model)
+  return {
+    ...binding,
+    provider,
+    baseUrl,
+    model,
+    contextLength: metadata.contextLength,
+    recommendedMaxOutputTokens: metadata.recommendedMaxOutputTokens,
+    tokenizer: String(metadata.tokenizer || '') || null,
+    metadataSource: String(metadata.metadataSource || 'unavailable')
+  }
+}
+
+function getExplicitModelRouteMatch(binding, phase, options = {}) {
+  const routing = binding?.workflow?.modelRouting
+  const actionKey = normalizeModelRoutingKey(options.action)
+  if (actionKey && routing?.actionRoutes?.[actionKey]) {
+    return {
+      routeConfig: routing.actionRoutes[actionKey],
+      routeId: `action:${actionKey}`,
+      matchedBy: 'action'
+    }
+  }
+  const phaseKey = normalizeModelRoutingKey(phase)
+  if (phaseKey && routing?.phaseRoutes?.[phaseKey]) {
+    return {
+      routeConfig: routing.phaseRoutes[phaseKey],
+      routeId: `phase:${phaseKey}`,
+      matchedBy: 'phase'
+    }
+  }
+  return null
+}
+
+export function resolveModelRouteForPhase(binding, phase, options = {}) {
+  const fallbackBinding = binding || buildHermesBinding()
+  const fallbackRoute = normalizeModelRouteEntry({
+    provider: fallbackBinding.provider,
+    baseUrl: fallbackBinding.baseUrl,
+    model: fallbackBinding.model,
+    transport: 'hermes',
+    strict: false
+  }, {
+    provider: fallbackBinding.provider,
+    baseUrl: fallbackBinding.baseUrl,
+    model: fallbackBinding.model,
+    transport: 'hermes',
+    strict: false
+  })
+  const match = getExplicitModelRouteMatch(fallbackBinding, phase, options)
+  const resolvedRoute = match?.routeConfig || fallbackBinding?.workflow?.modelRouting?.defaultRoute || fallbackRoute
+  const strictRouteRequiredPhases = new Set(normalizeStringList(fallbackBinding?.workflow?.modelRouting?.strictRouteRequiredPhases || []))
+  const phaseKey = normalizeModelRoutingKey(phase)
+  const route = normalizeModelRouteEntry(resolvedRoute, fallbackRoute)
+  route.strict = route.strict || strictRouteRequiredPhases.has(phaseKey)
+  const access = getProviderAccess(route.provider, route.baseUrl)
+  const requestBinding = buildBindingForResolvedModelRoute(fallbackBinding, route, access)
+  return {
+    routeId: match?.routeId || 'default',
+    matchedBy: match?.matchedBy || 'default',
+    explicit: Boolean(match),
+    transport: route.transport,
+    strict: route.strict,
+    provider: access.provider,
+    baseUrl: access.baseUrl,
+    model: route.model,
+    apiKey: access.apiKey,
+    headers: access.headers,
+    binding: requestBinding
+  }
+}
+
+export function getModelRouteOverrideForPhase(binding, phase, options = {}) {
+  const resolved = resolveModelRouteForPhase(binding, phase, options)
+  if (!resolved.explicit) return null
+  return {
+    routeId: resolved.routeId,
+    provider: resolved.provider,
+    model: resolved.model,
+    apiUrl: resolved.baseUrl,
+    strict: resolved.strict
+  }
+}
+
 function buildPersistedHermesControlConfig(rawConfig = {}) {
   const defaults = getDefaultHermesControlConfig()
   const memory = rawConfig.memory || {}
@@ -1091,11 +1586,14 @@ function buildPersistedHermesControlConfig(rawConfig = {}) {
   const shortTerm = rawConfig.shortTerm || {}
   const workflow = rawConfig.workflow || {}
   const brains = rawConfig.brains || {}
+  const provider = normalizeProviderName(rawConfig.provider || defaults.provider)
+  const baseUrl = normalizeModelBaseUrl(rawConfig.baseUrl || defaults.baseUrl, provider)
+  const model = String(rawConfig.model || defaults.model)
 
   return {
-    provider: normalizeProviderName(rawConfig.provider || defaults.provider),
-    baseUrl: String(rawConfig.baseUrl || defaults.baseUrl),
-    model: String(rawConfig.model || defaults.model),
+    provider,
+    baseUrl,
+    model,
     shortTerm: {
       minContextTokens: Number.isFinite(Number(shortTerm.minContextTokens))
         ? Number(shortTerm.minContextTokens)
@@ -1110,7 +1608,8 @@ function buildPersistedHermesControlConfig(rawConfig = {}) {
         : defaults.workflow.replayWindowMessages),
       reasoningReplayWindowMessages: Math.max(0, Number.isFinite(Number(workflow.reasoningReplayWindowMessages))
         ? Number(workflow.reasoningReplayWindowMessages)
-        : defaults.workflow.reasoningReplayWindowMessages)
+        : defaults.workflow.reasoningReplayWindowMessages),
+      modelRouting: normalizeModelRoutingConfig(workflow.modelRouting, { provider, baseUrl, model })
     },
     memory: {
       agentDefinitionFile: String(memory.agentDefinitionFile || defaults.memory.agentDefinitionFile),
@@ -1186,15 +1685,16 @@ function buildModelStateSnapshot({ provider, baseUrl, model, inspection, lastAct
   }
 
   const accessible = inspection?.accessible === true
+  const loaded = typeof inspection?.loaded === 'boolean' ? inspection.loaded === true : accessible
   return {
-    status: accessible ? 'loaded' : (inspection ? 'error' : 'unloaded'),
-    label: accessible ? '已启动' : '未启动',
-    detail: inspection?.detail || (accessible ? '模型已就绪' : '模型尚未加载'),
+    status: loaded ? 'loaded' : (inspection ? (accessible ? 'unloaded' : 'error') : 'unloaded'),
+    label: loaded ? '已启动' : '未启动',
+    detail: inspection?.detail || (loaded ? '模型已就绪' : (accessible ? '模型尚未加载' : '模型不可访问')),
     provider: normalizeProviderName(provider),
     baseUrl: normalizeModelBaseUrl(baseUrl, provider),
     model,
     inspectedAt: inspection?.checkedAt || new Date().toISOString(),
-    loadedAt: accessible ? (loadedAt || new Date().toISOString()) : null,
+    loadedAt: loaded ? (loadedAt || new Date().toISOString()) : null,
     lastAction,
     inspection: inspection || null
   }
@@ -1217,7 +1717,7 @@ async function refreshHermesControlStateFromConfig(config = getPersistedHermesCo
   const configFingerprint = getHermesControlConfigFingerprint(config)
   const runtimeState = getHermesRuntimeState()
   const inspection = config.model
-    ? await inspectModelAccess({ provider: config.provider, baseUrl: config.baseUrl, model: config.model })
+    ? await inspectProviderModelState({ provider: config.provider, baseUrl: config.baseUrl, model: config.model })
     : null
 
   const nextState = mergeHermesControlState(existingState, {
@@ -1509,6 +2009,15 @@ function buildAgentRuntimeDescriptor() {
     controlPlaneName: 'agentControl',
     workflowTerm: 'runtime task chain',
     taskGraphTerm: 'runtime task graph',
+    domains: [
+      'workspace_observation',
+      'review_gated_workspace_change',
+      'context_memory',
+      'gamestudio_bootstrap',
+      'story_workflow',
+      'gamestudio_observer',
+      'production_test_evidence'
+    ],
     frontend: {
       root: path.join(GAMESTUDIO_ROOT, 'apps', 'control-console'),
       entryFile: path.join(GAMESTUDIO_ROOT, 'apps', 'control-console', 'src', 'main.ts')
@@ -1521,7 +2030,14 @@ function buildAgentRuntimeDescriptor() {
       capabilities: '/api/control/agents/:agentId/agent-runtime',
       submissionPreview: '/api/control/agents/:agentId/submission-preview',
       contextDraft: '/api/control/agents/:agentId/context-drafts',
-      sessions: '/api/control/agents/:agentId/reasoning-sessions'
+      sessions: '/api/control/agents/:agentId/reasoning-sessions',
+      agentRuntimeSessions: '/api/control/agents/:agentId/agent-runtime-sessions',
+      review: '/api/control/agents/:agentId/agent-runtime-sessions/:sessionId/review',
+      cancel: '/api/control/agents/:agentId/agent-runtime-sessions/:sessionId/cancel',
+      recover: '/api/control/agents/:agentId/agent-runtime-sessions/:sessionId/recover',
+      clear: '/api/control/agents/:agentId/agent-runtime-sessions/:sessionId',
+      productionTestSession: '/api/control/agents/:agentId/production-test-session',
+      skillProposals: '/api/control/skill-proposals'
     }
   }
 }
@@ -1535,6 +2051,15 @@ function buildAgentRuntimeBehaviorChecks(binding) {
   const canObserveWorkspace = toolMap.has('workspace.listDirectory') && toolMap.has('workspace.readFile')
   const editWorkspaceAction = actionMap.get('edit_workspace_file')
   const lifecycleAction = actionMap.get('run_lifecycle_script')
+  const bootstrapActions = REASONING_GAMESTUDIO_BOOTSTRAP_ACTION_NAMES.map((name) => actionMap.get(name)).filter(Boolean)
+  const storyActions = REASONING_STORY_WORKFLOW_ACTION_NAMES.map((name) => actionMap.get(name)).filter(Boolean)
+  const storyMutationActions = REASONING_STORY_MUTATION_ACTION_NAMES.map((name) => actionMap.get(name)).filter(Boolean)
+  const storyObserverToolsPresent = [
+    'gamestudio.story.createProject',
+    'gamestudio.story.inspectProject',
+    'gamestudio.story.validateProject',
+    'gamestudio.story.exportProject'
+  ].every((toolName) => toolMap.has(toolName))
 
   return [
     {
@@ -1562,6 +2087,38 @@ function buildAgentRuntimeBehaviorChecks(binding) {
         : 'run_lifecycle_script 未正确接入审核门。'
     },
     {
+      key: 'runtime-gamestudio-bootstrap',
+      label: 'GameStudio 启动与自检能力',
+      status: bootstrapActions.length === REASONING_GAMESTUDIO_BOOTSTRAP_ACTION_NAMES.length ? 'ok' : 'error',
+      detail: bootstrapActions.length === REASONING_GAMESTUDIO_BOOTSTRAP_ACTION_NAMES.length
+        ? `已覆盖 ${bootstrapActions.length} 个 bootstrap 动作：启动/打开 Editor/settings/本地生产配置/自检。`
+        : `bootstrap 动作覆盖不足：${bootstrapActions.length}/${REASONING_GAMESTUDIO_BOOTSTRAP_ACTION_NAMES.length}。`
+    },
+    {
+      key: 'runtime-story-workflow',
+      label: '互动故事生产工作流',
+      status: storyActions.length === REASONING_STORY_WORKFLOW_ACTION_NAMES.length ? 'ok' : 'error',
+      detail: storyActions.length === REASONING_STORY_WORKFLOW_ACTION_NAMES.length
+        ? `已覆盖 ${storyActions.length} 个 story workflow 动作：创建、配置、脚本、蓝图、合成层、资产、校验和导出。`
+        : `story workflow 动作覆盖不足：${storyActions.length}/${REASONING_STORY_WORKFLOW_ACTION_NAMES.length}。`
+    },
+    {
+      key: 'runtime-story-review-gates',
+      label: '故事写入审核门',
+      status: storyMutationActions.every((action) => action.requiresHumanReview) ? 'ok' : 'error',
+      detail: storyMutationActions.every((action) => action.requiresHumanReview)
+        ? '所有故事写入/编译/资产/导出动作均需要 review gate 或测试策略授权。'
+        : '存在故事变更动作未被标记为需要审核。'
+    },
+    {
+      key: 'runtime-gamestudio-observer',
+      label: 'GameStudio 动态观测者',
+      status: storyObserverToolsPresent ? 'ok' : 'error',
+      detail: storyObserverToolsPresent
+        ? 'story/bootstrap 执行会写 gamestudio_observer timeline，记录 operation、endpoint、phase、耗时、projectId 和错误。'
+        : '缺少关键 GameStudio story 工具，无法形成完整 observer 证据链。'
+    },
+    {
       key: 'runtime-context-draft',
       label: '上下文提取与压缩',
       status: 'ok',
@@ -1580,6 +2137,12 @@ function buildAgentRuntimeBehaviorChecks(binding) {
       label: '任务执行闭环',
       status: 'ok',
       detail: '当前链路为 create session -> build runtime task graph -> execute action chain -> review/apply -> final answer。'
+    },
+    {
+      key: 'runtime-session-control',
+      label: 'Session 控制与恢复',
+      status: 'ok',
+      detail: 'agentRuntime 已提供 review、cancel、recover、clear 与 production-test active session 路由，支持生产测试追踪和中断恢复。'
     }
   ]
 }
@@ -1721,48 +2284,56 @@ function buildConfigValidation(config, binding, inspection = null) {
   }
 }
 
-async function fetchLocalModelCatalog({ provider, baseUrl }) {
-  const access = getProviderAccess(provider, baseUrl)
+async function fetchLocalModelCatalog({ provider, baseUrl, model = '' }) {
+  const normalizedProvider = normalizeProviderName(provider)
+  const normalizedBaseUrl = normalizeModelBaseUrl(baseUrl, normalizedProvider)
+  const selectedModel = String(model || '').trim()
+  const access = getProviderAccess(normalizedProvider, normalizedBaseUrl)
   try {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 3000)
-    const resp = await fetch(`${access.baseUrl}/models`, {
-      signal: controller.signal,
-      headers: access.headers
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    const response = await fetch(`${access.baseUrl}/models`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...access.headers
+      },
+      signal: controller.signal
     })
     clearTimeout(timeout)
-    if (!resp.ok) {
+
+    const data = await response.json().catch(() => null)
+    if (!response.ok) {
+      const error = data?.error?.message || data?.message || `HTTP ${response.status}`
       return {
         ok: false,
         provider: access.provider,
         baseUrl: access.baseUrl,
-        error: resp.status === 401 || resp.status === 403
-          ? `模型目录访问被拒绝: HTTP ${resp.status}。请检查 ${access.provider.toUpperCase()} 服务是否要求 API Key，或当前控制端是否具备访问权限。`
-          : `请启动推理模型（OMLX）。当前模型服务不可用: HTTP ${resp.status}`,
-        models: []
+        auth: {
+          required: access.provider !== 'ollama',
+          keyPresent: Boolean(access.apiKey)
+        },
+        probedProvider: true,
+        error: String(error),
+        models: selectedModel ? [{ id: selectedModel, object: 'model', created: null, ownedBy: 'configured', ...getModelMetadata(selectedModel) }] : []
       }
     }
-    const data = await resp.json()
-    const rawModels = Array.isArray(data?.data)
-      ? data.data
-      : Array.isArray(data?.models)
-        ? data.models
-        : Array.isArray(data)
-          ? data
-          : []
-    const models = rawModels.map((item) => {
-      const metadata = getModelMetadata(item.id)
+
+    const entries = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : [])
+    const models = entries.map((entry) => {
+      const id = typeof entry === 'string'
+        ? entry
+        : String(entry?.id || entry?.name || entry?.model || '').trim()
+      if (!id) return null
       return {
-        id: item.id,
-        object: item.object || 'model',
-        created: item.created || null,
-        ownedBy: item.owned_by || null,
-        contextLength: metadata.contextLength,
-        recommendedMaxOutputTokens: metadata.recommendedMaxOutputTokens,
-        tokenizer: metadata.tokenizer,
-        metadataSource: metadata.metadataSource
+        id,
+        object: typeof entry === 'object' && entry?.object ? entry.object : 'model',
+        created: typeof entry === 'object' && entry?.created ? entry.created : null,
+        ownedBy: typeof entry === 'object' && entry?.owned_by ? entry.owned_by : (typeof entry === 'object' && entry?.ownedBy ? entry.ownedBy : normalizedProvider),
+        ...getModelMetadata(id)
       }
-    })
+    }).filter(Boolean)
+
     return {
       ok: true,
       provider: access.provider,
@@ -1771,15 +2342,22 @@ async function fetchLocalModelCatalog({ provider, baseUrl }) {
         required: access.provider !== 'ollama',
         keyPresent: Boolean(access.apiKey)
       },
+      probedProvider: true,
+      detail: `已读取 provider /models 目录，发现 ${models.length} 个模型。`,
       models
     }
-  } catch (e) {
+  } catch (err) {
     return {
       ok: false,
       provider: access.provider,
       baseUrl: access.baseUrl,
-      error: `请启动推理模型（OMLX）。${e instanceof Error ? e.message : String(e)}`,
-      models: []
+      auth: {
+        required: access.provider !== 'ollama',
+        keyPresent: Boolean(access.apiKey)
+      },
+      probedProvider: true,
+      error: err instanceof Error ? err.message : String(err),
+      models: selectedModel ? [{ id: selectedModel, object: 'model', created: null, ownedBy: 'configured', ...getModelMetadata(selectedModel) }] : []
     }
   }
 }
@@ -1789,7 +2367,7 @@ async function buildHermesPreflight(configOverrides = {}, options = {}) {
   const mergedConfig = mergeHermesControlConfig(current, configOverrides)
   const binding = buildHermesBindingFromConfig(mergedConfig)
   const installState = detectHermesInstallState()
-  const modelCatalog = await fetchLocalModelCatalog({ provider: binding.provider, baseUrl: binding.baseUrl })
+  const modelCatalog = await fetchLocalModelCatalog({ provider: binding.provider, baseUrl: binding.baseUrl, model: binding.model })
   const selectedModel = binding.model || modelCatalog.models[0]?.id || ''
   const inspection = selectedModel
     ? await inspectModelAccess({ provider: binding.provider, baseUrl: binding.baseUrl, model: selectedModel })
@@ -1797,7 +2375,7 @@ async function buildHermesPreflight(configOverrides = {}, options = {}) {
         model: '',
         accessible: false,
         status: 'error',
-        detail: '请选择模型。可先访问 http://127.0.0.1:18888/v1/models 查看可用模型。',
+        detail: '请选择模型。Control 不直接读取底层 provider 模型目录。',
         checkedAt: new Date().toISOString(),
         usage: normalizeUsage(null),
         contextLength: binding.contextLength,
@@ -1831,13 +2409,13 @@ async function buildHermesPreflight(configOverrides = {}, options = {}) {
       key: 'model-selection',
       label: '检测模型选择',
       status: selectedModel ? 'ok' : 'error',
-      detail: selectedModel || '请选择模型。可先访问 http://127.0.0.1:18888/v1/models 查看可用模型。'
+      detail: selectedModel || '请选择模型。Control 不直接读取底层 provider 模型目录。'
     },
     {
-      key: 'active-inference',
-      label: '主动推理自检',
+      key: 'model-catalog-selection',
+      label: '模型目录自检',
       status: inspection.accessible ? 'ok' : 'error',
-      detail: inspection.accessible ? `${selectedModel} 推理可用` : inspection.detail
+      detail: inspection.accessible ? `${selectedModel} 已在模型目录中` : inspection.detail
     }
   ]
 
@@ -1976,7 +2554,6 @@ function buildHermesNextAction() {
 
 async function buildHermesSelfCheck() {
   const binding = buildHermesBinding()
-  const providerAccess = getProviderAccess(binding.provider, binding.baseUrl)
   
   // 检查 Python 环境
   const pythonOk = fs.existsSync(getHermesPython())
@@ -1991,35 +2568,11 @@ async function buildHermesSelfCheck() {
   }
 
   // 检查 LLM 模型路由
-  let modelRouteStatus = 'error'
-  let modelRouteDetail = 'Fetch failed'
-  try {
-    // Timeout of 2.5s
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 2500)
-    
-    const resp = await fetch(`${providerAccess.baseUrl}/models`, { 
-      method: 'GET',
-      headers: providerAccess.headers,
-      signal: controller.signal
-    }).catch(e => {
-      // ignore pure network errors
-      return { ok: false, status: 0, statusText: e.message }
-    })
-    
-    clearTimeout(timeout)
-
-    if (resp && resp.ok) {
-      modelRouteStatus = 'ok'
-      modelRouteDetail = `${binding.provider} -> ${binding.model} (API Connectivity OK)`
-    } else {
-      modelRouteStatus = 'error'
-      modelRouteDetail = `模型服务连接失败: HTTP ${resp ? resp.status : 'Unknown'} (${resp ? resp.statusText : 'No Response'})`
-    }
-  } catch (err) {
-    modelRouteStatus = 'error'
-    modelRouteDetail = `网络故障或超时: ${err.message}`
-  }
+  const runtimeStatus = getHermesRuntimeState()
+  let modelRouteStatus = runtimeStatus.state === 'running' ? 'ok' : 'warning'
+  let modelRouteDetail = runtimeStatus.state === 'running'
+    ? 'Hermes runtime 已运行；Control 不直连底层 provider 探测模型目录。'
+    : (runtimeStatus.detail || 'Hermes runtime 未运行')
 
   const configValidation = buildConfigValidation(getPersistedHermesControlConfig(), binding)
   const allOk = pythonOk && workspaceOk && modelRouteStatus === 'ok' && configValidation.ready
@@ -2255,6 +2808,20 @@ function registerBuiltinIntents() {
       evaluateWorkspaceDirectoryQuestionAnswerQuality(prompt, answer, artifacts),
   })
 
+  // 3.1. Capability status questions: evidence is collected by a fixed workflow,
+  // then summarized deterministically so production tests do not become long model generations.
+  registerIntent({
+    id: 'builtin.capability_status_answer',
+    source: 'builtin',
+    description: '能力状态 / 缺口类问题的确定性回答',
+    priority: 88,
+    matchAnswer: (prompt, artifacts) =>
+      shouldUseDeterministicCapabilityStatusAnswer(prompt, artifacts),
+    buildDeterministicAnswer: (prompt, artifacts) =>
+      buildProjectCapabilityStatusAnswer(prompt, artifacts),
+    deterministicAnswerReason: 'deterministic_capability_status_summary',
+  })
+
   // 3.5. Project listing questions: force a stable storage/projects path.
   registerIntent({
     id: 'builtin.project_listing',
@@ -2377,6 +2944,7 @@ function createControlServerRouteContext() {
     deleteReasoningSessionRecord,
     fetch,
     fetchLocalModelCatalog,
+    fetchProviderModelStatus,
     fs,
     generateContextDraft,
     getActiveHermesChatRecovery,
@@ -2389,10 +2957,13 @@ function createControlServerRouteContext() {
     getHermesRuntimeState,
     getPersistedHermesControlConfig,
     getProviderAccess,
+    listActiveReasoningExecutions,
     getSelectableContextSourceById,
     hermesAgentDefinition,
     inspectModelAccess,
+    inspectProviderModelState,
     listContextPoolEntries,
+    loadProviderModel,
     markReasoningSessionFailed,
     mergeHermesControlConfig,
     normalizeModelBaseUrl,
@@ -2415,12 +2986,13 @@ function createControlServerRouteContext() {
     refreshHermesControlStateFromConfig,
     requestJsonWithoutHeadersTimeout,
     requestHermesChatCompletion,
+    unloadProviderModel,
     runMemoryLifecycleMaintenance: () => runMemoryLifecycleMaintenance({
       fs,
       rootDir: GAMESTUDIO_ROOT,
       contextPoolDir: HERMES_CONTEXT_POOL_DIR,
       chatDir: path.join(GAMESTUDIO_ROOT, 'ai', 'chat'),
-      sessionDir: HERMES_AGENT_RUNTIME_SESSIONS_DIR,
+      sessionDirs: [HERMES_AGENT_RUNTIME_SESSIONS_DIR, HERMES_REASONING_SESSIONS_DIR],
     }),
     runAllReasoningStepsFrom,
     runReasoningSession,
@@ -2460,7 +3032,6 @@ function registerPrimaryControlServerRoutes(app) {
 export function registerControlServerRoutes(app) {
   bootstrapControlServerIntents()
   registerPrimaryControlServerRoutes(app)
-  registerChatRequestRoute(app)
 }
 
 function getHermesChatFilePath() {
@@ -2570,6 +3141,7 @@ function buildMatchedReasoningRuleSummary(userPrompt, history, binding, contextS
 
 export function buildStructuredOutboundPreview({
   binding,
+  requestRoute = null,
   messages,
   purpose,
   mode,
@@ -2582,6 +3154,21 @@ export function buildStructuredOutboundPreview({
   const selectedSkills = buildSelectedSkillSummary(binding, contextSelection)
   const matchedRules = buildMatchedReasoningRuleSummary(userPrompt, history, binding, contextSelection)
   const suggestedActions = [...new Set(matchedRules.flatMap((rule) => [...(rule.requiredActions || []), rule.answerAction]).filter(Boolean))]
+  const resolvedRoute = requestRoute && typeof requestRoute === 'object'
+    ? requestRoute
+    : {
+        routeId: 'default',
+        transport: 'hermes',
+        explicit: false,
+        strict: false,
+        provider: binding.provider,
+        model: binding.model,
+        baseUrl: binding.baseUrl
+      }
+  const target = resolvedRoute.transport === 'direct'
+    ? `${resolvedRoute.baseUrl}/chat/completions`
+    : `${HERMES_API_SERVER_BASE_URL}/chat/completions`
+  const targetModel = resolvedRoute.transport === 'direct' ? resolvedRoute.model : 'hermes-agent'
 
   return {
     provider: binding.provider,
@@ -2590,8 +3177,10 @@ export function buildStructuredOutboundPreview({
     controllerRequest: {
       purpose,
       mode,
-      target: `${HERMES_API_SERVER_BASE_URL}/chat/completions`,
-      model: 'hermes-agent',
+      routeId: resolvedRoute.routeId,
+      transport: resolvedRoute.transport,
+      target,
+      model: targetModel,
       totalMessages: previewMessages.length,
       systemMessageCount: previewMessages.filter((message) => message.role === 'system').length,
       replayedMessageCount,
@@ -2599,10 +3188,16 @@ export function buildStructuredOutboundPreview({
       messages: previewMessages
     },
     runtimeRoute: {
-      provider: binding.provider,
-      model: binding.model,
-      baseUrl: binding.baseUrl,
-      note: 'Control 先把请求发给 Hermes；Hermes 再按当前左脑绑定把本次任务路由到对应 provider / model。切换左脑配置后，这里会随 binding 动态变化。'
+      routeId: resolvedRoute.routeId,
+      transport: resolvedRoute.transport,
+      explicit: Boolean(resolvedRoute.explicit),
+      strict: Boolean(resolvedRoute.strict),
+      provider: resolvedRoute.provider,
+      model: resolvedRoute.model,
+      baseUrl: resolvedRoute.baseUrl,
+      note: resolvedRoute.transport === 'direct'
+        ? 'Control 已按阶段路由直接调用目标 provider/model；该请求不经过 Hermes runtime 的固定别名。'
+        : 'Control 先把请求发给 Hermes；Hermes 再按当前左脑绑定把本次任务路由到对应 provider/model。未命中显式阶段路由时仍保持这一行为。'
     },
     plannerHints: {
       selectedSkills,
@@ -2698,6 +3293,123 @@ function buildRuntimeTaskGraph(value) {
   }
 }
 
+function hasReasoningEvent(session, eventTypes) {
+  const typeSet = new Set(Array.isArray(eventTypes) ? eventTypes : [eventTypes])
+  return Array.isArray(session?.events) && session.events.some((event) => typeSet.has(event?.type))
+}
+
+function getLatestReasoningEvent(session, eventTypes) {
+  const typeSet = new Set(Array.isArray(eventTypes) ? eventTypes : [eventTypes])
+  const events = Array.isArray(session?.events) ? session.events : []
+  for (let index = events.length - 1; index >= 0; index--) {
+    if (typeSet.has(events[index]?.type)) return events[index]
+  }
+  return null
+}
+
+function buildReasoningWorkflowProgress(session) {
+  if (!session || typeof session !== 'object') return []
+  const status = String(session.status || '')
+  const isFailed = status === 'failed'
+  const isCancelled = status === 'cancelled'
+  const hasPlan = Boolean(session.plan || session.runtimeTaskGraph || hasReasoningEvent(session, 'plan_created'))
+  const hasAnswer = Boolean(session.artifacts?.finalAnswer || hasReasoningEvent(session, 'final_answer_ready'))
+  const qualityStarted = hasReasoningEvent(session, [
+    'quality_assessment_completed',
+    'quality_gate_skipped',
+    'quality_review_required',
+    'self_review_completed',
+    'model_task_queued',
+    'model_task_started',
+    'model_task_completed'
+  ])
+  const qualityDone = hasReasoningEvent(session, [
+    'quality_assessment_completed',
+    'quality_gate_skipped',
+    'quality_review_required',
+    'self_review_completed',
+    'quality_gate_rejected',
+    'session_completed'
+  ])
+  const currentReview = session.review || null
+  const currentStep = Array.isArray(session.plan?.steps)
+    ? session.plan.steps.find((step) => step.stepId === session.currentStepId) || null
+    : null
+  const completedStepCount = Array.isArray(session?.events)
+    ? session.events.filter((event) => event?.type === 'step_completed').length
+    : 0
+  const totalStepCount = Array.isArray(session.plan?.steps) ? session.plan.steps.length : 0
+  const latestPlanEvent = getLatestReasoningEvent(session, ['plan_created', 'planning_started'])
+  const latestStepEvent = getLatestReasoningEvent(session, ['step_started', 'step_completed', 'tool_result', 'tool_called'])
+  const latestAnswerEvent = getLatestReasoningEvent(session, ['final_answer_ready'])
+  const latestQualityEvent = getLatestReasoningEvent(session, ['quality_assessment_completed', 'quality_gate_skipped', 'quality_review_required', 'self_review_completed', 'quality_gate_rejected'])
+
+  const phaseStatus = (phase) => {
+    if (isFailed) return 'failed'
+    if (isCancelled) return 'cancelled'
+    if (phase === 'planning') {
+      if (currentReview?.targetType === 'runtime_task_graph' || currentReview?.targetType === 'plan') return 'waiting_review'
+      if (status === 'planning') return 'running'
+      return hasPlan ? 'completed' : 'pending'
+    }
+    if (phase === 'executing') {
+      if (!hasPlan) return 'pending'
+      if (currentReview?.targetType === 'step') return 'waiting_review'
+      if (hasAnswer || qualityStarted || status === 'completed') return 'completed'
+      if (status === 'running' || status === 'waiting_review') return 'running'
+      return 'pending'
+    }
+    if (phase === 'answering') {
+      if (hasAnswer) return 'completed'
+      if (!hasPlan) return 'pending'
+      if (status === 'running' && currentStep?.action === 'generate_default_answer') return 'running'
+      return totalStepCount > 0 && completedStepCount >= Math.max(0, totalStepCount - 1) ? 'running' : 'pending'
+    }
+    if (phase === 'quality_review') {
+      if (currentReview?.reviewPhase === 'quality_override') return 'waiting_review'
+      if (qualityDone || status === 'completed') return 'completed'
+      if (qualityStarted) return 'running'
+      return hasAnswer ? 'running' : 'pending'
+    }
+    return 'pending'
+  }
+
+  return [
+    {
+      phaseId: 'planning',
+      title: '任务制定',
+      status: phaseStatus('planning'),
+      summary: latestPlanEvent?.summary || '读取上下文并提交给 Hermes 制定运行任务图。',
+      currentOperation: currentReview?.targetType === 'runtime_task_graph' || currentReview?.targetType === 'plan' ? currentReview.title : (latestPlanEvent?.title || '构建运行任务图'),
+      evidence: hasPlan ? `${totalStepCount} 个步骤` : null
+    },
+    {
+      phaseId: 'executing',
+      title: '工作流执行',
+      status: phaseStatus('executing'),
+      summary: latestStepEvent?.summary || '按运行任务图顺序执行工具、读取证据并记录 artifacts。',
+      currentOperation: currentReview?.targetType === 'step' ? currentReview.title : (currentStep?.title || latestStepEvent?.title || ''),
+      evidence: totalStepCount > 0 ? `${Math.min(completedStepCount, totalStepCount)}/${totalStepCount} 步` : null
+    },
+    {
+      phaseId: 'answering',
+      title: 'Hermes 生成答案',
+      status: phaseStatus('answering'),
+      summary: latestAnswerEvent?.summary || '汇总已收集证据，通过 Hermes 生成最终回答。',
+      currentOperation: currentStep?.action === 'generate_default_answer' ? currentStep.title : '提交证据给 Hermes',
+      evidence: session.artifacts?.finalAnswer ? `${String(session.artifacts.finalAnswer).length} 字` : null
+    },
+    {
+      phaseId: 'quality_review',
+      title: '答案自检',
+      status: phaseStatus('quality_review'),
+      summary: latestQualityEvent?.summary || '提交答案、证据和评分规则给 Hermes 执行质量评分与自审。',
+      currentOperation: currentReview?.reviewPhase === 'quality_override' ? currentReview.title : (latestQualityEvent?.title || '等待答案进入自检'),
+      evidence: session.artifacts?.latestAnswerAssessment?.score != null ? `评分 ${session.artifacts.latestAnswerAssessment.score}/100` : null
+    }
+  ]
+}
+
 function normalizeRuntimeSessionShape(session) {
   if (!session || typeof session !== 'object') return session
   const runtimeTaskGraph = buildRuntimeTaskGraph(session.runtimeTaskGraph || session.plan)
@@ -2711,7 +3423,13 @@ function normalizeRuntimeSessionShape(session) {
     runtimeSessionId: session.runtimeSessionId || session.sessionId,
     runtimeTaskGraph,
     plan: runtimeTaskGraph,
-    events: normalizedEvents
+    events: normalizedEvents,
+    workflowProgress: buildReasoningWorkflowProgress({
+      ...session,
+      runtimeTaskGraph,
+      plan: runtimeTaskGraph,
+      events: normalizedEvents
+    })
   }
 }
 
@@ -2806,8 +3524,64 @@ function unmarkReasoningSessionActive(sessionId) {
   activeHermesReasoningSessionIds.delete(String(sessionId))
 }
 
+let memoryLifecycleMaintenanceTimer = null
+let memoryLifecycleMaintenanceRunning = false
+let memoryLifecycleMaintenancePending = false
+
+function runMemoryLifecycleMaintenanceNow(reason = 'manual') {
+  if (memoryLifecycleMaintenanceRunning) {
+    memoryLifecycleMaintenancePending = true
+    return null
+  }
+
+  memoryLifecycleMaintenanceRunning = true
+  try {
+    return runMemoryLifecycleMaintenance({
+      fs,
+      rootDir: GAMESTUDIO_ROOT,
+      contextPoolDir: HERMES_CONTEXT_POOL_DIR,
+      chatDir: path.join(GAMESTUDIO_ROOT, 'ai', 'chat'),
+      sessionDirs: [HERMES_AGENT_RUNTIME_SESSIONS_DIR, HERMES_REASONING_SESSIONS_DIR],
+    })
+  } catch (error) {
+    appendHermesLog(`[MEMORY][LIFECYCLE][ERROR] reason=${reason} detail=${error instanceof Error ? error.message : String(error)}`)
+    return null
+  } finally {
+    memoryLifecycleMaintenanceRunning = false
+    if (memoryLifecycleMaintenancePending) {
+      memoryLifecycleMaintenancePending = false
+      scheduleMemoryLifecycleMaintenance(`${reason}:pending`, 0)
+    }
+  }
+}
+
+function scheduleMemoryLifecycleMaintenance(reason = 'unspecified', delayMs = 1200) {
+  if (memoryLifecycleMaintenanceTimer) {
+    clearTimeout(memoryLifecycleMaintenanceTimer)
+  }
+  memoryLifecycleMaintenanceTimer = setTimeout(() => {
+    memoryLifecycleMaintenanceTimer = null
+    runMemoryLifecycleMaintenanceNow(reason)
+  }, Math.max(0, Number(delayMs) || 0))
+}
+
 function getActiveReasoningExecution(sessionId) {
   return activeHermesReasoningExecutions.get(String(sessionId)) || null
+}
+
+function listActiveReasoningExecutions() {
+  return Array.from(activeHermesReasoningExecutions.values()).map((execution) => {
+    const session = readReasoningSession(execution.sessionId)
+    return {
+      sessionId: execution.sessionId,
+      phase: execution.phase,
+      startedAt: Number.isFinite(Number(execution.startedAt)) ? new Date(execution.startedAt).toISOString() : null,
+      activeForMs: Number.isFinite(Number(execution.startedAt)) ? Math.max(0, Date.now() - Number(execution.startedAt)) : null,
+      status: session?.status || null,
+      currentStepId: session?.currentStepId || null,
+      title: session?.title || session?.userPrompt || ''
+    }
+  })
 }
 
 export function readReasoningSession(sessionId) {
@@ -2820,6 +3594,47 @@ export function readReasoningSession(sessionId) {
   return normalizeRuntimeSessionShape(JSON.parse(fs.readFileSync(filePath, 'utf8')))
 }
 
+function createReasoningSessionClearArchive(sessionId) {
+  const timestamp = new Date().toISOString()
+  const safeTimestamp = timestamp.replace(/[:.]/g, '-')
+  const archiveDir = path.join(GAMESTUDIO_ROOT, 'state', 'memory-archive', 'manual-clear', `reasoning-session_${safeTimestamp}_${sessionId}`)
+  fs.mkdirSync(path.join(archiveDir, 'files'), { recursive: true })
+  return { archiveDir, createdAt: timestamp, files: [] }
+}
+
+function archiveReasoningSessionFile(filePath, archive) {
+  if (!filePath || !fs.existsSync(filePath)) return false
+  const stat = fs.statSync(filePath)
+  if (!stat.isFile()) return false
+  const relativeSource = path.relative(GAMESTUDIO_ROOT, filePath)
+  const targetPath = path.join(archive.archiveDir, 'files', relativeSource)
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+  fs.copyFileSync(filePath, targetPath)
+  archive.files.push({
+    source: relativeSource,
+    archivePath: path.relative(GAMESTUDIO_ROOT, targetPath),
+    sizeBytes: stat.size
+  })
+  return true
+}
+
+function writeReasoningSessionClearReport(sessionId, archive) {
+  const reportPath = path.join(archive.archiveDir, 'clear-report.json')
+  fs.writeFileSync(reportPath, `${JSON.stringify({
+    createdAt: archive.createdAt,
+    completedAt: new Date().toISOString(),
+    target: 'reasoning-session',
+    sessionId,
+    archivedFileCount: archive.files.length,
+    archivedFiles: archive.files
+  }, null, 2)}\n`, 'utf8')
+  return {
+    archiveDir: path.relative(GAMESTUDIO_ROOT, archive.archiveDir),
+    reportFile: path.relative(GAMESTUDIO_ROOT, reportPath),
+    archivedFileCount: archive.files.length
+  }
+}
+
 function deleteReasoningSessionRecord(sessionId) {
   const session = readReasoningSession(sessionId)
   if (!session) {
@@ -2830,12 +3645,17 @@ function deleteReasoningSessionRecord(sessionId) {
   }
 
   const filePaths = [getAgentRuntimeSessionFilePath(sessionId), getLegacyReasoningSessionFilePath(sessionId)]
+  const archive = createReasoningSessionClearArchive(sessionId)
   for (const filePath of filePaths) {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+    if (fs.existsSync(filePath)) {
+      archiveReasoningSessionFile(filePath, archive)
+      fs.unlinkSync(filePath)
+    }
   }
+  const archiveSummary = writeReasoningSessionClearReport(sessionId, archive)
   unmarkReasoningSessionActive(sessionId)
   clearActiveReasoningExecution(sessionId)
-  return { sessionId }
+  return { sessionId, archive: archiveSummary }
 }
 
 export function updateReasoningSession(sessionId, updater) {
@@ -2849,14 +3669,13 @@ export function updateReasoningSession(sessionId, updater) {
 }
 
 function getReasoningSessionLeaseWait(currentTask) {
-  const leaseExpiresAtMs = Date.parse(String(currentTask?.leaseExpiresAt || ''))
-  const leaseWaitMs = Number.isFinite(leaseExpiresAtMs)
-    ? Math.max(0, leaseExpiresAtMs - Date.now())
-    : HERMES_REASONING_TASK_LEASE_MS
   const heartbeatWaitMs = Math.max(1000, HERMES_REASONING_TASK_HEARTBEAT_MS)
-  return leaseWaitMs <= heartbeatWaitMs
-    ? { waitMs: leaseWaitMs, kind: 'lease_expired' }
-    : { waitMs: heartbeatWaitMs, kind: 'heartbeat' }
+  const hardTimeoutAtMs = Date.parse(String(currentTask?.hardTimeoutAt || ''))
+  if (Number.isFinite(hardTimeoutAtMs)) {
+    const hardTimeoutWaitMs = Math.max(0, hardTimeoutAtMs - Date.now())
+    if (hardTimeoutWaitMs <= heartbeatWaitMs) return { waitMs: hardTimeoutWaitMs, kind: 'hard_timeout' }
+  }
+  return { waitMs: heartbeatWaitMs, kind: 'heartbeat' }
 }
 
 export function appendReasoningEvent(sessionId, type, title, summary, extra = {}) {
@@ -3211,6 +4030,7 @@ export function finalizeReasoningSession(sessionId, options = {}) {
   appendReasoningEvent(sessionId, 'session_completed', '推理完成', shouldPersist ? '本次可观测推理已完成，最终回答已写入聊天记录。' : '本次可观测推理已完成')
   appendHermesLog(`[REASONING][DONE] sessionId=${sessionId}`)
   unmarkReasoningSessionActive(sessionId)
+  scheduleMemoryLifecycleMaintenance('reasoning_session_completed')
   const finalizedSession = readReasoningSession(sessionId)
   void continueReasoningParentChain(finalizedSession).catch((error) => {
     appendHermesLog(`[REASONING][CHAIN][ERROR] sessionId=${sessionId} detail=${error instanceof Error ? error.message : String(error)}`)
@@ -3378,6 +4198,7 @@ function markReasoningSessionFailed(sessionId, error) {
   appendHermesLog(`[REASONING][ERROR] sessionId=${sessionId} detail=${detail}`)
   unmarkReasoningSessionActive(sessionId)
   clearActiveReasoningExecution(sessionId)
+  scheduleMemoryLifecycleMaintenance('reasoning_session_failed')
 }
 
 function getReasoningErrorDetail(error) {
@@ -3602,7 +4423,7 @@ function cancelReasoningSession(sessionId, reason = 'reasoning_cancelled_by_user
   }))
 
   appendReasoningEvent(sessionId, 'session_cancelled', '推理已停止', activePhase
-    ? `已停止当前 ${activePhase} 阶段并中断 Hermes / OMLX 请求。`
+    ? `已停止当前 ${activePhase} 阶段并中断 Hermes 模型请求。`
     : '已停止当前推理流程。', {
     data: {
       reason: detail,
@@ -3656,53 +4477,16 @@ async function probeReasoningProviderTask(binding, phase, task) {
     }
   }
 
-  const access = getProviderAccess(binding.provider, binding.baseUrl)
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), HERMES_REASONING_PROVIDER_PROBE_TIMEOUT_MS)
-
-  try {
-    const response = await fetch(`${access.baseUrl}/models`, {
-      method: 'GET',
-      signal: controller.signal,
-      headers: access.headers
-    })
-
-    if (!response.ok) {
-      return {
-        state: 'provider_unreachable',
-        canContinue: false,
-        checkedAt,
-        telemetrySource: 'service_health',
-        nativeSessionSupported: false,
-        detail: `OMLX probe failed with HTTP ${response.status}`
-      }
-    }
-
-    const exhausted = task.renewalCount >= task.maxRenewals
-    return {
-      state: exhausted ? 'provider_alive_but_lease_exhausted' : 'provider_alive_request_pending',
-      canContinue: !exhausted,
-      checkedAt,
-      telemetrySource: 'service_health',
-      nativeSessionSupported: false,
-      detail: exhausted
-        ? `OMLX service is reachable, but native session/job telemetry is unavailable and the ${phase} lease budget is exhausted`
-        : `OMLX service is reachable; native session/job telemetry is unavailable, so the pending ${phase} task will continue under an extended lease`
-    }
-  } catch (error) {
-    const detail = error?.name === 'AbortError'
-      ? `OMLX probe timed out after ${HERMES_REASONING_PROVIDER_PROBE_TIMEOUT_MS}ms`
-      : (error instanceof Error ? error.message : String(error))
-    return {
-      state: 'provider_probe_failed',
-      canContinue: false,
-      checkedAt,
-      telemetrySource: 'service_health',
-      nativeSessionSupported: false,
-      detail
-    }
-  } finally {
-    clearTimeout(timeout)
+  const exhausted = task.renewalCount >= task.maxRenewals
+  return {
+    state: exhausted ? 'control_lease_exhausted' : 'control_request_pending',
+    canContinue: !exhausted,
+    checkedAt,
+    telemetrySource: 'control_lease',
+    nativeSessionSupported: false,
+    detail: exhausted
+      ? `Control task lease budget is exhausted for ${phase}; no provider health probe was performed`
+      : `Hermes runtime is running; Control is waiting for the pending ${phase} task without probing the underlying provider`
   }
 }
 
@@ -3731,7 +4515,7 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
       ...task,
       status: 'running'
     }))
-    appendReasoningEvent(sessionId, 'task_started', phaseLabel, `${phaseLabel}已提交给 ${binding.provider}/${binding.model}`, {
+    appendReasoningEvent(sessionId, 'task_started', phaseLabel, `${phaseLabel}进入受监督执行窗口，当前路由 ${binding.provider}/${binding.model}；若命中 deterministic fallback，将不会调用远端模型。`, {
       data: {
         phase,
         provider: binding.provider,
@@ -3745,7 +4529,7 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
         renewalCount: initialTask.renewalCount
       }
     })
-    appendHermesLog(`[REASONING][TASK][START] sessionId=${sessionId} phase=${phase} provider=${binding.provider} model=${binding.model} leaseMs=${HERMES_REASONING_TASK_LEASE_MS} maxRenewals=${HERMES_REASONING_TASK_MAX_RENEWS}`)
+    appendHermesLog(`[REASONING][TASK][START] sessionId=${sessionId} phase=${phase} routeProvider=${binding.provider} routeModel=${binding.model} leaseMs=${HERMES_REASONING_TASK_LEASE_MS} maxRenewals=${HERMES_REASONING_TASK_MAX_RENEWS}`)
 
     while (true) {
       const currentTaskForWait = getReasoningTask(readReasoningSession(sessionId), phase)
@@ -3828,6 +4612,22 @@ async function runManagedReasoningTask(sessionId, phase, binding, executor) {
         })
         appendHermesLog(`[REASONING][TASK][HEARTBEAT] sessionId=${sessionId} phase=${phase} activeForMs=${activeForMs ?? 'unknown'}`)
         continue
+      }
+
+      if (result?.kind === 'hard_timeout') {
+        const detail = `${phase}_task_timeout: exceeded hard timeout ${HERMES_REASONING_TASK_HARD_TIMEOUT_MS}ms while waiting through Hermes`
+        controller.abort()
+        updateReasoningTask(sessionId, phase, (task) => ({
+          ...task,
+          status: 'failed',
+          finishedAt: new Date().toISOString(),
+          lastObservedAt: new Date().toISOString(),
+          telemetrySource: 'control_hard_timeout',
+          error: detail
+        }))
+        appendReasoningEvent(sessionId, 'task_failed', phaseLabel, detail, { data: { phase } })
+        appendHermesLog(`[REASONING][TASK][TIMEOUT] sessionId=${sessionId} phase=${phase} detail=${detail}`)
+        throw new Error(detail)
       }
 
       const currentSession = readReasoningSession(sessionId)
@@ -3964,6 +4764,7 @@ function isReasoningAutoReviewMode(sessionOrContext) {
 function shouldPauseBeforeExecutingReasoningStep(session, step) {
   if (!session || !step) return false
   if (isReasoningAutoReviewMode(session)) return false
+  if (isReasoningStoryMutationAction(step.action)) return true
   return !isReasoningWriteAction(step.action) && !isReasoningInvokeAction(step.action)
 }
 
@@ -4034,7 +4835,7 @@ export function collectReplayableHermesMessages(history, options = {}) {
   const limit = Math.max(0, Number.isFinite(Number(options.limit)) ? Number(options.limit) : MAX_REPLAYED_HERMES_CHAT_MESSAGES)
   const currentPrompt = String(options.userPrompt || '').trim()
   const currentTerms = extractContextMatchTerms(currentPrompt)
-  const allowRecentCarryover = shouldAllowRecentContextCarryover(currentPrompt)
+  const allowRecentCarryover = Boolean(options.forceCarryover) || shouldAllowRecentContextCarryover(currentPrompt)
   let pendingUserMessage = null
 
   for (const item of Array.isArray(history) ? history : []) {
@@ -4346,8 +5147,9 @@ function buildReasoningObservableOps(step, extra = {}) {
       ]
     }
     return [
-      `POST ${String(binding.baseUrl || '').trim() || HERMES_API_SERVER_BASE_URL}/chat/completions`,
-      `model=${String(binding.model || 'hermes-agent').trim() || 'hermes-agent'}`,
+      'prepare model.answer execution',
+      'remote Hermes chat completion is used only when no deterministic answer matches',
+      `hermes route=${String(binding.provider || 'configured-provider').trim() || 'configured-provider'}/${String(binding.model || 'configured-model').trim() || 'configured-model'}`,
       `messages=${totalMessages}`,
       'generate final answer from observable artifacts'
     ]
@@ -4401,6 +5203,18 @@ function buildReasoningObservableOps(step, extra = {}) {
     return scriptPath ? [`approve and run ${scriptPath}`] : ['approve and run workspace script']
   }
 
+  if (String(step.action || '').startsWith('story_')) {
+    const ops = []
+    const endpoint = String(extra.endpoint || '').trim()
+    const projectId = String(extra.projectId || step.params?.projectId || '').trim()
+    ops.push(`story workflow action=${step.action}`)
+    if (endpoint) ops.push(`server endpoint=${endpoint}`)
+    if (projectId) ops.push(`projectId=${projectId}`)
+    if (extra.evaluator?.name) ops.push(`evaluator=${extra.evaluator.name}:${extra.evaluator.passed ? 'pass' : 'fail'}`)
+    if (extra.failedStage) ops.push(`failedStage=${extra.failedStage}`)
+    return ops
+  }
+
   return []
 }
 
@@ -4411,6 +5225,2593 @@ function buildReasoningStepEventData(step, stepIndex, extra = {}) {
     tool: step.tool,
     ...extra
   }
+}
+
+function readJsonFileIfExists(filePath) {
+  try {
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function getLatestStoryProjectId() {
+  try {
+    if (!fs.existsSync(STORAGE_PROJECTS_ROOT) || !fs.statSync(STORAGE_PROJECTS_ROOT).isDirectory()) return ''
+    const entries = fs.readdirSync(STORAGE_PROJECTS_ROOT, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const projectDir = path.join(STORAGE_PROJECTS_ROOT, entry.name)
+        const stat = fs.statSync(projectDir)
+        return { id: entry.name, mtimeMs: Number(stat.mtimeMs || 0) }
+      })
+      .sort((left, right) => right.mtimeMs - left.mtimeMs)
+    return entries[0]?.id || ''
+  } catch {
+    return ''
+  }
+}
+
+function getPersistedStoryProjectId() {
+  const state = readJsonFileIfExists(STORY_PRODUCTION_STATE_FILE)
+  return String(state?.projectId || '').trim()
+}
+
+function persistStoryProjectPointer(result) {
+  const projectId = String(result?.projectId || '').trim()
+  if (!projectId || result?.ok !== true) return
+  try {
+    fs.mkdirSync(path.dirname(STORY_PRODUCTION_STATE_FILE), { recursive: true })
+    fs.writeFileSync(STORY_PRODUCTION_STATE_FILE, JSON.stringify({
+      projectId,
+      action: result.action || null,
+      updatedAt: new Date().toISOString(),
+      summary: result.summary || null
+    }, null, 2), 'utf8')
+  } catch (_) {}
+}
+
+function getStoryProjectIdFromArtifacts(artifacts) {
+  const storyProduction = artifacts?.storyProduction && typeof artifacts.storyProduction === 'object'
+    ? artifacts.storyProduction
+    : null
+  return String(storyProduction?.currentProjectId || storyProduction?.lastProjectId || '').trim()
+}
+
+function resolveStoryProjectId(session, step, userPrompt) {
+  const explicit = String(step?.params?.projectId || '').trim()
+  if (explicit) return explicit
+  const artifactProjectId = getStoryProjectIdFromArtifacts(session?.artifacts || {})
+  if (artifactProjectId) return artifactProjectId
+  const promptProjectId = extractProjectIdFromPrompt(userPrompt)
+  if (promptProjectId) return promptProjectId
+  const persistedProjectId = getPersistedStoryProjectId()
+  if (persistedProjectId) return persistedProjectId
+  return getLatestStoryProjectId()
+}
+
+function getStoryProjectDir(projectId) {
+  return path.join(STORAGE_PROJECTS_ROOT, String(projectId || ''))
+}
+
+function readStoryProjectFile(projectId, fileName) {
+  if (!projectId) return null
+  return readJsonFileIfExists(path.join(getStoryProjectDir(projectId), fileName))
+}
+
+function parseJsonObjectText(rawText) {
+  const text = String(rawText || '').trim()
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch (_) {
+    return null
+  }
+}
+
+function readStoryBibleFromProjectDoc(project) {
+  const state = project && project.state && typeof project.state === 'object' ? project.state : {}
+  const aiBackground = state && state.aiBackground && typeof state.aiBackground === 'object' ? state.aiBackground : {}
+  if (aiBackground.storyBible && typeof aiBackground.storyBible === 'object') return aiBackground.storyBible
+  return parseJsonObjectText(aiBackground.storyBibleJson)
+}
+
+function readStoryAssetPlanFile(projectId) {
+  if (!projectId) return null
+  return readJsonFileIfExists(path.join(getStoryProjectDir(projectId), 'story-assets', 'plan.json'))
+}
+
+function textHasAny(text, needles) {
+  const hay = String(text || '')
+  return needles.some((needle) => hay.includes(needle))
+}
+
+function collectStorySceneEntries(projectId) {
+  const story = readStoryProjectFile(projectId, 'story.json')
+  const scripts = readStoryProjectFile(projectId, 'scripts.json')
+  const storyNodes = Array.isArray(story?.nodes) ? story.nodes : []
+  if (storyNodes.length) {
+    return storyNodes
+      .filter((node) => ['scene', 'ending'].includes(String(node?.kind || '').trim()))
+      .map((node, index) => ({
+        key: String(node?.id || node?.name || `scene_${index + 1}`).trim(),
+        name: String(node?.name || node?.body?.title || `场景${index + 1}`).trim(),
+        text: String(node?.body?.text || '').trim()
+      }))
+  }
+  const cards = Array.isArray(scripts?.cards) ? scripts.cards : []
+  return cards.map((card, index) => ({
+    key: String(card?.id || card?.name || `scene_${index + 1}`).trim(),
+    name: String(card?.name || `场景${index + 1}`).trim(),
+    text: String(card?.text || '').trim()
+  }))
+}
+
+function buildControlDerivedStoryBible(projectId) {
+  const project = readStoryProjectFile(projectId, 'project.json')
+  const scenes = collectStorySceneEntries(projectId)
+  const fullText = scenes.map((scene) => `${scene.name} ${scene.text}`).join('\n')
+  if (!String(fullText || '').trim()) return null
+
+  const characters = []
+  const props = []
+  const locations = []
+  const add = (list, item) => {
+    if (!list.some((entry) => String(entry.id || '') === String(item.id || ''))) list.push(item)
+  }
+
+  if (textHasAny(fullText, ['孩子', '牧童', '守护者'])) {
+    add(characters, {
+      id: 'char.shepherd_boy',
+      name: '牧童孩子',
+      aliases: ['孩子', '牧童', '小牧童', '守护者'],
+      anchorPrompt: 'young shepherd boy, simple rural clothes, anxious but kind expression, child proportions, picture book character design, no modern items',
+      negativePrompt: 'adult, modern city clothes, armor, weapon'
+    })
+  }
+  if (textHasAny(fullText, ['狼', '狼嚎'])) {
+    add(characters, {
+      id: 'char.wolf',
+      name: '受伤的狼',
+      aliases: ['狼', '狼嚎', '受伤的狼'],
+      anchorPrompt: 'gray wild wolf, lean canine body, alert eyes, slightly injured leg when story requires it, picture book animal character, not a dog',
+      negativePrompt: 'domestic dog, cute puppy, humanoid wolf, monster, robot'
+    })
+  }
+  if (textHasAny(fullText, ['村民', '大家'])) {
+    add(characters, {
+      id: 'char.villagers',
+      name: '村民们',
+      aliases: ['村民', '大家', '村民们'],
+      anchorPrompt: 'small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design',
+      negativePrompt: 'modern office workers, soldiers, city crowd'
+    })
+  }
+  if (textHasAny(fullText, ['羊群', '山羊', '羊'])) {
+    add(characters, {
+      id: 'char.sheep_flock',
+      name: '羊群',
+      aliases: ['羊群', '羊', '山羊'],
+      anchorPrompt: 'small flock of white sheep, rounded wool, gentle rural storybook animals, consistent simple shapes',
+      negativePrompt: 'goats only, cows, horses, aggressive animals'
+    })
+  }
+  if (textHasAny(fullText, ['羊圈', '绳索'])) {
+    add(props, {
+      id: 'prop.sheep_pen_rope',
+      name: '羊圈绳索',
+      aliases: ['羊圈', '绳索', '羊圈的绳索'],
+      anchorPrompt: 'standalone sheep pen rope, rustic fiber cord tied to a small wooden pen gate, clean object reference on plain background',
+      forbiddenSubstitutes: ['chain', 'modern plastic rope', 'weapon']
+    })
+  }
+  if (textHasAny(fullText, ['草席', '包扎', '伤口'])) {
+    add(props, {
+      id: 'prop.grass_mat_bandage',
+      name: '草席包扎物',
+      aliases: ['草席', '包扎', '伤口'],
+      anchorPrompt: 'small woven grass mat used as an improvised bandage, rustic handmade texture, standalone object reference on plain background',
+      forbiddenSubstitutes: ['medical gauze roll', 'modern first aid kit']
+    })
+  }
+  if (textHasAny(fullText, ['山坡', '山脊', '牧场', '草原', '山脉'])) {
+    add(locations, {
+      id: 'loc.misty_hillside_pasture',
+      name: '清晨山坡牧场',
+      aliases: ['山坡', '山脊', '牧场', '草原', '山脉'],
+      anchorPrompt: 'misty dawn hillside pasture, soft grass, sheep pen, distant bronze colored mountains, quiet rural fairy tale atmosphere'
+    })
+  }
+  if (textHasAny(fullText, ['村民', '回家'])) {
+    add(locations, {
+      id: 'loc.village_edge',
+      name: '村庄边缘',
+      aliases: ['村庄', '回家', '村民集合处'],
+      anchorPrompt: 'edge of a small rural village near pasture, simple cottages, footpath to hillside, picture book background reference'
+    })
+  }
+
+  const sceneRefs = {}
+  for (const scene of scenes) {
+    const text = `${scene.name} ${scene.text}`
+    sceneRefs[scene.key] = {
+      characters: [
+        textHasAny(text, ['孩子', '牧童', '他', '守护者']) ? 'char.shepherd_boy' : '',
+        textHasAny(text, ['狼', '狼嚎']) ? 'char.wolf' : '',
+        textHasAny(text, ['村民', '大家']) ? 'char.villagers' : '',
+        textHasAny(text, ['羊群', '羊', '山羊']) ? 'char.sheep_flock' : ''
+      ].filter(Boolean),
+      props: [
+        textHasAny(text, ['羊圈', '绳索']) ? 'prop.sheep_pen_rope' : '',
+        textHasAny(text, ['草席', '包扎', '伤口']) ? 'prop.grass_mat_bandage' : ''
+      ].filter(Boolean),
+      locations: [
+        textHasAny(text, ['山坡', '山脊', '牧场', '草原', '山脉']) ? 'loc.misty_hillside_pasture' : '',
+        textHasAny(text, ['村民', '回家']) ? 'loc.village_edge' : ''
+      ].filter(Boolean)
+    }
+  }
+
+  return {
+    schemaVersion: '1.0',
+    title: String(project?.title || '').trim() || '互动故事',
+    worldAnchor: 'Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes',
+    forbiddenSubstitutes: ['modern city', 'science fiction', 'horror gore', 'photorealistic adults replacing child', 'dog replacing wolf'],
+    eventChain: scenes.map((scene) => `${scene.name}: ${scene.text}`.slice(0, 180)).filter(Boolean),
+    characters,
+    props,
+    locations,
+    sceneRefs,
+    source: 'control_derived_from_scripts_and_story'
+  }
+}
+
+function buildStoryBibleGenerationInput(projectId) {
+  const derived = buildControlDerivedStoryBible(projectId)
+  if (!derived) return null
+  const project = readStoryProjectFile(projectId, 'project.json')
+  const scripts = readStoryProjectFile(projectId, 'scripts.json')
+  const scenes = collectStorySceneEntries(projectId)
+  return {
+    title: String(project?.title || derived.title || '互动故事').trim(),
+    brief: String(project?.brief || project?.description || project?.summary || '').trim(),
+    scenes: scenes.map((scene) => ({
+      sceneId: String(scene?.key || '').trim(),
+      name: String(scene?.name || '').trim(),
+      text: String(scene?.text || '').trim()
+    })).filter((scene) => scene.sceneId && scene.text),
+    scripts: Array.isArray(scripts?.cards)
+      ? scripts.cards.map((card) => ({
+        id: String(card?.id || '').trim(),
+        name: String(card?.name || '').trim(),
+        order: Number(card?.order || 0) || 0,
+        text: String(card?.text || '').trim()
+      })).filter((card) => card.id && card.text)
+      : [],
+    candidateWorldHints: {
+      worldAnchor: derived.worldAnchor,
+      forbiddenSubstitutes: Array.isArray(derived.forbiddenSubstitutes) ? derived.forbiddenSubstitutes : [],
+      eventChain: Array.isArray(derived.eventChain) ? derived.eventChain : []
+    },
+    candidateEntities: {
+      characters: Array.isArray(derived.characters)
+        ? derived.characters.map((item) => ({
+          ...item,
+          fingerprintPrompt: String(item?.anchorPrompt || '').trim()
+        }))
+        : [],
+      props: Array.isArray(derived.props) ? derived.props : [],
+      locations: Array.isArray(derived.locations) ? derived.locations : []
+    },
+    scenePresenceRules: [
+      'Only include entities in sceneRefs when the scene should visually show them in the frame.',
+      'Mentioned, rumored, shouted, remembered, or heard-from-afar entities are not automatically visual scene members.',
+      'Choice scenes should bind only what is already visible before the choice, not branch outcomes.',
+      'Transient states such as injured, crying, wet, broken, frightened, or bleeding must not become the core identity of a character or prop.',
+      'Usually keep at most one primary location anchor per scene unless the same shot clearly contains both spaces.'
+    ],
+    source: 'control_story_workflow_story_bible_input'
+  }
+}
+
+async function createStoryAssetPlanWithControlFallback(projectId, payload = {}) {
+  const first = await gameStudioServerClient.createStoryAssetPlan(projectId, payload)
+  if (first?.ok || first?.error !== 'missing_story_bible') return first
+  const storyBible = buildControlDerivedStoryBible(projectId)
+  if (!storyBible) return first
+  const retry = await gameStudioServerClient.createStoryAssetPlan(projectId, {
+    ...payload,
+    storyBible,
+    source: payload?.source || 'control_derived_story_bible'
+  })
+  if (retry?.data && typeof retry.data === 'object') {
+    retry.data.controlDerivedStoryBible = storyBible
+  }
+  return retry
+}
+
+function buildStoryProjectSnapshot(projectId) {
+  const projectDir = projectId ? getStoryProjectDir(projectId) : ''
+  const fileNames = projectDir && fs.existsSync(projectDir) && fs.statSync(projectDir).isDirectory()
+    ? fs.readdirSync(projectDir).sort((left, right) => left.localeCompare(right))
+    : []
+  const project = readStoryProjectFile(projectId, 'project.json')
+  const story = readStoryProjectFile(projectId, 'story.json')
+  const scripts = readStoryProjectFile(projectId, 'scripts.json')
+  const blueprint = readStoryProjectFile(projectId, 'blueprint.json')
+  const meta = readStoryProjectFile(projectId, 'meta.json')
+  const exportsDir = projectId ? path.join(projectDir, 'builds') : ''
+  const latestDist = projectId ? path.join(exportsDir, 'latest', 'dist', 'index.html') : ''
+  const latestDistStat = latestDist && fs.existsSync(latestDist) && fs.statSync(latestDist).isFile()
+    ? fs.statSync(latestDist)
+    : null
+  return {
+    projectId: String(projectId || ''),
+    projectDir,
+    projectDirRelative: projectDir ? normalizeWorkspaceRelativePath(path.relative(GAMESTUDIO_ROOT, projectDir)) : '',
+    projectDirExists: Boolean(projectDir && fs.existsSync(projectDir) && fs.statSync(projectDir).isDirectory()),
+    fileNames,
+    project: project ? {
+      id: project.id || projectId,
+      title: project.title || '',
+      generationConfig: project.generationConfig || project.storyProduction?.generationConfig || null,
+      assetCount: Array.isArray(project.assets) ? project.assets.length : 0,
+      characterCount: Array.isArray(project.characters) ? project.characters.length : 0
+    } : null,
+    story: story ? {
+      startNodeId: story.startNodeId || story.startId || '',
+      nodeCount: Array.isArray(story.nodes) ? story.nodes.length : 0
+    } : null,
+    scripts: scripts ? {
+      cardCount: Array.isArray(scripts.cards) ? scripts.cards.length : 0,
+      updatedAt: scripts.updatedAt || ''
+    } : null,
+    blueprint: blueprint ? {
+      startNodeId: blueprint.startNodeId || '',
+      nodeCount: Array.isArray(blueprint.nodes) ? blueprint.nodes.length : 0,
+      placeholderCount: Array.isArray(blueprint.placeholders) ? blueprint.placeholders.length : 0
+    } : null,
+    meta: meta ? {
+      title: meta.title || '',
+      aiFormula: meta.aiFormula || null
+    } : null,
+    exports: {
+      latestDist,
+      latestDistRelative: latestDist ? normalizeWorkspaceRelativePath(path.relative(GAMESTUDIO_ROOT, latestDist)) : '',
+      latestDistExists: Boolean(latestDistStat),
+      latestDistMtime: latestDistStat ? latestDistStat.mtime.toISOString() : null
+    }
+  }
+}
+
+function evaluateStoryProjectCreated(projectId) {
+  const snapshot = buildStoryProjectSnapshot(projectId)
+  const required = ['assets', 'blueprint.json', 'meta.json', 'project.json', 'scripts.json', 'story.json']
+  const missing = required.filter((name) => !snapshot.fileNames.includes(name))
+  return {
+    name: 'evaluateCreateProject',
+    passed: snapshot.projectDirExists && missing.length === 0,
+    missing,
+    checks: {
+      projectDirExists: snapshot.projectDirExists,
+      requiredFiles: required,
+      actualFiles: snapshot.fileNames
+    }
+  }
+}
+
+function evaluateStoryScripts(scripts) {
+  const cards = Array.isArray(scripts?.cards) ? scripts.cards : []
+  const invalidCards = cards.filter((card) => !card?.id || !card?.name || !Number.isFinite(Number(card?.order)) || !String(card?.text || '').trim())
+  const hasChoice = cards.some((card) => /选项\s*1|选项1/i.test(String(card?.text || '')))
+  const endingCount = cards.filter((card) => /^结局/i.test(String(card?.name || '').trim())).length
+  return {
+    name: 'evaluateScripts',
+    passed: cards.length > 0 && invalidCards.length === 0 && hasChoice && endingCount > 0,
+    checks: {
+      cardCount: cards.length,
+      invalidCardCount: invalidCards.length,
+      hasChoice,
+      endingCount
+    }
+  }
+}
+
+function evaluateInteractiveStoryBlueprint(projectId, validation = null) {
+  const scripts = readStoryProjectFile(projectId, 'scripts.json')
+  const blueprint = readStoryProjectFile(projectId, 'blueprint.json')
+  const meta = readStoryProjectFile(projectId, 'meta.json')
+  const nodes = Array.isArray(blueprint?.nodes) ? blueprint.nodes : []
+  const cards = Array.isArray(scripts?.cards) ? scripts.cards : []
+  const nodeIds = new Set(nodes.map((node) => String(node?.id || '')).filter(Boolean))
+  const startNodeId = String(blueprint?.startNodeId || '').trim()
+  const unresolvedChoices = []
+  const emptyTextNodes = []
+  const choiceNodes = []
+  const endingNodes = []
+  const cardIds = new Set(cards.map((card) => String(card?.id || '')).filter(Boolean))
+  const missingScriptLinks = []
+  for (const node of nodes) {
+    const nodeId = String(node?.id || '').trim()
+    const choices = Array.isArray(node?.choices) ? node.choices : []
+    if (!String(node?.textDraft || '').trim()) emptyTextNodes.push(nodeId || String(node?.name || 'unknown'))
+    if (choices.length > 1 || /选择点/.test(String(node?.name || ''))) choiceNodes.push(nodeId)
+    if (choices.length === 0 || /^结局/.test(String(node?.name || '').trim())) endingNodes.push(nodeId)
+    const scriptCardId = String(node?.scriptCardId || '').trim()
+    if (scriptCardId && !cardIds.has(scriptCardId)) missingScriptLinks.push({ nodeId, scriptCardId })
+    for (const choice of choices) {
+      const toNodeId = String(choice?.toNodeId || '').trim()
+      if (!toNodeId || !nodeIds.has(toNodeId)) unresolvedChoices.push({ nodeId, choiceId: choice?.id || null, toNodeId })
+    }
+  }
+  const reachable = new Set()
+  const stack = startNodeId && nodeIds.has(startNodeId) ? [startNodeId] : []
+  const nodeById = new Map(nodes.map((node) => [String(node?.id || ''), node]))
+  while (stack.length) {
+    const current = stack.pop()
+    if (!current || reachable.has(current)) continue
+    reachable.add(current)
+    const node = nodeById.get(current)
+    const choices = Array.isArray(node?.choices) ? node.choices : []
+    for (const choice of choices) {
+      const toNodeId = String(choice?.toNodeId || '').trim()
+      if (toNodeId && nodeIds.has(toNodeId) && !reachable.has(toNodeId)) stack.push(toNodeId)
+    }
+  }
+  const validationErrors = Array.isArray(validation?.errors) ? validation.errors : []
+  const formula = meta?.aiFormula && typeof meta.aiFormula === 'object' ? meta.aiFormula : null
+  const expectedChoicePoints = Number.isFinite(Number(formula?.choicePoints)) ? Number(formula.choicePoints) : null
+  const expectedEndings = Number.isFinite(Number(formula?.endings)) ? Number(formula.endings) : null
+  const issues = []
+  const strengths = []
+  if (!blueprint) issues.push('缺少 blueprint.json。')
+  if (!scripts) issues.push('缺少 scripts.json。')
+  if (!startNodeId || !nodeIds.has(startNodeId)) issues.push('startNodeId 为空或不指向现有节点。')
+  if (nodes.length < 5) issues.push('节点数过少，不足以表达一个可交互故事。')
+  if (reachable.size !== nodes.length) issues.push(`存在不可达节点：可达 ${reachable.size}/${nodes.length}。`)
+  if (unresolvedChoices.length) issues.push(`存在 ${unresolvedChoices.length} 个无效跳转。`)
+  if (emptyTextNodes.length) issues.push(`存在 ${emptyTextNodes.length} 个空文本节点。`)
+  if (missingScriptLinks.length) issues.push(`存在 ${missingScriptLinks.length} 个蓝图节点无法对应脚本卡。`)
+  if (choiceNodes.length < 1) issues.push('缺少选择点节点。')
+  if (endingNodes.length < 2) issues.push('结局节点少于 2 个。')
+  if (expectedChoicePoints !== null && choiceNodes.length < expectedChoicePoints) issues.push(`选择点少于公式要求：${choiceNodes.length}/${expectedChoicePoints}。`)
+  if (expectedEndings !== null && endingNodes.length < expectedEndings) issues.push(`结局少于公式要求：${endingNodes.length}/${expectedEndings}。`)
+  if (validationErrors.length) issues.push(`GameStudio 蓝图校验存在 ${validationErrors.length} 个错误。`)
+  if (nodes.length >= 5) strengths.push(`蓝图包含 ${nodes.length} 个节点。`)
+  if (reachable.size === nodes.length && nodes.length > 0) strengths.push('所有节点均可从起点到达。')
+  if (choiceNodes.length >= 1) strengths.push(`识别到 ${choiceNodes.length} 个选择点。`)
+  if (endingNodes.length >= 2) strengths.push(`识别到 ${endingNodes.length} 个结局/终点。`)
+  if (!unresolvedChoices.length && nodes.length > 0) strengths.push('所有跳转均指向现有节点。')
+  const penalty = (
+    (!blueprint ? 25 : 0) +
+    (!scripts ? 20 : 0) +
+    (!startNodeId || !nodeIds.has(startNodeId) ? 20 : 0) +
+    Math.min(20, Math.max(0, nodes.length ? nodes.length - reachable.size : 1) * 5) +
+    Math.min(20, unresolvedChoices.length * 8) +
+    Math.min(15, emptyTextNodes.length * 5) +
+    Math.min(10, missingScriptLinks.length * 5) +
+    (choiceNodes.length < 1 ? 15 : 0) +
+    (endingNodes.length < 2 ? 15 : 0) +
+    Math.min(20, validationErrors.length * 10)
+  )
+  const score = Math.max(0, Math.min(100, 100 - penalty))
+  const passed = score >= 80 && issues.length === 0
+  return {
+    name: 'evaluateInteractiveStoryBlueprint',
+    passed,
+    score,
+    needsRepair: !passed,
+    issues,
+    strengths,
+    checks: {
+      projectId,
+      nodeCount: nodes.length,
+      scriptCardCount: cards.length,
+      startNodeId,
+      reachableCount: reachable.size,
+      unresolvedChoiceCount: unresolvedChoices.length,
+      emptyTextNodeCount: emptyTextNodes.length,
+      missingScriptLinkCount: missingScriptLinks.length,
+      choiceNodeCount: choiceNodes.length,
+      endingNodeCount: endingNodes.length,
+      expectedChoicePoints,
+      expectedEndings,
+      validationOk: validation?.ok !== false,
+      validationErrorCount: validationErrors.length,
+      sampleNodes: nodes.slice(0, 12).map((node) => ({
+        id: node?.id || '',
+        name: node?.name || '',
+        choices: Array.isArray(node?.choices) ? node.choices.length : 0,
+        textPreview: String(node?.textDraft || '').slice(0, 120)
+      }))
+    }
+  }
+}
+
+async function reviewStoryBlueprintWithHermes(sessionId, projectId, deterministicReview, serverReview, validation, signal, binding = buildHermesBinding(), requestRoute = null) {
+  const project = readStoryProjectFile(projectId, 'project.json')
+  const scripts = readStoryProjectFile(projectId, 'scripts.json')
+  const blueprint = readStoryProjectFile(projectId, 'blueprint.json')
+  const resolvedRoute = requestRoute || resolveModelRouteForPhase(binding, 'story_blueprint_review')
+  const compactBlueprint = {
+    startNodeId: blueprint?.startNodeId || '',
+    nodes: Array.isArray(blueprint?.nodes)
+      ? blueprint.nodes.slice(0, 20).map((node) => ({
+          id: node?.id || '',
+          name: node?.name || '',
+          textDraft: String(node?.textDraft || '').slice(0, 240),
+          choices: Array.isArray(node?.choices) ? node.choices.map((choice) => ({ text: choice?.text || '', toNodeId: choice?.toNodeId || '' })) : []
+        }))
+      : []
+  }
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        'You are Hermes, reviewing a GameStudio interactive story blueprint.',
+        'Return strict JSON only. No markdown, no commentary outside JSON.',
+        'Assess whether the blueprint can work as an interactive story: reachable start, meaningful choices, valid branch jumps, coherent consequences, at least two endings, child-safe story continuity when relevant.',
+        'Schema: {"score":number,"verdict":"approve|repair","summary":string,"issues":string[],"strengths":string[],"repairPlan":string[]}.',
+        'Use Chinese for all prose fields.'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        project: { id: projectId, title: project?.title || '' },
+        scriptsCardCount: Array.isArray(scripts?.cards) ? scripts.cards.length : 0,
+        deterministicReview,
+        gameStudioReview: serverReview || null,
+        validation,
+        blueprint: compactBlueprint
+      }, null, 2)
+    }
+  ]
+  const data = await requestHermesChatCompletion({
+    sessionId,
+    phase: 'story_blueprint_review',
+    messages,
+    maxTokens: 900,
+    temperature: 0.1,
+    route: resolvedRoute,
+    signal,
+    timeoutMs: HERMES_CHAT_REQUEST_TIMEOUT_MS
+  })
+  const content = data.choices?.[0]?.message?.content || ''
+  const parsed = JSON.parse(extractJsonObjectString(content))
+  const score = Math.max(0, Math.min(100, Number(parsed?.score || 0)))
+  const verdict = String(parsed?.verdict || '').trim() === 'approve' ? 'approve' : 'repair'
+  return {
+    score,
+    verdict,
+    passed: verdict === 'approve' && score >= 80,
+    summary: String(parsed?.summary || '').trim(),
+    issues: Array.isArray(parsed?.issues) ? parsed.issues.map((item) => String(item)).filter(Boolean).slice(0, 12) : [],
+    strengths: Array.isArray(parsed?.strengths) ? parsed.strengths.map((item) => String(item)).filter(Boolean).slice(0, 12) : [],
+    repairPlan: Array.isArray(parsed?.repairPlan) ? parsed.repairPlan.map((item) => String(item)).filter(Boolean).slice(0, 12) : [],
+    provider: binding.provider,
+    model: binding.model,
+    usage: data.usage || null,
+    rawResponsePreview: truncateReasoningPreview(content, 1600)
+  }
+}
+
+function evaluateStoryProjectRunnable(projectId, validation = null) {
+  const snapshot = buildStoryProjectSnapshot(projectId)
+  const validationErrors = Array.isArray(validation?.errors) ? validation.errors : []
+  return {
+    name: 'evaluateRunnableProject',
+    passed: snapshot.projectDirExists
+      && Boolean(snapshot.scripts?.cardCount)
+      && Boolean(snapshot.blueprint?.nodeCount)
+      && Boolean(snapshot.story?.nodeCount)
+      && validationErrors.length === 0,
+    checks: {
+      projectDirExists: snapshot.projectDirExists,
+      scriptCards: snapshot.scripts?.cardCount || 0,
+      blueprintNodes: snapshot.blueprint?.nodeCount || 0,
+      storyNodes: snapshot.story?.nodeCount || 0,
+      validationErrorCount: validationErrors.length
+    }
+  }
+}
+
+function evaluateStoryResourceReferences(projectId) {
+  const project = readStoryProjectFile(projectId, 'project.json')
+  const story = readStoryProjectFile(projectId, 'story.json')
+  const assets = Array.isArray(project?.assets) ? project.assets : []
+  const characters = Array.isArray(project?.characters) ? project.characters : []
+  const assetIds = new Set(assets.map((asset) => String(asset?.id || '')).filter(Boolean))
+  const characterIds = new Set(characters.map((character) => String(character?.id || '')).filter(Boolean))
+  const missingAssets = []
+  const missingCharacters = []
+  const nodes = Array.isArray(story?.nodes) ? story.nodes : []
+  for (const node of nodes) {
+    const nodeId = String(node?.id || '')
+    const backgroundAssetId = String(node?.visuals?.backgroundAssetId || node?.backgroundAssetId || '').trim()
+    if (backgroundAssetId && !assetIds.has(backgroundAssetId)) {
+      missingAssets.push({ nodeId, assetId: backgroundAssetId, field: 'backgroundAssetId' })
+    }
+    const placements = Array.isArray(node?.visuals?.placements) ? node.visuals.placements : []
+    for (const placement of placements) {
+      const characterId = String(placement?.characterId || '').trim()
+      if (characterId && !characterIds.has(characterId)) {
+        missingCharacters.push({ nodeId, characterId, field: 'visuals.placements.characterId' })
+      }
+    }
+  }
+  return {
+    name: 'evaluateResourceReferences',
+    passed: Boolean(project && story && missingAssets.length === 0 && missingCharacters.length === 0),
+    checks: {
+      projectExists: Boolean(project),
+      storyExists: Boolean(story),
+      assetCount: assets.length,
+      characterCount: characters.length,
+      nodeCount: nodes.length,
+      missingAssets,
+      missingCharacters
+    }
+  }
+}
+
+function evaluateStoryExport(result) {
+  const evidence = result?.evidence || {}
+  return {
+    name: 'evaluateExport',
+    passed: Boolean(result?.ok && evidence.distUrl && evidence.distExists),
+    checks: {
+      ok: Boolean(result?.ok),
+      buildId: evidence.buildId || null,
+      distUrl: evidence.distUrl || null,
+      distPath: evidence.distPath || null,
+      distMtime: evidence.distMtime || null,
+      exportedAt: evidence.exportedAt || null,
+      distExists: Boolean(evidence.distExists)
+    }
+  }
+}
+
+function buildFallbackStoryScripts({ title, brief }) {
+  const safeTitle = String(title || '').trim() || '未命名互动故事'
+  const safeBrief = String(brief || '').trim() || `${safeTitle} 的互动故事。`
+  const now = new Date().toISOString()
+  const card = (id, name, order, text) => ({ id, name, order, text, updatedAt: now })
+  return {
+    schemaVersion: '1.0',
+    cards: [
+      card('card_intro', '开场', 1, `${safeTitle}。${safeBrief} 主角在一个关键时刻意识到，今晚的选择会改变所有人的命运。`),
+      card('card_choice_1', '选择1', 2, '选项1：主动追查异常的源头。\n选项2：先保护身边重要的人。'),
+      card('card_choice_1_result_1', '1后果1', 3, '主角追查线索，发现看似偶然的事件背后藏着可重复验证的规律。'),
+      card('card_choice_1_result_2', '1后果2', 4, '主角选择保护同伴，因此错过了第一条线索，却获得了更深的信任。'),
+      card('card_ending_1', '结局1', 5, '主角打破循环，带着真相走向新的清晨。'),
+      card('card_ending_2', '结局2', 6, '主角保留秘密，让世界暂时维持原状，但心里已经知道下一次该如何选择。')
+    ],
+    updatedAt: now
+  }
+}
+
+function normalizeStoryScriptsCandidate(parsed, fallbackInput) {
+  const source = parsed?.scripts && typeof parsed.scripts === 'object' ? parsed.scripts : parsed
+  const cardsIn = Array.isArray(source?.cards) ? source.cards : []
+  const now = new Date().toISOString()
+  const cards = cardsIn.map((card, index) => ({
+    id: String(card?.id || `card_${index + 1}`).trim(),
+    name: String(card?.name || `分镜${index + 1}`).trim(),
+    order: Number.isFinite(Number(card?.order)) ? Number(card.order) : index + 1,
+    text: String(card?.text || '').trim(),
+    updatedAt: String(card?.updatedAt || now)
+  })).filter((card) => card.id && card.name && card.text)
+  const scripts = { schemaVersion: '1.0', cards, updatedAt: now }
+  const verdict = evaluateStoryScripts(scripts)
+  if (verdict.passed) return { scripts, verdict, fallback: false, fallbackReason: null }
+  const fallbackScripts = buildFallbackStoryScripts(fallbackInput || {})
+  return {
+    scripts: fallbackScripts,
+    verdict: evaluateStoryScripts(fallbackScripts),
+    fallback: true,
+    fallbackReason: cards.length === 0 ? 'model_candidate_missing_cards' : 'model_candidate_failed_script_schema'
+  }
+}
+
+async function generateStoryScriptsCandidate(sessionId, step, userPrompt, signal, binding = buildHermesBinding(), requestRoute = null) {
+  const title = String(step.params?.title || extractStoryTitleFromPrompt(userPrompt) || '').trim() || '未命名互动故事'
+  const brief = String(step.params?.brief || userPrompt || '').trim()
+  const config = inferStoryConfigFromPrompt(userPrompt)
+  const resolvedRoute = requestRoute || resolveModelRouteForPhase(binding, 'story_scripts_candidate')
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        'You generate GameStudio interactive story scripts as strict JSON only.',
+        'Return one JSON object. No markdown fences, no commentary.',
+        'The JSON must match: { "title": string, "language": string, "cards": [{ "id": string, "name": string, "order": number, "text": string }] }.',
+        'Use Chinese when the brief is Chinese.',
+        'The scripts layer must use cards only. Do not create blueprint fields or asset IDs.',
+        'Include one choice card whose text contains separate lines starting with 选项1 and 选项2.',
+        'Include consequence cards named 1后果1 and 1后果2, and at least two ending cards named 结局1 and 结局2.'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({ title, brief, config }, null, 2)
+    }
+  ]
+
+  const data = await requestHermesChatCompletion({
+    sessionId,
+    phase: 'story_scripts_candidate',
+    messages,
+    maxTokens: 1600,
+    temperature: 0.2,
+    route: resolvedRoute,
+    signal,
+    timeoutMs: HERMES_CHAT_REQUEST_TIMEOUT_MS
+  })
+  const content = data.choices?.[0]?.message?.content || ''
+  let parsed = null
+  let parseError = null
+  try {
+    parsed = JSON.parse(extractJsonObjectString(content))
+  } catch (error) {
+    parseError = error instanceof Error ? error.message : String(error)
+  }
+  const normalized = normalizeStoryScriptsCandidate(parsed, { title, brief })
+  return {
+    ok: true,
+    title,
+    scripts: normalized.scripts,
+    evaluator: normalized.verdict,
+    fallback: normalized.fallback || Boolean(parseError),
+    fallbackReason: parseError || normalized.fallbackReason,
+    usage: data.usage || null,
+    rawResponsePreview: truncateReasoningPreview(content, 1600),
+    provider: binding.provider,
+    model: binding.model
+  }
+}
+
+function buildStoryWorkflowStepResult({ action, projectId, ok, status = 'completed', summary, serverResult = null, evaluator = null, snapshot = null, data = null, failedStage = null, retryable = false }) {
+  return {
+    action,
+    ok: Boolean(ok),
+    status,
+    summary,
+    projectId: String(projectId || serverResult?.evidence?.projectId || ''),
+    endpoint: serverResult?.endpoint || null,
+    serverStatus: serverResult?.status || null,
+    error: serverResult?.ok === false ? serverResult.error : null,
+    message: serverResult?.ok === false ? serverResult.message : null,
+    failedStage,
+    retryable: Boolean(retryable || serverResult?.retryable),
+    evidence: serverResult?.evidence || null,
+    evaluator,
+    snapshot,
+    data
+  }
+}
+
+function getPriorBlockingStoryFailure(session, currentAction) {
+  const lastResult = session?.artifacts?.storyProduction?.lastResult
+  if (!lastResult || lastResult.ok !== false) return null
+  if (currentAction === 'story_inspect_project') return null
+  return lastResult
+}
+
+function buildSkippedStoryWorkflowResult(step, blocker) {
+  const projectId = String(blocker?.projectId || '').trim()
+  return buildStoryWorkflowStepResult({
+    action: step.action,
+    projectId,
+    ok: false,
+    status: 'skipped',
+    summary: `已跳过 ${step.action}：前置步骤 ${blocker?.action || 'unknown'} 未通过，失败阶段 ${blocker?.failedStage || 'unknown'}。`,
+    evaluator: {
+      name: 'evaluateStoryWorkflowDependency',
+      passed: false,
+      checks: {
+        blockedByAction: blocker?.action || null,
+        blockedByStage: blocker?.failedStage || null,
+        blockedBySummary: blocker?.summary || null
+      }
+    },
+    snapshot: projectId ? buildStoryProjectSnapshot(projectId) : null,
+    data: { blockedBy: blocker || null },
+    failedStage: 'blocked_by_previous_story_step',
+    retryable: Boolean(blocker?.retryable)
+  })
+}
+
+function updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result) {
+  persistStoryProjectPointer(result)
+  updateReasoningSession(sessionId, (session) => {
+    const storyProduction = session.artifacts?.storyProduction && typeof session.artifacts.storyProduction === 'object'
+      ? session.artifacts.storyProduction
+      : {}
+    const projectId = String(result.projectId || storyProduction.currentProjectId || '').trim()
+    const projectRecord = projectId
+      ? {
+          ...(storyProduction.projects?.[projectId] || {}),
+          projectId,
+          snapshot: result.snapshot || storyProduction.projects?.[projectId]?.snapshot || null,
+          lastResult: result
+        }
+      : null
+    return {
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        storyProduction: {
+          ...storyProduction,
+          currentProjectId: projectId || storyProduction.currentProjectId || null,
+          lastProjectId: projectId || storyProduction.lastProjectId || null,
+          lastResult: result,
+          steps: {
+            ...(storyProduction.steps || {}),
+            [step.stepId]: result
+          },
+          projects: projectId
+            ? {
+                ...(storyProduction.projects || {}),
+                [projectId]: projectRecord
+              }
+            : (storyProduction.projects || {})
+        },
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: {
+            tool: step.tool,
+            action: step.action,
+            params: step.params || {},
+            endpoint: result.endpoint,
+            projectId: result.projectId,
+            observableOps: buildReasoningObservableOps(step, result)
+          },
+          rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+          structuredResult: result
+        }
+      }
+    }
+  })
+}
+
+function appendStoryWorkflowEvents(sessionId, step, stepIndex, result) {
+  appendReasoningEvent(sessionId, 'tool_result', step.title, result.summary || (result.ok ? 'story workflow step completed' : 'story workflow step failed'), {
+    stepId: step.stepId,
+    data: buildReasoningStepEventData(step, stepIndex, {
+      storyWorkflow: result,
+      observableOps: buildReasoningObservableOps(step, result)
+    })
+  })
+  appendReasoningEvent(sessionId, 'step_completed', step.title, result.ok ? '故事 workflow 步骤完成' : '故事 workflow 步骤已返回失败边界', {
+    stepId: step.stepId,
+    data: buildReasoningStepEventData(step, stepIndex, { ok: result.ok, failedStage: result.failedStage || null })
+  })
+}
+
+function summarizeGameStudioObserverResult(result) {
+  if (!result || typeof result !== 'object') return null
+  return {
+    ok: result.ok === undefined ? null : Boolean(result.ok),
+    status: result.status ?? result.serverStatus ?? null,
+    endpoint: result.endpoint || null,
+    error: result.error || null,
+    message: result.message || null,
+    retryable: result.retryable === undefined ? null : Boolean(result.retryable),
+    evidence: result.evidence
+      ? {
+          projectId: result.evidence.projectId || null,
+          projectDirRelative: result.evidence.projectDirRelative || null,
+          distUrl: result.evidence.distUrl || null,
+          distPathRelative: result.evidence.distPathRelative || null,
+          distExists: result.evidence.distExists === undefined ? null : Boolean(result.evidence.distExists),
+          fileNames: Array.isArray(result.evidence.fileNames) ? result.evidence.fileNames.slice(0, 20) : []
+        }
+      : null
+  }
+}
+
+function appendGameStudioObserverEvent(sessionId, step, stepIndex, phase, operation, detail = {}) {
+  const resultSummary = summarizeGameStudioObserverResult(detail.result)
+  const observer = {
+    observedAt: new Date().toISOString(),
+    phase,
+    operation,
+    action: step.action,
+    stepId: step.stepId,
+    stepTitle: step.title,
+    stepIndex,
+    endpoint: detail.endpoint || resultSummary?.endpoint || null,
+    projectId: detail.projectId || resultSummary?.evidence?.projectId || null,
+    elapsedMs: Number.isFinite(detail.elapsedMs) ? detail.elapsedMs : null,
+    ok: phase === 'started' ? null : (detail.ok === undefined ? resultSummary?.ok ?? null : Boolean(detail.ok)),
+    status: resultSummary?.status ?? null,
+    failedStage: detail.failedStage || null,
+    retryable: detail.retryable === undefined ? resultSummary?.retryable ?? null : Boolean(detail.retryable),
+    error: detail.error || resultSummary?.error || null,
+    message: detail.message || resultSummary?.message || null,
+    evidence: resultSummary?.evidence || null
+  }
+  const summary = phase === 'started'
+    ? `GameStudio 开始执行 ${operation}${observer.endpoint ? `：${observer.endpoint}` : ''}`
+    : `GameStudio ${operation} ${observer.ok ? '完成' : '失败'}${observer.elapsedMs == null ? '' : `，耗时 ${observer.elapsedMs}ms`}`
+
+  updateReasoningSession(sessionId, (session) => {
+    const currentObserver = session.artifacts?.gameStudioObserver && typeof session.artifacts.gameStudioObserver === 'object'
+      ? session.artifacts.gameStudioObserver
+      : {}
+    const timeline = Array.isArray(currentObserver.timeline) ? currentObserver.timeline : []
+    return {
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        gameStudioObserver: {
+          ...currentObserver,
+          lastEvent: observer,
+          timeline: [...timeline, observer].slice(-240)
+        }
+      }
+    }
+  })
+  appendReasoningEvent(sessionId, 'gamestudio_observer', step.title, summary, {
+    stepId: step.stepId,
+    data: buildReasoningStepEventData(step, stepIndex, { gameStudioObserver: observer })
+  })
+}
+
+async function observeGameStudioOperation(sessionId, step, stepIndex, operation, details, runOperation) {
+  const startedAt = Date.now()
+  appendGameStudioObserverEvent(sessionId, step, stepIndex, 'started', operation, details)
+  try {
+    const result = await runOperation()
+    const ok = result?.ok === undefined ? true : Boolean(result.ok)
+    appendGameStudioObserverEvent(sessionId, step, stepIndex, ok ? 'completed' : 'failed', operation, {
+      ...details,
+      result,
+      ok,
+      elapsedMs: Date.now() - startedAt,
+      retryable: result?.retryable
+    })
+    return result
+  } catch (error) {
+    appendGameStudioObserverEvent(sessionId, step, stepIndex, 'failed', operation, {
+      ...details,
+      ok: false,
+      elapsedMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+      retryable: true
+    })
+    throw error
+  }
+}
+
+async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) {
+  const session = readReasoningSession(sessionId)
+  const action = step.action
+  const blocker = getPriorBlockingStoryFailure(session, action)
+  if (blocker) {
+    const result = buildSkippedStoryWorkflowResult(step, blocker)
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_create_ai_project') {
+    const title = String(step.params?.title || extractStoryTitleFromPrompt(userPrompt) || '').trim() || '未命名互动故事'
+    const prompt = String(step.params?.prompt || step.params?.brief || userPrompt || '').trim()
+    const payload = {
+      title,
+      prompt,
+      choicePoints: Math.max(1, Number(step.params?.choicePoints || 2)),
+      optionsPerChoice: Math.max(2, Number(step.params?.optionsPerChoice || 2)),
+      endings: Math.max(2, Number(step.params?.endings || 2)),
+      timeoutMs: Math.max(90000, Number(step.params?.timeoutMs || 180000))
+    }
+    const serverResult = prompt
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'createAiProject', {
+        endpoint: 'POST /api/projects/ai/create'
+      }, () => gameStudioServerClient.createAiProject(payload))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/ai/create', error: 'missing_prompt', message: 'AI 创建故事缺少 prompt', retryable: false }
+    const projectId = serverResult?.evidence?.projectId || serverResult?.data?.project?.id || ''
+    const scriptsVerdict = evaluateStoryScripts(serverResult?.data?.scripts)
+    const validation = serverResult?.data?.gen?.after?.validation || serverResult?.data?.gen?.before?.validation || null
+    const blueprintVerdict = projectId ? evaluateInteractiveStoryBlueprint(projectId, validation) : { passed: false, score: 0, needsRepair: true, issues: ['missing_project_id'], strengths: [], checks: {} }
+    const evaluator = {
+      name: 'evaluateAiStoryProjectCreated',
+      passed: Boolean(serverResult.ok && scriptsVerdict.passed && blueprintVerdict.passed),
+      checks: {
+        scripts: scriptsVerdict.checks,
+        blueprint: blueprintVerdict.checks,
+        blueprintScore: blueprintVerdict.score,
+        gen: serverResult?.data?.gen || null
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: Boolean(serverResult.ok && scriptsVerdict.passed && snapshot.projectDirExists),
+      summary: serverResult.ok
+        ? `已通过 GameStudio AI 创建故事 ${projectId}：scripts=${snapshot.scripts?.cardCount || 0} blueprint=${snapshot.blueprint?.nodeCount || 0}`
+        : `GameStudio AI 创建故事失败：${serverResult.message || serverResult.error}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: { payload: { ...payload, prompt: truncateReasoningPreview(prompt, 1000) }, scriptsVerdict, blueprintVerdict, gen: serverResult?.data?.gen || null },
+      failedStage: serverResult.ok ? null : 'create_ai_project_api',
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_create_project') {
+    const title = String(step.params?.title || extractStoryTitleFromPrompt(userPrompt) || '').trim() || '未命名互动故事'
+    const serverResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'createProject', {
+      endpoint: 'POST /api/projects'
+    }, () => gameStudioServerClient.createProject({ title }))
+    const projectId = serverResult?.evidence?.projectId || serverResult?.data?.project?.id || ''
+    const evaluator = evaluateStoryProjectCreated(projectId)
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: Boolean(serverResult.ok && evaluator.passed),
+      summary: serverResult.ok
+        ? `已创建互动故事项目 ${projectId}，目录 ${snapshot.projectDirRelative || snapshot.projectDir}`
+        : `创建互动故事项目失败：${serverResult.message || serverResult.error}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      failedStage: serverResult.ok ? (evaluator.passed ? null : 'create_project_evaluator') : 'create_project_api',
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_configure_project') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const config = step.params?.config && typeof step.params.config === 'object'
+      ? step.params.config
+      : inferStoryConfigFromPrompt(userPrompt)
+    const payload = {
+      project: {
+        generationConfig: {
+          ...config,
+          updatedAt: new Date().toISOString()
+        },
+        storyProduction: {
+          generationConfig: config,
+          updatedAt: new Date().toISOString()
+        }
+      }
+    }
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'updateProject', {
+        endpoint: 'PUT /api/projects/:id',
+        projectId
+      }, () => gameStudioServerClient.updateProject(projectId, payload))
+      : { ok: false, status: 0, endpoint: 'PUT /api/projects/:id', error: 'missing_project_id', message: '无法定位要配置的项目', retryable: false }
+    const readBack = projectId && serverResult.ok
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'getProjectAfterConfigure', {
+        endpoint: 'GET /api/projects/:id',
+        projectId
+      }, () => gameStudioServerClient.getProject(projectId))
+      : null
+    const readConfig = readBack?.data?.project?.generationConfig || readBack?.data?.project?.storyProduction?.generationConfig || null
+    const evaluator = {
+      name: 'evaluateConfigureProject',
+      passed: Boolean(serverResult.ok && readConfig && String(readConfig.outputLanguage || '') === String(config.outputLanguage || '')),
+      checks: { projectId, requestedConfig: config, readBackConfig: readConfig }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed ? `已写入并读回项目 ${projectId} 的生成配置` : `项目生成配置未通过验证：${serverResult.message || serverResult.error || 'read_back_mismatch'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: { config, readBackConfig: readConfig },
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'configure_project_readback' : 'configure_project_api'),
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_inspect_project') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'getProject', {
+        endpoint: 'GET /api/projects/:id',
+        projectId
+      }, () => gameStudioServerClient.getProject(projectId))
+      : { ok: false, status: 0, endpoint: 'GET /api/projects/:id', error: 'missing_project_id', message: '无法定位要检查的项目', retryable: false }
+    const scriptsResult = projectId ? await observeGameStudioOperation(sessionId, step, stepIndex, 'getScripts', {
+      endpoint: 'GET /api/projects/:id/scripts',
+      projectId
+    }, () => gameStudioServerClient.getScripts(projectId)) : null
+    const exportsResult = projectId ? await observeGameStudioOperation(sessionId, step, stepIndex, 'listExports', {
+      endpoint: 'GET /api/projects/:id/exports',
+      projectId
+    }, () => gameStudioServerClient.listExports(projectId)) : null
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const evaluator = evaluateStoryProjectCreated(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: Boolean(serverResult.ok && snapshot.projectDirExists),
+      summary: snapshot.projectDirExists
+        ? `已检查项目 ${projectId}，顶层子项 ${snapshot.fileNames.join(', ') || '空'}`
+        : `检查项目失败：${serverResult.message || serverResult.error || 'project_not_found'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: {
+        project: serverResult?.data?.project || null,
+        story: serverResult?.data?.story || null,
+        scripts: scriptsResult?.data?.scripts || null,
+        exports: exportsResult?.data?.items || []
+      },
+      failedStage: serverResult.ok ? null : 'inspect_project_api',
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_generate_scripts_candidate') {
+    let candidate = null
+    const title = String(step.params?.title || extractStoryTitleFromPrompt(userPrompt) || '').trim() || '未命名互动故事'
+    const brief = String(step.params?.brief || userPrompt || '').trim()
+    if (session?.submissionContext?.productionTest && !session?.submissionContext?.requireModelAnswer) {
+      const scripts = buildFallbackStoryScripts({ title, brief })
+      candidate = {
+        ok: true,
+        error: null,
+        scripts,
+        evaluator: evaluateStoryScripts(scripts),
+        fallback: true,
+        fallbackReason: 'production_test_deterministic_minimal_scripts'
+      }
+    } else {
+      try {
+        const scriptsRoute = resolveModelRouteForPhase(buildHermesBinding(), 'story_scripts_candidate', { action })
+        candidate = await runManagedReasoningTask(sessionId, 'story_scripts_candidate', scriptsRoute.binding, ({ signal }) => generateStoryScriptsCandidate(
+          sessionId,
+          step,
+          userPrompt,
+          signal,
+          scriptsRoute.binding,
+          scriptsRoute
+        ))
+      } catch (error) {
+        const scripts = buildFallbackStoryScripts({ title, brief })
+        candidate = {
+          ok: true,
+          error: error instanceof Error ? error.message : String(error),
+          scripts,
+          evaluator: evaluateStoryScripts(scripts),
+          fallback: true,
+          fallbackReason: 'story_scripts_model_request_failed'
+        }
+      }
+    }
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: Boolean(candidate.ok && candidate.evaluator?.passed),
+      summary: candidate.ok
+        ? `已生成故事脚本候选，卡片数 ${candidate.scripts?.cards?.length || 0}${candidate.fallback ? '（使用 fallback 兜底）' : ''}`
+        : `故事脚本候选生成失败：${candidate.error || 'model_request_failed'}`,
+      evaluator: candidate.evaluator,
+      snapshot: projectId ? buildStoryProjectSnapshot(projectId) : null,
+      data: candidate,
+      failedStage: candidate.ok ? (candidate.evaluator?.passed ? null : 'scripts_candidate_evaluator') : 'scripts_candidate_model',
+      retryable: !candidate.ok
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    updateReasoningSession(sessionId, (current) => ({
+      ...current,
+      artifacts: {
+        ...current.artifacts,
+        storyProduction: {
+          ...(current.artifacts?.storyProduction || {}),
+          scriptsCandidate: candidate?.scripts || null,
+          scriptsCandidateMeta: {
+            fallback: Boolean(candidate?.fallback),
+            fallbackReason: candidate?.fallbackReason || null,
+            provider: candidate?.provider || null,
+            model: candidate?.model || null,
+            usage: candidate?.usage || null
+          }
+        }
+      }
+    }))
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_write_scripts') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const latestSession = readReasoningSession(sessionId)
+    const scripts = latestSession?.artifacts?.storyProduction?.scriptsCandidate || null
+    const scriptVerdict = evaluateStoryScripts(scripts)
+    const serverResult = projectId && scriptVerdict.passed
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'putScripts', {
+        endpoint: 'PUT /api/projects/:id/scripts',
+        projectId
+      }, () => gameStudioServerClient.putScripts(projectId, scripts))
+      : { ok: false, status: 0, endpoint: 'PUT /api/projects/:id/scripts', error: projectId ? 'invalid_scripts_candidate' : 'missing_project_id', message: projectId ? '脚本候选未通过 schema 验证' : '无法定位要写入脚本的项目', retryable: false }
+    const readBack = projectId && serverResult.ok ? await observeGameStudioOperation(sessionId, step, stepIndex, 'getScriptsAfterWrite', {
+      endpoint: 'GET /api/projects/:id/scripts',
+      projectId
+    }, () => gameStudioServerClient.getScripts(projectId)) : null
+    const readBackVerdict = evaluateStoryScripts(readBack?.data?.scripts)
+    const evaluator = {
+      name: 'evaluateWriteScripts',
+      passed: Boolean(serverResult.ok && readBackVerdict.passed),
+      checks: { candidate: scriptVerdict.checks, readBack: readBackVerdict.checks }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed ? `已写入并读回项目 ${projectId} 的 scripts.json` : `脚本写入失败：${serverResult.message || serverResult.error}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: { readBackScripts: readBack?.data?.scripts || null },
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'write_scripts_readback' : 'write_scripts_api'),
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_compile_blueprint') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'compileBlueprint', {
+        endpoint: 'POST /api/projects/:id/compile/blueprint',
+        projectId
+      }, () => gameStudioServerClient.compileBlueprint(projectId))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/compile/blueprint', error: 'missing_project_id', message: '无法定位要编译蓝图的项目', retryable: false }
+    const validation = serverResult?.data?.validation || null
+    const validationErrors = Array.isArray(validation?.errors) ? validation.errors : []
+    const evaluator = {
+      name: 'evaluateBlueprint',
+      passed: Boolean(serverResult.ok && validation?.ok !== false && validationErrors.length === 0),
+      checks: { validation }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed ? `已编译项目 ${projectId} 的 blueprint.json` : `蓝图编译未通过：${serverResult.message || serverResult.error || 'validation_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: { report: serverResult?.data?.report || null, validation },
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'compile_blueprint_validation' : 'compile_blueprint_api'),
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_analyze_scripts') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'analyzeScripts', {
+        endpoint: 'POST /api/projects/:id/analyze/scripts',
+        projectId
+      }, () => gameStudioServerClient.analyzeScripts(projectId))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/analyze/scripts', error: 'missing_project_id', message: '无法定位要分析脚本的项目', retryable: false }
+    const analysis = serverResult?.data?.analysis || null
+    const evaluator = {
+      name: 'evaluateScriptAnalysis',
+      passed: Boolean(serverResult.ok && analysis && analysis.ok !== false),
+      checks: {
+        ok: analysis?.ok ?? null,
+        stats: analysis?.stats || null,
+        suggestionCount: Array.isArray(analysis?.suggestions) ? analysis.suggestions.length : 0,
+        checkCount: Array.isArray(analysis?.checks) ? analysis.checks.length : 0
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed ? `脚本分析通过：${analysis?.summary || '可进入蓝图评审'}` : `脚本分析未通过：${serverResult.message || serverResult.error || 'analysis_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: { analysis },
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'analyze_scripts_evaluator' : 'analyze_scripts_api'),
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_review_blueprint_agent') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const blueprintReviewRoute = resolveModelRouteForPhase(buildHermesBinding(), 'story_blueprint_review', { action })
+    const blueprintReviewOverride = getModelRouteOverrideForPhase(buildHermesBinding(), 'story_blueprint_review', { action })
+    const validationResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'validateBlueprintForAgentReview', {
+        endpoint: 'POST /api/projects/:id/validate/blueprint',
+        projectId
+      }, () => gameStudioServerClient.validateBlueprint(projectId))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/validate/blueprint', error: 'missing_project_id', message: '无法定位要评审蓝图的项目', retryable: false }
+    const serverReviewResult = projectId && validationResult.ok
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'reviewBlueprintWithGameStudioRules', {
+        endpoint: 'POST /api/projects/:id/ai/review/blueprint',
+        projectId
+      }, () => gameStudioServerClient.reviewBlueprint(projectId, blueprintReviewOverride ? { modelRoute: blueprintReviewOverride } : {}))
+      : null
+    const validation = validationResult?.data?.validation || serverReviewResult?.data?.validation || null
+    const deterministicReview = projectId ? evaluateInteractiveStoryBlueprint(projectId, validation) : { passed: false, score: 0, needsRepair: true, issues: ['missing_project_id'], strengths: [], checks: {} }
+    let hermesReview = null
+    let hermesError = null
+    if (session?.submissionContext?.productionTest && !session?.submissionContext?.requireModelAnswer) {
+      hermesReview = {
+        score: deterministicReview.score,
+        verdict: deterministicReview.passed ? 'approve' : 'repair',
+        passed: deterministicReview.passed,
+        summary: deterministicReview.passed ? '生产测试使用确定性蓝图评审通过。' : '生产测试确定性蓝图评审要求修复。',
+        issues: deterministicReview.issues,
+        strengths: deterministicReview.strengths,
+        repairPlan: deterministicReview.issues,
+        provider: 'deterministic',
+        model: null,
+        usage: null,
+        rawResponsePreview: ''
+      }
+    } else {
+      try {
+        hermesReview = await runManagedReasoningTask(sessionId, 'story_blueprint_review', blueprintReviewRoute.binding, ({ signal }) => reviewStoryBlueprintWithHermes(
+          sessionId,
+          projectId,
+          deterministicReview,
+          serverReviewResult?.data?.review || null,
+          validation,
+          signal,
+          blueprintReviewRoute.binding,
+          blueprintReviewRoute
+        ))
+      } catch (error) {
+        hermesError = error instanceof Error ? error.message : String(error)
+        hermesReview = {
+          score: deterministicReview.score,
+          verdict: deterministicReview.passed ? 'approve' : 'repair',
+          passed: deterministicReview.passed,
+          summary: deterministicReview.passed ? 'Hermes 评审失败，暂以确定性蓝图门禁通过。' : 'Hermes 评审失败，确定性蓝图门禁要求修复。',
+          issues: deterministicReview.issues,
+          strengths: deterministicReview.strengths,
+          repairPlan: deterministicReview.issues,
+          provider: 'deterministic_fallback',
+          model: null,
+          usage: null,
+          rawResponsePreview: ''
+        }
+      }
+    }
+    const finalScore = Math.min(Number(deterministicReview.score || 0), Number(hermesReview?.score || 0))
+    const needsRepair = Boolean(!deterministicReview.passed || hermesReview?.verdict !== 'approve' || finalScore < 80)
+    const evaluator = {
+      name: 'evaluateBlueprintAgentReview',
+      passed: !needsRepair,
+      checks: {
+        deterministicPassed: deterministicReview.passed,
+        deterministicScore: deterministicReview.score,
+        hermesVerdict: hermesReview?.verdict || null,
+        hermesScore: hermesReview?.score ?? null,
+        finalScore,
+        needsRepair,
+        hermesError
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: Boolean(validationResult.ok && projectId),
+      summary: needsRepair
+        ? `蓝图智能体评审要求修复：score=${finalScore}`
+        : `蓝图智能体评审通过：score=${finalScore}`,
+      serverResult: validationResult,
+      evaluator,
+      snapshot,
+      data: {
+        needsRepair,
+        finalScore,
+        deterministicReview,
+        hermesReview,
+        hermesError,
+        gameStudioReview: serverReviewResult?.data?.review || null,
+        gameStudioReviewMeta: serverReviewResult?.data?.meta || null,
+        validation
+      },
+      failedStage: validationResult.ok ? null : 'blueprint_review_validation_api',
+      retryable: validationResult.retryable || serverReviewResult?.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_repair_blueprint_if_needed') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const latestSession = readReasoningSession(sessionId)
+    const reviewResult = latestSession?.artifacts?.storyProduction?.steps?.step_story_review_blueprint_agent || null
+    const needsRepair = Boolean(reviewResult?.data?.needsRepair)
+    if (!needsRepair) {
+      const snapshot = buildStoryProjectSnapshot(projectId)
+      const result = buildStoryWorkflowStepResult({
+        action,
+        projectId,
+        ok: true,
+        summary: `蓝图评审已通过，跳过修复并进入合成：${projectId}`,
+        evaluator: { name: 'evaluateBlueprintRepairGate', passed: true, checks: { needsRepair: false } },
+        snapshot,
+        data: { skipped: true, reason: 'blueprint_review_passed' }
+      })
+      updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+      appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+      return result
+    }
+    const fixResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'fixScriptsForBlueprint', {
+        endpoint: 'POST /api/projects/:id/ai/fix/scripts',
+        projectId
+      }, () => gameStudioServerClient.fixScripts(projectId))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/fix/scripts', error: 'missing_project_id', message: '无法定位要修复的项目', retryable: false }
+    const compileResult = projectId && fixResult.ok
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'compileBlueprintAfterRepair', {
+        endpoint: 'POST /api/projects/:id/compile/blueprint',
+        projectId
+      }, () => gameStudioServerClient.compileBlueprint(projectId))
+      : null
+    const validation = compileResult?.data?.validation || fixResult?.data?.after?.validation || null
+    const deterministicReview = projectId ? evaluateInteractiveStoryBlueprint(projectId, validation) : { passed: false, score: 0, needsRepair: true, issues: ['missing_project_id'], strengths: [], checks: {} }
+    const evaluator = {
+      name: 'evaluateBlueprintRepair',
+      passed: Boolean(fixResult.ok && deterministicReview.passed),
+      checks: {
+        fixOk: Boolean(fixResult.ok),
+        compileOk: Boolean(compileResult?.ok),
+        scoreAfterRepair: deterministicReview.score,
+        issuesAfterRepair: deterministicReview.issues
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed ? `蓝图已修复并通过 Control 门禁：score=${deterministicReview.score}` : `蓝图修复未通过：${fixResult.message || fixResult.error || 'repair_failed'}`,
+      serverResult: fixResult,
+      evaluator,
+      snapshot,
+      data: { fix: fixResult?.data || null, compile: compileResult?.data || null, deterministicReview },
+      failedStage: evaluator.passed ? null : (fixResult.ok ? 'blueprint_repair_evaluator' : 'blueprint_repair_api'),
+      retryable: fixResult.retryable || compileResult?.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_compile_compose') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'compileCompose', {
+        endpoint: 'POST /api/projects/:id/compile/compose',
+        projectId
+      }, () => gameStudioServerClient.compileCompose(projectId))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/compile/compose', error: 'missing_project_id', message: '无法定位要编译合成层的项目', retryable: false }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const evaluator = evaluateStoryProjectRunnable(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: Boolean(serverResult.ok && evaluator.passed),
+      summary: evaluator.passed ? `已编译项目 ${projectId} 为可运行 story/project 合成层` : `合成层编译未通过：${serverResult.message || serverResult.error || 'compose_evaluator_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'compile_compose_evaluator' : 'compile_compose_api'),
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_validate_project') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'validateBlueprint', {
+        endpoint: 'POST /api/projects/:id/validate/blueprint',
+        projectId
+      }, () => gameStudioServerClient.validateBlueprint(projectId))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/validate/blueprint', error: 'missing_project_id', message: '无法定位要校验的项目', retryable: false }
+    const validation = serverResult?.data?.validation || null
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const evaluator = evaluateStoryProjectRunnable(projectId, validation)
+    const resourceEvaluator = evaluateStoryResourceReferences(projectId)
+    const combinedEvaluator = {
+      name: 'evaluateStoryProjectValidation',
+      passed: Boolean(evaluator.passed && resourceEvaluator.passed),
+      checks: {
+        structure: evaluator.checks,
+        resources: resourceEvaluator.checks
+      }
+    }
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: Boolean(serverResult.ok && combinedEvaluator.passed),
+      summary: combinedEvaluator.passed ? `项目 ${projectId} 结构与资源引用校验通过` : `项目校验未通过：${serverResult.message || serverResult.error || 'validation_failed'}`,
+      serverResult,
+      evaluator: combinedEvaluator,
+      snapshot,
+      data: { validation, resourceValidation: resourceEvaluator },
+      failedStage: combinedEvaluator.passed ? null : (serverResult.ok ? 'validate_project_evaluator' : 'validate_project_api'),
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_export_project') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'exportProject', {
+        endpoint: 'POST /api/projects/:id/export',
+        projectId
+      }, () => gameStudioServerClient.exportProject(projectId))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/export', error: 'missing_project_id', message: '无法定位要导出的项目', retryable: false }
+    const evaluator = evaluateStoryExport(serverResult)
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed ? `项目 ${projectId} 已导出：${serverResult.evidence?.distUrl}` : `项目导出失败：${serverResult.message || serverResult.error || 'export_evaluator_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'export_project_evaluator' : 'export_project_api'),
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_create_bible') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const timeoutMs = Math.max(10000, Number(step.params?.timeoutMs || 120000))
+    const storyBibleInput = projectId ? buildStoryBibleGenerationInput(projectId) : null
+    const serverResult = projectId && storyBibleInput
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'createStoryBible', {
+        endpoint: 'POST /api/projects/:id/ai/story/bible',
+        projectId
+      }, () => gameStudioServerClient.createStoryBible(projectId, {
+        input: storyBibleInput,
+        timeoutMs
+      }))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/bible', error: projectId ? 'missing_story_bible_input' : 'missing_project_id', message: projectId ? '无法构造 Story Bible 生成输入' : '无法定位要生成 Story Bible 的项目', retryable: false }
+    const storyBible = serverResult?.data?.result && typeof serverResult.data.result === 'object' ? serverResult.data.result : null
+    const currentProjectResult = projectId && serverResult.ok && storyBible
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'getProjectBeforePersistStoryBible', {
+        endpoint: 'GET /api/projects/:id',
+        projectId
+      }, () => gameStudioServerClient.getProject(projectId))
+      : null
+    const currentProject = currentProjectResult?.data?.project && typeof currentProjectResult.data.project === 'object'
+      ? currentProjectResult.data.project
+      : {}
+    const currentState = currentProject?.state && typeof currentProject.state === 'object' ? currentProject.state : {}
+    const currentAiBackground = currentState?.aiBackground && typeof currentState.aiBackground === 'object' ? currentState.aiBackground : {}
+    const persistResult = projectId && serverResult.ok && storyBible
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'persistStoryBibleToProject', {
+        endpoint: 'PUT /api/projects/:id',
+        projectId
+      }, () => gameStudioServerClient.updateProject(projectId, {
+        project: {
+          state: {
+            ...currentState,
+            aiBackground: {
+              ...currentAiBackground,
+              storyBible,
+              storyBibleJson: JSON.stringify(storyBible, null, 2),
+              updatedAt: new Date().toISOString()
+            }
+          }
+        }
+      }))
+      : null
+    const readBack = projectId && persistResult?.ok
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'getProjectAfterPersistStoryBible', {
+        endpoint: 'GET /api/projects/:id',
+        projectId
+      }, () => gameStudioServerClient.getProject(projectId))
+      : null
+    const persistedStoryBible = readStoryBibleFromProjectDoc(readBack?.data?.project || null)
+    const persistedCharacters = Array.isArray(persistedStoryBible?.characters) ? persistedStoryBible.characters.length : 0
+    const persistedProps = Array.isArray(persistedStoryBible?.props) ? persistedStoryBible.props.length : 0
+    const persistedLocations = Array.isArray(persistedStoryBible?.locations) ? persistedStoryBible.locations.length : 0
+    const evaluator = {
+      name: 'evaluateStoryBible',
+      passed: Boolean(serverResult.ok && persistResult?.ok && persistedStoryBible && (persistedCharacters + persistedProps + persistedLocations > 0)),
+      checks: {
+        projectId,
+        inputBuilt: Boolean(storyBibleInput),
+        generated: Boolean(storyBible),
+        persisted: Boolean(persistResult?.ok),
+        readBack: Boolean(persistedStoryBible),
+        characters: persistedCharacters,
+        props: persistedProps,
+        locations: persistedLocations,
+        traceId: serverResult?.data?.traceId || null,
+        error: persistResult?.error || serverResult?.error || null,
+        message: persistResult?.message || serverResult?.message || null
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed
+        ? `已通过 GameStudio 显式生成并写回 Story Bible：characters=${persistedCharacters} props=${persistedProps} locations=${persistedLocations}`
+        : `Story Bible 生成或写回失败：${persistResult?.message || persistResult?.error || serverResult?.message || serverResult?.error || 'story_bible_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: {
+        traceId: serverResult?.data?.traceId || null,
+        storyBible: persistedStoryBible || storyBible,
+        persistResult: persistResult?.ok ? { ok: true } : persistResult ? { ok: false, error: persistResult.error || null, message: persistResult.message || null } : null
+      },
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'persist_story_bible' : 'create_story_bible'),
+      retryable: Boolean(serverResult.retryable || persistResult?.retryable)
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_preflight_image_provider') {
+    const mode = String(step.params?.mode || 'basic').trim().toLowerCase() === 'storyboard' ? 'storyboard' : 'basic'
+    const timeoutMs = Math.max(2000, Number(step.params?.timeoutMs || 15000))
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const lockPlan = mode === 'storyboard' && projectId ? readStoryAssetPlanFile(projectId) : null
+    const settingsResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'getStudioSettingsForImagePreflight', {
+      endpoint: 'GET /api/studio/settings'
+    }, () => gameStudioServerClient.getStudioSettings())
+    const comfyuiBaseUrl = String(settingsResult?.data?.effective?.image?.comfyuiBaseUrl || step.params?.comfyuiBaseUrl || 'http://127.0.0.1:8188').trim()
+    const comfyUi = await observeGameStudioOperation(sessionId, step, stepIndex, 'ensureComfyUiRunning', {
+      endpoint: 'GET /system_stats or sh ./start.sh',
+      baseUrl: comfyuiBaseUrl,
+      cwd: '/Volumes/ovokit2t/ComfyUI'
+    }, () => ensureComfyUiRunning(comfyuiBaseUrl, {
+      comfyRoot: '/Volumes/ovokit2t/ComfyUI',
+      waitTimeoutMs: Math.max(60000, timeoutMs)
+    }))
+    const serverResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'preflightImageProvider', {
+      endpoint: 'POST /api/studio/image/preflight'
+    }, () => gameStudioServerClient.preflightImageProvider({ mode, timeoutMs }))
+    const checks = serverResult?.data?.checks || null
+    const provider = String(checks?.provider || '').trim()
+    const lockAssets = Array.isArray(lockPlan?.assets) ? lockPlan.assets : []
+    const lockAnalysisRequired = step.params?.lockAnalysisRequired === true
+    const lockAnalysisOk = mode !== 'storyboard' || !projectId || Boolean(lockPlan && lockAssets.length > 0)
+    const evaluator = {
+      name: 'evaluateImageProviderPreflight',
+      passed: Boolean(serverResult.ok && checks?.ok !== false && comfyUi?.ok && (lockAnalysisOk || !lockAnalysisRequired)),
+      checks: {
+        mode,
+        provider,
+        comfyUi: {
+          ok: Boolean(comfyUi?.ok),
+          started: Boolean(comfyUi?.data?.started),
+          baseUrl: comfyUi?.data?.baseUrl || comfyuiBaseUrl,
+          status: comfyUi?.data?.health?.status ?? null,
+          error: comfyUi?.error || comfyUi?.data?.health?.error || null
+        },
+        lockAnalysis: mode === 'storyboard' && projectId ? {
+          ok: Boolean(lockPlan && lockAssets.length > 0),
+          required: lockAnalysisRequired,
+          assetCount: lockAssets.length,
+          error: lockPlan ? null : 'missing_story_asset_plan',
+          message: lockPlan ? null : '未找到已保存的 story-assets/plan.json'
+        } : null,
+        reason: checks?.reason || serverResult?.error || null,
+        missingNodes: Array.isArray(checks?.missingNodes) ? checks.missingNodes : [],
+        extras: checks?.extras || null
+      }
+    }
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed
+        ? `锁定事物/图片 provider preflight 通过：provider=${provider || 'unknown'} mode=${mode}${lockPlan ? ` lockAssets=${lockAssets.length}` : ''}${comfyUi?.data?.started ? ' ComfyUI已启动' : ''}`
+        : `锁定事物/图片 provider preflight 未通过：${serverResult.message || serverResult.error || checks?.reason || comfyUi?.error || evaluator.checks.lockAnalysis?.error || 'preflight_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot: null,
+      data: { mode, checks, lockAnalysis: lockPlan ? { plan: lockPlan } : null, comfyUi: comfyUi?.data || null },
+      failedStage: evaluator.passed ? null : 'image_provider_preflight',
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_create_asset_plan') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'createStoryAssetPlan', {
+        endpoint: 'POST /api/projects/:id/ai/story/assets/plan',
+        projectId
+      }, () => gameStudioServerClient.createStoryAssetPlan(projectId, {
+        rebuild: Boolean(step.params?.rebuild),
+        source: step.params?.source || 'control_story_workflow'
+      }))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/assets/plan', error: 'missing_project_id', message: '无法定位要创建资产计划的项目', retryable: false }
+    const plan = serverResult?.data?.plan || null
+    const assets = Array.isArray(plan?.assets) ? plan.assets : []
+    const evaluator = {
+      name: 'evaluateStoryAssetPlan',
+      passed: Boolean(serverResult.ok && plan && assets.length > 0),
+      checks: {
+        projectId,
+        hasPlan: Boolean(plan),
+        assetCount: assets.length,
+        error: serverResult?.error || null,
+        message: serverResult?.message || null
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed ? `已创建故事资产计划，资产数 ${assets.length}` : `故事资产计划未完成：${serverResult.message || serverResult.error || 'asset_plan_evaluator_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: { plan },
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'asset_plan_evaluator' : 'asset_plan_api'),
+      retryable: serverResult.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    if (evaluator.passed) {
+      updateReasoningSession(sessionId, (current) => ({
+        ...current,
+        artifacts: {
+          ...current.artifacts,
+          storyProduction: {
+            ...(current.artifacts?.storyProduction || {}),
+            assetPlan: plan
+          }
+        }
+      }))
+    }
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_generate_lock_asset_references') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const planResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'createStoryAssetPlanForLockReferences', {
+        endpoint: 'POST /api/projects/:id/ai/story/assets/plan',
+        projectId
+      }, () => createStoryAssetPlanWithControlFallback(projectId, {
+        rebuild: Boolean(step.params?.rebuild),
+        source: step.params?.source || 'control_lock_asset_references'
+      }))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/assets/plan', error: 'missing_project_id', message: '无法定位要锁定事物的项目', retryable: false }
+    const plan = planResult?.data?.plan || null
+    const assets = Array.isArray(plan?.assets) ? plan.assets : []
+    const maxAssets = Math.max(1, Math.min(12, Number(step.params?.maxAssets || 8)))
+    const force = Boolean(step.params?.force)
+    const requiredAssets = assets
+      .filter((asset) => asset && String(asset.id || '').trim())
+      .filter((asset) => Number(asset.sceneCount || 0) > 0 || String(asset.persistence || '') === 'high' || String(asset.renderStrategy || '') === 'ref_required')
+      .slice(0, maxAssets)
+    const generated = []
+    for (const asset of requiredAssets) {
+      const assetId = String(asset.id || '').trim()
+      const existingUri = String(asset.primaryReferenceAssetUri || '').trim()
+      if (existingUri && !force) {
+        generated.push({
+          assetId,
+          name: String(asset.name || assetId),
+          category: String(asset.category || ''),
+          lockProfile: String(asset.lockProfile || ''),
+          status: 'ready_existing',
+          primaryReferenceAssetUri: existingUri,
+          ok: true
+        })
+        continue
+      }
+      const referenceResult = await observeGameStudioOperation(sessionId, step, stepIndex, `generateLockReference:${assetId}`, {
+        endpoint: 'POST /api/projects/:id/ai/story/assets/reference',
+        projectId,
+        assetId
+      }, () => gameStudioServerClient.generateStoryAssetReference(projectId, {
+        assetId,
+        batchSize: Math.max(1, Math.min(2, Number(step.params?.batchSize || 1))),
+        style: step.params?.style || 'picture_book',
+        timeoutMs: Math.max(120000, Number(step.params?.timeoutMs || 300000))
+      }))
+      const recommendedAssetPath = String(referenceResult?.data?.recommendedAssetPath || referenceResult?.data?.assetPath || referenceResult?.data?.candidates?.[0]?.assetPath || '').trim()
+      let selectResult = null
+      if (referenceResult?.ok && recommendedAssetPath) {
+        selectResult = await observeGameStudioOperation(sessionId, step, stepIndex, `selectLockReference:${assetId}`, {
+          endpoint: 'POST /api/projects/:id/ai/story/assets/reference/select',
+          projectId,
+          assetId
+        }, () => gameStudioServerClient.selectStoryAssetReference(projectId, {
+          assetId,
+          assetPath: recommendedAssetPath,
+          timeoutMs: Math.max(120000, Number(step.params?.timeoutMs || 300000))
+        }))
+      }
+      const selectedAsset = selectResult?.data?.asset || referenceResult?.data?.asset || asset
+      generated.push({
+        assetId,
+        name: String(asset.name || assetId),
+        category: String(asset.category || ''),
+        lockProfile: String(asset.lockProfile || ''),
+        renderStrategy: String(asset.renderStrategy || ''),
+        sceneCount: Number(asset.sceneCount || 0),
+        status: selectResult?.ok ? 'selected_primary_reference' : (referenceResult?.ok ? 'candidate_generated' : 'failed'),
+        ok: Boolean(selectResult?.ok || referenceResult?.ok),
+        selected: Boolean(selectResult?.ok),
+        recommendedAssetPath,
+        primaryReferenceAssetUri: String(selectedAsset?.primaryReferenceAssetUri || recommendedAssetPath || '').trim(),
+        url: String(referenceResult?.data?.url || '').trim(),
+        score: Number.isFinite(Number(referenceResult?.data?.analysis?.score)) ? Number(referenceResult.data.analysis.score) : null,
+        passed: referenceResult?.data?.analysis?.passed ?? null,
+        summary: String(referenceResult?.data?.analysis?.summary || '').trim(),
+        error: referenceResult?.error || selectResult?.error || null,
+        message: referenceResult?.message || selectResult?.message || null
+      })
+    }
+    const okCount = generated.filter((item) => item.ok).length
+    const selectedCount = generated.filter((item) => item.selected || item.status === 'ready_existing').length
+    const failed = generated.filter((item) => !item.ok)
+    const evaluator = {
+      name: 'evaluateStoryLockAssetReferences',
+      passed: Boolean(planResult.ok && requiredAssets.length > 0 && okCount === requiredAssets.length),
+      checks: {
+        projectId,
+        hasPlan: Boolean(plan),
+        planAssetCount: assets.length,
+        requiredAssetCount: requiredAssets.length,
+        generatedCount: okCount,
+        selectedCount,
+        failedCount: failed.length,
+        failedAssets: failed.map((item) => ({ assetId: item.assetId, name: item.name, error: item.error, message: item.message }))
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed
+        ? `已锁定并绘制必要事物 ${okCount}/${requiredAssets.length}，主参考图 ${selectedCount} 个`
+        : `锁定事物出图未完成：${planResult.message || planResult.error || failed[0]?.message || failed[0]?.error || 'lock_asset_reference_failed'}`,
+      serverResult: planResult,
+      evaluator,
+      snapshot,
+      data: { plan, generated },
+      failedStage: evaluator.passed ? null : (planResult.ok ? 'lock_asset_reference_generation' : 'asset_plan_api'),
+      retryable: Boolean(planResult.retryable || failed.length)
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    if (plan) {
+      updateReasoningSession(sessionId, (current) => ({
+        ...current,
+        artifacts: {
+          ...current.artifacts,
+          storyProduction: {
+            ...(current.artifacts?.storyProduction || {}),
+            assetPlan: plan,
+            lockAssetReferences: generated
+          }
+        }
+      }))
+    }
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_generate_asset_candidate') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const assetKind = String(step.params?.assetKind || 'background').trim() || 'background'
+    const prompt = String(step.params?.prompt || userPrompt || '').trim()
+    const aiStatus = await observeGameStudioOperation(sessionId, step, stepIndex, 'getAiStatus', {
+      endpoint: 'GET /api/ai/status',
+      projectId
+    }, () => gameStudioServerClient.getAiStatus())
+    const imageEnabled = Boolean(aiStatus?.data?.ai?.effective?.enabled?.image || aiStatus?.data?.ai?.enabled?.image)
+    let serverResult = null
+    if (projectId && imageEnabled && assetKind === 'background') {
+      serverResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'generateBackground', {
+        endpoint: 'POST /api/projects/:id/ai/background',
+        projectId
+      }, () => gameStudioServerClient.generateBackground(projectId, {
+        prompt,
+        width: 768,
+        height: 1024,
+        timeoutMs: 300000
+      }))
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const ok = Boolean(serverResult?.ok)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok,
+      summary: ok
+        ? `已生成 ${assetKind} 资产候选并返回项目证据`
+        : `资产生成未完成：${!projectId ? 'missing_project_id' : (!imageEnabled ? 'image_provider_not_ready' : (assetKind !== 'background' ? 'character_asset_pipeline_not_ready' : (serverResult?.message || serverResult?.error || 'asset_generation_failed')))}`,
+      serverResult: serverResult || aiStatus,
+      evaluator: {
+        name: 'evaluateAssets',
+        passed: ok,
+        checks: {
+          projectId,
+          assetKind,
+          imageEnabled,
+          providerStatus: aiStatus?.data?.ai || null,
+          serverResult: serverResult ? { ok: serverResult.ok, endpoint: serverResult.endpoint, error: serverResult.error || null } : null
+        }
+      },
+      snapshot,
+      data: { assetKind, prompt, aiStatus: aiStatus?.data?.ai || null, serverData: serverResult?.data || null },
+      failedStage: ok ? null : (!projectId ? 'asset_project_resolution' : (!imageEnabled ? 'image_provider_preflight' : (assetKind !== 'background' ? 'character_asset_contract' : 'image_provider_call'))),
+      retryable: Boolean(projectId && (serverResult?.retryable || !imageEnabled))
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_lock_test') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const settingsResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'getStudioSettingsForLockTest', {
+      endpoint: 'GET /api/studio/settings'
+    }, () => gameStudioServerClient.getStudioSettings())
+    const effective = settingsResult?.data?.effective || {}
+    const model = String(
+      step.params?.model ||
+      effective?.image?.model ||
+      'ivisionIllustration_ivision10.safetensors'
+    ).trim()
+    const loras = Array.isArray(step.params?.loras)
+      ? step.params.loras
+      : Array.isArray(effective?.image?.loras) ? effective.image.loras : []
+    const style = String(step.params?.style || 'picture_book').trim()
+    const maxAttempts = Math.max(1, Math.min(4, Number(step.params?.maxAttempts || 3)))
+    const timeoutMs = Math.max(60000, Number(step.params?.timeoutMs || 180000))
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'storyLockTest', {
+        endpoint: 'POST /api/projects/:id/ai/story/lock/test',
+        projectId,
+        model,
+        maxAttempts
+      }, () => gameStudioServerClient.storyLockTest(projectId, {
+        model,
+        loras,
+        style,
+        width: Number(step.params?.width || 512),
+        height: Number(step.params?.height || 512),
+        steps: Number(step.params?.steps || 20),
+        cfgScale: Number(step.params?.cfgScale || 7),
+        maxAttempts,
+        timeoutMs
+      }))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/lock/test', error: 'missing_project_id', message: '无法定位要执行锁定测试的项目', retryable: false }
+    const passed = Boolean(serverResult?.data?.passed)
+    const testAttempts = Array.isArray(serverResult?.data?.attempts) ? serverResult.data.attempts : []
+    const testTarget = serverResult?.data?.testTarget || null
+    const summary = String(serverResult?.data?.summary || '').trim()
+    const evaluator = {
+      name: 'evaluateStoryLockTest',
+      passed: Boolean(serverResult.ok && passed),
+      checks: {
+        projectId,
+        model,
+        maxAttempts,
+        attemptCount: testAttempts.length,
+        passed,
+        testTarget: testTarget ? { id: testTarget.id, name: testTarget.name, category: testTarget.category } : null,
+        error: serverResult?.error || null,
+        message: serverResult?.message || null
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed
+        ? `事物锁定测试通过：${summary || (testTarget ? `asset=${String(testTarget.name || testTarget.id || 'asset')} attempts=${testAttempts.length}` : `attempts=${testAttempts.length}`)}`
+        : `事物锁定测试未通过：${serverResult.message || serverResult.error || summary || 'lock_test_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: {
+        model,
+        testTarget,
+        passed,
+        summary,
+        attempts: testAttempts.map((a) => ({
+          attempt: a.attempt,
+          assetId: a.assetId,
+          assetName: a.assetName,
+          assetPath: a.assetPath,
+          url: a.url,
+          passed: a.analysis?.passed ?? null,
+          score: a.analysis?.score ?? null,
+          summary: a.analysis?.summary || null
+        }))
+      },
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'lock_test_evaluator' : 'lock_test_api'),
+      retryable: Boolean(serverResult.retryable || (serverResult.ok && !passed))
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    if (passed && testTarget) {
+      updateReasoningSession(sessionId, (current) => ({
+        ...current,
+        artifacts: {
+          ...current.artifacts,
+          storyProduction: {
+            ...(current.artifacts?.storyProduction || {}),
+            lockTestResult: { passed, testTarget, attempts: testAttempts.length, summary }
+          }
+        }
+      }))
+    }
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  throw new Error(`unsupported_story_workflow_action_${action}`)
+}
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function fetchOk(url, timeoutMs = 3000) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), Math.max(500, Number(timeoutMs || 3000)))
+  try {
+    const response = await fetch(url, { method: 'GET', signal: controller.signal })
+    return { ok: response.ok, status: response.status, url }
+  } catch (error) {
+    return { ok: false, status: 0, url, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function waitForHttpOk(url, { timeoutMs = 60000, intervalMs = 1000 } = {}) {
+  const startedAt = Date.now()
+  let last = null
+  while (Date.now() - startedAt < timeoutMs) {
+    last = await fetchOk(url, Math.min(3000, intervalMs + 1000))
+    if (last.ok) return { ...last, elapsedMs: Date.now() - startedAt }
+    await sleepMs(intervalMs)
+  }
+  return { ...(last || { ok: false, status: 0, url }), elapsedMs: Date.now() - startedAt }
+}
+
+async function ensureComfyUiRunning(baseUrl = 'http://127.0.0.1:8188', options = {}) {
+  const normalizedBaseUrl = String(baseUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '')
+  const healthUrl = `${normalizedBaseUrl}/system_stats`
+  const before = await fetchOk(healthUrl, Math.min(3000, Number(options.healthTimeoutMs || 3000)))
+  if (before.ok) {
+    return { ok: true, started: false, baseUrl: normalizedBaseUrl, health: before, startResult: null }
+  }
+  const comfyRoot = String(options.comfyRoot || '/Volumes/ovokit2t/ComfyUI').trim()
+  const startResult = await runLocalCommand('sh', ['-lc', 'mkdir -p .run && nohup sh ./start.sh > .run/gamestudio-comfyui.log 2>&1 < /dev/null & echo $!'], {
+    cwd: comfyRoot,
+    timeoutMs: 5000
+  })
+  const after = await waitForHttpOk(healthUrl, { timeoutMs: Math.max(15000, Number(options.waitTimeoutMs || 90000)), intervalMs: 1000 })
+  return { ok: Boolean(after.ok), started: true, baseUrl: normalizedBaseUrl, health: after, startResult }
+}
+
+function runLocalCommand(command, args, { cwd = GAMESTUDIO_ROOT, timeoutMs = 180000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const stdout = []
+    const stderr = []
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM')
+      resolve({ ok: false, exitCode: null, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), error: 'command_timeout' })
+    }, Math.max(1000, Number(timeoutMs || 180000)))
+    child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)))
+    child.stderr.on('data', (chunk) => stderr.push(Buffer.from(chunk)))
+    child.on('error', (error) => {
+      clearTimeout(timeout)
+      resolve({ ok: false, exitCode: null, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), error: error instanceof Error ? error.message : String(error) })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timeout)
+      resolve({ ok: code === 0, exitCode: code, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), error: code === 0 ? null : `exit_${code}` })
+    })
+  })
+}
+
+function buildChromiumReuseTabScript(browserName) {
+  const appName = String(browserName || '').replace(/"/g, '\\"')
+  return `
+on run argv
+  set targetUrl to item 1 of argv
+  set targetHost to item 2 of argv
+  tell application "System Events"
+    if not (exists process "${appName}") then return "not_running:${appName}"
+  end tell
+  tell application "${appName}"
+    repeat with browserWindow in windows
+      set browserTabIndex to 0
+      repeat with browserTab in tabs of browserWindow
+        set browserTabIndex to browserTabIndex + 1
+        try
+          if (URL of browserTab contains targetHost) then
+            set URL of browserTab to targetUrl
+            set active tab index of browserWindow to browserTabIndex
+            set index of browserWindow to 1
+            activate
+            return "reused:${appName}"
+          end if
+        end try
+      end repeat
+    end repeat
+  end tell
+  return "not_found:${appName}"
+end run
+`
+}
+
+function buildSafariReuseTabScript() {
+  return `
+on run argv
+  set targetUrl to item 1 of argv
+  set targetHost to item 2 of argv
+  tell application "System Events"
+    if not (exists process "Safari") then return "not_running:Safari"
+  end tell
+  tell application "Safari"
+    repeat with browserWindow in windows
+      repeat with browserTab in tabs of browserWindow
+        try
+          if (URL of browserTab contains targetHost) then
+            set URL of browserTab to targetUrl
+            set current tab of browserWindow to browserTab
+            set index of browserWindow to 1
+            activate
+            return "reused:Safari"
+          end if
+        end try
+      end repeat
+    end repeat
+  end tell
+  return "not_found:Safari"
+end run
+`
+}
+
+async function openUrlReusingBrowserTab(url, { cwd = GAMESTUDIO_ROOT, timeoutMs = 5000 } = {}) {
+  let targetHost = ''
+  try {
+    targetHost = new URL(url).host
+  } catch {
+    targetHost = 'localhost:8868'
+  }
+  const reuseScripts = [
+    buildChromiumReuseTabScript('Google Chrome'),
+    buildChromiumReuseTabScript('Chromium'),
+    buildChromiumReuseTabScript('Microsoft Edge'),
+    buildChromiumReuseTabScript('Brave Browser'),
+    buildSafariReuseTabScript()
+  ]
+  const attempts = []
+  for (const script of reuseScripts) {
+    const result = await runLocalCommand('osascript', ['-e', script, url, targetHost], { cwd, timeoutMs })
+    const stdout = String(result.stdout || '').trim()
+    attempts.push({ ok: result.ok, exitCode: result.exitCode, stdout, stderr: String(result.stderr || '').trim(), error: result.error || null })
+    if (result.ok && stdout.startsWith('reused:')) {
+      return { ...result, method: 'reuse-existing-tab', reused: true, browser: stdout.slice('reused:'.length), attempts }
+    }
+  }
+  const fallback = await runLocalCommand('open', [url], { cwd, timeoutMs })
+  return { ...fallback, method: 'open-fallback', reused: false, attempts }
+}
+
+async function openUrlInBrowser(url, { cwd = GAMESTUDIO_ROOT, timeoutMs = 5000, allowNewTabFallback = true } = {}) {
+  const reused = await openUrlReusingBrowserTab(url, { cwd, timeoutMs })
+  if (reused.reused || allowNewTabFallback) return reused
+  return {
+    ok: true,
+    exitCode: 0,
+    stdout: 'reuse_not_found_new_tab_fallback_disabled',
+    stderr: '',
+    error: null,
+    method: 'reuse-not-found',
+    reused: false,
+    attempts: reused.attempts || []
+  }
+}
+
+function buildGameStudioBootstrapResult({ action, ok, summary, data = null, evaluator = null, failedStage = null, retryable = false }) {
+  return {
+    action,
+    ok: Boolean(ok),
+    status: 'completed',
+    summary,
+    failedStage,
+    retryable: Boolean(retryable),
+    evaluator,
+    data
+  }
+}
+
+function updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result) {
+  updateReasoningSession(sessionId, (session) => {
+    const bootstrap = session.artifacts?.gameStudioBootstrap && typeof session.artifacts.gameStudioBootstrap === 'object'
+      ? session.artifacts.gameStudioBootstrap
+      : {}
+    return {
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        gameStudioBootstrap: {
+          ...bootstrap,
+          lastResult: result,
+          steps: {
+            ...(bootstrap.steps || {}),
+            [step.stepId]: result
+          }
+        },
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: {
+            tool: step.tool,
+            action: step.action,
+            params: step.params || {}
+          },
+          rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+          structuredResult: result
+        }
+      }
+    }
+  })
+  appendReasoningEvent(sessionId, 'tool_result', step.title, result.summary || String(result.action || step.action), {
+    stepId: step.stepId,
+    data: buildReasoningStepEventData(step, stepIndex, {
+      result,
+      observableOps: buildReasoningObservableOps(step, result)
+    })
+  })
+  appendReasoningEvent(sessionId, 'step_completed', step.title, result.ok ? 'GameStudio bootstrap step completed' : 'GameStudio bootstrap step failed or blocked', {
+    stepId: step.stepId,
+    data: buildReasoningStepEventData(step, stepIndex, result)
+  })
+}
+
+function buildLocalProductionStudioSettings(params = {}) {
+  const model = String(params.model || 'gpt-oss-20b-MXFP4-Q8').trim()
+  const localModelBaseUrl = String(params.localModelBaseUrl || 'http://127.0.0.1:18888/v1').trim()
+  const comfyuiBaseUrl = String(params.comfyuiBaseUrl || 'http://127.0.0.1:8188').trim()
+  const comfyuiModelsRoot = String(params.comfyuiModelsRoot || '/Volumes/ovokit2t/ComfyUI/models').trim()
+  const imageModel = String(params.imageModel || params.comfyuiModel || 'ivisionIllustration_ivision10.safetensors').trim()
+  const imageSize = String(params.imageSize || '1024x1024').trim()
+  return {
+    enabled: {
+      scripts: true,
+      prompt: true,
+      image: true,
+      tts: false
+    },
+    scripts: {
+      provider: 'localoxml',
+      model,
+      apiUrl: localModelBaseUrl
+    },
+    prompt: {
+      provider: 'localoxml',
+      model,
+      apiUrl: localModelBaseUrl
+    },
+    translation: {
+      provider: 'localoxml',
+      model,
+      apiUrl: localModelBaseUrl
+    },
+    image: {
+      provider: 'comfyui',
+      model: imageModel,
+      comfyuiBaseUrl,
+      comfyuiModelsRoot,
+      size: imageSize
+    }
+  }
+}
+
+async function executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepIndex) {
+  const action = step.action
+  if (action === 'gamestudio_ensure_running') {
+    const serverBaseUrl = String(step.params?.serverUrl || 'http://127.0.0.1:1999').replace(/\/+$/, '')
+    const editorUrl = String(step.params?.editorUrl || 'http://localhost:8868').replace(/\/+$/, '')
+    const healthUrl = `${serverBaseUrl}/api/health`
+    let serverHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'fetchServerHealth', {
+      endpoint: 'GET /api/health'
+    }, () => fetchOk(healthUrl, 3000))
+    let startResult = null
+    if (!serverHealth.ok && step.params?.startIfNeeded !== false) {
+      startResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'startProjectDetached', {
+        endpoint: 'bash ./start_project.sh --detached'
+      }, () => runLocalCommand('bash', ['./start_project.sh', '--detached'], { cwd: GAMESTUDIO_ROOT, timeoutMs: 180000 }))
+      serverHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'waitForServerHealth', {
+        endpoint: 'GET /api/health'
+      }, () => waitForHttpOk(healthUrl, { timeoutMs: 60000, intervalMs: 1000 }))
+    }
+    const editorHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'waitForEditor', {
+      endpoint: 'GET editor root'
+    }, () => waitForHttpOk(editorUrl, { timeoutMs: serverHealth.ok ? 5000 : 1000, intervalMs: 1000 }))
+    const ok = Boolean(serverHealth.ok && editorHealth.ok)
+    const result = buildGameStudioBootstrapResult({
+      action,
+      ok,
+      summary: ok
+        ? `GameStudio 已就绪：server=${healthUrl} editor=${editorUrl}`
+        : `GameStudio 未完全就绪：server=${serverHealth.ok ? 'ok' : 'fail'} editor=${editorHealth.ok ? 'ok' : 'fail'}`,
+      data: { serverBaseUrl, editorUrl, serverHealth, editorHealth, startResult },
+      evaluator: {
+        name: 'evaluateGameStudioRunning',
+        passed: ok,
+        checks: { serverHealth, editorHealth, startExitCode: startResult?.exitCode ?? null }
+      },
+      failedStage: ok ? null : 'gamestudio_startup',
+      retryable: !ok
+    })
+    updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'gamestudio_open_editor') {
+    const editorBaseUrl = String(step.params?.editorUrl || 'http://localhost:8868').replace(/\/+$/, '')
+    const openTarget = String(step.params?.openTarget || '').trim()
+    const editorUrl = openTarget === 'ai-create-story'
+      ? `${editorBaseUrl}/?action=ai-create-story`
+      : editorBaseUrl
+    const reachable = await observeGameStudioOperation(sessionId, step, stepIndex, 'fetchEditor', {
+      endpoint: 'GET editor root'
+    }, () => fetchOk(editorBaseUrl, 3000))
+    let openResult = { attempted: false, ok: false, note: 'openBrowser_disabled' }
+    if (step.params?.openBrowser !== false && process.platform === 'darwin') {
+      const allowNewTabFallback = step.params?.openNewTabFallback !== false
+      const opened = await observeGameStudioOperation(sessionId, step, stepIndex, 'openEditorInBrowser', {
+        endpoint: 'reuse existing browser tab or open editor url'
+      }, () => openUrlInBrowser(editorUrl, { cwd: GAMESTUDIO_ROOT, timeoutMs: 5000, allowNewTabFallback }))
+      openResult = { attempted: true, ok: opened.ok, exitCode: opened.exitCode, error: opened.error || null, method: opened.method || null, reused: Boolean(opened.reused), browser: opened.browser || null }
+    }
+    const ok = Boolean(reachable.ok)
+    const result = buildGameStudioBootstrapResult({
+      action,
+      ok,
+      summary: ok ? `GameStudio Editor 可访问：${editorUrl}` : `GameStudio Editor 当前不可访问：${editorUrl}`,
+      data: { editorUrl, openTarget: openTarget || null, reachable, openResult },
+      evaluator: { name: 'evaluateGameStudioEditor', passed: ok, checks: { reachable, openResult } },
+      failedStage: ok ? null : 'gamestudio_editor_unreachable',
+      retryable: !ok
+    })
+    updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'gamestudio_read_settings') {
+    const serverResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'getStudioSettings', {
+      endpoint: 'GET /api/studio/settings'
+    }, () => gameStudioServerClient.getStudioSettings())
+    const effective = serverResult?.data?.effective || null
+    const ok = Boolean(serverResult.ok && effective)
+    const result = buildGameStudioBootstrapResult({
+      action,
+      ok,
+      summary: ok ? `已读取 GameStudio settings：scripts=${effective?.scripts?.provider || 'none'} image=${effective?.image?.provider || 'none'}` : `读取 GameStudio settings 失败：${serverResult.message || serverResult.error}`,
+      data: { settings: serverResult?.data?.settings || null, effective },
+      evaluator: { name: 'evaluateGameStudioSettings', passed: ok, checks: { endpoint: serverResult.endpoint, status: serverResult.status, effective } },
+      failedStage: ok ? null : 'gamestudio_settings_read',
+      retryable: serverResult.retryable
+    })
+    updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'gamestudio_configure_local_production') {
+    const settings = buildLocalProductionStudioSettings(step.params || {})
+    const serverResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'updateStudioSettings', {
+      endpoint: 'PUT /api/studio/settings'
+    }, () => gameStudioServerClient.updateStudioSettings(settings))
+    const readBack = serverResult.ok ? await observeGameStudioOperation(sessionId, step, stepIndex, 'getStudioSettingsAfterWrite', {
+      endpoint: 'GET /api/studio/settings'
+    }, () => gameStudioServerClient.getStudioSettings()) : null
+    const effective = readBack?.data?.effective || null
+    const ok = Boolean(serverResult.ok && effective?.enabled?.image && effective?.image?.provider === 'comfyui' && effective?.scripts?.provider === 'localoxml')
+    const result = buildGameStudioBootstrapResult({
+      action,
+      ok,
+      summary: ok ? `已写入本地生产配置：model=${settings.scripts.model} comfyui=${settings.image.comfyuiBaseUrl}` : `本地生产配置未通过读回验证：${serverResult.message || serverResult.error || 'readback_failed'}`,
+      data: { requestedSettings: settings, saved: serverResult?.data?.settings || null, effective },
+      evaluator: {
+        name: 'evaluateLocalProductionSettings',
+        passed: ok,
+        checks: {
+          scriptsProvider: effective?.scripts?.provider || null,
+          scriptsModel: effective?.scripts?.model || null,
+          imageEnabled: effective?.enabled?.image || false,
+          imageProvider: effective?.image?.provider || null,
+          comfyuiBaseUrl: effective?.image?.comfyuiBaseUrl || null
+        }
+      },
+      failedStage: ok ? null : 'gamestudio_settings_write',
+      retryable: serverResult.retryable
+    })
+    updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'gamestudio_self_check') {
+    const timeoutMs = Math.max(3000, Number(step.params?.timeoutMs || 15000))
+    const health = await observeGameStudioOperation(sessionId, step, stepIndex, 'getHealth', {
+      endpoint: 'GET /api/health'
+    }, () => gameStudioServerClient.getHealth())
+    const settings = await observeGameStudioOperation(sessionId, step, stepIndex, 'getStudioSettings', {
+      endpoint: 'GET /api/studio/settings'
+    }, () => gameStudioServerClient.getStudioSettings())
+    const diagnose = await observeGameStudioOperation(sessionId, step, stepIndex, 'diagnoseStudio', {
+      endpoint: 'POST /api/studio/diagnose'
+    }, () => gameStudioServerClient.diagnoseStudio({ service: 'all', deepText: false, deepImages: false, timeoutMs }))
+    const imagePreflightMode = String(step.params?.imagePreflightMode || step.params?.mode || 'basic').trim().toLowerCase() === 'storyboard' ? 'storyboard' : 'basic'
+    const preflight = step.params?.imagePreflight === false
+      ? null
+      : await observeGameStudioOperation(sessionId, step, stepIndex, 'preflightImageProvider', {
+        endpoint: 'POST /api/studio/image/preflight'
+      }, () => gameStudioServerClient.preflightImageProvider({ mode: imagePreflightMode, timeoutMs }))
+    const preflightOk = preflight ? Boolean(preflight.ok && preflight?.data?.checks?.ok !== false) : true
+    const ok = Boolean(health.ok && settings.ok && diagnose.ok && preflightOk)
+    const imageProvider = settings?.data?.effective?.image?.provider || preflight?.data?.checks?.provider || 'none'
+    const result = buildGameStudioBootstrapResult({
+      action,
+      ok,
+      summary: ok
+        ? `GameStudio 自检通过：health ok，image provider=${imageProvider}`
+        : `GameStudio 自检未通过：health=${health.ok ? 'ok' : 'fail'} diagnose=${diagnose.ok ? 'ok' : 'fail'} preflight=${preflightOk ? 'ok' : 'fail'}`,
+      data: {
+        health: { ok: health.ok, status: health.status, data: health.data || null },
+        settings: settings?.data || null,
+        diagnose: diagnose?.data || null,
+        preflight: preflight?.data || null
+      },
+      evaluator: {
+        name: 'evaluateGameStudioSelfCheck',
+        passed: ok,
+        checks: {
+          healthOk: health.ok,
+          settingsOk: settings.ok,
+          diagnoseOk: diagnose.ok,
+          imagePreflightOk: preflightOk,
+          imagePreflightMode,
+          imageProvider,
+          preflightReason: preflight?.data?.checks?.reason || preflight?.error || null
+        }
+      },
+      failedStage: ok ? null : (!health.ok ? 'gamestudio_health' : (!settings.ok ? 'gamestudio_settings' : (!diagnose.ok ? 'gamestudio_diagnose' : 'gamestudio_image_preflight'))),
+      retryable: Boolean(health.retryable || settings.retryable || diagnose.retryable || preflight?.retryable)
+    })
+    updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'gamestudio_bootstrap_answer') {
+    const session = readReasoningSession(sessionId)
+    const stepResults = session?.artifacts?.gameStudioBootstrap?.steps || {}
+    const openEditor = stepResults.step_gamestudio_open_editor || null
+    const ensureRunning = stepResults.step_gamestudio_ensure_running || null
+    const readSettings = stepResults.step_gamestudio_read_settings || null
+    const selfCheck = stepResults.step_gamestudio_self_check || null
+    const completedResults = Object.values(stepResults).filter((entry) => entry && typeof entry === 'object')
+    const failedResults = completedResults.filter((entry) => entry.ok === false)
+    const editorUrl = openEditor?.data?.editorUrl || ensureRunning?.data?.editorUrl || 'http://localhost:8868'
+    const lines = [
+      `已通过 Control 打开 GameStudio：${editorUrl}`,
+      openEditor?.data?.openTarget === 'ai-create-story' ? '目标入口：AI 创建故事弹窗。' : '',
+      ensureRunning ? `运行状态：${ensureRunning.ok ? '已就绪' : '未完全就绪'}。` : '',
+      readSettings ? `Studio Settings：${readSettings.summary || (readSettings.ok ? '读取成功' : '读取失败')}。` : '',
+      selfCheck ? `自检：${selfCheck.summary || (selfCheck.ok ? '通过' : '未通过')}。` : '',
+      failedResults.length ? `需要关注：${failedResults.map((entry) => entry.failedStage || entry.action || 'unknown').join(', ')}` : ''
+    ].filter(Boolean)
+    const finalAnswer = lines.join('\n')
+    const ok = failedResults.length === 0
+    const result = buildGameStudioBootstrapResult({
+      action,
+      ok,
+      summary: finalAnswer,
+      data: {
+        editorUrl,
+        openTarget: openEditor?.data?.openTarget || null,
+        completedStepCount: completedResults.length,
+        failedStepCount: failedResults.length,
+        failedStages: failedResults.map((entry) => entry.failedStage || entry.action || 'unknown')
+      },
+      evaluator: {
+        name: 'evaluateGameStudioBootstrapSummary',
+        passed: ok,
+        checks: {
+          editorOpened: Boolean(openEditor?.ok),
+          gameStudioReady: Boolean(ensureRunning?.ok),
+          failedStepCount: failedResults.length
+        }
+      },
+      failedStage: ok ? null : 'gamestudio_bootstrap_summary',
+      retryable: false
+    })
+    const answerPersisted = persistHermesChatReply(sessionId, finalAnswer, null, { provisional: true })
+    updateReasoningSession(sessionId, (current) => ({
+      ...current,
+      artifacts: {
+        ...current.artifacts,
+        finalAnswer,
+        finalAnswerUsage: null,
+        finalAnswerPersisted: answerPersisted
+      }
+    }))
+    updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  throw new Error(`unsupported_gamestudio_bootstrap_action_${action}`)
 }
 
 async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
@@ -4432,6 +7833,14 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       observableOps: buildReasoningObservableOps(step)
     })
   })
+
+  if (String(step.action || '').startsWith('story_')) {
+    return executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex)
+  }
+
+  if (String(step.action || '').startsWith('gamestudio_')) {
+    return executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepIndex)
+  }
 
   if (step.action === 'read_recent_context') {
     const session = readReasoningSession(sessionId)
@@ -4630,13 +8039,14 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       correctionPrompt,
       contextSelection: session?.submissionContext || {}
     }))
+    const answerPersisted = persistHermesChatReply(sessionId, answer.reply, answer.usage || null, { provisional: true })
     updateReasoningSession(sessionId, (current) => ({
       ...current,
       artifacts: {
         ...current.artifacts,
         finalAnswer: answer.reply,
         finalAnswerUsage: answer.usage || null,
-        finalAnswerPersisted: false,
+        finalAnswerPersisted: answerPersisted,
         latestStepReviewEvidence: {
           targetType: 'step',
           stepId: step.stepId,
@@ -4757,12 +8167,12 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
   }
 
   if (step.action === 'search_workspace_text') {
-    const query = String(step.params?.query || '').trim()
+    const query = String(step.params?.query || step.params?.pattern || '').trim()
     if (!query) {
       throw new Error('search_workspace_text_missing_query')
     }
     const result = runWorkspaceTextSearch(query, {
-      startDir: step.params?.startDir,
+      startDir: step.params?.startDir || step.params?.dirPath,
       maxResults: step.params?.maxResults,
     })
     updateReasoningSession(sessionId, (session) => ({
@@ -5403,8 +8813,15 @@ async function runReasoningSession(sessionId, binding, history) {
 async function createReasoningSession(agentId, userPrompt, submissionContext = {}) {
   const sessionId = createOpaqueId('reasoning')
   const now = new Date().toISOString()
-  const parentSessionId = String(submissionContext?.parentSessionId || '').trim() || null
-  const allowRecentVerifiedReuse = !Boolean(submissionContext?.productionTest || submissionContext?.forceFreshRun)
+  const normalizedSubmissionContext = {
+    ...submissionContext,
+    disableQualityAutoRetry: submissionContext?.disableQualityAutoRetry === undefined
+      ? isLikelyReadOnlyReasoningPrompt(userPrompt)
+      : Boolean(submissionContext.disableQualityAutoRetry)
+  }
+  const parentSessionId = String(normalizedSubmissionContext?.parentSessionId || '').trim() || null
+  const allowRecentVerifiedReuse = Boolean(normalizedSubmissionContext?.allowRecentVerifiedReuse)
+    && !Boolean(normalizedSubmissionContext?.productionTest || normalizedSubmissionContext?.forceFreshRun)
   const reusedSession = allowRecentVerifiedReuse ? findReusableVerifiedReasoningSession(userPrompt) : null
   if (reusedSession) {
     const reusedReply = String(reusedSession.artifacts?.finalAnswer || '').trim()
@@ -5414,7 +8831,7 @@ async function createReasoningSession(agentId, userPrompt, submissionContext = {
       sessionKind: 'agent-runtime',
       agentId,
       userPrompt,
-      submissionContext,
+      submissionContext: normalizedSubmissionContext,
       parentSessionId,
       childSessionIds: [],
       status: 'completed',
@@ -5461,7 +8878,7 @@ async function createReasoningSession(agentId, userPrompt, submissionContext = {
     sessionKind: 'agent-runtime',
     agentId,
     userPrompt,
-    submissionContext,
+    submissionContext: normalizedSubmissionContext,
     parentSessionId,
     childSessionIds: [],
     status: 'planning',
@@ -5478,8 +8895,8 @@ async function createReasoningSession(agentId, userPrompt, submissionContext = {
       recentContext: null,
       latestPlanReviewEvidence: null,
       latestStepReviewEvidence: null,
-        childGoalQueue: Array.isArray(submissionContext?.childGoals) ? submissionContext.childGoals : [],
-        pendingWrites: {},
+      childGoalQueue: Array.isArray(normalizedSubmissionContext?.childGoals) ? normalizedSubmissionContext.childGoals : [],
+      pendingWrites: {},
       approvedStepRuns: {},
       nextStepIndex: 0,
       tasks: {
@@ -5589,6 +9006,7 @@ function writeHermesChatHistory(history) {
   const chatDir = path.dirname(chatFile)
   if (!fs.existsSync(chatDir)) fs.mkdirSync(chatDir, { recursive: true })
   fs.writeFileSync(chatFile, JSON.stringify(Array.isArray(history) ? history : [], null, 2), 'utf-8')
+  scheduleMemoryLifecycleMaintenance('chat_history_updated')
 }
 
 function readStoredHermesChatHistory() {
@@ -5720,6 +9138,17 @@ function appendHermesChatHistoryEntries(entries) {
   writeHermesChatHistory(history)
 }
 
+function upsertHermesChatHistoryEntry(entry, predicate) {
+  const history = readStoredHermesChatHistory()
+  const index = history.findIndex((item) => predicate(item))
+  if (index >= 0) {
+    history[index] = entry
+  } else {
+    history.push(entry)
+  }
+  writeHermesChatHistory(history)
+}
+
 function buildActiveHermesChatRequestPayload(request = activeHermesChatRequest) {
   if (!request) return null
   return {
@@ -5742,13 +9171,17 @@ function persistHermesChatPrompt(requestId, userPrompt) {
   }
 }
 
-function persistHermesChatReply(requestId, reply, tokens) {
+function persistHermesChatReply(requestId, reply, tokens, extra = {}) {
   try {
-    appendHermesChatHistoryEntries([
-      createHermesChatEntry('hermes', reply, { requestId, tokens, chatSessionId: currentHermesChatSessionId })
-    ])
+    const entry = createHermesChatEntry('hermes', reply, { requestId, tokens, chatSessionId: currentHermesChatSessionId, ...extra })
+    upsertHermesChatHistoryEntry(entry, (item) => (
+      String(item?.requestId || '').trim() === String(requestId || '').trim()
+      && String(item?.role || '').trim().toLowerCase() === 'hermes'
+    ))
+    return true
   } catch (err) {
     console.error('Failed to save chat reply', err)
+    return false
   }
 }
 
@@ -5944,6 +9377,7 @@ function writeContextPoolEntry(entry) {
       })
   }
   fs.writeFileSync(getContextPoolEntryFilePath(normalizedEntry.entryId), JSON.stringify(normalizedEntry, null, 2), 'utf8')
+  scheduleMemoryLifecycleMaintenance('context_pool_updated')
   return normalizedEntry
 }
 
@@ -6376,45 +9810,45 @@ async function recoverHermesChatRuntime(reason) {
   return activeHermesChatRecovery
 }
 
-function registerChatRequestRoute(app) {
-  registerChatRequestRoutes(app, createControlServerRouteContext())
-}
-
 // 启动时清理孤儿 session（上次服务器崩溃或重启遗留的 planning/running 状态）
 export function cleanupOrphanedReasoningSessions() {
   try {
-    if (!fs.existsSync(HERMES_REASONING_SESSIONS_DIR)) return
-    const files = fs.readdirSync(HERMES_REASONING_SESSIONS_DIR).filter((f) => f.endsWith('.json'))
+    const sessionDirs = [HERMES_REASONING_SESSIONS_DIR, HERMES_AGENT_RUNTIME_SESSIONS_DIR]
     let count = 0
-    for (const file of files) {
-      const filePath = path.join(HERMES_REASONING_SESSIONS_DIR, file)
-      try {
-        const raw = fs.readFileSync(filePath, 'utf8')
-        const session = JSON.parse(raw)
-        if (session.status === 'planning' || session.status === 'running') {
-          session.status = 'failed'
-          session.error = '服务器重启，本次 session 被中断（orphaned by server restart）'
-          session.updatedAt = new Date().toISOString()
-          if (!Array.isArray(session.events)) session.events = []
-          session.events.push({
-            eventId: `orphan_cleanup_${Date.now()}`,
-            type: 'session_failed',
-            title: '服务器重启中断',
-            summary: '服务器重启时检测到本 session 仍为 running/planning 状态，已标记为失败。',
-            timestamp: new Date().toISOString(),
-            data: {}
-          })
-          fs.writeFileSync(filePath, JSON.stringify(session, null, 2), 'utf8')
-          count++
-          console.log(`[control-server] [startup] orphaned session marked failed: ${session.sessionId}`)
+    for (const sessionDir of sessionDirs) {
+      if (!fs.existsSync(sessionDir)) continue
+      const files = fs.readdirSync(sessionDir).filter((f) => f.endsWith('.json'))
+      for (const file of files) {
+        const filePath = path.join(sessionDir, file)
+        try {
+          const raw = fs.readFileSync(filePath, 'utf8')
+          const session = JSON.parse(raw)
+          if (session.status === 'planning' || session.status === 'running') {
+            session.status = 'failed'
+            session.error = '服务器重启，本次 session 被中断（orphaned by server restart）'
+            session.updatedAt = new Date().toISOString()
+            if (!Array.isArray(session.events)) session.events = []
+            session.events.push({
+              eventId: `orphan_cleanup_${Date.now()}`,
+              type: 'session_failed',
+              title: '服务器重启中断',
+              summary: '服务器重启时检测到本 session 仍为 running/planning 状态，已标记为失败。',
+              timestamp: new Date().toISOString(),
+              data: {}
+            })
+            fs.writeFileSync(filePath, JSON.stringify(session, null, 2), 'utf8')
+            count++
+            console.log(`[control-server] [startup] orphaned session marked failed: ${session.sessionId}`)
+          }
+        } catch (e) {
+          // ignore corrupt session files
         }
-      } catch (e) {
-        // ignore corrupt session files
       }
     }
     if (count > 0) {
       console.log(`[control-server] [startup] cleaned up ${count} orphaned reasoning session(s)`)
     }
+    scheduleMemoryLifecycleMaintenance('startup_orphan_cleanup', 0)
   } catch (e) {
     console.error('[control-server] [startup] orphan cleanup error:', e)
   }

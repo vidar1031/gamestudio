@@ -1,7 +1,6 @@
 export function registerOverviewRoutes(app, context) {
   const {
     fs,
-    fetch,
     HERMES_HOME,
     HERMES_RUNTIME_LOG_FILE,
     appendHermesLog,
@@ -14,13 +13,16 @@ export function registerOverviewRoutes(app, context) {
     buildOpenClawAgentRecord,
     buildRuntimeStateSnapshot,
     getHermesControlState,
+    getPersistedHermesControlConfig,
     getHermesRuntimeState,
-    getProviderAccess,
     hermesAgentDefinition,
-    inspectModelAccess,
+    inspectProviderModelState,
+    listActiveReasoningExecutions,
+    loadProviderModel,
     normalizeModelBaseUrl,
     normalizeProviderName,
     openclawAgentDefinition,
+    unloadProviderModel,
     updateHermesControlState,
   } = context
 
@@ -46,8 +48,13 @@ export function registerOverviewRoutes(app, context) {
     appendHermesLog(`[MODEL] Request ${action} model: ${model || 'unknown'} on ${provider} at ${baseUrl}`)
 
     if (action === 'load') {
-      const inspection = await inspectModelAccess({ provider, baseUrl, model })
-      if (!inspection.accessible) {
+      const loadResult = await loadProviderModel({ provider, baseUrl, model })
+      if (!loadResult.ok) {
+        appendHermesLog(`[MODEL][ERROR] ${loadResult.detail}`)
+        return c.json({ ok: false, action, model, error: loadResult.detail }, 409)
+      }
+      const inspection = await inspectProviderModelState({ provider, baseUrl, model })
+      if (!inspection.accessible || inspection.loaded !== true) {
         updateHermesControlState({
           model: buildModelStateSnapshot({ provider, baseUrl, model, inspection, lastAction: 'load' })
         })
@@ -57,49 +64,59 @@ export function registerOverviewRoutes(app, context) {
       const state = updateHermesControlState({
         model: buildModelStateSnapshot({ provider, baseUrl, model, inspection, lastAction: 'load' })
       })
-      appendHermesLog(`[MODEL][OK] ${model} ready for inference`)
+      appendHermesLog(`[MODEL][OK] ${loadResult.detail}`)
       return c.json({ ok: true, action, model, inspection, state })
     }
 
     if (action === 'unload') {
-      if (provider === 'omlx') {
-        try {
-          const access = getProviderAccess(provider, baseUrl)
-          const response = await fetch(`${access.baseUrl}/models/${model}/unload`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(access.headers || {})
-            }
-          })
-          const data = await response.json().catch(() => null)
-          if (!response.ok) {
-            const error = data?.error?.message || data?.message || `HTTP ${response.status}`
-            appendHermesLog(`[MODEL][ERROR] Failed to unload model: ${error}`)
-            return c.json({ ok: false, action, model, error }, response.status)
-          }
-          appendHermesLog(`[MODEL][OK] ${model} successfully unloaded from OMLX`)
-        } catch (error) {
-          appendHermesLog(`[MODEL][ERROR] Could not reach OMLX for unload: ${error.message}`)
-          return c.json({ ok: false, action, model, error: error.message }, 500)
-        }
-      } else {
-        appendHermesLog(`[MODEL] ${model || 'unknown'} marked for unload (Provider ${provider} does not support explicit unload)`)
-      }
-      const state = updateHermesControlState({
-        model: {
-          status: 'unloaded',
-          label: '未启动',
-          detail: `${model || '当前模型'} 已卸载`,
-          provider,
-          baseUrl,
+      const runtimeStatus = getHermesRuntimeState()
+      const activeExecutions = listActiveReasoningExecutions()
+      const persistedConfig = getPersistedHermesControlConfig()
+      const unloadingCurrentRuntimeModel = runtimeStatus.state === 'running'
+        && String(persistedConfig.provider || '') === provider
+        && String(persistedConfig.baseUrl || '') === baseUrl
+        && String(persistedConfig.model || '') === model
+
+      if (activeExecutions.length > 0) {
+        return c.json({
+          ok: false,
+          action,
           model,
-          inspectedAt: new Date().toISOString(),
-          loadedAt: null,
-          lastAction: 'unload',
-          inspection: null
-        }
-      })
+          error: 'reasoning_in_progress',
+          detail: '当前仍有模型请求在执行，禁止卸载模型。',
+          activeExecutions
+        }, 409)
+      }
+
+      if (unloadingCurrentRuntimeModel) {
+        return c.json({
+          ok: false,
+          action,
+          model,
+          error: 'runtime_model_in_use',
+          detail: '当前模型仍被 Hermes runtime 使用，请先停止或切换模型。',
+          runtimeStatus
+        }, 409)
+      }
+
+      const unloadResult = await unloadProviderModel({ provider, baseUrl, model })
+      if (!unloadResult.ok) {
+        appendHermesLog(`[MODEL][ERROR] ${unloadResult.detail}`)
+        return c.json({ ok: false, action, model, error: unloadResult.detail }, 409)
+      }
+
+      const inspection = await inspectProviderModelState({ provider, baseUrl, model })
+
+      const currentModelState = getHermesControlState().model
+      const shouldUpdateControlModel = String(currentModelState?.provider || '') === provider
+        && String(currentModelState?.baseUrl || '') === baseUrl
+        && String(currentModelState?.model || '') === model
+      const state = shouldUpdateControlModel
+        ? updateHermesControlState({
+            model: buildModelStateSnapshot({ provider, baseUrl, model, inspection, lastAction: 'unload' })
+          })
+        : getHermesControlState()
+      appendHermesLog(`[MODEL][OK] ${unloadResult.detail}`)
       return c.json({ ok: true, action, model, state })
     }
 

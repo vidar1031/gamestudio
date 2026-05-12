@@ -18,6 +18,16 @@ const REASONING_DIRECTORY_SEARCH_PREFIXES = ['', 'apps', 'packages', 'storage', 
 
 const REASONING_PROJECT_LISTING_KEYWORDS = /storage\/projects|当前已有项目|当前项目|已有项目|现有项目|列出项目|找出项目|盘点项目/i
 
+export function isProjectStructureInspectionPrompt(userPrompt) {
+  const prompt = String(userPrompt || '').trim()
+  if (!prompt) return false
+  const asksForProjectSelection = /选一个现有项目|选取一个现有项目|选择一个现有项目|任选一个项目|基于一个现有项目/i.test(prompt)
+    || (/项目/i.test(prompt) && /现有|已有|当前/.test(prompt))
+  const asksForStructure = /顶层目录|目录结构|项目结构|顶层结构/i.test(prompt)
+  const asksForExistenceBreakdown = /配置|故事内容|资源|导出产物|是否存在|分别是否存在|存在情况/i.test(prompt)
+  return asksForProjectSelection && asksForStructure && asksForExistenceBreakdown
+}
+
 export function normalizeWorkspaceRelativePath(inputPath) {
   return String(inputPath || '').trim().replace(/\\/g, '/')
 }
@@ -29,6 +39,7 @@ export function isDirectoryListingPrompt(userPrompt) {
 export function isProjectListingPrompt(userPrompt) {
   const prompt = String(userPrompt || '').trim()
   if (!prompt) return false
+  if (isProjectStructureInspectionPrompt(prompt)) return false
   if (REASONING_PROJECT_LISTING_KEYWORDS.test(prompt)) return true
   return /项目/i.test(prompt) && /当前|已有|现有|哪些|列表|列出|找出|盘点/i.test(prompt)
 }

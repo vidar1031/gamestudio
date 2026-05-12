@@ -9,7 +9,13 @@ export const hermesAgentDefinition = {
     'query_runtime_health',
     'execute_allowed_action',
     'write_action_result',
-    'report_diagnostics'
+    'report_diagnostics',
+    'manage_context_memory',
+    'execute_gamestudio_bootstrap',
+    'execute_story_workflow',
+    'observe_gamestudio_operations',
+    'run_review_gated_workspace_changes',
+    'support_production_test_evidence'
   ]
 }
 

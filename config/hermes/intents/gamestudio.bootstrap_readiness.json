@@ -1,0 +1,48 @@
+{
+  "id": "gamestudio.bootstrap_readiness",
+  "version": 1,
+  "source": "json",
+  "priority": 83,
+  "description": "Quality gate: GameStudio bootstrap answers must report Server, Editor, settings and diagnose evidence.",
+  "match": {
+    "anyRegex": [
+      "GameStudio.*(启动|打开|配置|自检|诊断|settings)",
+      "bootstrap|ensureRunning|openEditor|Studio Settings",
+      "本地生产配置|OMLX|ComfyUI|图片 provider"
+    ]
+  },
+  "evaluation": {
+    "requireArtifactKey": "gameStudioBootstrap",
+    "minScore": 82,
+    "scoreBase": 18,
+    "perRequiredHit": 14,
+    "perOptionalHit": 6,
+    "perEvidenceHit": 12,
+    "perForbiddenHit": -30,
+    "mustInclude": [
+      "Server",
+      "Editor",
+      "settings"
+    ],
+    "optional": [
+      "diagnose",
+      "health",
+      "OMLX",
+      "ComfyUI",
+      "provider",
+      "preflight"
+    ],
+    "evidenceRegex": [
+      "http://127\\.0\\.0\\.1:[0-9]+|http://localhost:[0-9]+",
+      "settings|effective",
+      "health|diagnose|preflight"
+    ],
+    "forbidden": [
+      "应该可用",
+      "可能已启动",
+      "无法确认",
+      "没有检查"
+    ],
+    "correctionPrompt": "回答 GameStudio 启动、打开、settings、自检或本地生产配置问题时，必须基于 gameStudioBootstrap artifacts 报告 Server/Editor/settings/diagnose 或 provider preflight 证据。"
+  }
+}

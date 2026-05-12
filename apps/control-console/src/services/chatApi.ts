@@ -20,14 +20,6 @@ export function saveChatHistoryFile(agentId: string, content: string) {
   })
 }
 
-export function pingModel(agentId: string, body: unknown) {
-  return fetch(`/api/control/agents/${agentId}/ping-model`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  })
-}
-
 export function getContextCandidates(agentId = 'hermes-manager') {
   return fetch(`/api/control/agents/${agentId}/context-candidates`)
 }

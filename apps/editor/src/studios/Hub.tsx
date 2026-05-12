@@ -256,6 +256,40 @@ export default function Hub(props: Props) {
     if (resolver) resolver(ok)
   }
 
+  function openAiCreateStoryModal() {
+    setAiModalOpen(true)
+    setError('')
+    const d = loadAiDraft()
+    setAiPrompt(d.prompt)
+    setAiTitle(d.title)
+    setAiChoicePoints(d.choicePoints)
+    setAiOptionsPerChoice(d.optionsPerChoice)
+    setAiEndings(d.endings)
+    setAiResult(null)
+    setPromptReview(null)
+    setPromptReviewError('')
+    setAiTab('preview')
+    setAnalysis(null)
+    setBlueprintReview(null)
+    setBlueprintReviewMeta(null)
+    setSelfCheckError('')
+    setSelfFixNote('')
+    setRulesText('')
+    setRulesError('')
+  }
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const action = params.get('action') || params.get('open') || ''
+    if (!/^ai[-_]?create[-_]?story$/i.test(action)) return
+    openAiCreateStoryModal()
+    params.delete('action')
+    params.delete('open')
+    const nextSearch = params.toString()
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
+    window.history.replaceState(null, '', nextUrl)
+  }, [])
+
   const selected = useMemo(() => projects.find((p) => p.id === selectedId) || null, [projects, selectedId])
 
   useEffect(() => {
@@ -971,25 +1005,7 @@ export default function Hub(props: Props) {
                 style={{ opacity: busy ? 0.7 : 1 }}
                 onClick={() => {
                   if (busy) return
-                  setAiModalOpen(true)
-                  setError('')
-                  const d = loadAiDraft()
-                  setAiPrompt(d.prompt)
-                  setAiTitle(d.title)
-                  setAiChoicePoints(d.choicePoints)
-                  setAiOptionsPerChoice(d.optionsPerChoice)
-                  setAiEndings(d.endings)
-                  setAiResult(null)
-                  setPromptReview(null)
-                  setPromptReviewError('')
-                  setAiTab('preview')
-                  setAnalysis(null)
-                  setBlueprintReview(null)
-                  setBlueprintReviewMeta(null)
-                  setSelfCheckError('')
-                  setSelfFixNote('')
-                  setRulesText('')
-                  setRulesError('')
+                  openAiCreateStoryModal()
                 }}
               >
                 <div className="hub-card-title">+ AI 创建故事</div>

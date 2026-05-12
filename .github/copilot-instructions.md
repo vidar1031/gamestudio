@@ -19,7 +19,7 @@ Use these instructions for GitHub Copilot work in this repository. They are sepa
 ## High-Signal Docs
 
 - Project workflow: [README.md](../README.md)
-- Three-layer story workflow: [docs/使用说明_三层工作流.md](../docs/%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E_%E4%B8%89%E5%B1%82%E5%B7%A5%E4%BD%9C%E6%B5%81.md)
+- Product and three-layer story workflow: [docs/PRODUCT_AND_STORY_WORKFLOW.md](../docs/PRODUCT_AND_STORY_WORKFLOW.md)
 - Control system intent and boundaries: [docs/CONTROL_SYSTEM.md](../docs/CONTROL_SYSTEM.md)
 - Frontend style guardrails: [docs/UI_SELF_CONSTRAINTS.md](../docs/UI_SELF_CONSTRAINTS.md)
 

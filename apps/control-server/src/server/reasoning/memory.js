@@ -80,8 +80,23 @@ export function shouldAppendReasoningMemorySync(steps, userPrompt, options = {})
   const normalizedPrompt = String(userPrompt || '').trim()
   const hasMutatingWork = steps.some((step) => isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action))
   if (hasMutatingWork) return true
+  const requestType = String(options?.requestDecision?.type || '').trim()
+  if ([
+    'project_listing',
+    'project_structure_inspection',
+    'directory_listing',
+    'file_inspection',
+    'directory_inspection',
+    'surface_location',
+    'capability_status_inspection'
+  ].includes(requestType)) {
+    return false
+  }
   if (isWorkspaceFileQuestionPrompt(normalizedPrompt)) return false
   if (isWorkspaceDirectoryQuestionPrompt(normalizedPrompt)) return false
+  const readOnlyCapabilityQuestion = /包含哪些|有哪些|是什么|是否|当前|说明|分析|解释|列出|查看|检查/i.test(normalizedPrompt)
+    && /workflow|工作流|能力链条|目标能力|evaluator|评估器|registry|intent|状态机|自动化|Hermes|GameStudio Server|关键词|打标签|可靠性/i.test(normalizedPrompt)
+  if (readOnlyCapabilityQuestion) return false
   const asksForWorkflowClosure = /修复|fix|更新|rewrite|重写|整理|补全|闭环|同步|写回|写入|落盘|维护|清理|迁移|删除|创建|生成|配置|执行|运行|run|create|write|edit|delete|rename/i.test(normalizedPrompt)
   return hasMutatingWork || asksForWorkflowClosure
 }

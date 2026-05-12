@@ -11,7 +11,7 @@ Use this skill to route quickly to the owning module instead of scanning the who
 
 - Read `README.md` for root scripts and the product-level layout.
 - Then read only one of these, based on the task:
-  - `docs/使用说明_三层工作流.md` for editor and story-production flow.
+  - `docs/PRODUCT_AND_STORY_WORKFLOW.md` for editor and story-production flow.
   - `docs/CONTROL_SYSTEM.md` for manager, control console, or Hermes control-plane work.
   - `docs/UI_SELF_CONSTRAINTS.md` for frontend visual or layout changes.
 

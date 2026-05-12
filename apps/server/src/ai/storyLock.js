@@ -6,7 +6,7 @@ import { extractResponseOutputText, openaiResponsesJsonForTools } from './openai
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const WORKFLOW_TEMPLATE_PATH = path.resolve(__dirname, '../workflows/comfyui_story_lock_test_template.json')
+const WORKFLOW_TEMPLATE_PATH = path.resolve(__dirname, '../../workflows/comfyui_story_lock_test_template.json')
 
 function asObj(v) {
   return v && typeof v === 'object' ? v : {}
@@ -291,8 +291,22 @@ export async function reviewStoryboardLockImageWithAi({
     }
   }
 
-  const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, model, timeoutMs: 90_000 })
-  const parsed = JSON.parse(extractResponseOutputText(json) || '{}')
-  if (!validateStoryLockReview(parsed)) throw new Error('invalid_story_lock_review_output')
-  return { ...parsed, meta }
+  try {
+    const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, model, timeoutMs: 90_000 })
+    const parsed = JSON.parse(extractResponseOutputText(json) || '{}')
+    if (!validateStoryLockReview(parsed)) throw new Error('invalid_story_lock_review_output')
+    return { ...parsed, meta }
+  } catch (error) {
+    const detail = asStr(error && error.message).trim() || 'visual_review_failed'
+    return {
+      passed: false,
+      score: 0,
+      summary: `锁定测试图已生成，但视觉评审失败，需人工复核。原因：${detail}`,
+      issues: ['visual_review_failed', detail],
+      revisedPrompt: asStr(prompt).trim(),
+      revisedNegativePrompt: asStr(negativePrompt).trim(),
+      skipped: true,
+      reviewError: detail
+    }
+  }
 }

@@ -147,6 +147,7 @@ export async function requestHermesChatCompletion({
   messages,
   maxTokens,
   temperature,
+  route,
   signal,
   timeoutMs = HERMES_CHAT_REQUEST_TIMEOUT_MS,
   onStatus,
@@ -165,14 +166,23 @@ export async function requestHermesChatCompletion({
 
   try {
     return await enqueueModelTask(async () => {
-      const response = await fetch(`${HERMES_API_SERVER_BASE_URL}/chat/completions`, {
+      const directRoute = route && route.transport === 'direct' ? route : null
+      const targetUrl = directRoute
+        ? `${String(directRoute.baseUrl || '').replace(/\/+$/, '')}/chat/completions`
+        : `${HERMES_API_SERVER_BASE_URL}/chat/completions`
+      const targetModel = directRoute ? String(directRoute.model || '').trim() : 'hermes-agent'
+      if (!targetModel) {
+        throw new Error(`model_route_missing_model:${String(phase || 'model')}`)
+      }
+      const response = await fetch(targetUrl, {
         method: 'POST',
         signal: controller.signal,
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(directRoute?.headers || {})
         },
         body: JSON.stringify({
-          model: 'hermes-agent',
+          model: targetModel,
           messages,
           max_tokens: maxTokens,
           ...(temperature === undefined ? {} : { temperature })

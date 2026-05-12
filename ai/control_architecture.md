@@ -236,9 +236,7 @@ apps/control-console/src/
 3. `ai/TOOLS.md`
 4. `ai/control_architecture.md`
 5. `docs/CONTROL_SYSTEM.md`
-6. 需要补 runtime / reasoning 细节时，再读：
-   - `docs/HERMES_MANAGER_CONFIG.md`
-   - `docs/OBSERVABLE_REASONING_PIPELINE.md`
+6. 需要补生产链、模型链路或本机运行标准时，再读 `docs/系统生产级推进方案.md`。
 
 使用原则：
 

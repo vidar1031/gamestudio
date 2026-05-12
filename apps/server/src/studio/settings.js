@@ -2,6 +2,11 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setStudioSecrets } from './secrets.js'
 
+const DEFAULT_COMFYUI_BASE_URL = 'http://127.0.0.1:8188'
+const DEFAULT_COMFYUI_MODELS_ROOT = '/Volumes/ovokit2t/ComfyUI/models'
+const DEFAULT_COMFYUI_SDXL_MODEL = 'ivisionIllustration_ivision10.safetensors'
+const DEFAULT_COMFYUI_SDXL_SIZE = '1024x1024'
+
 function nowIso() {
   try { return new Date().toISOString() } catch (_) { return String(Date.now()) }
 }
@@ -229,6 +234,25 @@ export function redactStudioSettingsForClient(settings) {
   return out
 }
 
+export function redactEffectiveStudioConfigForClient(effective) {
+  const e = effective && typeof effective === 'object' ? effective : null
+  if (!e) return null
+  const out = {
+    ...e,
+    secrets: e.secrets && typeof e.secrets === 'object'
+      ? Object.fromEntries(Object.entries(e.secrets).map(([key, value]) => {
+        const item = value && typeof value === 'object' ? value : {}
+        return [key, {
+          present: Boolean(item.present),
+          masked: item.masked || null,
+          source: item.source || 'none'
+        }]
+      }))
+      : {}
+  }
+  return out
+}
+
 export async function getEffectiveStudioConfig(storageRoot, options = null) {
   const override = options && typeof options === 'object' ? options.settingsOverride : null
   const settings = (override && typeof override === 'object' ? override : ((await readStudioSettings(storageRoot)) || null))
@@ -242,10 +266,11 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
     localoxmlBaseUrl: String(process.env.LOCALOXML_BASE_URL || process.env.STUDIO_AI_BASE_URL || '').trim(),
     openaiModel: String(process.env.OPENAI_MODEL || '').trim(),
     openaiBaseUrl: String(process.env.OPENAI_BASE_URL || '').trim(),
-    bgProvider: String(process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase(),
+    bgProvider: String(process.env.STUDIO_BG_PROVIDER || 'comfyui').toLowerCase(),
     sdwebuiBaseUrl: String(process.env.SDWEBUI_BASE_URL || 'http://127.0.0.1:7860').trim(),
-    comfyuiBaseUrl: String(process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188').trim(),
-    comfyuiModelsRoot: String(process.env.STUDIO_COMFYUI_MODELS_ROOT || process.env.COMFYUI_MODELS_ROOT || '').trim(),
+    comfyuiBaseUrl: String(process.env.COMFYUI_BASE_URL || DEFAULT_COMFYUI_BASE_URL).trim(),
+    comfyuiModelsRoot: String(process.env.STUDIO_COMFYUI_MODELS_ROOT || process.env.COMFYUI_MODELS_ROOT || DEFAULT_COMFYUI_MODELS_ROOT).trim(),
+    comfyuiModel: String(process.env.STUDIO_COMFYUI_MODEL || process.env.COMFYUI_MODEL || DEFAULT_COMFYUI_SDXL_MODEL).trim(),
     doubaoImagesUrl: envFirst('DOUBAO_ARK_IMAGES_URL', 'DOUBAO_ARK_API_URL'),
     doubaoTextUrl: envFirst('DOUBAO_ARK_CHAT_URL', 'DOUBAO_ARK_TEXT_URL'),
     doubaoImagesModel: String(process.env.DOUBAO_ARK_MODEL || '').trim(),
@@ -351,10 +376,10 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
             : promptApiUrl
 
   const imageProvider = (settings?.image?.provider ? String(settings.image.provider) : 'none') || 'none'
-  const imageModel = settings?.image?.model ? String(settings.image.model) : env.doubaoImagesModel
+  const imageModel = settings?.image?.model ? String(settings.image.model) : (imageProvider === 'comfyui' ? env.comfyuiModel : env.doubaoImagesModel)
   const imageLoras = Array.isArray(settings?.image?.loras) ? settings.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
   const imageApiUrl = settings?.image?.apiUrl ? String(settings.image.apiUrl) : env.doubaoImagesUrl
-  const imageSize = settings?.image?.size ? String(settings.image.size) : env.doubaoImageSize
+  const imageSize = settings?.image?.size ? String(settings.image.size) : (imageProvider === 'comfyui' ? DEFAULT_COMFYUI_SDXL_SIZE : env.doubaoImageSize)
   const sdwebuiBaseUrl = settings?.image?.sdwebuiBaseUrl ? String(settings.image.sdwebuiBaseUrl) : env.sdwebuiBaseUrl
   const comfyuiBaseUrl = settings?.image?.comfyuiBaseUrl ? String(settings.image.comfyuiBaseUrl) : env.comfyuiBaseUrl
   const comfyuiModelsRoot = settings?.image?.comfyuiModelsRoot ? String(settings.image.comfyuiModelsRoot) : env.comfyuiModelsRoot
