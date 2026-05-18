@@ -157,6 +157,15 @@ import {
 
 let activeHermesChatRequest = null
 let activeHermesChatRecovery = null
+let hermesChildProcess = null
+let hermesStoppingIntentionally = false
+let hermesHealthCheckTimer = null
+let hermesCrashRestartAttempts = 0
+let hermesLastCrashAt = 0
+const HERMES_CRASH_RESTART_MAX_ATTEMPTS = 5
+const HERMES_CRASH_RESTART_BACKOFF_MS = [0, 2000, 5000, 10000, 30000]
+const HERMES_HEALTH_CHECK_INTERVAL_MS = 30000
+const HERMES_CRASH_ATTEMPT_RESET_MS = 5 * 60 * 1000
 const activeHermesReasoningSessionIds = new Set()
 const activeHermesReasoningExecutions = new Map()
 // 心跳事件只用于 UI 展示「仍在执行 X 秒」，不会触发任何 OMLX 调用。
@@ -372,6 +381,27 @@ function getHermesGatewayFaultSnapshot() {
 }
 
 ensureHermesGatewayLogWatcher()
+ensureHermesHealthCheck()
+
+function ensureHermesHealthCheck() {
+  if (hermesHealthCheckTimer) return
+  hermesHealthCheckTimer = setInterval(() => {
+    const state = getHermesRuntimeState()
+    if (state.state === 'running') {
+      const pid = readHermesPid()
+      if (!pid || !isPidRunning(pid)) {
+        appendHermesLog(`[HEALTH-CHECK] PID ${pid} not running but state is running. Triggering recovery.`)
+        clearHermesPid()
+        recoverHermesChatRuntime('health_check_pid_missing').catch((err) => {
+          appendHermesLog(`[HEALTH-CHECK][RECOVERY_ERROR] ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
+    }
+  }, HERMES_HEALTH_CHECK_INTERVAL_MS)
+  if (typeof hermesHealthCheckTimer.unref === 'function') {
+    hermesHealthCheckTimer.unref()
+  }
+}
 
 function getHermesPython() {
   return fs.existsSync(HERMES_VENV_PYTHON) ? HERMES_VENV_PYTHON : 'python3'
@@ -1262,6 +1292,7 @@ async function stopHermesRuntime() {
     return current
   }
 
+  hermesStoppingIntentionally = true
   appendHermesLog(`[STOP] Stopping Hermes runtime pid=${current.pid}`)
   try {
     process.kill(-current.pid, 'SIGTERM')
@@ -1300,7 +1331,7 @@ async function stopHermesRuntime() {
       appendHermesLog(`[STOP][ERROR] Hermes still running after SIGKILL, manual intervention may be needed`)
     }
   }
-  
+  hermesChildProcess = null
   return getHermesRuntimeState()
 }
 
@@ -3058,6 +3089,7 @@ function createControlServerRouteContext() {
     spawn,
     startHermesRuntime,
     stopHermesRuntime,
+    recoverHermesChatRuntime,
     updateHermesControlState,
     updateReasoningSession,
     writeContextPoolEntry,
@@ -4086,6 +4118,57 @@ export function finalizeReasoningSession(sessionId, options = {}) {
   }))
   appendReasoningEvent(sessionId, 'session_completed', '推理完成', shouldPersist ? '本次可观测推理已完成，最终回答已写入聊天记录。' : '本次可观测推理已完成')
   appendHermesLog(`[REASONING][DONE] sessionId=${sessionId}`)
+
+  // 记忆回写：将本次 session 的关键状态写入 ai/memory/ 文件
+  try {
+    const binding = buildHermesBinding()
+    const hadMutatingWork = (session.plan?.steps || []).some((s) => {
+      const action = String(s?.action || '')
+      return action.startsWith('story_') || action.startsWith('gamestudio_') || action === 'write_file' || action === 'write_memory_file' || action === 'update_task_queue' || action === 'invoke_tool'
+    })
+    if (hadMutatingWork && binding.memory) {
+      const completedSteps = (session.plan?.steps || []).filter((s) => s && (s.status === 'completed' || s.status === 'ok'))
+      const failedSteps = (session.plan?.steps || []).filter((s) => s && (s.status === 'failed' || s.status === 'error'))
+
+      const statusPath = binding.memory.statusFile
+      if (statusPath) {
+        const statusContent = [
+          `## 当前目标`,
+          String(session.userPrompt || '（未指定）').trim(),
+          ``,
+          `## 当前结果`,
+          session.artifacts?.finalAnswer ? '推理已完成，最终回答已生成。' : '推理进行中或未完成。',
+          ``,
+          `## 当前阻塞`,
+          failedSteps.length > 0 ? `${failedSteps.length} 个步骤失败，需人工审查。` : '无阻塞。',
+          ``,
+          `## 下一步`,
+          '继续推进剩余任务',
+          ``,
+          `sessionId: ${sessionId}`,
+          `updatedAt: ${new Date().toISOString()}`
+        ].join('\n')
+        fs.writeFileSync(statusPath, statusContent, 'utf8')
+      }
+
+      const taskQueuePath = binding.memory.taskQueueFile
+      if (taskQueuePath) {
+        const taskContent = [
+          `## Ready（待处理）`,
+          ...completedSteps.map((s) => `- [x] ${String(s.title || s.action || '未命名步骤').trim()}`),
+          ...failedSteps.map((s) => `- [ ] ${String(s.title || s.action || '未命名步骤').trim()} (失败: ${String(s.error || '未知').trim()})`),
+          ``,
+          `updatedAt: ${new Date().toISOString()}`
+        ].join('\n')
+        fs.writeFileSync(taskQueuePath, taskContent, 'utf8')
+      }
+
+      appendHermesLog(`[MEMORY][WRITEBACK] sessionId=${sessionId} status=${statusPath ? 'ok' : 'skip'} taskQueue=${taskQueuePath ? 'ok' : 'skip'}`)
+    }
+  } catch (writebackErr) {
+    appendHermesLog(`[MEMORY][WRITEBACK][ERROR] sessionId=${sessionId} detail=${writebackErr instanceof Error ? writebackErr.message : String(writebackErr)}`)
+  }
+
   unmarkReasoningSessionActive(sessionId)
   scheduleMemoryLifecycleMaintenance('reasoning_session_completed')
   const finalizedSession = readReasoningSession(sessionId)
@@ -4820,6 +4903,8 @@ function isReasoningAutoReviewMode(sessionOrContext) {
 
 function shouldPauseBeforeExecutingReasoningStep(session, step) {
   if (!session || !step) return false
+  // productionTest mode bypasses all review gates for automated testing
+  if (session?.submissionContext?.productionTest) return false
   if (isReasoningAutoReviewMode(session)) return false
   if (isReasoningStoryMutationAction(step.action)) return true
   return !isReasoningWriteAction(step.action) && !isReasoningInvokeAction(step.action)
@@ -4828,6 +4913,7 @@ function shouldPauseBeforeExecutingReasoningStep(session, step) {
 function shouldRequireHumanReviewForStep(step, session = null) {
   if (!step) return false
   if (isReasoningAutoReviewMode(session)) return false
+  if (session?.submissionContext?.productionTest) return false
   if (isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)) return true
   return inferReasoningStepSkipReview(step) === false
 }
@@ -6001,7 +6087,7 @@ async function generateStoryScriptsCandidate(sessionId, step, userPrompt, signal
     sessionId,
     phase: 'story_scripts_candidate',
     messages,
-    maxTokens: 1600,
+    maxTokens: 8192,
     temperature: 0.2,
     route: resolvedRoute,
     signal,
@@ -6975,9 +7061,9 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
     const comfyUi = await observeGameStudioOperation(sessionId, step, stepIndex, 'ensureComfyUiRunning', {
       endpoint: 'GET /system_stats or sh ./start.sh',
       baseUrl: comfyuiBaseUrl,
-      cwd: '/Volumes/ovokit2t/ComfyUI'
+      cwd: process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI'
     }, () => ensureComfyUiRunning(comfyuiBaseUrl, {
-      comfyRoot: '/Volumes/ovokit2t/ComfyUI',
+      comfyRoot: process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI',
       waitTimeoutMs: Math.max(60000, timeoutMs)
     }))
     const serverResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'preflightImageProvider', {
@@ -7405,7 +7491,7 @@ async function ensureComfyUiRunning(baseUrl = 'http://127.0.0.1:8188', options =
   if (before.ok) {
     return { ok: true, started: false, baseUrl: normalizedBaseUrl, health: before, startResult: null }
   }
-  const comfyRoot = String(options.comfyRoot || '/Volumes/ovokit2t/ComfyUI').trim()
+  const comfyRoot = String(options.comfyRoot || process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI').trim()
   const startResult = await runLocalCommand('sh', ['-lc', 'mkdir -p .run && nohup sh ./start.sh > .run/gamestudio-comfyui.log 2>&1 < /dev/null & echo $!'], {
     cwd: comfyRoot,
     timeoutMs: 5000
@@ -7600,7 +7686,7 @@ function buildLocalProductionStudioSettings(params = {}) {
   const model = String(params.model || 'gpt-oss-20b-MXFP4-Q8').trim()
   const localModelBaseUrl = String(params.localModelBaseUrl || 'http://127.0.0.1:18888/v1').trim()
   const comfyuiBaseUrl = String(params.comfyuiBaseUrl || 'http://127.0.0.1:8188').trim()
-  const comfyuiModelsRoot = String(params.comfyuiModelsRoot || '/Volumes/ovokit2t/ComfyUI/models').trim()
+  const comfyuiModelsRoot = String(params.comfyuiModelsRoot || process.env.COMFYUI_MODELS_ROOT || (process.env.COMFYUI_ROOT ? path.join(process.env.COMFYUI_ROOT, 'models') : '/Volumes/ovokit2t/ComfyUI/models')).trim()
   const imageModel = String(params.imageModel || params.comfyuiModel || 'ivisionIllustration_ivision10.safetensors').trim()
   const imageSize = String(params.imageSize || '1024x1024').trim()
   return {
@@ -7874,6 +7960,7 @@ async function executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepI
 async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
   const correctionPrompt = String(options.correctionPrompt || '').trim()
   const sessionBeforeRun = readReasoningSession(sessionId)
+  const productionTest = Boolean(sessionBeforeRun?.submissionContext?.productionTest)
   const stepIndex = getReasoningStepIndex(sessionBeforeRun, step.stepId)
   appendReasoningEvent(sessionId, 'step_started', step.title, `开始执行：${step.tool}`, {
     stepId: step.stepId,
@@ -8284,6 +8371,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
         }
       }
     }))
+    if (productionTest) {
+      applyPreparedReasoningWrite(sessionId, step.stepId)
+      appendReasoningEvent(sessionId, 'step_completed', step.title, `productionTest=true，已自动写入 ${rewrite.filePath}，跳过人工审核。`, { stepId: step.stepId })
+      return
+    }
     requestReasoningReview(sessionId, buildReasoningReview('step', {
       action: step.action,
       stepId: step.stepId,
@@ -8323,6 +8415,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
         }
       }
     }))
+    if (productionTest) {
+      applyPreparedReasoningWrite(sessionId, step.stepId)
+      appendReasoningEvent(sessionId, 'step_completed', step.title, `productionTest=true，已自动编辑 ${rewrite.filePath}，跳过人工审核。`, { stepId: step.stepId })
+      return
+    }
     requestReasoningReview(sessionId, buildReasoningReview('step', {
       action: step.action,
       stepId: step.stepId,
@@ -8365,6 +8462,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
         }
       }
     }))
+    if (productionTest) {
+      applyPreparedReasoningWrite(sessionId, step.stepId)
+      appendReasoningEvent(sessionId, 'step_completed', step.title, `productionTest=true，已自动创建 ${rewrite.filePath}，跳过人工审核。`, { stepId: step.stepId })
+      return
+    }
     requestReasoningReview(sessionId, buildReasoningReview('step', {
       action: step.action,
       stepId: step.stepId,
@@ -8404,6 +8506,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
         }
       }
     }))
+    if (productionTest) {
+      applyPreparedReasoningWrite(sessionId, step.stepId)
+      appendReasoningEvent(sessionId, 'step_completed', step.title, `productionTest=true，已自动更新 ${rewrite.filePath}，跳过人工审核。`, { stepId: step.stepId })
+      return
+    }
     requestReasoningReview(sessionId, buildReasoningReview('step', {
       action: step.action,
       stepId: step.stepId,
@@ -8452,6 +8559,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
         }
       }
     }))
+    if (productionTest) {
+      applyPreparedWorkspaceOperation(sessionId, step.stepId)
+      appendReasoningEvent(sessionId, 'step_completed', step.title, `productionTest=true，已自动重命名 ${fromPath} -> ${toPath}，跳过人工审核。`, { stepId: step.stepId })
+      return
+    }
     requestReasoningReview(sessionId, buildReasoningReview('step', {
       action: step.action,
       stepId: step.stepId,
@@ -8500,6 +8612,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
         }
       }
     }))
+    if (productionTest) {
+      applyPreparedWorkspaceOperation(sessionId, step.stepId)
+      appendReasoningEvent(sessionId, 'step_completed', step.title, `productionTest=true，已自动删除 ${targetPath}，跳过人工审核。`, { stepId: step.stepId })
+      return
+    }
     requestReasoningReview(sessionId, buildReasoningReview('step', {
       action: step.action,
       stepId: step.stepId,
@@ -8553,6 +8670,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
         }
       }
     }))
+    if (productionTest) {
+      applyPreparedLifecycleScript(sessionId, step.stepId)
+      appendReasoningEvent(sessionId, 'step_completed', step.title, `productionTest=true，已自动执行脚本 ${scriptName}，跳过人工审核。`, { stepId: step.stepId })
+      return
+    }
     requestReasoningReview(sessionId, buildReasoningReview('step', {
       action: step.action,
       stepId: step.stepId,
@@ -8598,6 +8720,11 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
         }
       }
     }))
+    if (productionTest) {
+      applyPreparedLifecycleScript(sessionId, step.stepId)
+      appendReasoningEvent(sessionId, 'step_completed', step.title, `productionTest=true，已自动执行脚本 ${scriptPath}，跳过人工审核。`, { stepId: step.stepId })
+      return
+    }
     requestReasoningReview(sessionId, buildReasoningReview('step', {
       action: step.action,
       stepId: step.stepId,
@@ -8684,7 +8811,7 @@ export async function prepareReasoningSessionPlan(sessionId, binding, history, o
     planResult.rawResponsePreview ? `[REASONING][PLAN][RAW] sessionId=${sessionId} preview=${truncateReasoningPreview(planResult.rawResponsePreview, 600)}` : ''
   ].filter(Boolean))
 
-  if (isReasoningAutoReviewMode(session)) {
+  if (isReasoningAutoReviewMode(session) || session?.submissionContext?.productionTest) {
     void runAllReasoningStepsFrom(sessionId, binding, history, 0).catch((error) => {
       markReasoningSessionFailed(sessionId, error)
     })

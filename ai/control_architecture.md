@@ -151,6 +151,9 @@ apps/control-console/src/
 - context source / context pool 工作台能力
 - reasoning session 创建、轮询、审批、取消
 - 服务器启动时 orphan reasoning session 清理
+- `productionTest` 完整 bypass 所有 review gate
+- story workflow 文本闭环（13 步）含 Story Bible 生成
+- OMLX `response_format` workaround（fallback 到 `chat/completions`）
 
 ### 4.2 当前未继续拆开的部分
 
@@ -235,8 +238,8 @@ apps/control-console/src/
 2. `ai/AGENTS.md`
 3. `ai/TOOLS.md`
 4. `ai/control_architecture.md`
-5. `docs/CONTROL_SYSTEM.md`
-6. 需要补生产链、模型链路或本机运行标准时，再读 `docs/系统生产级推进方案.md`。
+5. `docs/系统生产级推进方案.md`（系统分工、启动流程、任务流、路由规则）
+6. `docs/PRODUCTION_DEFECTS.md`（当需要了解当前缺陷和未实现项时）
 
 使用原则：
 

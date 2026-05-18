@@ -5,7 +5,7 @@ description: "Use when editing GameStudio frontend UI. Keep one visual direction
 
 # UI Style Guardrails
 
-Follow [docs/UI_SELF_CONSTRAINTS.md](../docs/UI_SELF_CONSTRAINTS.md). Link to that file instead of restating it in full.
+Follow [docs/系统生产级推进方案.md](../docs/系统生产级推进方案.md) (UI 约束章节). Link to that file instead of restating it in full.
 
 ## Visual Rules
 

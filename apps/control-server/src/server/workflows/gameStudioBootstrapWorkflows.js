@@ -68,7 +68,7 @@ export function buildGameStudioBootstrapPlan(userPrompt) {
       model: 'gpt-oss-20b-MXFP4-Q8',
       localModelBaseUrl: 'http://127.0.0.1:18888/v1',
       comfyuiBaseUrl: 'http://127.0.0.1:8188',
-      comfyuiModelsRoot: '/Volumes/ovokit2t/ComfyUI/models',
+      comfyuiModelsRoot: process.env.COMFYUI_MODELS_ROOT || (process.env.COMFYUI_ROOT ? path.join(process.env.COMFYUI_ROOT, 'models') : '/Volumes/ovokit2t/ComfyUI/models'),
       imageModel: 'ivisionIllustration_ivision10.safetensors',
       imageSize: '1024x1024'
     })

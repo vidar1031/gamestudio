@@ -5,7 +5,7 @@ description: "Use when editing GameStudio control-system files. Protect runtime 
 
 # Control System Guardrails
 
-Read [docs/CONTROL_SYSTEM.md](../docs/CONTROL_SYSTEM.md) before making structural changes to the control plane.
+Read [docs/系统生产级推进方案.md](../docs/系统生产级推进方案.md) before making structural changes to the control plane.
 
 ## Scope
 

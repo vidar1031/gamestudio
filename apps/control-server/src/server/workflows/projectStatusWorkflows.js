@@ -75,7 +75,7 @@ export function buildProjectCapabilityStatusPlan(userPrompt) {
       filePath: 'docs/系统生产级推进方案.md'
     }),
     makeStep('step_read_control_system_doc', '读取 Control 系统边界说明', 'read_file_content', {
-      filePath: 'docs/CONTROL_SYSTEM.md'
+      filePath: 'docs/系统生产级推进方案.md'
     }, ['step_read_agent_workflow_doc']),
     makeStep('step_list_intent_registry', '列出 Hermes intent 配置目录', 'list_directory_contents', {
       dirPath: 'config/hermes/intents'

@@ -61,9 +61,21 @@ export function extractResponseOutputText(respJson) {
         }
       }
       raw = texts.join('').trim()
-    } catch (_) {
-      return ''
-    }
+    } catch (_) {}
+  }
+
+  // Fallback: chat/completions format (used by localoxml / OMLX and other OpenAI-compatible endpoints)
+  if (!raw) {
+    try {
+      const choices = Array.isArray(respJson && respJson.choices) ? respJson.choices : []
+      const texts = []
+      for (const c of choices) {
+        if (!c || typeof c !== 'object') continue
+        const msg = c.message || c.delta || {}
+        if (typeof msg.content === 'string') texts.push(msg.content)
+      }
+      raw = texts.join('').trim()
+    } catch (_) {}
   }
 
   // Strip markdown code fences that some models output (e.g. ```json ... ```)
@@ -104,7 +116,7 @@ function getOpenAIConfig(provider = 'openai', overrides = null) {
     inOverrides.apiUrl ||
       (
         useLocalOxml
-          ? (process.env.LOCALOXML_BASE_URL || process.env.STUDIO_AI_BASE_URL || OFFICIAL_OPENAI_BASE_URL)
+          ? (process.env.LOCALOXML_BASE_URL || process.env.STUDIO_AI_BASE_URL || 'http://127.0.0.1:18888/v1')
           : (process.env.OPENAI_BASE_URL || OFFICIAL_OPENAI_BASE_URL)
       ),
     p
@@ -137,10 +149,86 @@ export async function openaiResponsesJsonForTools({ body, provider, timeoutMs: c
   const startedAt = Date.now()
   const merged = { ...(body || {}), model: String((body && body.model) || model) }
   const json = await openaiRequestJson({ method: 'POST', path: '/responses', body: merged, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+
+  // Fallback to chat/completions if responses returns empty content (e.g. localoxml/OMLX with complex schemas)
+  if (!extractResponseOutputText(json)) {
+    const chatBody = buildChatCompletionsBodyFromResponsesBody(merged)
+    if (chatBody) {
+      const chatJson = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: chatBody, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+      return {
+        json: chatJson,
+        meta: { provider: cfg.provider, api: 'chat.completions', model: merged.model, durationMs: Math.max(0, Date.now() - startedAt) }
+      }
+    }
+  }
+
   return {
     json,
     meta: { provider: cfg.provider, api: 'responses', model: merged.model, durationMs: Math.max(0, Date.now() - startedAt) }
   }
+}
+
+function buildChatCompletionsBodyFromResponsesBody(responsesBody) {
+  if (!responsesBody || typeof responsesBody !== 'object') return null
+  const messages = []
+  let systemContent = ''
+  if (typeof responsesBody.instructions === 'string') {
+    systemContent = responsesBody.instructions
+  }
+
+  // For localoxml/OMLX, json_schema response_format causes the model to consume all tokens in reasoning_content
+  // and leave content empty. Workaround: embed the schema into the system prompt and do not use response_format.
+  let needsSchemaInPrompt = false
+  let schemaObj = null
+  if (responsesBody.text && typeof responsesBody.text === 'object') {
+    const fmt = responsesBody.text.format
+    if (fmt && typeof fmt === 'object') {
+      if (fmt.type === 'json_schema') {
+        schemaObj = fmt.json_schema || (fmt.schema ? { name: fmt.name || 'schema', strict: fmt.strict, schema: fmt.schema } : null)
+        needsSchemaInPrompt = true
+      } else if (fmt.type === 'json_object') {
+        needsSchemaInPrompt = true
+      }
+    }
+  }
+
+  if (needsSchemaInPrompt) {
+    systemContent += '\n\nIMPORTANT: Respond ONLY with a valid JSON object. Do not include markdown code fences, explanations, or any text outside the JSON.'
+    if (schemaObj && schemaObj.schema) {
+      systemContent += '\n\nYou must follow this JSON schema:\n' + JSON.stringify(schemaObj.schema, null, 2)
+    } else if (schemaObj) {
+      systemContent += '\n\nYou must follow this JSON schema:\n' + JSON.stringify(schemaObj, null, 2)
+    } else {
+      systemContent += '\n\nThe response must be a single JSON object.'
+    }
+  }
+
+  if (systemContent) {
+    messages.push({ role: 'system', content: systemContent })
+  }
+  if (typeof responsesBody.input === 'string') {
+    messages.push({ role: 'user', content: responsesBody.input })
+  }
+  if (messages.length === 0) return null
+
+  const chatBody = { model: responsesBody.model || 'unknown', messages }
+  // Only use response_format for non-localoxml providers, or when no schema is required
+  if (!needsSchemaInPrompt && responsesBody.text && typeof responsesBody.text === 'object') {
+    const fmt = responsesBody.text.format
+    if (fmt && typeof fmt === 'object') {
+      if (fmt.type === 'json_schema') {
+        const jsonSchema = fmt.json_schema || (fmt.schema ? { name: fmt.name || 'schema', strict: fmt.strict, schema: fmt.schema } : null)
+        if (jsonSchema) {
+          chatBody.response_format = { type: 'json_schema', json_schema: jsonSchema }
+        }
+      } else if (fmt.type === 'json_object') {
+        chatBody.response_format = { type: 'json_object' }
+      }
+    }
+  }
+  // OMLX needs more output tokens for complex schemas
+  chatBody.max_tokens = 8192
+  return chatBody
 }
 
 async function openaiRequestJson({ method, path: apiPath, body, timeoutMs, provider, apiUrl, model, proxyUrl: proxyUrlOverride }) {

@@ -19,9 +19,9 @@ Use these instructions for GitHub Copilot work in this repository. They are sepa
 ## High-Signal Docs
 
 - Project workflow: [README.md](../README.md)
-- Product and three-layer story workflow: [docs/PRODUCT_AND_STORY_WORKFLOW.md](../docs/PRODUCT_AND_STORY_WORKFLOW.md)
-- Control system intent and boundaries: [docs/CONTROL_SYSTEM.md](../docs/CONTROL_SYSTEM.md)
-- Frontend style guardrails: [docs/UI_SELF_CONSTRAINTS.md](../docs/UI_SELF_CONSTRAINTS.md)
+- System division, startup flow, and task routing: [docs/系统生产级推进方案.md](../docs/系统生产级推进方案.md)
+- Production defects and gaps: [docs/PRODUCTION_DEFECTS.md](../docs/PRODUCTION_DEFECTS.md)
+- Frontend style guardrails: [docs/系统生产级推进方案.md](../docs/系统生产级推进方案.md) (UI 约束章节)
 
 Link to these docs when they already cover the rule. Do not duplicate large blocks of project documentation inside responses or patches.
 

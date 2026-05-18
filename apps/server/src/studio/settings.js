@@ -3,7 +3,7 @@ import path from 'node:path'
 import { setStudioSecrets } from './secrets.js'
 
 const DEFAULT_COMFYUI_BASE_URL = 'http://127.0.0.1:8188'
-const DEFAULT_COMFYUI_MODELS_ROOT = '/Volumes/ovokit2t/ComfyUI/models'
+const DEFAULT_COMFYUI_MODELS_ROOT = process.env.COMFYUI_MODELS_ROOT || (process.env.COMFYUI_ROOT ? path.join(process.env.COMFYUI_ROOT, 'models') : '/Volumes/ovokit2t/ComfyUI/models')
 const DEFAULT_COMFYUI_SDXL_MODEL = 'ivisionIllustration_ivision10.safetensors'
 const DEFAULT_COMFYUI_SDXL_SIZE = '1024x1024'
 

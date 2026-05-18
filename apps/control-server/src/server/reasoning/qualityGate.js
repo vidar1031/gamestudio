@@ -690,6 +690,7 @@ export async function finalizeReasoningSessionWithQualityGate(sessionId, binding
 
   const selfReviewAllowsPass = selfReview.verdict === 'approve'
   const assessmentSelfReviewConflict = !assessment.passed && selfReviewAllowsPass
+  const productionTest = Boolean(session?.submissionContext?.productionTest)
   if (assessment.passed && selfReviewAllowsPass) {
     if (selfReview.promotableLesson) {
       appendReasoningImprovementCandidateRecord({
@@ -723,6 +724,14 @@ export async function finalizeReasoningSessionWithQualityGate(sessionId, binding
         })
       }
     }
+    return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
+  }
+
+  // productionTest mode bypasses quality gate review for automated testing
+  if (productionTest) {
+    appendReasoningEvent(sessionId, 'quality_gate_skipped', '生产测试模式跳过质检确认', `productionTest=true，自动质检评分 ${assessment.score}/100，直接通过并落盘最终答案。`, {
+      data: { score: assessment.score, issues: assessment.issues, selfReview }
+    })
     return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
   }
 

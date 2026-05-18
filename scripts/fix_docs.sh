@@ -4,8 +4,8 @@
 # Update STATUS.md path
 sed -i '' -e 's|PROJECT_PATH.*|PROJECT_PATH=/Volumes/ovokit2t/aiwork/gamestudio|' memory/STATUS.md
 
-# Update CONTROL_SYSTEM.md
-sed -i '' -e 's|暂未实现|已实现|' docs/CONTROL_SYSTEM.md
+# Note: CONTROL_SYSTEM.md has been merged into docs/系统生产级推进方案.md
+# If you need to update status markers, edit docs/系统生产级推进方案.md instead
 
 # Rebuild docs
 make docs || ./scripts/compile_docs.sh

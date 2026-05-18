@@ -227,14 +227,14 @@ node --check apps/server/src/index.js
 - 文案面向用户，不出现 `P0/P1/P2`、`实验`、`临时` 等研发术语。
 - Provider/Model 展示格式统一为 `provider / model`。
 - 未配置 Provider 时动作必须明确阻断，不得静默失败。
-- 详见 `docs/UI_SELF_CONSTRAINTS.md`。
+- 详见 `docs/系统生产级推进方案.md` 的 "UI 约束" 章节。
 
 ### 控制平面契约
 - 生命周期控制（`start`、`stop`、`pause`、`resume`、`exit`、`all-restart`）是**保护行为**，不可被新功能替代。
 - `control-console` 与 `control-server` 必须保持同一套控制语义；若一侧调整 contract，另一侧必须同步更新。
 - 左脑配置 -> 预检/自检 -> 启动/恢复的顺序不可绕过。
 - reasoning 与 chat 语义分离：`ping-model` 是普通聊天路径，`reasoning-sessions` 是可观测推理路径。
-- 详见 `docs/CONTROL_SYSTEM.md` 与 `ai/control_architecture.md`。
+- 详见 `docs/系统生产级推进方案.md` 与 `ai/control_architecture.md`。
 
 ### 编辑器契约
 - 节点式交互故事编辑器，**对象优先于数据**，**结构优先于视觉**。
@@ -341,10 +341,10 @@ PID 与日志保存在 `.run/` 目录：
 | --- | --- |
 | `README.md` | 项目快速启动、权威目录、端口 |
 | `docs/README.md` | docs/ 目录入口与维护规则 |
-| `docs/CONTROL_SYSTEM.md` | Control 系统全面说明 |
-| `docs/系统生产级推进方案.md` | 唯一生产级推进方案 |
-| `docs/PRODUCT_AND_STORY_WORKFLOW.md` | 产品定位与三层故事工作流 |
-| `docs/UI_SELF_CONSTRAINTS.md` | 前端 UI 约束规范 |
+| `docs/PROJECT_GOVERNANCE.md` | 全系统最高治理规则 |
+| `docs/系统生产级推进方案.md` | 系统分工、启动流程、任务流、路由规则、UI 约束 |
+| `docs/Control + GameStudio 生产工作流联调测试说明.md` | 联调测试标准与验证清单 |
+| `docs/PRODUCTION_DEFECTS.md` | 当前生产缺陷与未实现项 |
 | `ai/AGENTS.md` | Hermes 工作契约（控制平面专用） |
 | `ai/TOOLS.md` | 工具目录、接口、端口、命令速查 |
 | `ai/control_architecture.md` | Control 当前结构说明（权威当前状态） |
@@ -372,7 +372,7 @@ PID 与日志保存在 `.run/` 目录：
 
 ## 给 Agent 的核心建议
 
-1. **先读契约再动手**：涉及 control 读 `ai/control_architecture.md`，涉及 editor 读 `ai/interactive_story_editor.contract.md`，涉及 UI 读 `docs/UI_SELF_CONSTRAINTS.md`。
+1. **先读契约再动手**：涉及 control 读 `ai/control_architecture.md`，涉及 editor 读 `ai/interactive_story_editor.contract.md`，涉及 UI 读 `docs/系统生产级推进方案.md` 的 "UI 约束" 章节。
 2. **保护生命周期控制**：控制平面的 `start/stop/pause/resume/exit` 是产品行为，不可被新配置面板覆盖或替代。
 3. **控制前后端对齐**：修改 `control-server` API 时，必须同步检查 `control-console` 的 service 层和 UI callsite。
 4. **以文件事实为先**：对项目路径、目录结构、任务状态的判断，以实际文件系统为准，不以旧聊天印象为准。

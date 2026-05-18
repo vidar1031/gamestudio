@@ -46,3 +46,15 @@
 
 - 决策：`DECISIONS.md` 只保留稳定约束、架构边界和经过验证的规则，不写临时进展或一次性操作细节
 - 原因：防止决策文件被噪声污染，影响后续 runtime 判断
+
+## 10. `productionTest` 用于自动化测试，可 bypass 所有 review gate
+
+- 决策：`productionTest=true` 时，reasoning session 完整 bypass plan review、step review、write/edit review、quality gate
+- 原因：自动化测试需要无阻塞执行，人工审核在自动化场景下不可行
+- 边界：`productionTest` 只应在测试环境中使用，生产环境默认关闭
+
+## 11. OMLX `response_format: json_schema` 不兼容，使用 chat/completions fallback
+
+- 决策：`gpt-oss-20b` 在 `/responses` API 的 `json_schema` response_format 下会返回空 `content`，所有 workaround 统一 fallback 到 `chat/completions` + schema 嵌入 system prompt
+- 原因：OMLX 将所有 token 用于 `reasoning_content`，导致实际 `content` 为空
+- 边界：此 workaround 适用于 `localoxml` provider；若 OMLX 更新修复此问题，可回退到 `/responses`

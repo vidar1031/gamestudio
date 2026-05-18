@@ -234,12 +234,14 @@ export function registerRuntimeRoutes(app, context) {
     } else {
       const side = body.brainSide || 'unknown'
       appendHermesLog(`[STOP] Stopped ${side} brain`)
-      if (action === 'pause' || action === 'stop') {
+      if (action === 'stop') {
         if (body.stopAll) {
           runtimeStatus = await stopHermesRuntime()
         } else {
           runtimeStatus = current
         }
+      } else if (action === 'pause') {
+        runtimeStatus = await stopHermesRuntime()
       } else {
         runtimeStatus = await stopHermesRuntime()
       }
@@ -473,6 +475,37 @@ export function registerRuntimeRoutes(app, context) {
       } catch (recoveryError) {
         recoveryDetail = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
         appendHermesLog(`[MODEL][SWITCH][RECOVERY_ERROR] detail=${recoveryDetail}`)
+
+        // 最终保底：尝试加载 fallback 模型，确保 OMLX 不会处于空模型状态
+        try {
+          const fallbackModel = currentConfig.model || 'gpt-oss-20b-MXFP4-Q8'
+          appendHermesLog(`[MODEL][SWITCH][FALLBACK] attempting to load fallback model=${fallbackModel}`)
+          const fallbackLoad = await loadProviderModel({
+            provider: currentConfig.provider,
+            baseUrl: currentConfig.baseUrl,
+            model: fallbackModel
+          })
+          if (fallbackLoad.ok) {
+            appendHermesLog(`[MODEL][SWITCH][FALLBACK][OK] loaded=${fallbackModel}`)
+            updateHermesControlState({
+              model: buildModelStateSnapshot({
+                provider: currentConfig.provider,
+                baseUrl: currentConfig.baseUrl,
+                model: fallbackModel,
+                inspection: await inspectProviderModelState({
+                  provider: currentConfig.provider,
+                  baseUrl: currentConfig.baseUrl,
+                  model: fallbackModel
+                }),
+                lastAction: 'fallback'
+              })
+            })
+          } else {
+            appendHermesLog(`[MODEL][SWITCH][FALLBACK][ERROR] ${fallbackLoad.detail}`)
+          }
+        } catch (fallbackErr) {
+          appendHermesLog(`[MODEL][SWITCH][FALLBACK][ERROR] ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`)
+        }
       }
 
       return c.json({

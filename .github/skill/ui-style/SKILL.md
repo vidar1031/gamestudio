@@ -9,8 +9,8 @@ Use this skill when changing frontend appearance or layout in `apps/editor` or `
 
 ## Source of Truth
 
-- Read `docs/UI_SELF_CONSTRAINTS.md` first.
-- If the task is in the control plane, also check `docs/CONTROL_SYSTEM.md` so visual changes do not break control semantics.
+- Read `docs/系统生产级推进方案.md` 的 "UI 约束" 章节 first.
+- If the task is in the control plane, also check `docs/系统生产级推进方案.md` so visual changes do not break control semantics.
 
 ## Rules
 

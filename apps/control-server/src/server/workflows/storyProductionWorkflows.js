@@ -103,6 +103,7 @@ function appendFullP0Steps(add, { projectId, title, config, prompt }) {
   add('step_story_configure_project', '写入故事生成配置', 'story_configure_project', { projectId, config })
   add('step_story_generate_scripts_candidate', '生成故事脚本候选', 'story_generate_scripts_candidate', { projectId, brief: prompt, title })
   add('step_story_write_scripts', '写入故事脚本到项目', 'story_write_scripts', { projectId })
+  add('step_story_create_bible', '生成 Story Bible', 'story_create_bible', { projectId, timeoutMs: 300000 })
   add('step_story_compile_blueprint', '编译脚本为蓝图', 'story_compile_blueprint', { projectId })
   add('step_story_review_blueprint_agent', '智能体评审交互蓝图', 'story_review_blueprint_agent', { projectId })
   add('step_story_repair_blueprint_if_needed', '按评审结果修复蓝图', 'story_repair_blueprint_if_needed', { projectId })
@@ -119,7 +120,7 @@ function appendAiStoryToComposeSteps(add, { projectId, title, prompt }) {
     choicePoints: 2,
     optionsPerChoice: 2,
     endings: 2,
-    timeoutMs: 180000
+    timeoutMs: 300000
   })
   add('step_story_analyze_scripts', '分析脚本并生成蓝图建议', 'story_analyze_scripts', { projectId })
   add('step_story_review_blueprint_agent', '智能体评审交互蓝图', 'story_review_blueprint_agent', { projectId })
@@ -159,7 +160,8 @@ export function buildStoryWorkflowPlan(userPrompt) {
   const wantsWriteBack = /写回|转换|最小 story|最小 scripts|项目目录|落盘/i.test(prompt)
   const wantsLockTest = /事物锁定测试|锁定测试|lock.?test|lock_test|测试.*锁定/i.test(prompt)
   const wantsLockAssets = !wantsLockTest && /锁定事物|必须包括|必要事物|主参考|参考图|锁定.*图|绘制.*锁定|lock(?:ed)?\s*(?:asset|reference)|asset\s*reference/i.test(prompt)
-  const wantsAssets = wantsLockAssets || /资产|背景图|角色|立绘|图片|出图|asset|image|sprite/i.test(prompt)
+  const forbidsAssets = /不画.*背景图|不要.*背景图|不画.*图|不要.*图|不出图|不生成.*图|不制作.*图|no\s*background|no\s*image|no\s*asset/i.test(prompt)
+  const wantsAssets = !forbidsAssets && (wantsLockAssets || /资产|背景图|角色|立绘|图片|出图|asset|image|sprite/i.test(prompt))
   const wantsStoryBibleOnly = /story\s*bible|圣经|故事圣经/i.test(prompt) && /只执行|仅执行|只生成|仅生成|只做|仅做|只跑|仅跑/i.test(prompt)
   const forbidsAssetPlan = /不执行\s*asset\s*plan|不做\s*asset\s*plan|不要\s*asset\s*plan|不执行\s*资产计划|不做\s*资产计划|不要\s*资产计划/i.test(prompt)
   const forbidsLockTest = /不执行\s*lock\s*test|不做\s*lock\s*test|不要\s*lock\s*test|不执行\s*锁定测试|不做\s*锁定测试|不要\s*锁定测试/i.test(prompt)
@@ -224,7 +226,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsStoryBibleOnly && forbidsAssetPlan && forbidsLockTest) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 180000
+      timeoutMs: 300000
     })
     appendAnswerStep(steps, { skipReview: true })
     return {
@@ -238,7 +240,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsLockTest) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 180000
+      timeoutMs: 300000
     })
     add('step_story_create_asset_plan', '基于 Story Bible 创建资产计划', 'story_create_asset_plan', {
       projectId,
@@ -255,7 +257,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
       projectId,
       style: 'picture_book',
       maxAttempts: 3,
-      timeoutMs: 180000
+      timeoutMs: 300000
     })
     appendAnswerStep(steps)
     return {
@@ -269,7 +271,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsLockAssets) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 180000
+      timeoutMs: 300000
     })
     add('step_story_create_asset_plan', '锁定故事必须包括的事物', 'story_create_asset_plan', {
       projectId,
@@ -303,7 +305,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsAssets) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 180000
+      timeoutMs: 300000
     })
     add('step_story_create_asset_plan', '创建故事资产计划', 'story_create_asset_plan', {
       projectId,

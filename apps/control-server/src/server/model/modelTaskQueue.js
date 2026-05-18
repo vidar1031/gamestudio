@@ -4,7 +4,7 @@ import {
 } from '../../config/constants.js'
 
 const MAX_CONCURRENT_MODEL_TASKS = Math.max(1, Number(process.env.HERMES_MODEL_TASK_MAX_CONCURRENT || 1))
-const MAX_MODEL_CALLS_PER_SESSION = Math.max(1, Number(process.env.HERMES_MODEL_TASK_MAX_CALLS_PER_SESSION || 8))
+const MAX_MODEL_CALLS_PER_SESSION = Math.max(1, Number(process.env.HERMES_MODEL_TASK_MAX_CALLS_PER_SESSION || 16))
 const MODEL_TASK_QUEUE_WAIT_TIMEOUT_MS = Math.max(1000, Number(process.env.HERMES_MODEL_TASK_QUEUE_WAIT_TIMEOUT_MS || 120000))
 
 let activeCount = 0
@@ -176,25 +176,50 @@ export async function requestHermesChatCompletion({
       if (!targetModel) {
         throw new Error(`model_route_missing_model:${String(phase || 'model')}`)
       }
-      const response = await fetch(targetUrl, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(directRoute?.headers || {})
-        },
-        body: JSON.stringify({
-          model: targetModel,
-          messages,
-          max_tokens: maxTokens,
-          ...(temperature === undefined ? {} : { temperature })
-        })
+      const requestBody = JSON.stringify({
+        model: targetModel,
+        messages,
+        max_tokens: maxTokens,
+        ...(temperature === undefined ? {} : { temperature })
       })
-
-      if (!response.ok) {
-        throw new Error(`model_task_http_${response.status}_${response.statusText}`)
+      const MAX_RETRIES = 3
+      const RETRY_DELAY_MS = 2000
+      let lastError = null
+      let response = null
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          response = await fetch(targetUrl, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+              'Content-Type': 'application/json',
+              ...(directRoute?.headers || {})
+            },
+            body: requestBody
+          })
+          if (response.ok) {
+            break
+          }
+          const status = response.status
+          const retryable = status === 503 || status === 504 || status === 429 || status === 408 || status === 502
+          lastError = new Error(`model_task_http_${status}_${response.statusText}`)
+          if (!retryable || attempt >= MAX_RETRIES) {
+            throw lastError
+          }
+          const delay = RETRY_DELAY_MS * Math.pow(2, attempt)
+          console.log(`[MODEL_TASK][RETRY] phase=${phase || 'model'} attempt=${attempt + 1}/${MAX_RETRIES + 1} status=${status} delay=${delay}ms`)
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        } catch (fetchErr) {
+          lastError = fetchErr
+          if (attempt >= MAX_RETRIES) throw fetchErr
+          const delay = RETRY_DELAY_MS * Math.pow(2, attempt)
+          console.log(`[MODEL_TASK][RETRY] phase=${phase || 'model'} attempt=${attempt + 1}/${MAX_RETRIES + 1} error=${fetchErr.message} delay=${delay}ms`)
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        }
       }
-
+      if (!response || !response.ok) {
+        throw lastError || new Error('model_task_unknown_error')
+      }
       return response.json()
     }, {
       sessionId,

@@ -87,7 +87,8 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 
 - 文档入口与整理清单：`docs/README.md`
 - 系统生产级推进方案：`docs/系统生产级推进方案.md`
-- 控制系统说明：`docs/CONTROL_SYSTEM.md`
-- 产品与三层工作流：`docs/PRODUCT_AND_STORY_WORKFLOW.md`
+- 系统分工与推进方案：`docs/系统生产级推进方案.md`
+- 联调测试说明：`docs/Control + GameStudio 生产工作流联调测试说明.md`
+- 生产缺陷报告：`docs/PRODUCTION_DEFECTS.md`
 - 交互故事编辑器契约：`ai/interactive_story_editor.contract.md`
 - 页内编辑器是:vue-codemirror

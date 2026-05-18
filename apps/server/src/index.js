@@ -5397,6 +5397,27 @@ app.post('/api/projects/:id/ai/story/bible', async (c) => {
       ok: true,
       durationMs: Math.max(0, Date.now() - startedAt)
     })
+    // Persist Story Bible into project document
+    try {
+      const projectPath = path.join(dir, 'project.json')
+      const projectDoc = await readJson(projectPath).catch(() => ({}))
+      if (!projectDoc.state || typeof projectDoc.state !== 'object') {
+        projectDoc.state = {}
+      }
+      if (!projectDoc.state.aiBackground || typeof projectDoc.state.aiBackground !== 'object') {
+        projectDoc.state.aiBackground = {}
+      }
+      projectDoc.state.aiBackground.storyBible = result
+      projectDoc.updatedAt = nowIso()
+      await writeJson(projectPath, projectDoc)
+      // Update meta.json timestamp
+      const metaPath = path.join(dir, 'meta.json')
+      const metaDoc = await readJson(metaPath).catch(() => ({}))
+      metaDoc.updatedAt = nowIso()
+      await writeJson(metaPath, metaDoc)
+    } catch (persistErr) {
+      console.error('[story.bible][PERSIST_ERROR]', persistErr && persistErr.message ? persistErr.message : String(persistErr))
+    }
     return c.json({ success: true, result, meta, traceId })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)

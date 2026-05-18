@@ -10,20 +10,22 @@
 
 ## 默认读取顺序
 
-1. `README.md`
-2. `ai/USER.md`
-3. `ai/MEMORY.md`
-4. `ai/memory/LONG_TASKS.md`
-5. `ai/memory/STATUS.md`
-6. `ai/memory/TASK_QUEUE.md`
-7. `ai/memory/DECISIONS.md`
-8. 最新的 `ai/memory/YYYY-MM-DD.md`
+1. `docs/PROJECT_GOVERNANCE.md`（**最高级治理规则，必须首先遵守**）
+2. `README.md`
+3. `ai/USER.md`
+4. `ai/MEMORY.md`
+5. `ai/memory/LONG_TASKS.md`
+6. `ai/memory/STATUS.md`
+7. `ai/memory/TASK_QUEUE.md`
+8. `ai/memory/DECISIONS.md`
 9. `ai/TOOLS.md`（当任务需要命令、接口、端口或目录细节时）
 10. `ai/interactive_story_editor.contract.md`（当任务明确涉及 editor schema / UI 契约时）
 
 当任务明确涉及 `control`、`control-server`、`control-console`、`Hermes manager` 结构或接口时，追加读取：
 
 11. `ai/control_architecture.md`
+12. `docs/系统生产级推进方案.md`（当任务涉及系统分工、启动流程和边界时）
+13. `docs/PRODUCTION_DEFECTS.md`（当任务涉及生产链路和当前缺陷时）
 
 ## 权威目录事实
 
@@ -42,7 +44,7 @@
 - 短任务推进：`ai/memory/TASK_QUEUE.md`
 - 当前目标、阻塞、下一步：`ai/memory/STATUS.md`
 - 生效中的规则：`ai/memory/DECISIONS.md`
-- 当日关键进展：最新的 `ai/memory/YYYY-MM-DD.md`
+- **禁止读取 `memory/` 根目录下的任何文件（该目录已弃用）**
 
 ## 工作规则
 
@@ -58,11 +60,12 @@
 
 ## 更新规则
 
+- **所有更新必须遵守 `docs/PROJECT_GOVERNANCE.md` 的文档治理规则。**
 - 长任务方向变化：更新 `ai/MEMORY.md` 或 `ai/memory/LONG_TASKS.md`
 - 短任务变化：更新 `ai/memory/TASK_QUEUE.md`
 - 当前目标 / 阻塞 / 下一步变化：更新 `ai/memory/STATUS.md`
 - 新的稳定取舍：更新 `ai/memory/DECISIONS.md`
-- 当日关键进展：更新当日 `ai/memory/YYYY-MM-DD.md`
+- **禁止在 `ai/memory/` 下创建按日期的日志文件（如 `2026-05-18.md`）**；当日进展直接更新 `STATUS.md`，详细过程进入 `state/` 或测试 artifacts
 - 当多步骤执行改变了项目状态、流程规则或当前主线时，必须在最终回答前同步上述记忆文件，而不是只更新聊天历史。
 
 ## 响应规则
