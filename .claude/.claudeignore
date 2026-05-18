@@ -1,0 +1,10 @@
+node_modules
+dist
+build
+temp
+logs
+coverage
+assets
+public
+cache
+.DS_Store

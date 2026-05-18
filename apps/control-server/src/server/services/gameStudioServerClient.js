@@ -243,7 +243,26 @@ export async function listExports(projectId) {
 }
 
 export async function getAiStatus() {
-  return requestGameStudio('/api/ai/status')
+  const result = await requestGameStudio('/api/ai/status')
+  // 适配契约：服务端返回 data.ai = { provider, openai, localoxml, proxy, diagnostics }
+  // control-server 期望 data.ai.effective.enabled.image 来判断资产生成可用性
+  if (result.ok && result.data?.ai && typeof result.data.ai === 'object') {
+    const snap = result.data.ai
+    if (!snap.effective || typeof snap.effective !== 'object') {
+      const provider = String(snap.provider || 'local').toLowerCase()
+      const hasTextProvider = provider === 'localoxml' || provider === 'openai' || provider === 'ollama' || provider === 'doubao'
+      const hasImageProvider = provider === 'localoxml' || provider === 'openai' || provider === 'doubao'
+      snap.effective = {
+        enabled: {
+          scripts: hasTextProvider,
+          prompt: hasTextProvider,
+          image: hasImageProvider,
+          tts: false
+        }
+      }
+    }
+  }
+  return result
 }
 
 export async function preflightImageProvider(payload = {}) {

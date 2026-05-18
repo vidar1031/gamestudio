@@ -6,27 +6,27 @@
   },
   "config": {
     "saved": true,
-    "savedAt": "2026-05-12T11:57:01.875Z",
+    "savedAt": "2026-05-15T03:18:03.325Z",
     "savedFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"hermes\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"direct\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"direct\",\"strict\":true}},\"actionRoutes\":{},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
     "lastSavedModel": "Qwen3.6-35B-A3B-4bit",
-    "detail": "已保存并切换左脑配置"
+    "detail": "已保存左脑配置"
   },
   "model": {
-    "status": "loaded",
-    "label": "已启动",
-    "detail": "模型已通过 provider 接口载入。",
+    "status": "unloaded",
+    "label": "未启动",
+    "detail": "模型已存在，但当前未载入。",
     "provider": "omlx",
     "baseUrl": "http://127.0.0.1:18888/v1",
-    "model": "gpt-oss-20b-MXFP4-Q8",
-    "inspectedAt": "2026-05-12T11:57:38.800Z",
-    "loadedAt": "2026-05-12T11:57:38.802Z",
-    "lastAction": "load",
+    "model": "Qwen3.6-35B-A3B-4bit",
+    "inspectedAt": "2026-05-18T02:50:37.262Z",
+    "loadedAt": null,
+    "lastAction": "switch",
     "inspection": {
-      "model": "gpt-oss-20b-MXFP4-Q8",
+      "model": "Qwen3.6-35B-A3B-4bit",
       "accessible": true,
       "status": "ok",
-      "detail": "模型已通过 provider 接口载入。",
-      "checkedAt": "2026-05-12T11:57:38.800Z",
+      "detail": "模型已存在，但当前未载入。",
+      "checkedAt": "2026-05-18T02:50:37.262Z",
       "usage": {
         "promptTokens": null,
         "completionTokens": null,
@@ -37,17 +37,17 @@
       "probedProvider": true,
       "contextLength": 131072,
       "recommendedMaxOutputTokens": 8192,
-      "tokenizer": "gpt-oss/qwen-compatible",
-      "metadataSource": "catalog",
-      "loaded": true,
+      "tokenizer": "qwen",
+      "metadataSource": "heuristic",
+      "loaded": false,
       "isLoading": false,
       "runtimeStatusKnown": true,
-      "runtimeStatusDetail": "模型已通过 provider 接口载入。"
+      "runtimeStatusDetail": "模型已存在，但当前未载入。"
     }
   },
   "preflight": {
     "ready": true,
-    "checkedAt": "2026-05-12T11:56:48.703Z",
+    "checkedAt": "2026-05-15T03:17:48.758Z",
     "configFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"hermes\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"direct\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"direct\",\"strict\":true}},\"actionRoutes\":{},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
     "detail": "左脑自检通过",
     "checks": [
@@ -171,7 +171,7 @@
       "accessible": true,
       "status": "ok",
       "detail": "模型已出现在 provider /models 目录中（只读自检，不触发推理）。",
-      "checkedAt": "2026-05-12T11:56:48.701Z",
+      "checkedAt": "2026-05-15T03:17:48.755Z",
       "usage": {
         "promptTokens": null,
         "completionTokens": null,
@@ -187,16 +187,15 @@
     }
   },
   "runtime": {
-    "state": "running",
-    "label": "运行中",
-    "detail": "Hermes gateway 进程正在运行",
-    "pid": 76822,
-    "updatedAt": "2026-05-12T11:57:07.272Z",
-    "lastAction": "start",
+    "state": "stopped",
+    "label": "已暂停",
+    "detail": "Hermes 已安装，但当前没有运行中的 manager 受控进程",
+    "pid": null,
+    "updatedAt": "2026-05-18T02:50:37.398Z",
+    "lastAction": null,
     "availableActions": [
       "all-restart",
-      "pause",
-      "exit"
+      "resume"
     ]
   }
 }
