@@ -183,15 +183,18 @@ export function registerRuntimeRoutes(app, context) {
       const preflight = await buildHermesPreflight(existing, { appendLogs: true })
       if (preflight.ready) {
         appendHermesLog(`[START] Loading provider model before runtime start: ${preflight.selectedModel}`)
+        const loadStart = Date.now()
         const loadResult = await loadProviderModel({
           provider: existing.provider,
           baseUrl: existing.baseUrl,
           model: preflight.selectedModel
         })
+        const loadDuration = Date.now() - loadStart
         if (!loadResult.ok) {
-          appendHermesLog(`[START][ERROR] Provider load failed: ${loadResult.detail}`)
+          appendHermesLog(`[START][ERROR] Provider load failed: ${loadResult.detail} time_ms=${loadDuration}`)
           return c.json({ ok: false, error: 'provider_load_failed', detail: loadResult.detail, preflight }, 409)
         }
+        appendHermesLog(`[START][DETAIL] provider_load_time_ms=${loadDuration} model=${preflight.selectedModel}`)
       }
       const loadedInspection = preflight.ready
         ? await inspectProviderModelState({ provider: existing.provider, baseUrl: existing.baseUrl, model: preflight.selectedModel })

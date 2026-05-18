@@ -171,6 +171,8 @@ export async function requestHermesChatCompletion({
         ? `${String(directRoute.baseUrl || '').replace(/\/+$/, '')}/chat/completions`
         : `${HERMES_API_SERVER_BASE_URL}/chat/completions`
       const targetModel = directRoute ? String(directRoute.model || '').trim() : 'hermes-agent'
+      const transportLabel = directRoute ? 'direct' : 'hermes'
+      console.log(`[MODEL_TASK] phase=${phase || 'model'} transport=${transportLabel} model=${targetModel}`)
       if (!targetModel) {
         throw new Error(`model_route_missing_model:${String(phase || 'model')}`)
       }

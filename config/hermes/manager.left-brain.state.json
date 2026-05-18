@@ -5,28 +5,28 @@
     "detail": "Hermes 作为当前全局唯一管理器"
   },
   "config": {
-    "saved": true,
+    "saved": false,
     "savedAt": "2026-05-15T03:18:03.325Z",
     "savedFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"hermes\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"direct\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"direct\",\"strict\":true}},\"actionRoutes\":{},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
     "lastSavedModel": "Qwen3.6-35B-A3B-4bit",
-    "detail": "已保存左脑配置"
+    "detail": "未保存左脑配置"
   },
   "model": {
-    "status": "unloaded",
-    "label": "未启动",
-    "detail": "模型已存在，但当前未载入。",
+    "status": "loaded",
+    "label": "已启动",
+    "detail": "模型已通过 provider 接口载入。",
     "provider": "omlx",
     "baseUrl": "http://127.0.0.1:18888/v1",
-    "model": "Qwen3.6-35B-A3B-4bit",
-    "inspectedAt": "2026-05-18T02:50:37.262Z",
-    "loadedAt": null,
-    "lastAction": "switch",
+    "model": "gpt-oss-20b-MXFP4-Q8",
+    "inspectedAt": "2026-05-18T03:39:59.012Z",
+    "loadedAt": "2026-05-18T03:35:57.364Z",
+    "lastAction": "load",
     "inspection": {
-      "model": "Qwen3.6-35B-A3B-4bit",
+      "model": "gpt-oss-20b-MXFP4-Q8",
       "accessible": true,
       "status": "ok",
-      "detail": "模型已存在，但当前未载入。",
-      "checkedAt": "2026-05-18T02:50:37.262Z",
+      "detail": "模型已通过 provider 接口载入。",
+      "checkedAt": "2026-05-18T03:39:59.012Z",
       "usage": {
         "promptTokens": null,
         "completionTokens": null,
@@ -37,18 +37,18 @@
       "probedProvider": true,
       "contextLength": 131072,
       "recommendedMaxOutputTokens": 8192,
-      "tokenizer": "qwen",
-      "metadataSource": "heuristic",
-      "loaded": false,
+      "tokenizer": "gpt-oss/qwen-compatible",
+      "metadataSource": "catalog",
+      "loaded": true,
       "isLoading": false,
       "runtimeStatusKnown": true,
-      "runtimeStatusDetail": "模型已存在，但当前未载入。"
+      "runtimeStatusDetail": "模型已通过 provider 接口载入。"
     }
   },
   "preflight": {
     "ready": true,
-    "checkedAt": "2026-05-15T03:17:48.758Z",
-    "configFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"hermes\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"direct\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.6-35B-A3B-4bit\",\"transport\":\"direct\",\"strict\":true}},\"actionRoutes\":{},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
+    "checkedAt": "2026-05-18T03:35:57.349Z",
+    "configFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true}},\"actionRoutes\":{},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
     "detail": "左脑自检通过",
     "checks": [
       {
@@ -73,7 +73,7 @@
         "key": "model-name",
         "label": "模型名称",
         "status": "ok",
-        "detail": "Qwen3.6-35B-A3B-4bit"
+        "detail": "gpt-oss-20b-MXFP4-Q8"
       },
       {
         "key": "short-term-context",
@@ -157,21 +157,21 @@
         "key": "model-selection",
         "label": "检测模型选择",
         "status": "ok",
-        "detail": "Qwen3.6-35B-A3B-4bit"
+        "detail": "gpt-oss-20b-MXFP4-Q8"
       },
       {
         "key": "model-catalog-selection",
         "label": "模型目录自检",
         "status": "ok",
-        "detail": "Qwen3.6-35B-A3B-4bit 已在模型目录中"
+        "detail": "gpt-oss-20b-MXFP4-Q8 已在模型目录中"
       }
     ],
     "inspection": {
-      "model": "Qwen3.6-35B-A3B-4bit",
+      "model": "gpt-oss-20b-MXFP4-Q8",
       "accessible": true,
       "status": "ok",
       "detail": "模型已出现在 provider /models 目录中（只读自检，不触发推理）。",
-      "checkedAt": "2026-05-15T03:17:48.755Z",
+      "checkedAt": "2026-05-18T03:35:57.347Z",
       "usage": {
         "promptTokens": null,
         "completionTokens": null,
@@ -182,20 +182,21 @@
       "probedProvider": true,
       "contextLength": 131072,
       "recommendedMaxOutputTokens": 8192,
-      "tokenizer": "qwen",
-      "metadataSource": "heuristic"
+      "tokenizer": "gpt-oss/qwen-compatible",
+      "metadataSource": "catalog"
     }
   },
   "runtime": {
-    "state": "stopped",
-    "label": "已暂停",
-    "detail": "Hermes 已安装，但当前没有运行中的 manager 受控进程",
-    "pid": null,
-    "updatedAt": "2026-05-18T02:50:37.398Z",
+    "state": "running",
+    "label": "运行中",
+    "detail": "Hermes gateway 进程正在运行",
+    "pid": 68310,
+    "updatedAt": "2026-05-18T03:39:59.093Z",
     "lastAction": null,
     "availableActions": [
       "all-restart",
-      "resume"
+      "pause",
+      "exit"
     ]
   }
 }

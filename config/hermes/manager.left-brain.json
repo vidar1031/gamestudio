@@ -1,7 +1,7 @@
 {
   "provider": "omlx",
   "baseUrl": "http://127.0.0.1:18888/v1",
-  "model": "Qwen3.6-35B-A3B-4bit",
+  "model": "gpt-oss-20b-MXFP4-Q8",
   "shortTerm": {
     "minContextTokens": 65536
   },
@@ -13,7 +13,7 @@
       "defaultRoute": {
         "provider": "omlx",
         "baseUrl": "http://127.0.0.1:18888/v1",
-        "model": "Qwen3.6-35B-A3B-4bit",
+        "model": "gpt-oss-20b-MXFP4-Q8",
         "transport": "hermes",
         "strict": false
       },
@@ -21,15 +21,15 @@
         "story_scripts_candidate": {
           "provider": "omlx",
           "baseUrl": "http://127.0.0.1:18888/v1",
-          "model": "Qwen3.6-35B-A3B-4bit",
-          "transport": "direct",
+          "model": "gpt-oss-20b-MXFP4-Q8",
+          "transport": "hermes",
           "strict": true
         },
         "story_blueprint_review": {
           "provider": "omlx",
           "baseUrl": "http://127.0.0.1:18888/v1",
-          "model": "Qwen3.6-35B-A3B-4bit",
-          "transport": "direct",
+          "model": "gpt-oss-20b-MXFP4-Q8",
+          "transport": "hermes",
           "strict": true
         }
       },

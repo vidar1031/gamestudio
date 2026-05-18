@@ -841,6 +841,20 @@ async function loadProviderModel({ provider, baseUrl, model }) {
     }
   }
 
+  // 单模型约束：加载新模型前，先卸载当前已加载的其他模型
+  const statusBefore = await fetchProviderModelStatus({ provider: access.provider, baseUrl: access.baseUrl })
+  if (statusBefore.ok && Array.isArray(statusBefore.models)) {
+    const loadedOthers = statusBefore.models.filter((m) => m?.loaded === true && m?.is_loading === false && String(m?.id || '').trim() !== normalizedModel)
+    for (const other of loadedOthers) {
+      const otherId = String(other.id || '').trim()
+      appendHermesLog(`[MODEL][SINGLE] Unloading previously loaded model before loading ${normalizedModel}: ${otherId}`)
+      const unloadResult = await unloadProviderModel({ provider: access.provider, baseUrl: access.baseUrl, model: otherId })
+      if (!unloadResult.ok) {
+        appendHermesLog(`[MODEL][SINGLE][WARN] Failed to unload ${otherId}: ${unloadResult.detail}`)
+      }
+    }
+  }
+
   const session = await createProviderAdminSession({ provider: access.provider, baseUrl: access.baseUrl })
   if (!session.ok) {
     return { ok: false, attempted: false, detail: session.detail }
@@ -1139,19 +1153,37 @@ function buildHermesEphemeralSystemPrompt(binding) {
 }
 
 async function startHermesRuntime() {
+  const startAt = Date.now()
   const current = getHermesRuntimeState()
   if (current.state === 'uninstalled') {
+    appendHermesLog(`[START][SKIP] Hermes uninstalled, cannot start`)
     return current
   }
   if (current.state === 'running') {
+    appendHermesLog(`[START][SKIP] Hermes already running pid=${current.pid}`)
     return current
   }
 
+  appendHermesLog(`[START] Initiating Hermes runtime startup`)
   const binding = buildHermesBinding()
   syncHermesRuntimeConfig(binding)
   const providerAccess = getProviderAccess(binding.provider, binding.baseUrl)
   const noProxyValue = buildHermesNoProxyValue(binding)
   const ephemeralSystemPrompt = buildHermesEphemeralSystemPrompt(binding)
+  
+  const injectedMemoryFiles = [
+    binding.memory.agentDefinitionFile,
+    binding.memory.userFile,
+    binding.memory.memoryFile,
+    binding.memory.longTasksFile,
+    binding.memory.statusFile,
+    binding.memory.taskQueueFile,
+    binding.memory.decisionsFile
+  ].filter(Boolean)
+  
+  appendHermesLog(`[START][DETAIL] model=${binding.model} provider=${binding.provider} baseUrl=${binding.baseUrl}`)
+  appendHermesLog(`[START][DETAIL] memory_injection=${injectedMemoryFiles.length} files skills=${binding.skills.availableSkillFiles?.length || 0}`)
+  
   const customEnv = {
     ...process.env,
     HERMES_HOME,
@@ -1193,7 +1225,10 @@ async function startHermesRuntime() {
 
   fs.mkdirSync(path.dirname(HERMES_RUNTIME_LOG_FILE), { recursive: true })
   const logFd = fs.openSync(HERMES_RUNTIME_LOG_FILE, 'a')
-  const child = spawn(getHermesPython(), [HERMES_GATEWAY_SCRIPT, 'run'], {
+  const pythonPath = getHermesPython()
+  appendHermesLog(`[START][DETAIL] python=${pythonPath} script=${HERMES_GATEWAY_SCRIPT} cwd=${HERMES_ROOT}`)
+  
+  const child = spawn(pythonPath, [HERMES_GATEWAY_SCRIPT, 'run'], {
     cwd: HERMES_ROOT,
     detached: true,
     stdio: ['ignore', logFd, logFd],
@@ -1202,21 +1237,32 @@ async function startHermesRuntime() {
 
   child.unref()
   writeHermesPid(child.pid)
+  appendHermesLog(`[START][DETAIL] hermes_pid=${child.pid}`)
   ensureHermesGatewayLogWatcher()
 
+  const apiReadyStart = Date.now()
   const readiness = await waitForHermesApiReady()
+  const apiReadyDuration = Date.now() - apiReadyStart
   if (!readiness.ready) {
-    appendHermesLog(`[START][WARN] Hermes API not ready after launch wait: ${readiness.detail}`)
+    appendHermesLog(`[START][WARN] Hermes API not ready after launch wait: ${readiness.detail} time_ms=${apiReadyDuration}`)
+  } else {
+    appendHermesLog(`[START][DETAIL] api_ready_time_ms=${apiReadyDuration}`)
   }
+  
+  const totalDuration = Date.now() - startAt
+  appendHermesLog(`[START][COMPLETE] total_time_ms=${totalDuration} state=${getHermesRuntimeState().state}`)
   return getHermesRuntimeState()
 }
 
 async function stopHermesRuntime() {
+  const stopAt = Date.now()
   const current = getHermesRuntimeState()
   if (current.state !== 'running' || !current.pid) {
+    appendHermesLog(`[STOP][SKIP] Hermes not running, state=${current.state}`)
     return current
   }
 
+  appendHermesLog(`[STOP] Stopping Hermes runtime pid=${current.pid}`)
   try {
     process.kill(-current.pid, 'SIGTERM')
   } catch {
@@ -1235,7 +1281,9 @@ async function stopHermesRuntime() {
   const refreshed = getHermesRuntimeState()
   if (refreshed.state !== 'running') {
     clearHermesPid()
+    appendHermesLog(`[STOP][OK] Hermes stopped gracefully time_ms=${Date.now() - stopAt}`)
   } else {
+    appendHermesLog(`[STOP][WARN] Hermes still running after SIGTERM, escalating to SIGKILL`)
     try {
       process.kill(-current.pid, 'SIGKILL')
     } catch {
@@ -1247,6 +1295,9 @@ async function stopHermesRuntime() {
     const hardRefreshed = getHermesRuntimeState()
     if (hardRefreshed.state !== 'running') {
       clearHermesPid()
+      appendHermesLog(`[STOP][OK] Hermes stopped with SIGKILL time_ms=${Date.now() - stopAt}`)
+    } else {
+      appendHermesLog(`[STOP][ERROR] Hermes still running after SIGKILL, manual intervention may be needed`)
     }
   }
   
@@ -1458,8 +1509,8 @@ function buildDefaultModelRoutingConfig({ provider, baseUrl, model }) {
   return {
     defaultRoute,
     phaseRoutes: {
-      story_scripts_candidate: normalizeModelRouteEntry({ model: 'Qwen3.6-35B', transport: 'direct', strict: true }, defaultRoute),
-      story_blueprint_review: normalizeModelRouteEntry({ model: 'Qwen3.6-35B', transport: 'direct', strict: true }, defaultRoute)
+      story_scripts_candidate: normalizeModelRouteEntry({ model: 'gpt-oss-20b-MXFP4-Q8', transport: 'hermes', strict: true }, defaultRoute),
+      story_blueprint_review: normalizeModelRouteEntry({ model: 'gpt-oss-20b-MXFP4-Q8', transport: 'hermes', strict: true }, defaultRoute)
     },
     actionRoutes: {},
     strictRouteRequiredPhases: ['story_scripts_candidate', 'story_blueprint_review']
@@ -2363,10 +2414,14 @@ async function fetchLocalModelCatalog({ provider, baseUrl, model = '' }) {
 }
 
 async function buildHermesPreflight(configOverrides = {}, options = {}) {
+  const preflightStart = Date.now()
   const current = getPersistedHermesControlConfig()
   const mergedConfig = mergeHermesControlConfig(current, configOverrides)
   const binding = buildHermesBindingFromConfig(mergedConfig)
   const installState = detectHermesInstallState()
+  
+  appendHermesLog(`[PREFLIGHT] Starting Hermes preflight model=${binding.model} provider=${binding.provider}`)
+  
   const modelCatalog = await fetchLocalModelCatalog({ provider: binding.provider, baseUrl: binding.baseUrl, model: binding.model })
   const selectedModel = binding.model || modelCatalog.models[0]?.id || ''
   const inspection = selectedModel
@@ -2419,10 +2474,12 @@ async function buildHermesPreflight(configOverrides = {}, options = {}) {
     }
   ]
 
+  const preflightDuration = Date.now() - preflightStart
   const logs = checks.map((item) => `[CHECK][${item.status === 'ok' ? 'OK' : 'ERROR'}] ${item.label}: ${item.detail}`)
   if (options.appendLogs) {
-    appendHermesLog(['[CHECK] Starting Hermes preflight', ...logs])
+    appendHermesLog(['[PREFLIGHT] Starting Hermes preflight checks', ...logs])
   }
+  appendHermesLog(`[PREFLIGHT][${checks.every((item) => item.status === 'ok') ? 'OK' : 'ERROR'}] preflight_completed time_ms=${preflightDuration} ready=${checks.every((item) => item.status === 'ok')} model=${selectedModel}`)
 
   return {
     ready: checks.every((item) => item.status === 'ok'),
