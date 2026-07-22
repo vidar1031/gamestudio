@@ -729,8 +729,22 @@ export async function finalizeReasoningSessionWithQualityGate(sessionId, binding
 
   // productionTest mode bypasses quality gate review for automated testing
   if (productionTest) {
-    appendReasoningEvent(sessionId, 'quality_gate_skipped', '生产测试模式跳过质检确认', `productionTest=true，自动质检评分 ${assessment.score}/100，直接通过并落盘最终答案。`, {
-      data: { score: assessment.score, issues: assessment.issues, selfReview }
+    // 质检未通过不得静默丢弃:把评估结论显式写入 artifacts,供自动判定/门禁读取(见 P0-01)。
+    updateReasoningSession(sessionId, (current) => ({
+      ...current,
+      artifacts: {
+        ...current.artifacts,
+        productionTestQualityGate: {
+          passed: Boolean(assessment.passed),
+          score: assessment.score,
+          issues: assessment.issues,
+          selfReviewVerdict: selfReview?.verdict || null,
+          recordedAt: new Date().toISOString()
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'quality_gate_skipped', '生产测试模式跳过质检确认', `productionTest=true，自动质检评分 ${assessment.score}/100（${assessment.passed ? '过线' : '未过线'}），直接通过并落盘最终答案。`, {
+      data: { score: assessment.score, passed: Boolean(assessment.passed), issues: assessment.issues, selfReview }
     })
     return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
   }

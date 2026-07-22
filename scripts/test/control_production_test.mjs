@@ -7,6 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
+import { inspectStoryWorkflowFailure, hasStoryWorkflowSteps } from './lib/storyWorkflowVerdict.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -602,6 +603,12 @@ function autoVerdict(caseId, session) {
   const finalAnswer = String(session?.artifacts?.finalAnswer || '').trim()
   const stageId = String(session?.submissionContext?.stageId || '').trim().toLowerCase()
   const workflowFailure = inspectStoryWorkflowFailure(session)
+  // L4-04 false-pass 根因修复:story workflow 任一步骤失败(含 step.ok=true 但 evaluator.passed=false)
+  // 必须先于关键词命中判定记为 FAIL,不能只看最终回答里出现了期望词。
+  if (hasStoryWorkflowSteps(session) && workflowFailure.hasFailure) {
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: `自动判定：story workflow 存在失败步骤(含 evaluator 失败),不能计为业务 PASS。${workflowFailure.detail}` }
+  }
   if (/api call failed|http 5\d\d|cannot free enough memory|connection error|request timeout|timeout_error|timed out waiting|failed after \d+ retries/i.test(finalAnswer)) {
     console.log(`${caseId} 自动判定: FAIL`)
     return { result: 'FAIL', notes: '自动判定：最终回答包含模型/API 错误，不计为有效答案。' }
@@ -646,10 +653,6 @@ function autoVerdict(caseId, session) {
     console.log(`${caseId} 自动判定: FAIL`)
     return { result: 'FAIL', notes: '自动判定：最终回答只暴露失败边界或阻断传播，不能计为业务 PASS。' }
   }
-  if (stageId === 'l4' && !expectations && workflowFailure.hasFailure) {
-    console.log(`${caseId} 自动判定: FAIL`)
-    return { result: 'FAIL', notes: `自动判定：story workflow 存在失败步骤，不能计为业务 PASS。${workflowFailure.detail}` }
-  }
   if (session.status === 'completed' && finalAnswer.length > 0) {
     console.log(`${caseId} 自动判定: PASS`)
     return { result: 'PASS', notes: '自动判定：session completed 且存在最终回答。' }
@@ -686,19 +689,6 @@ function hasBoundaryOnlyBusinessAnswer(finalAnswer) {
   if (/失败边界[:：]\s*未发现失败步骤/i.test(text)) return false
   return /blocked_by_previous_story_step|invalid_story_bible|validation_failed|项目校验未通过|已跳过 .*前置步骤 .* 未通过|未达到生产放行标准/i.test(text)
     || (/失败边界/i.test(text) && !/未发现失败步骤/i.test(text))
-}
-
-function inspectStoryWorkflowFailure(session) {
-  const steps = session?.artifacts?.storyProduction?.steps && typeof session.artifacts.storyProduction.steps === 'object'
-    ? Object.values(session.artifacts.storyProduction.steps)
-    : []
-  const failedSteps = steps.filter((step) => step && typeof step === 'object' && step.ok === false)
-  return {
-    hasFailure: failedSteps.length > 0,
-    detail: failedSteps.length > 0
-      ? `failedSteps=${failedSteps.map((step) => `${step.action || 'unknown'}:${step.failedStage || 'unknown'}`).join(',')}`
-      : 'failedSteps=none'
-  }
 }
 
 function inspectHermesModelAnswerEvidence(session) {
