@@ -23,6 +23,7 @@
     "control:start": "npm run dev:control-server",
     "control:console": "npm run dev:control-console",
     "test:control-production": "node scripts/test/control_production_test.mjs",
+    "test:dashboard": "node scripts/test-dashboard/server.mjs",
     "sync:from-compose": "node tools/syncFromCompose.mjs",
     "lint": "echo \"(todo)\""
   }

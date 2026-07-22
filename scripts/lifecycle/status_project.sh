@@ -43,20 +43,6 @@ else
 fi
 
 echo ""
-echo "OpenClaw watchdog"
-WATCHDOG_PLIST_PATH="${HOME}/Library/LaunchAgents/com.gamestudio.openclaw-watchdog.plist"
-if [ -f "${WATCHDOG_PLIST_PATH}" ] && launchctl print "gui/$(id -u)/com.gamestudio.openclaw-watchdog" >/dev/null 2>&1; then
-  INTERVAL="$(/usr/libexec/PlistBuddy -c 'Print :StartInterval' "${WATCHDOG_PLIST_PATH}" 2>/dev/null || true)"
-  if [ -n "${INTERVAL}" ]; then
-    echo "openclaw watchdog: loaded (every ${INTERVAL}s)"
-  else
-    echo "openclaw watchdog: loaded"
-  fi
-else
-  echo "openclaw watchdog: not loaded"
-fi
-
-echo ""
 echo "Health"
 if curl --noproxy '*' -fsS http://127.0.0.1:1999/api/health >/dev/null 2>&1; then
   echo "server health: ok"
@@ -70,8 +56,8 @@ else
   echo "editor http: fail"
 fi
 
-if bash scripts/lifecycle/openclaw_selfcheck.sh >/dev/null 2>&1; then
-  echo "openclaw/model health: ok"
+if curl -sS --max-time 3 http://127.0.0.1:18888/v1/models -H "Authorization: Bearer omlx123" >/dev/null 2>&1; then
+  echo "omlx model health: ok"
 else
-  echo "openclaw/model health: fail"
+  echo "omlx model health: fail"
 fi

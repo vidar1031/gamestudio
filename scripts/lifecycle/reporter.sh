@@ -1,6 +1,5 @@
 #!/bin/bash
-# GameStudio Reporter Agent - 启动后自动汇报
-# 此脚本由 OpenClaw 启动后自动调用
+# GameStudio Reporter Agent - 定时状态汇报
 
 set -euo pipefail
 

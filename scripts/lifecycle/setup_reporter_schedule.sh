@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PLIST_SRC="${ROOT}/.openclaw/com.gamestudio.reporter.plist"
-CONFIG_FILE="${ROOT}/.openclaw/email_config.sh"
+PLIST_SRC="${ROOT}/scripts/lifecycle/com.gamestudio.reporter.plist"
+CONFIG_FILE="${ROOT}/config/email_config.sh"
 LABEL="com.gamestudio.reporter"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 PLIST_DEST="${LAUNCH_AGENTS_DIR}/${LABEL}.plist"

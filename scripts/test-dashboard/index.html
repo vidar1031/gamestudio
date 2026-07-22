@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GameStudio 四阶段联调测试仪表盘</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --bg-elevated: #161b22;
+      --bg-card: #1c2128;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --text-dim: #6e7681;
+      --accent: #58a6ff;
+      --pass: #238636;
+      --pass-bg: rgba(35, 134, 54, 0.15);
+      --fail: #da3633;
+      --fail-bg: rgba(218, 54, 51, 0.15);
+      --warn: #d29922;
+      --warn-bg: rgba(210, 153, 34, 0.15);
+      --running: #8957e5;
+      --running-bg: rgba(137, 87, 229, 0.15);
+      --pending: #484f58;
+      --notimpl: #6e7681;
+      --notimpl-bg: rgba(110, 118, 129, 0.15);
+      --font-mono: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+    .header .subtitle { color: var(--text-muted); font-size: 12px; }
+
+    .service-statuses {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .service-dot {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--pending);
+      transition: background 0.3s;
+    }
+
+    .dot.ok { background: var(--pass); box-shadow: 0 0 6px rgba(35, 134, 54, 0.4); }
+    .dot.err { background: var(--fail); box-shadow: 0 0 6px rgba(218, 54, 51, 0.4); }
+    .dot.warn { background: var(--warn); }
+    .dot.checking {
+      background: var(--running);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* Controls */
+    .controls {
+      padding: 16px 24px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn:hover:not(:disabled) { background: var(--bg-elevated); border-color: var(--accent); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn-primary:hover:not(:disabled) { background: #4183d7; }
+    .btn-danger { background: var(--fail-bg); color: #f85149; border-color: rgba(218, 54, 51, 0.3); }
+    .btn-danger:hover:not(:disabled) { background: rgba(218, 54, 51, 0.25); }
+
+    /* Phase Grid */
+    .phases {
+      padding: 20px 24px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+      gap: 20px;
+    }
+
+    @media (max-width: 600px) {
+      .phases { grid-template-columns: 1fr; padding: 12px; }
+      .header { padding: 12px 16px; }
+    }
+
+    .phase {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .phase-header {
+      padding: 14px 18px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .phase-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .phase-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .phase-status {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .phase-status.pending { background: rgba(72, 79, 88, 0.2); color: var(--text-muted); }
+    .phase-status.running { background: var(--running-bg); color: #a371f7; }
+    .phase-status.passed { background: var(--pass-bg); color: #3fb950; }
+    .phase-status.failed { background: var(--fail-bg); color: #f85149; }
+    .phase-status.blocked { background: var(--warn-bg); color: #e3b341; }
+
+    .phase-progress {
+      height: 3px;
+      background: var(--bg);
+      position: relative;
+    }
+
+    .phase-progress-bar {
+      height: 100%;
+      background: var(--accent);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    .phase-progress-bar.pass { background: var(--pass); }
+    .phase-progress-bar.fail { background: var(--fail); }
+
+    .phase-body {
+      padding: 14px 18px;
+    }
+
+    .test-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 6px;
+    }
+
+    .test-item {
+      padding: 8px 4px;
+      border-radius: 6px;
+      background: var(--bg);
+      border: 1px solid transparent;
+      text-align: center;
+      cursor: default;
+      transition: all 0.15s;
+      position: relative;
+    }
+
+    .test-item:hover { border-color: var(--border); }
+    .test-item:hover .test-tooltip { display: block; }
+
+    .test-id {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .test-badge {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--pending);
+      transition: all 0.3s;
+    }
+
+    .test-badge.pass { background: var(--pass); box-shadow: 0 0 4px rgba(35, 134, 54, 0.5); }
+    .test-badge.fail { background: var(--fail); box-shadow: 0 0 4px rgba(218, 54, 51, 0.5); }
+    .test-badge.blocked { background: var(--warn); }
+    .test-badge.running {
+      background: var(--running);
+      animation: pulse 1s ease-in-out infinite;
+    }
+    .test-badge.notimpl { background: var(--notimpl); }
+
+    .test-tooltip {
+      display: none;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      min-width: 220px;
+      z-index: 100;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      text-align: left;
+    }
+
+    .test-tooltip::after {
+      content: '';
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border: 6px solid transparent;
+      border-top-color: var(--border);
+    }
+
+    .tooltip-title {
+      font-weight: 600;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+
+    .tooltip-detail {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .phase-footer {
+      padding: 10px 18px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .phase-stats {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    /* Log Console */
+    .log-section {
+      margin: 0 24px 24px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--bg-card);
+    }
+
+    .log-header {
+      padding: 10px 16px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+    }
+
+    .log-title {
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .log-actions { display: flex; gap: 8px; }
+    .log-action {
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .log-action:hover { background: var(--bg); color: var(--text); }
+
+    .log-body {
+      max-height: 320px;
+      overflow-y: auto;
+      padding: 12px 16px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .log-line {
+      padding: 1px 0;
+      word-break: break-all;
+    }
+
+    .log-line.stdout { color: var(--text); }
+    .log-line.stderr { color: #f85149; }
+    .log-line.info { color: var(--accent); }
+    .log-line.warn { color: var(--warn); }
+    .log-line.success { color: #3fb950; }
+
+    /* Summary Bar */
+    .summary-bar {
+      margin: 0 24px 16px;
+      padding: 12px 18px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .summary-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+    }
+
+    .summary-count {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 16px;
+    }
+
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <h1>GameStudio 四阶段联调测试</h1>
+      <span class="subtitle" id="connection-status">就绪</span>
+    </div>
+    <div class="service-statuses" id="service-statuses">
+      <div class="service-dot"><div class="dot" id="dot-omlx"></div>OMLX</div>
+      <div class="service-dot"><div class="dot" id="dot-server"></div>Server</div>
+      <div class="service-dot"><div class="dot" id="dot-control"></div>Control</div>
+      <div class="service-dot"><div class="dot" id="dot-console"></div>Console</div>
+      <div class="service-dot"><div class="dot" id="dot-hermes"></div>Hermes</div>
+      <div class="service-dot"><div class="dot" id="dot-comfyui"></div>ComfyUI</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-primary" id="btn-run-all" onclick="runStage('all')">
+      ▶ 执行全部阶段
+    </button>
+    <button class="btn" id="btn-stop" onclick="stopRun()" disabled>
+      ⏹ 停止
+    </button>
+    <button class="btn" onclick="checkHealth()">
+      🔄 刷新服务状态
+    </button>
+    <span style="color:var(--text-dim);font-size:12px;margin-left:auto;">
+      端口: 20990 · 文档: docs/PRODUCTION_DEFECTS.md
+    </span>
+  </div>
+
+  <div class="summary-bar" id="summary-bar" style="display:none;">
+    <div class="summary-item"><span class="summary-count" style="color:var(--pass)">0</span> 通过</div>
+    <div class="summary-item"><span class="summary-count" style="color:var(--fail)">0</span> 失败</div>
+    <div class="summary-item"><span class="summary-count" style="color:var(--warn)">0</span> 阻塞</div>
+    <div class="summary-item"><span class="summary-count" style="color:var(--text-muted)">0</span> 未实现</div>
+    <div class="summary-item" style="margin-left:auto;color:var(--text-dim)">总计: <span class="summary-count" id="summary-total">0/40</span></div>
+  </div>
+
+  <div class="phases" id="phases">
+    <!-- Populated by JS -->
+  </div>
+
+  <div class="log-section">
+    <div class="log-header" onclick="toggleLog()">
+      <div class="log-title">
+        <span>📋 执行日志</span>
+        <span style="color:var(--text-dim);font-weight:normal;" id="log-count">(0 行)</span>
+      </div>
+      <div class="log-actions">
+        <span class="log-action" onclick="event.stopPropagation();clearLog()">清空</span>
+        <span class="log-action" onclick="event.stopPropagation();copyLog()">复制</span>
+      </div>
+    </div>
+    <div class="log-body" id="log-body"></div>
+  </div>
+
+  <script>
+    // ==================== Data ====================
+    const PHASES = [
+      {
+        id: 's0',
+        title: '第一阶段：系统启动硬检查',
+        desc: 'S0 基础可用性 — 所有服务可启动、可检测、可响应',
+        tests: [
+          { id: 'S0-T01', name: 'OMLX 健康检查' },
+          { id: 'S0-T02', name: 'GameStudio Server 健康检查' },
+          { id: 'S0-T03', name: 'Control Server 健康检查' },
+          { id: 'S0-T04', name: 'Control Console 可访问' },
+          { id: 'S0-T05', name: 'Hermes Gateway API 就绪' },
+          { id: 'S0-T06', name: 'ComfyUI system_stats 可达' },
+          { id: 'S0-T07', name: 'GameStudio Editor 可访问' },
+          { id: 'S0-T08', name: 'OMLX 模型列表非空' },
+          { id: 'S0-T09', name: '记忆文件权威性检查' },
+          { id: 'S0-T10', name: 'Studio Settings 图片配置' },
+        ]
+      },
+      {
+        id: 'l1',
+        title: '第二阶段：交互测试',
+        desc: 'Control ↔ Hermes 任务分类与执行准确性',
+        tests: [
+          { id: 'L1-T01', name: 'answer_only 分类准确性' },
+          { id: 'L1-T02', name: 'bootstrap_execute 分类准确性' },
+          { id: 'L1-T03', name: '完整 P0 workflow 分类' },
+          { id: 'L1-T04', name: '最小创建 plan 分类' },
+          { id: 'L1-T05', name: 'capability_status_inspection 分类' },
+          { id: 'L1-T06', name: 'workflow 不落入 plan_then_answer' },
+          { id: 'L1-T07', name: 'Agent 记忆加载完整性' },
+          { id: 'L1-T08', name: 'OMLX response_format fallback' },
+          { id: 'L1-T09', name: '中文脚本不截断' },
+          { id: 'L1-T10', name: 'productionTest 完整 bypass' },
+        ]
+      },
+      {
+        id: 'l4',
+        title: '第三阶段：故事生成 P0',
+        desc: '文本闭环完整性、结构正确性和可运行性',
+        tests: [
+          { id: 'L4-T01', name: '创建项目成功' },
+          { id: 'L4-T02', name: '写入配置成功' },
+          { id: 'L4-T03', name: '脚本候选真实生成' },
+          { id: 'L4-T04', name: '写入脚本成功' },
+          { id: 'L4-T05', name: 'Story Bible 生成与持久化' },
+          { id: 'L4-T06', name: '蓝图编译成功' },
+          { id: 'L4-T07', name: '蓝图评审执行' },
+          { id: 'L4-T08', name: '合成层编译成功' },
+          { id: 'L4-T09', name: '项目校验通过' },
+          { id: 'L4-T10', name: '项目导出成功' },
+        ]
+      },
+      {
+        id: 'p1',
+        title: '第四阶段：场景图锁定 P1',
+        desc: '图片资产闭环 — 锁定→渲染→回填→校验→导出',
+        tests: [
+          { id: 'P1-T01', name: '资产计划创建成功' },
+          { id: 'P1-T02', name: '识别 ref_required 锁定资产' },
+          { id: 'P1-T03', name: 'ComfyUI preflight 通过' },
+          { id: 'P1-T04', name: '锁定测试图生成成功' },
+          { id: 'P1-T05', name: '锁定测试图 AI 评审通过' },
+          { id: 'P1-T06', name: '锁定参考图保存成功' },
+          { id: 'P1-T07', name: '缺少参考时渲染被阻断' },
+          { id: 'P1-T08', name: '场景渲染生成场景图' },
+          { id: 'P1-T09', name: '场景图资源回填成功' },
+          { id: 'P1-T10', name: '校验与重新导出成功' },
+        ]
+      }
+    ]
+
+    // ==================== State ====================
+    let evtSource = null
+    let logLines = []
+    let results = {}
+    let running = false
+
+    // ==================== Init ====================
+    function init() {
+      renderPhases()
+      checkHealth()
+    }
+
+    function renderPhases() {
+      const container = document.getElementById('phases')
+      container.innerHTML = PHASES.map(phase => `
+        <div class="phase" id="phase-${phase.id}">
+          <div class="phase-header">
+            <div>
+              <div class="phase-title">${phase.title}</div>
+              <div class="phase-desc">${phase.desc}</div>
+            </div>
+            <div class="phase-status pending" id="phase-status-${phase.id}">待执行</div>
+          </div>
+          <div class="phase-progress">
+            <div class="phase-progress-bar" id="phase-bar-${phase.id}"></div>
+          </div>
+          <div class="phase-body">
+            <div class="test-grid">
+              ${phase.tests.map(t => `
+                <div class="test-item" id="test-${t.id}">
+                  <div class="test-id">${t.id}</div>
+                  <div class="test-badge" id="badge-${t.id}"></div>
+                  <div class="test-tooltip">
+                    <div class="tooltip-title">${t.name}</div>
+                    <div class="tooltip-detail" id="tooltip-${t.id}">等待执行...</div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+          <div class="phase-footer">
+            <div class="phase-stats" id="phase-stats-${phase.id}">0/10 —</div>
+            <button class="btn" id="btn-run-${phase.id}" onclick="runStage('${phase.id}')">▶ 执行</button>
+          </div>
+        </div>
+      `).join('')
+    }
+
+    // ==================== Health Check ====================
+    async function checkHealth() {
+      const services = ['omlx', 'server', 'control', 'console', 'hermes', 'comfyui']
+      services.forEach(s => setDot(s, 'checking'))
+
+      try {
+        const res = await fetch('/api/health')
+        const data = await res.json()
+        if (data.checks) {
+          data.checks.forEach((check, i) => {
+            const service = services[i]
+            if (service) setDot(service, check.result === 'PASS' ? 'ok' : 'err')
+          })
+        }
+      } catch (err) {
+        services.forEach(s => setDot(s, 'err'))
+        log('warn', `Health check failed: ${err.message}`)
+      }
+    }
+
+    function setDot(service, status) {
+      const dot = document.getElementById(`dot-${service}`)
+      if (!dot) return
+      dot.className = 'dot ' + status
+    }
+
+    // ==================== Run Stage ====================
+    function runStage(stageId) {
+      if (running) {
+        alert('已有测试正在执行，请先停止')
+        return
+      }
+      running = true
+      setRunningUI(true)
+
+      if (stageId === 'all') {
+        PHASES.forEach(p => setPhaseStatus(p.id, 'running'))
+      } else {
+        setPhaseStatus(stageId, 'running')
+      }
+
+      log('info', `开始执行阶段: ${stageId}`)
+      evtSource = new EventSource(`/api/run-stage/${stageId}`)
+
+      evtSource.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          handleEvent(e.type, data)
+        } catch {}
+      }
+
+      evtSource.addEventListener('case_start', (e) => {
+        const data = JSON.parse(e.data)
+        setTestStatus(data.id, 'running')
+        log('info', `[${data.id}] ${data.name} — 开始执行`)
+      })
+
+      evtSource.addEventListener('case_result', (e) => {
+        const data = JSON.parse(e.data)
+        results[data.id] = data
+        const status = data.result === 'PASS' ? 'pass' :
+                       data.result === 'FAIL' ? 'fail' :
+                       data.result === 'BLOCKED' ? 'blocked' :
+                       data.result === 'NOT_IMPLEMENTED' ? 'notimpl' : 'pending'
+        setTestStatus(data.id, status)
+        document.getElementById(`tooltip-${data.id}`).textContent = data.detail || data.name
+        log(status === 'pass' ? 'success' : status === 'fail' ? 'stderr' : 'warn',
+          `[${data.id}] ${data.result}${data.duration ? ` (${data.duration}ms)` : ''} — ${data.detail || ''}`)
+        updatePhaseStats(data.stage || guessStage(data.id))
+        updateSummary()
+      })
+
+      evtSource.addEventListener('log', (e) => {
+        const data = JSON.parse(e.data)
+        log(data.source === 'stderr' ? 'stderr' : 'stdout', data.line)
+      })
+
+      evtSource.addEventListener('phase_start', (e) => {
+        const data = JSON.parse(e.data)
+        log('info', `========== 阶段 ${data.stageId} 开始 ==========`)
+        setPhaseStatus(data.stageId, 'running')
+      })
+
+      evtSource.addEventListener('phase_end', (e) => {
+        const data = JSON.parse(e.data)
+        log('info', `========== 阶段 ${data.stageId} 结束 ==========`)
+        updatePhaseFinalStatus(data.stageId)
+      })
+
+      evtSource.addEventListener('stage_status', (e) => {
+        const data = JSON.parse(e.data)
+        setPhaseStatus(data.stage, data.status)
+      })
+
+      evtSource.addEventListener('complete', (e) => {
+        log('success', '测试执行完成')
+        cleanup()
+      })
+
+      evtSource.addEventListener('error', (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          log('stderr', `Error: ${data.message}`)
+        } catch {
+          log('stderr', 'SSE connection error')
+        }
+        cleanup()
+      })
+
+      evtSource.addEventListener('stopped', (e) => {
+        log('warn', '测试已停止')
+        cleanup()
+      })
+    }
+
+    function stopRun() {
+      if (!running) return
+      fetch('/api/stop', { method: 'POST' }).catch(() => {})
+    }
+
+    function cleanup() {
+      running = false
+      if (evtSource) { evtSource.close(); evtSource = null }
+      setRunningUI(false)
+      // Update all phase statuses based on results
+      PHASES.forEach(p => updatePhaseFinalStatus(p.id))
+    }
+
+    function handleEvent(type, data) {
+      // Fallback for generic messages
+    }
+
+    // ==================== UI Updates ====================
+    function setPhaseStatus(phaseId, status) {
+      const el = document.getElementById(`phase-status-${phaseId}`)
+      if (!el) return
+      el.className = `phase-status ${status}`
+      const labels = { pending: '待执行', running: '执行中', passed: '已通过', failed: '未通过', blocked: '阻塞' }
+      el.textContent = labels[status] || status
+    }
+
+    function setTestStatus(testId, status) {
+      const badge = document.getElementById(`badge-${testId}`)
+      if (badge) badge.className = `test-badge ${status}`
+    }
+
+    function updatePhaseStats(phaseId) {
+      const phase = PHASES.find(p => p.id === phaseId)
+      if (!phase) return
+      let pass = 0, fail = 0, blocked = 0, notimpl = 0, running = 0
+      phase.tests.forEach(t => {
+        const r = results[t.id]
+        if (!r) return
+        if (r.result === 'PASS') pass++
+        else if (r.result === 'FAIL') fail++
+        else if (r.result === 'BLOCKED') blocked++
+        else if (r.result === 'NOT_IMPLEMENTED') notimpl++
+      })
+
+      const total = pass + fail + blocked + notimpl
+      const statsEl = document.getElementById(`phase-stats-${phaseId}`)
+      if (statsEl) {
+        const parts = []
+        if (pass) parts.push(`<span style="color:var(--pass)">${pass}P</span>`)
+        if (fail) parts.push(`<span style="color:var(--fail)">${fail}F</span>`)
+        if (blocked) parts.push(`<span style="color:var(--warn)">${blocked}B</span>`)
+        if (notimpl) parts.push(`<span style="color:var(--notimpl)">${notimpl}N</span>`)
+        statsEl.innerHTML = `${total}/10 — ${parts.join(' ')}`
+      }
+
+      const bar = document.getElementById(`phase-bar-${phaseId}`)
+      if (bar) {
+        bar.style.width = `${(total / 10) * 100}%`
+        if (fail > 0) bar.className = 'phase-progress-bar fail'
+        else if (total === 10) bar.className = 'phase-progress-bar pass'
+      }
+    }
+
+    function updatePhaseFinalStatus(phaseId) {
+      const phase = PHASES.find(p => p.id === phaseId)
+      if (!phase) return
+      const testResults = phase.tests.map(t => results[t.id]?.result)
+      const hasFail = testResults.some(r => r === 'FAIL')
+      const hasRunning = testResults.some(r => !r)
+      const allDone = testResults.every(r => r)
+
+      if (hasRunning) return // Still running
+      if (hasFail) setPhaseStatus(phaseId, 'failed')
+      else if (allDone) setPhaseStatus(phaseId, 'passed')
+    }
+
+    function updateSummary() {
+      const bar = document.getElementById('summary-bar')
+      bar.style.display = 'flex'
+      let pass = 0, fail = 0, blocked = 0, notimpl = 0
+      Object.values(results).forEach(r => {
+        if (r.result === 'PASS') pass++
+        else if (r.result === 'FAIL') fail++
+        else if (r.result === 'BLOCKED') blocked++
+        else if (r.result === 'NOT_IMPLEMENTED') notimpl++
+      })
+      const counts = bar.querySelectorAll('.summary-count')
+      counts[0].textContent = pass
+      counts[1].textContent = fail
+      counts[2].textContent = blocked
+      counts[3].textContent = notimpl
+      document.getElementById('summary-total').textContent = `${pass + fail + blocked + notimpl}/40`
+    }
+
+    function guessStage(testId) {
+      if (testId.startsWith('S0-')) return 's0'
+      if (testId.startsWith('L1-')) return 'l1'
+      if (testId.startsWith('L4-')) return 'l4'
+      if (testId.startsWith('P1-')) return 'p1'
+      return 'unknown'
+    }
+
+    function setRunningUI(isRunning) {
+      document.getElementById('btn-run-all').disabled = isRunning
+      document.getElementById('btn-stop').disabled = !isRunning
+      PHASES.forEach(p => {
+        document.getElementById(`btn-run-${p.id}`).disabled = isRunning
+      })
+      document.getElementById('connection-status').textContent = isRunning ? '执行中...' : '就绪'
+    }
+
+    // ==================== Log ====================
+    function log(type, message) {
+      logLines.push({ type, message, time: new Date().toLocaleTimeString() })
+      const body = document.getElementById('log-body')
+      const line = document.createElement('div')
+      line.className = `log-line ${type}`
+      line.textContent = `[${logLines[logLines.length - 1].time}] ${message}`
+      body.appendChild(line)
+      body.scrollTop = body.scrollHeight
+      document.getElementById('log-count').textContent = `(${logLines.length} 行)`
+    }
+
+    function toggleLog() {
+      const body = document.getElementById('log-body')
+      body.classList.toggle('hidden')
+    }
+
+    function clearLog() {
+      logLines = []
+      document.getElementById('log-body').innerHTML = ''
+      document.getElementById('log-count').textContent = '(0 行)'
+    }
+
+    function copyLog() {
+      const text = logLines.map(l => `[${l.time}] ${l.message}`).join('\n')
+      navigator.clipboard.writeText(text).then(() => alert('日志已复制到剪贴板'))
+    }
+
+    // ==================== Start ====================
+    init()
+  </script>
+</body>
+</html>

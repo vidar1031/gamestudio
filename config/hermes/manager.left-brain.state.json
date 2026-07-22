@@ -6,9 +6,9 @@
   },
   "config": {
     "saved": true,
-    "savedAt": "2026-05-18T04:14:26.116Z",
-    "savedFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true}},\"actionRoutes\":{},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
-    "lastSavedModel": "gpt-oss-20b-MXFP4-Q8",
+    "savedAt": "2026-06-18T13:21:39.008Z",
+    "savedFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.5-9B-MLX-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.5-9B-MLX-4bit\",\"transport\":\"direct\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true}},\"actionRoutes\":{\"meta_analysis\":{\"provider\":\"moonshot\",\"baseUrl\":\"https://api.kimi.com/coding/v1\",\"model\":\"kimi-for-coding\",\"transport\":\"direct\",\"strict\":false}},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":true,\"rightBrain\":{\"provider\":\"moonshot\",\"baseUrl\":\"https://api.kimi.com/coding/v1\",\"model\":\"kimi-for-coding\",\"apiKey\":\"sk-kimi-XVFtaZCSNScdkzxyKK3JWDVCwVp9CSBYBXNMDGqYg3TSXCtX6wqokzJhnNFkVwUY\"}}}",
+    "lastSavedModel": "Qwen3.5-9B-MLX-4bit",
     "detail": "已保存左脑配置"
   },
   "model": {
@@ -17,16 +17,16 @@
     "detail": "模型已通过 provider 接口载入。",
     "provider": "omlx",
     "baseUrl": "http://127.0.0.1:18888/v1",
-    "model": "gpt-oss-20b-MXFP4-Q8",
-    "inspectedAt": "2026-05-18T05:56:33.993Z",
-    "loadedAt": "2026-05-18T05:56:33.994Z",
+    "model": "Qwen3.5-9B-MLX-4bit",
+    "inspectedAt": "2026-06-18T13:35:52.091Z",
+    "loadedAt": "2026-06-18T13:21:56.055Z",
     "lastAction": "load",
     "inspection": {
-      "model": "gpt-oss-20b-MXFP4-Q8",
+      "model": "Qwen3.5-9B-MLX-4bit",
       "accessible": true,
       "status": "ok",
       "detail": "模型已通过 provider 接口载入。",
-      "checkedAt": "2026-05-18T05:56:33.993Z",
+      "checkedAt": "2026-06-18T13:35:52.091Z",
       "usage": {
         "promptTokens": null,
         "completionTokens": null,
@@ -37,7 +37,7 @@
       "probedProvider": true,
       "contextLength": 131072,
       "recommendedMaxOutputTokens": 8192,
-      "tokenizer": "gpt-oss/qwen-compatible",
+      "tokenizer": "qwen3.5",
       "metadataSource": "catalog",
       "loaded": true,
       "isLoading": false,
@@ -47,8 +47,8 @@
   },
   "preflight": {
     "ready": true,
-    "checkedAt": "2026-05-18T05:56:33.980Z",
-    "configFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true}},\"actionRoutes\":{},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":false}}",
+    "checkedAt": "2026-06-18T13:21:56.055Z",
+    "configFingerprint": "{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.5-9B-MLX-4bit\",\"shortTerm\":{\"minContextTokens\":65536},\"workflow\":{\"memoryOverlayMode\":\"references-only\",\"replayWindowMessages\":24,\"reasoningReplayWindowMessages\":8,\"modelRouting\":{\"defaultRoute\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"Qwen3.5-9B-MLX-4bit\",\"transport\":\"direct\",\"strict\":false},\"phaseRoutes\":{\"story_scripts_candidate\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true},\"story_blueprint_review\":{\"provider\":\"omlx\",\"baseUrl\":\"http://127.0.0.1:18888/v1\",\"model\":\"gpt-oss-20b-MXFP4-Q8\",\"transport\":\"hermes\",\"strict\":true}},\"actionRoutes\":{\"meta_analysis\":{\"provider\":\"moonshot\",\"baseUrl\":\"https://api.kimi.com/coding/v1\",\"model\":\"kimi-for-coding\",\"transport\":\"direct\",\"strict\":false}},\"strictRouteRequiredPhases\":[\"story_scripts_candidate\",\"story_blueprint_review\"]}},\"memory\":{\"agentDefinitionFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/AGENTS.md\",\"userFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/USER.md\",\"memoryFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/MEMORY.md\",\"longTasksFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/LONG_TASKS.md\",\"statusFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/STATUS.md\",\"taskQueueFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/TASK_QUEUE.md\",\"decisionsFile\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory/DECISIONS.md\",\"dailyLogDir\":\"/Volumes/ovokit2t/aiwork/gamestudio/ai/memory\"},\"skills\":{\"skillRoot\":\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills\",\"skillFiles\":[\"/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md\"]},\"brains\":{\"rightBrainEnabled\":true,\"rightBrain\":{\"provider\":\"moonshot\",\"baseUrl\":\"https://api.kimi.com/coding/v1\",\"model\":\"kimi-for-coding\",\"apiKey\":\"sk-kimi-XVFtaZCSNScdkzxyKK3JWDVCwVp9CSBYBXNMDGqYg3TSXCtX6wqokzJhnNFkVwUY\"}}}",
     "detail": "左脑自检通过",
     "checks": [
       {
@@ -73,7 +73,7 @@
         "key": "model-name",
         "label": "模型名称",
         "status": "ok",
-        "detail": "gpt-oss-20b-MXFP4-Q8"
+        "detail": "Qwen3.5-9B-MLX-4bit"
       },
       {
         "key": "short-term-context",
@@ -151,27 +151,27 @@
         "key": "omlx-service",
         "label": "检测本地模型服务",
         "status": "ok",
-        "detail": "OMLX OK，发现 7 个模型 (http://127.0.0.1:18888/v1)"
+        "detail": "OMLX OK，发现 8 个模型 (http://127.0.0.1:18888/v1)"
       },
       {
         "key": "model-selection",
         "label": "检测模型选择",
         "status": "ok",
-        "detail": "gpt-oss-20b-MXFP4-Q8"
+        "detail": "Qwen3.5-9B-MLX-4bit"
       },
       {
         "key": "model-catalog-selection",
         "label": "模型目录自检",
         "status": "ok",
-        "detail": "gpt-oss-20b-MXFP4-Q8 已在模型目录中"
+        "detail": "Qwen3.5-9B-MLX-4bit 已在模型目录中"
       }
     ],
     "inspection": {
-      "model": "gpt-oss-20b-MXFP4-Q8",
+      "model": "Qwen3.5-9B-MLX-4bit",
       "accessible": true,
       "status": "ok",
       "detail": "模型已出现在 provider /models 目录中（只读自检，不触发推理）。",
-      "checkedAt": "2026-05-18T05:56:33.978Z",
+      "checkedAt": "2026-06-18T13:21:56.051Z",
       "usage": {
         "promptTokens": null,
         "completionTokens": null,
@@ -182,7 +182,7 @@
       "probedProvider": true,
       "contextLength": 131072,
       "recommendedMaxOutputTokens": 8192,
-      "tokenizer": "gpt-oss/qwen-compatible",
+      "tokenizer": "qwen3.5",
       "metadataSource": "catalog"
     }
   },
@@ -190,9 +190,9 @@
     "state": "running",
     "label": "运行中",
     "detail": "Hermes gateway 进程正在运行",
-    "pid": 68310,
-    "updatedAt": "2026-05-18T05:56:34.040Z",
-    "lastAction": "start",
+    "pid": 23819,
+    "updatedAt": "2026-06-18T13:35:52.219Z",
+    "lastAction": null,
     "availableActions": [
       "all-restart",
       "pause",

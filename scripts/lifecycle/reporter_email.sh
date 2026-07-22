@@ -10,7 +10,7 @@ AI_MEMORY_DIR="$PROJECT_DIR/ai/memory"
 cd "$PROJECT_DIR"
 
 # 加载邮件配置
-source "$PROJECT_DIR/.openclaw/email_config.sh"
+source "$PROJECT_DIR/config/email_config.sh"
 
 if [ -z "${RECIPIENT:-}" ]; then
     echo "❌ 缺少收件人配置: RECIPIENT" >&2

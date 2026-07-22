@@ -25,6 +25,7 @@ const REVIEW_VIA = CLI_ARGV.includes('--review-via=auto') ? 'auto' : CLI_ARGV.in
 const AUTO_VERDICT = !CLI_ARGS.has('--manual-verdict')
 const USE_RUNNING_CONTROL = CLI_ARGS.has('--use-running-control')
 const CONTINUE_ON_FAIL = !CLI_ARGS.has('--stop-on-fail')
+const JSON_PROGRESS = CLI_ARGS.has('--json-progress')
 const HARD_GATE_STAGES = new Set(['l1'])
 const FETCH_TIMEOUT_MS = Math.max(5000, Number(process.env.CONTROL_PRODUCTION_FETCH_TIMEOUT_MS || 30000))
 const CASE_TIMEOUT_MS = Math.max(60000, Number(process.env.CONTROL_PRODUCTION_CASE_TIMEOUT_MS || 20 * 60 * 1000))
@@ -315,6 +316,7 @@ async function runReasoningStage(stage, stageRecord) {
     console.log(`\n${item.id} ${item.title}`)
 
     try {
+      emitProgress({ type: 'case_start', stage: stage.id, case: item.id, title: item.title })
       const session = await createReasoningSession(item.prompt, {
         stageId: stage.id,
         caseId: item.id,
@@ -346,6 +348,7 @@ async function runReasoningStage(stage, stageRecord) {
       caseRecord.notes = verdict.notes
       caseRecord.status = verdict.result === 'PASS' ? 'passed' : 'needs-review'
       caseRecord.endedAt = new Date().toISOString()
+      emitProgress({ type: 'case_result', stage: stage.id, case: item.id, result: verdict.result, detail: verdict.notes })
 
       if (verdict.result !== 'PASS' && !CONTINUE_ON_FAIL) {
         return false
@@ -355,6 +358,7 @@ async function runReasoningStage(stage, stageRecord) {
       caseRecord.status = 'failed'
       caseRecord.error = toErrorString(error)
       caseRecord.endedAt = new Date().toISOString()
+      emitProgress({ type: 'case_result', stage: stage.id, case: item.id, result: 'FAIL', detail: caseRecord.error })
       console.error(`案例失败: ${caseRecord.error}`)
       if (!CONTINUE_ON_FAIL) return false
     }
@@ -390,17 +394,20 @@ async function runManualGate(stageRecord) {
 
 async function runBootstrapCheck(id, title, fn) {
   const record = { id, title, startedAt: new Date().toISOString() }
+  emitProgress({ type: 'case_start', stage: 'bootstrap', case: id, title })
   try {
     const result = await fn()
     record.result = result.ok ? 'PASS' : 'FAIL'
     record.detail = result.detail
     record.endedAt = new Date().toISOString()
     console.log(`${result.ok ? 'PASS' : 'FAIL'} ${id} ${title}: ${result.detail}`)
+    emitProgress({ type: 'case_result', stage: 'bootstrap', case: id, result: record.result, detail: record.detail })
   } catch (error) {
     record.result = 'FAIL'
     record.detail = toErrorString(error)
     record.endedAt = new Date().toISOString()
     console.log(`FAIL ${id} ${title}: ${record.detail}`)
+    emitProgress({ type: 'case_result', stage: 'bootstrap', case: id, result: 'FAIL', detail: record.detail })
   }
   return record
 }
@@ -888,6 +895,11 @@ function casePrompt(id, prompt, expectations = null) {
   return { id, title: prompt, prompt, expectations }
 }
 
+function emitProgress(obj) {
+  if (!JSON_PROGRESS) return
+  console.log(`__JSON_PROGRESS__${JSON.stringify(obj)}`)
+}
+
 function getCaseExpectations(caseId) {
   if (!caseId) return null
   for (const stage of STAGES) {
@@ -940,6 +952,7 @@ function buildSummary(currentResults) {
 function finalize(status) {
   results.status = status
   results.endedAt = new Date().toISOString()
+  emitProgress({ type: 'complete', status, summary: buildSummary(results) })
   releaseScriptLock()
   console.log('\n====================')
   console.log('控制面生产测试执行结束')
