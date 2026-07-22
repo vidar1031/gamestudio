@@ -15,5 +15,8 @@
       "default": "./dist/index.js"
     },
     "./schema": "./schema/story.schema.json"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
   }
 }

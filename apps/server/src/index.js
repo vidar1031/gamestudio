@@ -34,6 +34,7 @@ import dns from 'node:dns/promises'
 import { getEffectiveStudioConfig, redactEffectiveStudioConfigForClient, redactStudioSettingsForClient, writeStudioSettings } from './studio/settings.js'
 import { normalizeProjectDoc } from './studio/projectState.js'
 import { getStudioSecret } from './studio/secrets.js'
+import { storyInputGate } from './middleware/storyInputGate.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -3473,7 +3474,7 @@ app.get('/api/projects', async (c) => {
   return c.json({ success: true, items })
 })
 
-app.post('/api/projects', async (c) => {
+app.post('/api/projects', storyInputGate('story.project.create'), async (c) => {
   await ensureDirs()
   const body = await c.req.json().catch(() => ({}))
   const title = String(body?.title || '').trim() || '未命名故事'
@@ -3505,7 +3506,7 @@ app.post('/api/projects', async (c) => {
 })
 
 // AI: Create new project + scripts from prompt (P0: scripts layer only)
-app.post('/api/projects/ai/create', async (c) => {
+app.post('/api/projects/ai/create', storyInputGate('story.project.create'), async (c) => {
   await ensureDirs()
   const body = await c.req.json().catch(() => ({}))
   const prompt = String(body?.prompt || '').trim()
@@ -3805,7 +3806,7 @@ app.post('/api/projects/:id/analyze/scripts', async (c) => {
   return c.json({ success: true, analysis })
 })
 
-app.post('/api/projects/:id/validate/blueprint', async (c) => {
+app.post('/api/projects/:id/validate/blueprint', storyInputGate('story.validate.blueprint', (c) => ({ projectId: c.req.param('id') })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -4158,7 +4159,7 @@ app.get('/api/projects/:id/scripts', async (c) => {
   return c.json({ success: true, scripts })
 })
 
-app.put('/api/projects/:id/scripts', async (c) => {
+app.put('/api/projects/:id/scripts', storyInputGate('story.scripts.write', (c, body) => ({ projectId: c.req.param('id'), scripts: body?.scripts })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -4254,7 +4255,7 @@ app.put('/api/projects/:id/blueprint', async (c) => {
 })
 
 // Script → Blueprint（P0：merge/update）
-app.post('/api/projects/:id/compile/blueprint', async (c) => {
+app.post('/api/projects/:id/compile/blueprint', storyInputGate('story.blueprint.compile', (c) => ({ projectId: c.req.param('id') })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -4293,7 +4294,7 @@ app.post('/api/projects/:id/compile/blueprint', async (c) => {
 })
 
 // Blueprint → Compose（P0：overwrite/reset）
-app.post('/api/projects/:id/compile/compose', async (c) => {
+app.post('/api/projects/:id/compile/compose', storyInputGate('story.compose.compile', (c) => ({ projectId: c.req.param('id') })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -4578,7 +4579,7 @@ app.get('/api/demos/:id', async (c) => {
   })
 })
 
-app.post('/api/projects/:id/export', async (c) => {
+app.post('/api/projects/:id/export', storyInputGate('story.export.project', (c) => ({ projectId: c.req.param('id') })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -5060,7 +5061,7 @@ app.post('/api/projects/:id/assets/upload', async (c) => {
 
 // AI 生成背景图（P0：默认对接 SDWebUI txt2img；ComfyUI 预留）
 // 说明：此功能只用于制作阶段生成素材，最终产物仍需通过 app_system 导入。
-app.post('/api/projects/:id/ai/background', async (c) => {
+app.post('/api/projects/:id/ai/background', storyInputGate('story.background.generate', (c, body) => ({ projectId: c.req.param('id'), ...body })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -5340,7 +5341,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
 })
 
 // AI：生成 Story Bible（角色/道具/地点锁定，用于连续分镜）
-app.post('/api/projects/:id/ai/story/bible', async (c) => {
+app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generate', (c, body) => ({ projectId: c.req.param('id'), ...body })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -5519,7 +5520,7 @@ app.post('/api/projects/:id/ai/translate', async (c) => {
 
 })
 
-app.post('/api/projects/:id/ai/story/assets/plan', async (c) => {
+app.post('/api/projects/:id/ai/story/assets/plan', storyInputGate('story.assets.plan', (c, body) => ({ projectId: c.req.param('id'), ...body })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -6787,7 +6788,7 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/gallery/delete', async (c) 
   }
 })
 
-app.post('/api/projects/:id/ai/story/assets/reference/select', async (c) => {
+app.post('/api/projects/:id/ai/story/assets/reference/select', storyInputGate('story.assets.reference.lock', (c, body) => ({ projectId: c.req.param('id'), ...body })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const dir = projectDir(id)
@@ -7126,7 +7127,7 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
   }
 })
 
-app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', async (c) => {
+app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('story.scene.render', (c, body) => ({ projectId: c.req.param('id'), sceneId: c.req.param('sceneId'), ...body })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
   const sceneId = c.req.param('sceneId')

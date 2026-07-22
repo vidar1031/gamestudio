@@ -73,6 +73,8 @@ export function extractResponseOutputText(respJson) {
         if (!c || typeof c !== 'object') continue
         const msg = c.message || c.delta || {}
         if (typeof msg.content === 'string') texts.push(msg.content)
+        // OMLX gpt-oss-20b may return reasoning_content instead of content
+        else if (typeof msg.reasoning_content === 'string') texts.push(msg.reasoning_content)
       }
       raw = texts.join('').trim()
     } catch (_) {}
@@ -446,7 +448,39 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
 
   const schema = scriptDraftSchema()
 
-  // Prefer Responses API with Structured Outputs
+  // For localoxml/OMLX, avoid json_schema response_format which causes empty content.
+  // Use buildChatCompletionsBodyFromResponsesBody to embed schema into system prompt.
+  const isLocalOxml = cfg.provider === 'localoxml'
+
+  if (isLocalOxml) {
+    const bodyResponses = {
+      model: useModel,
+      instructions,
+      input: user,
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'script_draft',
+          strict: true,
+          schema
+        }
+      }
+    }
+    const bodyChat = buildChatCompletionsBodyFromResponsesBody(bodyResponses)
+    if (bodyChat) {
+      const resp = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs: useTimeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+      const content = resp && resp.choices && resp.choices[0] && resp.choices[0].message && resp.choices[0].message.content
+      const reasoning = resp && resp.choices && resp.choices[0] && resp.choices[0].message && resp.choices[0].message.reasoning_content
+      const text = typeof content === 'string' ? content.trim() : (typeof reasoning === 'string' ? reasoning.trim() : '')
+      if (!text) throw new Error('empty_ai_output')
+      return {
+        draft: JSON.parse(text),
+        meta: { provider: cfg.provider, api: 'chat.completions', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
+      }
+    }
+  }
+
+  // Prefer Responses API with Structured Outputs (for OpenAI / non-OMLX)
   const bodyResponses = {
     model: useModel,
     instructions,
@@ -476,20 +510,10 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
     if (Number(code) === 28 || String(msg).includes('curl_timeout')) throw e
 
     // Fallback: Chat Completions API shape if needed
-    const bodyChat = {
-      model: useModel,
-      messages: [
-        { role: 'system', content: instructions },
-        { role: 'user', content: user }
-      ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'script_draft',
-          strict: true,
-          schema
-        }
-      }
+    const bodyChat = buildChatCompletionsBodyFromResponsesBody(bodyResponses)
+    if (!bodyChat) {
+      const text = ''
+      if (!text) throw new Error('empty_ai_output')
     }
     const resp2 = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs: useTimeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
     const content = resp2 && resp2.choices && resp2.choices[0] && resp2.choices[0].message && resp2.choices[0].message.content
