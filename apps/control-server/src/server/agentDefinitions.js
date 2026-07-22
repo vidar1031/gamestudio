@@ -19,14 +19,3 @@ export const hermesAgentDefinition = {
   ]
 }
 
-export const openclawAgentDefinition = {
-  id: 'openclaw-manager',
-  name: 'OpenClaw Manager',
-  runtime: 'openclaw',
-  role: 'project-controller',
-  description: 'Reserved control-plane agent entry for OpenClaw. It is selectable in the manager, but its execution workflow is not enabled yet.',
-  capabilities: [
-    'read_control_state',
-    'report_runtime_presence'
-  ]
-}

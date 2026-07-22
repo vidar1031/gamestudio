@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import path from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, exec as execCallback } from 'node:child_process'
+import { promisify } from 'node:util'
 import {
   CONTROL_SERVER_PORT,
   HERMES_API_SERVER_BASE_URL,
@@ -42,7 +43,7 @@ import {
   STUDIO_STORAGE_ROOT,
   STORAGE_PROJECTS_ROOT,
 } from '../config/paths.js'
-import { hermesAgentDefinition, openclawAgentDefinition } from './agentDefinitions.js'
+import { hermesAgentDefinition } from './agentDefinitions.js'
 import {
   inspectControlBackendSurfaces,
   inspectWorkspaceDirectory,
@@ -89,6 +90,7 @@ import {
 import {
   buildReasoningFallbackPlan,
   buildReasoningPlannerMessages,
+  buildSupervisionPrompt,
   extractJsonObjectString,
   isLikelyReadOnlyReasoningPrompt,
   normalizeReasoningPlan,
@@ -133,6 +135,21 @@ import {
 import { enqueueSelfReviewOperatorProposals } from './intents/proposals.js'
 import { requestHermesChatCompletion } from './model/modelTaskQueue.js'
 import {
+  aggregateMetaAnalysisData,
+  buildMetaAnalysisPrompt,
+} from './reasoning/metaAnalysis.js'
+import {
+  aggregateSupervisionData,
+  buildSupervisionScorecard,
+  parseCorrectionPlan,
+} from './reasoning/supervision.js'
+import {
+  appendDailyJsonl,
+  appendDailyLog,
+  getDailyLogPath,
+  writeStructuredLog,
+} from './utils/logger.js'
+import {
   createMemoryLifecycleMetadata,
   MEMORY_LIFECYCLE_STATES,
   MEMORY_RECORD_KINDS,
@@ -149,6 +166,8 @@ import {
   buildProjectCapabilityStatusAnswer,
   shouldUseDeterministicCapabilityStatusAnswer,
 } from './workflows/projectStatusWorkflows.js'
+import { performWebSearch, performWebExtract } from './services/webToolsService.js'
+import { getMcpStatus, callMcpTool } from './services/mcpService.js'
 import {
   extractProjectIdFromPrompt,
   extractStoryTitleFromPrompt,
@@ -162,6 +181,7 @@ let hermesStoppingIntentionally = false
 let hermesHealthCheckTimer = null
 let hermesCrashRestartAttempts = 0
 let hermesLastCrashAt = 0
+const execAsync = promisify(execCallback)
 const HERMES_CRASH_RESTART_MAX_ATTEMPTS = 5
 const HERMES_CRASH_RESTART_BACKOFF_MS = [0, 2000, 5000, 10000, 30000]
 const HERMES_HEALTH_CHECK_INTERVAL_MS = 30000
@@ -235,13 +255,10 @@ function normalizeProviderName(provider) {
 
 function appendHermesLog(lines) {
   try {
-    fs.mkdirSync(path.dirname(HERMES_RUNTIME_LOG_FILE), { recursive: true })
     const entries = Array.isArray(lines) ? lines : [lines]
-    const stamped = entries
-      .filter(Boolean)
-      .map((line) => `[${new Date().toISOString()}] ${line}`)
-      .join('\n')
-    fs.appendFileSync(HERMES_RUNTIME_LOG_FILE, `${stamped}\n`, 'utf8')
+    for (const line of entries.filter(Boolean)) {
+      writeStructuredLog('hermes-runtime', 'info', line)
+    }
   } catch {
     // Ignore logging failures.
   }
@@ -478,13 +495,16 @@ function getProviderApiKey(provider) {
   if (normalizedProvider === 'omlx') {
     return getEnvValue('LOCALOXML_API_KEY') || getEnvValue('STUDIO_AI_API_KEY') || 'omlx123'
   }
+  if (normalizedProvider === 'moonshot') {
+    return getEnvValue('MOONSHOT_API_KEY') || getEnvValue('OPENAI_API_KEY') || getEnvValue('STUDIO_AI_API_KEY') || ''
+  }
   return getEnvValue('OPENAI_API_KEY') || getEnvValue('STUDIO_AI_API_KEY') || ''
 }
 
-function getProviderAccess(provider, baseUrl) {
+function getProviderAccess(provider, baseUrl, apiKeyOverride = null) {
   const normalizedProvider = normalizeProviderName(provider)
   const normalizedBaseUrl = normalizeModelBaseUrl(baseUrl, normalizedProvider)
-  const apiKey = getProviderApiKey(normalizedProvider)
+  const apiKey = apiKeyOverride || getProviderApiKey(normalizedProvider)
   try {
     const url = new URL(normalizedBaseUrl)
     const noProxyValue = mergeNoProxyValues(process.env.NO_PROXY || '', process.env.no_proxy || '', ['127.0.0.1', 'localhost', '::1', url.hostname])
@@ -547,9 +567,9 @@ function buildInspectModelCacheKey({ provider, baseUrl, model }) {
   return `${provider || ''}|${baseUrl || ''}|${model || ''}`
 }
 
-async function inspectModelAccess({ provider, baseUrl, model }) {
+async function inspectModelAccess({ provider, baseUrl, model, apiKeyOverride = null }) {
   const metadata = getModelMetadata(model)
-  const access = getProviderAccess(provider, baseUrl)
+  const access = getProviderAccess(provider, baseUrl, apiKeyOverride)
   const checkedAt = new Date().toISOString()
   const cacheKey = buildInspectModelCacheKey({ provider, baseUrl, model })
 
@@ -566,7 +586,7 @@ async function inspectModelAccess({ provider, baseUrl, model }) {
   }
 
   try {
-    const catalog = await fetchLocalModelCatalog({ provider: access.provider, baseUrl: access.baseUrl })
+    const catalog = await fetchLocalModelCatalog({ provider: access.provider, baseUrl: access.baseUrl, apiKeyOverride })
     if (!catalog.ok) {
       const failure = {
         model,
@@ -811,8 +831,8 @@ async function waitForProviderModelLoadState({ provider, baseUrl, model, shouldB
   }
 }
 
-async function inspectProviderModelState({ provider, baseUrl, model }) {
-  const inspection = await inspectModelAccess({ provider, baseUrl, model })
+async function inspectProviderModelState({ provider, baseUrl, model, apiKeyOverride = null }) {
+  const inspection = await inspectModelAccess({ provider, baseUrl, model, apiKeyOverride })
   if (!inspection.accessible) {
     return {
       ...inspection,
@@ -1073,9 +1093,24 @@ function getHermesRuntimeState() {
   }
 }
 
+function readHermesApiServerKey() {
+  const envKey = String(process.env.API_SERVER_KEY || '').trim()
+  if (envKey) return envKey
+  try {
+    const envPath = path.join(HERMES_HOME, '.env')
+    if (!fs.existsSync(envPath)) return ''
+    const content = fs.readFileSync(envPath, 'utf8')
+    const match = content.match(/^API_SERVER_KEY\s*=\s*(.+)$/m)
+    return match ? String(match[1]).trim() : ''
+  } catch {
+    return ''
+  }
+}
+
 async function waitForHermesApiReady(timeoutMs = 12000, intervalMs = 400) {
   const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 12000)
   let lastError = null
+  const apiKey = readHermesApiServerKey()
 
   while (Date.now() < deadline) {
     try {
@@ -1085,6 +1120,7 @@ async function waitForHermesApiReady(timeoutMs = 12000, intervalMs = 400) {
         method: 'GET',
         headers: {
           Accept: 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
         },
         signal: controller.signal,
       })
@@ -1224,6 +1260,7 @@ async function startHermesRuntime() {
     API_SERVER_HOST: HERMES_API_SERVER_HOST,
     API_SERVER_PORT: String(HERMES_API_SERVER_PORT),
     API_SERVER_MODEL_NAME: 'hermes-agent',
+    API_SERVER_KEY: providerAccess.apiKey || 'gamestudio-local-key',
     GAMESTUDIO_AGENT_CONFIG_FILES: binding.agentMemoryFiles.join(path.delimiter),
     GAMESTUDIO_AGENT_CONFIG_COUNT: String(binding.agentMemoryCount || 0),
     GAMESTUDIO_AGENT_CONFIG_JSON: JSON.stringify(binding.agentMemoryAgents || []),
@@ -1254,6 +1291,23 @@ async function startHermesRuntime() {
   }
 
   fs.mkdirSync(path.dirname(HERMES_RUNTIME_LOG_FILE), { recursive: true })
+
+  // Ensure API_SERVER_KEY is present in Hermes .env so the API server can start.
+  // Hermes reads HERMES_HOME/.env on gateway startup and the env var alone is not enough.
+  try {
+    const hermesEnvPath = path.join(HERMES_HOME, '.env')
+    let envContent = ''
+    try { envContent = fs.readFileSync(hermesEnvPath, 'utf8') } catch { /* ignore */ }
+    const hasKey = /^(\s*API_SERVER_KEY\s*=\s*\S+\s*)$/m.test(envContent)
+    if (!hasKey) {
+      const keyLine = `\nAPI_SERVER_KEY=${providerAccess.apiKey || 'gamestudio-local-key'}\n`
+      fs.writeFileSync(hermesEnvPath, envContent + keyLine, 'utf8')
+      appendHermesLog(`[START] Wrote API_SERVER_KEY to ${hermesEnvPath}`)
+    }
+  } catch (envError) {
+    appendHermesLog(`[START][WARN] Could not write API_SERVER_KEY to Hermes .env: ${envError instanceof Error ? envError.message : String(envError)}`)
+  }
+
   const logFd = fs.openSync(HERMES_RUNTIME_LOG_FILE, 'a')
   const pythonPath = getHermesPython()
   appendHermesLog(`[START][DETAIL] python=${pythonPath} script=${HERMES_GATEWAY_SCRIPT} cwd=${HERMES_ROOT}`)
@@ -1282,6 +1336,129 @@ async function startHermesRuntime() {
   const totalDuration = Date.now() - startAt
   appendHermesLog(`[START][COMPLETE] total_time_ms=${totalDuration} state=${getHermesRuntimeState().state}`)
   return getHermesRuntimeState()
+}
+
+// OMLX 启动 helper：同时检查应用和服务，优先直接启动服务
+async function startOmlxApp() {
+  const omlxAppCandidates = [
+    '/Volumes/ovokit2t/Applications/oMLX.app',
+    '/Applications/oMLX.app',
+  ]
+  const omlxAppPath = omlxAppCandidates.find((p) => {
+    try { return fs.existsSync(p) } catch { return false }
+  }) || omlxAppCandidates[0]
+  const omlxApiUrl = 'http://127.0.0.1:18888/v1/models'
+  const omlxLogFile = path.join(path.dirname(HERMES_RUNTIME_LOG_FILE), 'omlx-server.log')
+  const apiKey = String(process.env.LOCALOXML_API_KEY || process.env.STUDIO_AI_API_KEY || process.env.OPENAI_API_KEY || 'omlx123').trim()
+  const modelDir = String(process.env.OMLX_MODEL_DIR || '/Volumes/ovokit2t/ollama/models').trim()
+
+  // 候选 CLI 路径（按优先级）：优先 App bundle 内的 omlx-cli，再试系统 PATH
+  const cliCandidates = [
+    path.join(omlxAppPath, 'Contents/MacOS/omlx-cli'),
+    '/opt/homebrew/bin/omlx',
+    '/usr/local/bin/omlx',
+    path.join(process.env.HOME || '/Users/vidar', '.omlx/bin/omlx'),
+  ]
+  const omlxCliPath = cliCandidates.find((p) => {
+    try { return fs.existsSync(p) } catch { return false }
+  })
+
+  // Step 1: 检查服务是否已经在运行（需要带 key，因为 OMLX 默认启用认证）
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 3000)
+    const response = await fetch(omlxApiUrl, {
+      signal: controller.signal,
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    })
+    clearTimeout(timeout)
+    if (response.ok || response.status === 200) {
+      console.log('[OMLX] probe status=', response.status)
+      return { ok: true, alreadyRunning: true, message: 'OMLX 服务已在运行' }
+    }
+    console.log('[OMLX] probe returned status=', response.status, '(treating as not ready)')
+  } catch (err) {
+    console.log('[OMLX] probe error (service not running):', err instanceof Error ? err.message : String(err))
+  }
+
+  // Step 2: 优先直接启动 omlx serve（不依赖 GUI）
+  if (omlxCliPath) {
+    try {
+      const args = ['serve', '--port', '18888']
+      if (modelDir && fs.existsSync(modelDir)) {
+        args.push('--model-dir', modelDir)
+      }
+      console.log('[OMLX] spawning', omlxCliPath, args.join(' '))
+      fs.mkdirSync(path.dirname(omlxLogFile), { recursive: true })
+      const logFd = fs.openSync(omlxLogFile, 'a')
+      const child = spawn(omlxCliPath, args, {
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+        env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' }
+      })
+      child.unref()
+      console.log('[OMLX] omlx-cli pid=', child.pid)
+
+      // 等待服务就绪（最多 60 秒，大模型加载较慢）
+      const maxAttempts = 60
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        try {
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 2000)
+          const res = await fetch(omlxApiUrl, {
+            signal: controller.signal,
+            headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+          })
+          clearTimeout(timeout)
+          if (res.ok || res.status === 200) {
+            console.log('[OMLX] omlx-cli serve started successfully')
+            return { ok: true, alreadyRunning: false, message: 'OMLX 服务启动成功' }
+          }
+        } catch {
+          // 继续等待
+        }
+      }
+      return { ok: false, message: 'OMLX 服务启动超时，请检查 omlx-cli serve 日志' }
+    } catch (error) {
+      console.log('[OMLX] omlx-cli serve failed:', error instanceof Error ? error.message : String(error))
+      // fallback 到启动 GUI App
+    }
+  }
+
+  // Step 3: Fallback — 启动 GUI App
+  try {
+    if (!fs.existsSync(omlxAppPath)) {
+      return { ok: false, message: `未找到 OMLX App: ${omlxAppPath}，也未找到 omlx CLI` }
+    }
+  } catch {
+    return { ok: false, message: `无法访问 OMLX App 路径: ${omlxAppPath}` }
+  }
+
+  try {
+    console.log('[OMLX] spawning open', omlxAppPath)
+    const child = spawn('open', [omlxAppPath], { detached: true, stdio: 'ignore' })
+    child.unref()
+
+    // 等待服务就绪（最多 30 秒）
+    const maxAttempts = 30
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 2000)
+        await fetch(omlxApiUrl, { signal: controller.signal })
+        clearTimeout(timeout)
+        console.log('[OMLX] App started successfully')
+        return { ok: true, alreadyRunning: false, message: 'OMLX App 已启动，请在 App 中点击「Start Server」启动服务' }
+      } catch {
+        // 继续等待
+      }
+    }
+    return { ok: false, message: 'OMLX App 已打开，但服务未在预期时间内就绪，请在 App 中手动启动服务' }
+  } catch (error) {
+    return { ok: false, message: `启动失败: ${error instanceof Error ? error.message : String(error)}` }
+  }
 }
 
 async function stopHermesRuntime() {
@@ -1491,7 +1668,13 @@ function getDefaultHermesControlConfig() {
       skillFiles: [DEFAULT_HERMES_SKILL_FILE]
     },
     brains: {
-      rightBrainEnabled: false
+      rightBrainEnabled: false,
+      rightBrain: {
+        provider: 'omlx',
+        baseUrl: 'http://127.0.0.1:18888/v1',
+        model: '',
+        apiKey: ''
+      }
     }
   }
 }
@@ -1632,7 +1815,9 @@ export function resolveModelRouteForPhase(binding, phase, options = {}) {
   const phaseKey = normalizeModelRoutingKey(phase)
   const route = normalizeModelRouteEntry(resolvedRoute, fallbackRoute)
   route.strict = route.strict || strictRouteRequiredPhases.has(phaseKey)
-  const access = getProviderAccess(route.provider, route.baseUrl)
+  const rightBrainApiKey = getRightBrainApiKey(fallbackBinding)
+  const isRightBrainRoute = fallbackBinding.rightBrainEnabled && fallbackBinding.rightBrain && route.provider === fallbackBinding.rightBrain.provider && rightBrainApiKey
+  const access = getProviderAccess(route.provider, route.baseUrl, isRightBrainRoute ? rightBrainApiKey : null)
   const requestBinding = buildBindingForResolvedModelRoute(fallbackBinding, route, access)
   return {
     routeId: match?.routeId || 'default',
@@ -1710,7 +1895,13 @@ function buildPersistedHermesControlConfig(rawConfig = {}) {
         : defaults.skills.skillFiles
     },
     brains: {
-      rightBrainEnabled: Boolean(brains.rightBrainEnabled)
+      rightBrainEnabled: Boolean(brains.rightBrainEnabled),
+      rightBrain: brains.rightBrain && typeof brains.rightBrain === 'object' ? {
+        provider: normalizeProviderName(brains.rightBrain.provider || defaults.brains.rightBrain.provider),
+        baseUrl: normalizeModelBaseUrl(brains.rightBrain.baseUrl || defaults.brains.rightBrain.baseUrl, normalizeProviderName(brains.rightBrain.provider || defaults.brains.rightBrain.provider)),
+        model: String(brains.rightBrain.model || defaults.brains.rightBrain.model),
+        apiKey: String(brains.rightBrain.apiKey || defaults.brains.rightBrain.apiKey || '')
+      } : defaults.brains.rightBrain
     }
   }
 }
@@ -1864,8 +2055,14 @@ function buildHermesBindingFromConfig(cfg) {
     agentMemoryCount: agentMemory.agentCount,
     agentMemoryAgents: agentMemory.agents,
     skills,
-    rightBrainEnabled: Boolean(cfg.brains?.rightBrainEnabled)
+    rightBrainEnabled: Boolean(cfg.brains?.rightBrainEnabled),
+    rightBrain: cfg.brains?.rightBrain || null
   }
+}
+
+function getRightBrainApiKey(binding) {
+  if (!binding?.rightBrainEnabled || !binding?.rightBrain) return null
+  return String(binding.rightBrain.apiKey || '').trim() || null
 }
 
 function readMarkdownFile(filePath) {
@@ -2366,11 +2563,11 @@ function buildConfigValidation(config, binding, inspection = null) {
   }
 }
 
-async function fetchLocalModelCatalog({ provider, baseUrl, model = '' }) {
+async function fetchLocalModelCatalog({ provider, baseUrl, model = '', apiKeyOverride = null }) {
   const normalizedProvider = normalizeProviderName(provider)
   const normalizedBaseUrl = normalizeModelBaseUrl(baseUrl, normalizedProvider)
   const selectedModel = String(model || '').trim()
-  const access = getProviderAccess(normalizedProvider, normalizedBaseUrl)
+  const access = getProviderAccess(normalizedProvider, normalizedBaseUrl, apiKeyOverride)
   try {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
@@ -2453,7 +2650,19 @@ async function buildHermesPreflight(configOverrides = {}, options = {}) {
   
   appendHermesLog(`[PREFLIGHT] Starting Hermes preflight model=${binding.model} provider=${binding.provider}`)
   
-  const modelCatalog = await fetchLocalModelCatalog({ provider: binding.provider, baseUrl: binding.baseUrl, model: binding.model })
+  let modelCatalog = await fetchLocalModelCatalog({ provider: binding.provider, baseUrl: binding.baseUrl, model: binding.model })
+
+  // OMLX 自动启动：本地模型服务未就绪时尝试拉起，避免“测试通过”报告失真
+  if (!modelCatalog.ok && binding.provider === 'omlx') {
+    appendHermesLog(`[PREFLIGHT][WARN] Local model service unreachable (${modelCatalog.error}). Attempting to start OMLX...`)
+    const startResult = await startOmlxApp()
+    appendHermesLog(`[PREFLIGHT][DETAIL] OMLX start result: ok=${startResult.ok} alreadyRunning=${startResult.alreadyRunning || false} message=${startResult.message}`)
+    if (startResult.ok) {
+      modelCatalog = await fetchLocalModelCatalog({ provider: binding.provider, baseUrl: binding.baseUrl, model: binding.model })
+      appendHermesLog(`[PREFLIGHT][DETAIL] OMLX retry catalog: ok=${modelCatalog.ok} models=${modelCatalog.models?.length || 0}`)
+    }
+  }
+
   const selectedModel = binding.model || modelCatalog.models[0]?.id || ''
   const inspection = selectedModel
     ? await inspectModelAccess({ provider: binding.provider, baseUrl: binding.baseUrl, model: selectedModel })
@@ -2797,47 +3006,6 @@ function buildHermesAgentRecord() {
   }
 }
 
-function buildOpenClawBinding() {
-  return {
-    runtimeId: 'openclaw-local-cli',
-    runtimeKind: 'local-cli',
-    workspace: '/Volumes/ovokit2t/aiwork/gamestudio',
-    command: 'openclaw --version',
-    model: 'pending',
-    provider: 'pending',
-    baseUrl: 'pending'
-  }
-}
-
-function buildOpenClawStatus() {
-  return {
-    lifecycle: 'registered',
-    availability: 'idle',
-    health: 'unknown',
-    interactionMode: 'manager-mediated',
-    currentSessionId: null,
-    currentActionId: null,
-    contextPressure: 'unknown',
-    lastHeartbeatAt: null,
-    lastError: null
-  }
-}
-
-function buildOpenClawAgentRecord() {
-  return {
-    definition: openclawAgentDefinition,
-    binding: buildOpenClawBinding(),
-    status: buildOpenClawStatus(),
-    contract: {
-      requestShape: {},
-      resultShape: {},
-      currentSupportedActions: []
-    },
-    startupProfile: null,
-    startupFlow: null
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Builtin intent registration
 // ---------------------------------------------------------------------------
@@ -3017,7 +3185,6 @@ function createControlServerRouteContext() {
     buildAgentRuntimeDescriptor,
     buildManualContextSourceCandidates,
     buildModelStateSnapshot,
-    buildOpenClawAgentRecord,
     buildReasoningActionCatalog,
     buildReasoningToolCatalog,
     buildReasoningCapabilityGuide,
@@ -3046,6 +3213,7 @@ function createControlServerRouteContext() {
     getPersistedHermesControlConfig,
     getProviderAccess,
     listActiveReasoningExecutions,
+    listReasoningSessions,
     getSelectableContextSourceById,
     hermesAgentDefinition,
     inspectModelAccess,
@@ -3057,7 +3225,6 @@ function createControlServerRouteContext() {
     normalizeModelBaseUrl,
     normalizeProviderName,
     openFileInEditor,
-    openclawAgentDefinition,
     parseHermesChatHistoryContent,
     path,
     persistHermesChatError,
@@ -3088,6 +3255,7 @@ function createControlServerRouteContext() {
     setHermesControlConfig,
     spawn,
     startHermesRuntime,
+    startOmlxApp,
     stopHermesRuntime,
     recoverHermesChatRuntime,
     updateHermesControlState,
@@ -3116,6 +3284,74 @@ function registerPrimaryControlServerRoutes(app) {
   registerChatRoutes(app, context)
   registerReasoningRoutes(app, context)
   registerSkillProposalsRoutes(app)
+
+  // 系统启动后 30 秒触发首次监督评估
+  setTimeout(() => {
+    triggerSupervision({ trigger: 'post_startup', delay: 0 })
+  }, 30000)
+
+  // 每 30 分钟触发周期性监督评估
+  setInterval(() => {
+    triggerSupervision({ trigger: 'periodic', delay: 0 })
+  }, 30 * 60 * 1000)
+}
+
+/**
+ * 触发监督评估（内部调用）
+ */
+async function triggerSupervision({ trigger, delay = 0 } = {}) {
+  let sessionId = null
+  try {
+    const agentId = 'hermes-manager'
+    const prompt = trigger === 'post_startup'
+      ? '系统刚启动，请对左脑执行质量进行全面监督评估'
+      : '执行周期性健康检查，评估左脑最近任务执行情况'
+
+    // 创建 supervision 类型 session（createReasoningSession 内部生成 sessionId）
+    const session = await createReasoningSession(agentId, prompt, { productionTest: false, trigger, type: 'supervision' })
+    sessionId = session.sessionId
+
+    console.log(`[SUPERVISION] triggering ${trigger} supervision, sessionId=${sessionId}`)
+    writeStructuredLog('supervision', 'info', `Triggering ${trigger} supervision`, { sessionId, trigger, delay })
+
+    // 构建仅包含 supervision_evaluate 步骤的 plan
+    const plan = {
+      steps: [
+        {
+          stepId: createOpaqueId('step'),
+          action: 'supervision_evaluate',
+          title: '监督评估',
+          tool: 'model.supervisionEvaluate',
+          params: { trigger },
+        },
+      ],
+    }
+
+    updateReasoningSession(sessionId, (s) => ({
+      ...s,
+      plan,
+      status: 'running',
+      currentStepId: plan.steps[0].stepId,
+    }))
+
+    // 执行步骤
+    await executeSupervisionStep(sessionId, plan.steps[0], prompt, 0)
+
+    // 标记完成
+    updateReasoningSession(sessionId, (s) => ({
+      ...s,
+      status: 'completed',
+      currentStepId: null,
+      completedAt: new Date().toISOString(),
+    }))
+
+    console.log(`[SUPERVISION] ${trigger} supervision completed, sessionId=${sessionId}`)
+    writeStructuredLog('supervision', 'info', `${trigger} supervision completed`, { sessionId, trigger })
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    console.error(`[SUPERVISION] ${trigger} supervision failed:`, errMsg)
+    writeStructuredLog('supervision', 'error', `${trigger} supervision failed`, { sessionId: sessionId || null, trigger, error: errMsg })
+  }
 }
 
 export function registerControlServerRoutes(app) {
@@ -3523,8 +3759,14 @@ function normalizeRuntimeSessionShape(session) {
 }
 
 function appendAgentRuntimeEventJournal(event) {
-  ensureDirectory(path.dirname(HERMES_AGENT_RUNTIME_EVENTS_FILE))
-  fs.appendFileSync(HERMES_AGENT_RUNTIME_EVENTS_FILE, `${JSON.stringify(event)}\n`, 'utf8')
+  // Write structured event to daily-rotated JSONL log for unified logging
+  try {
+    writeStructuredLog('agent-runtime', 'info', event.title || event.type || 'event', { event })
+  } catch {
+    // Fallback to legacy path if structured logging fails
+    ensureDirectory(path.dirname(HERMES_AGENT_RUNTIME_EVENTS_FILE))
+    fs.appendFileSync(HERMES_AGENT_RUNTIME_EVENTS_FILE, `${JSON.stringify(event)}\n`, 'utf8')
+  }
 }
 
 function createReasoningEvent(sessionId, type, title, summary, extra = {}) {
@@ -3683,6 +3925,42 @@ export function readReasoningSession(sessionId) {
   return normalizeRuntimeSessionShape(JSON.parse(fs.readFileSync(filePath, 'utf8')))
 }
 
+export function listReasoningSessions({ limit = 50, includeTerminal = true } = {}) {
+  ensureDirectory(HERMES_AGENT_RUNTIME_SESSIONS_DIR)
+  const sessions = []
+  try {
+    const files = fs.readdirSync(HERMES_AGENT_RUNTIME_SESSIONS_DIR)
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => path.join(HERMES_AGENT_RUNTIME_SESSIONS_DIR, name))
+      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
+      .slice(0, Math.max(1, Number(limit) || 50))
+
+    for (const filePath of files) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+        const session = normalizeRuntimeSessionShape(raw)
+        if (!includeTerminal && (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled')) continue
+        sessions.push({
+          sessionId: session.sessionId,
+          status: session.status,
+          userPrompt: session.userPrompt,
+          title: session.title,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          currentStepId: session.currentStepId,
+          stepCount: Array.isArray(session.plan?.steps) ? session.plan.steps.length : 0,
+          currentStepIndex: session.currentStepIndex ?? null
+        })
+      } catch {
+        // skip malformed session files
+      }
+    }
+  } catch {
+    // directory may not exist
+  }
+  return sessions
+}
+
 function createReasoningSessionClearArchive(sessionId) {
   const timestamp = new Date().toISOString()
   const safeTimestamp = timestamp.replace(/[:.]/g, '-')
@@ -3807,6 +4085,31 @@ async function continueReasoningParentChain(completedSession) {
   if (!parentSessionId) return null
   const parentSession = readReasoningSession(parentSessionId)
   if (!parentSession) return null
+
+  // 系统级硬 gate：模型/runtime 未就绪时禁止自动派生子任务
+  const runtimeStatus = getHermesRuntimeState()
+  if (runtimeStatus.state !== 'running') {
+    appendReasoningEvent(parentSessionId, 'child_session_blocked', '子任务被阻止', `Hermes runtime 未运行（${runtimeStatus.label}），禁止自动派生子任务。`)
+    return null
+  }
+  const controlState = getHermesControlState()
+  const persistedConfig = getPersistedHermesControlConfig()
+  const configFingerprint = getHermesControlConfigFingerprint(persistedConfig)
+  const modelState = controlState.model || {}
+  const modelLoaded = modelState.status === 'loaded'
+    && modelState.loaded === true
+    && String(modelState.provider || '') === String(persistedConfig.provider || '')
+    && String(modelState.baseUrl || '') === String(persistedConfig.baseUrl || '')
+    && String(modelState.model || '') === String(persistedConfig.model || '')
+  if (!modelLoaded) {
+    appendReasoningEvent(parentSessionId, 'child_session_blocked', '子任务被阻止', `模型未加载就绪（${modelState.detail || 'unknown'}），禁止自动派生子任务。`)
+    return null
+  }
+  const preflightReady = controlState.preflight?.ready === true && controlState.preflight?.configFingerprint === configFingerprint
+  if (!preflightReady) {
+    appendReasoningEvent(parentSessionId, 'child_session_blocked', '子任务被阻止', '左脑自检未通过，禁止自动派生子任务。')
+    return null
+  }
 
   updateReasoningSession(parentSessionId, (current) => ({
     ...current,
@@ -4894,26 +5197,81 @@ export function inferReasoningStepSkipReview(step) {
 
 function getReasoningReviewMode(sessionOrContext) {
   const mode = String(sessionOrContext?.submissionContext?.reviewMode || sessionOrContext?.reviewMode || '').trim().toLowerCase()
-  return mode === 'auto' ? 'auto' : 'manual'
+  const validModes = ['suggest', 'auto-edit', 'full-auto', 'manual']
+  return validModes.includes(mode) ? mode : 'manual'
 }
 
 function isReasoningAutoReviewMode(sessionOrContext) {
-  return getReasoningReviewMode(sessionOrContext) === 'auto'
+  const mode = getReasoningReviewMode(sessionOrContext)
+  return mode === 'full-auto' || mode === 'auto-edit' || mode === 'suggest'
+}
+
+function isLowRiskAction(action) {
+  // Low-risk actions that can auto-execute in auto-edit mode
+  const lowRisk = [
+    'edit_workspace_file',
+    'create_workspace_file',
+    'write_memory_file',
+    'update_task_queue',
+    'web_search',
+    'web_extract',
+    'git_status',
+    'git_diff',
+    'git_log',
+    'git_branch',
+    'test_run',
+    'vision_analyze'
+  ]
+  return lowRisk.includes(action)
+}
+
+function isMediumRiskAction(action) {
+  // Medium-risk actions that require review even in auto-edit mode
+  const mediumRisk = [
+    'shell_execute',
+    'run_lifecycle_script',
+    'run_workspace_script',
+    'rename_workspace_path',
+    'delete_workspace_path'
+  ]
+  return mediumRisk.includes(action)
 }
 
 function shouldPauseBeforeExecutingReasoningStep(session, step) {
   if (!session || !step) return false
   // productionTest mode bypasses all review gates for automated testing
   if (session?.submissionContext?.productionTest) return false
-  if (isReasoningAutoReviewMode(session)) return false
+  const mode = getReasoningReviewMode(session)
+  if (mode === 'full-auto') return false
+  if (mode === 'suggest') {
+    // In suggest mode, only read-only ops execute automatically; everything else pauses
+    return isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)
+  }
+  if (mode === 'auto-edit') {
+    // In auto-edit mode, low-risk ops execute automatically; medium/high-risk pauses
+    if (isLowRiskAction(step.action)) return false
+    return true
+  }
+  // manual mode: story mutation always pauses; read-only ops do not
   if (isReasoningStoryMutationAction(step.action)) return true
   return !isReasoningWriteAction(step.action) && !isReasoningInvokeAction(step.action)
 }
 
 function shouldRequireHumanReviewForStep(step, session = null) {
   if (!step) return false
-  if (isReasoningAutoReviewMode(session)) return false
   if (session?.submissionContext?.productionTest) return false
+  const mode = getReasoningReviewMode(session)
+  if (mode === 'full-auto') return false
+  if (mode === 'suggest') {
+    // In suggest mode, all write/invoke actions require review
+    return isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)
+  }
+  if (mode === 'auto-edit') {
+    // In auto-edit mode, low-risk actions skip review; medium/high-risk require review
+    if (isLowRiskAction(step.action)) return false
+    return isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)
+  }
+  // manual mode (legacy behavior)
   if (isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)) return true
   return inferReasoningStepSkipReview(step) === false
 }
@@ -6519,6 +6877,7 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
     let candidate = null
     const title = String(step.params?.title || extractStoryTitleFromPrompt(userPrompt) || '').trim() || '未命名互动故事'
     const brief = String(step.params?.brief || userPrompt || '').trim()
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
     if (session?.submissionContext?.productionTest && !session?.submissionContext?.requireModelAnswer) {
       const scripts = buildFallbackStoryScripts({ title, brief })
       candidate = {
@@ -6530,16 +6889,39 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
         fallbackReason: 'production_test_deterministic_minimal_scripts'
       }
     } else {
+      // 架构修正：Control 不再直接调用模型生成脚本，而是通过 GameStudio Server 生成
       try {
-        const scriptsRoute = resolveModelRouteForPhase(buildHermesBinding(), 'story_scripts_candidate', { action })
-        candidate = await runManagedReasoningTask(sessionId, 'story_scripts_candidate', scriptsRoute.binding, ({ signal }) => generateStoryScriptsCandidate(
-          sessionId,
-          step,
-          userPrompt,
-          signal,
-          scriptsRoute.binding,
-          scriptsRoute
-        ))
+        const serverResult = projectId
+          ? await observeGameStudioOperation(sessionId, step, stepIndex, 'regenerateScripts', {
+            endpoint: 'POST /api/projects/:id/ai/regenerate',
+            projectId
+          }, () => gameStudioServerClient.regenerateScripts(projectId, {
+            prompt: brief,
+            title,
+            timeoutMs: 120000
+          }))
+          : { ok: false, error: 'missing_project_id', message: '无法定位要生成脚本的项目' }
+        if (serverResult.ok && serverResult.data?.scripts) {
+          const scripts = serverResult.data.scripts
+          candidate = {
+            ok: true,
+            error: null,
+            scripts,
+            evaluator: evaluateStoryScripts(scripts),
+            fallback: false,
+            fallbackReason: null
+          }
+        } else {
+          const scripts = buildFallbackStoryScripts({ title, brief })
+          candidate = {
+            ok: true,
+            error: serverResult?.message || serverResult?.error || 'gamestudio_regenerate_failed',
+            scripts,
+            evaluator: evaluateStoryScripts(scripts),
+            fallback: true,
+            fallbackReason: 'gamestudio_regenerate_failed'
+          }
+        }
       } catch (error) {
         const scripts = buildFallbackStoryScripts({ title, brief })
         candidate = {
@@ -6548,14 +6930,13 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
           scripts,
           evaluator: evaluateStoryScripts(scripts),
           fallback: true,
-          fallbackReason: 'story_scripts_model_request_failed'
+          fallbackReason: 'gamestudio_regenerate_exception'
         }
       }
     }
-    const projectId = resolveStoryProjectId(session, step, userPrompt)
     const result = buildStoryWorkflowStepResult({
       action,
-      projectId,
+      projectId: projectId || null,
       ok: Boolean(candidate.ok && candidate.evaluator?.passed),
       summary: candidate.ok
         ? `已生成故事脚本候选，卡片数 ${candidate.scripts?.cards?.length || 0}${candidate.fallback ? '（使用 fallback 兜底）' : ''}`
@@ -7453,6 +7834,64 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
     return result
   }
 
+  if (action === 'story_render_scene') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    let sceneId = String(step.params?.sceneId || '').trim()
+    if (projectId && !sceneId) {
+      const projectResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'getProjectForSceneRender', {
+        endpoint: 'GET /api/projects/:id',
+        projectId
+      }, () => gameStudioServerClient.getProject(projectId))
+      const story = projectResult?.data?.project?.story || projectResult?.data?.story || null
+      const nodes = Array.isArray(story?.nodes) ? story.nodes : []
+      const firstScene = nodes.find((n) => n && String(n.kind || '') === 'scene')
+      sceneId = firstScene ? String(firstScene.id || '').trim() : ''
+    }
+    const serverResult = projectId && sceneId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'renderStoryScene', {
+        endpoint: 'POST /api/projects/:id/ai/story/scenes/:sceneId/render',
+        projectId,
+        sceneId
+      }, () => gameStudioServerClient.renderStoryScene(projectId, sceneId, {
+        width: Number(step.params?.width || 768),
+        height: Number(step.params?.height || 1024),
+        timeoutMs: Math.max(120000, Number(step.params?.timeoutMs || 300000))
+      }))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/scenes/:sceneId/render', error: projectId ? 'missing_scene_id' : 'missing_project_id', message: projectId ? '无法定位要渲染的场景' : '无法定位要渲染场景的项目', retryable: false }
+    const assetPath = String(serverResult?.data?.assetPath || serverResult?.data?.scene?.assetPath || '').trim()
+    const assetUri = String(serverResult?.data?.assetUri || serverResult?.data?.scene?.assetUri || '').trim()
+    const evaluator = {
+      name: 'evaluateStorySceneRender',
+      passed: Boolean(serverResult.ok && (assetPath || assetUri)),
+      checks: {
+        projectId,
+        sceneId,
+        hasAssetPath: Boolean(assetPath),
+        hasAssetUri: Boolean(assetUri),
+        error: serverResult?.error || null,
+        message: serverResult?.message || null
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed
+        ? `场景 ${sceneId} 渲染完成：${assetPath || assetUri}`
+        : `场景渲染未完成：${serverResult.message || serverResult.error || 'scene_render_failed'}`,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: { sceneId, assetPath, assetUri, scene: serverResult?.data?.scene || null },
+      failedStage: evaluator.passed ? null : (serverResult.ok ? 'scene_render_evaluator' : 'scene_render_api'),
+      retryable: Boolean(serverResult.retryable)
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
   throw new Error(`unsupported_story_workflow_action_${action}`)
 }
 
@@ -7484,18 +7923,62 @@ async function waitForHttpOk(url, { timeoutMs = 60000, intervalMs = 1000 } = {})
   return { ...(last || { ok: false, status: 0, url }), elapsedMs: Date.now() - startedAt }
 }
 
+async function stopComfyUi(baseUrl = 'http://127.0.0.1:8188') {
+  const normalizedBaseUrl = String(baseUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '')
+  const healthUrl = `${normalizedBaseUrl}/system_stats`
+  const before = await fetchOk(healthUrl, 3000)
+  if (!before.ok) {
+    return { ok: true, stopped: false, note: 'comfyui_not_running' }
+  }
+  const port = new URL(normalizedBaseUrl).port || '8188'
+  await runLocalCommand('sh', ['-lc', `lsof -ti:${port} | xargs kill -TERM 2>/dev/null || true`], {
+    cwd: process.cwd(),
+    timeoutMs: 5000
+  })
+  await new Promise((r) => setTimeout(r, 3000))
+  const after = await fetchOk(healthUrl, 3000)
+  if (after.ok) {
+    await runLocalCommand('sh', ['-lc', `lsof -ti:${port} | xargs kill -KILL 2>/dev/null || true`], {
+      cwd: process.cwd(),
+      timeoutMs: 5000
+    })
+    await new Promise((r) => setTimeout(r, 2000))
+    const final = await fetchOk(healthUrl, 3000)
+    return { ok: !final.ok, stopped: !final.ok, note: final.ok ? 'force_kill_may_have_failed' : 'killed' }
+  }
+  return { ok: true, stopped: true, note: 'terminated' }
+}
+
+async function openComfyUiInTerminal(comfyRoot) {
+  const root = String(comfyRoot || process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI').trim()
+  const script = `
+tell application "Terminal"
+    if not running then launch
+    activate
+    do script "cd '${root.replace(/'/g, "'\\''")}' && sh ./start.sh"
+end tell
+`
+  return runLocalCommand('osascript', ['-e', script], {
+    cwd: process.cwd(),
+    timeoutMs: 8000
+  })
+}
+
 async function ensureComfyUiRunning(baseUrl = 'http://127.0.0.1:8188', options = {}) {
   const normalizedBaseUrl = String(baseUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '')
   const healthUrl = `${normalizedBaseUrl}/system_stats`
   const before = await fetchOk(healthUrl, Math.min(3000, Number(options.healthTimeoutMs || 3000)))
-  if (before.ok) {
+  if (before.ok && !options.restart) {
     return { ok: true, started: false, baseUrl: normalizedBaseUrl, health: before, startResult: null }
   }
+  if (options.restart && before.ok) {
+    const stopResult = await stopComfyUi(normalizedBaseUrl)
+    if (!stopResult.ok) {
+      return { ok: false, started: false, baseUrl: normalizedBaseUrl, health: before, startResult: null, error: 'restart_stop_failed', stopResult }
+    }
+  }
   const comfyRoot = String(options.comfyRoot || process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI').trim()
-  const startResult = await runLocalCommand('sh', ['-lc', 'mkdir -p .run && nohup sh ./start.sh > .run/gamestudio-comfyui.log 2>&1 < /dev/null & echo $!'], {
-    cwd: comfyRoot,
-    timeoutMs: 5000
-  })
+  const startResult = await openComfyUiInTerminal(comfyRoot)
   const after = await waitForHttpOk(healthUrl, { timeoutMs: Math.max(15000, Number(options.waitTimeoutMs || 90000)), intervalMs: 1000 })
   return { ok: Boolean(after.ok), started: true, baseUrl: normalizedBaseUrl, health: after, startResult }
 }
@@ -7742,20 +8225,38 @@ async function executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepI
     const editorHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'waitForEditor', {
       endpoint: 'GET editor root'
     }, () => waitForHttpOk(editorUrl, { timeoutMs: serverHealth.ok ? 5000 : 1000, intervalMs: 1000 }))
-    const ok = Boolean(serverHealth.ok && editorHealth.ok)
+    let comfyUiResult = null
+    if (step.params?.comfyuiCheck !== false && serverHealth.ok) {
+      const settings = await observeGameStudioOperation(sessionId, step, stepIndex, 'getStudioSettingsForComfyUi', {
+        endpoint: 'GET /api/studio/settings'
+      }, () => gameStudioServerClient.getStudioSettings())
+      const provider = settings?.data?.effective?.image?.provider || 'none'
+      const comfyuiBaseUrl = String(settings?.data?.effective?.image?.comfyuiBaseUrl || 'http://127.0.0.1:8188').trim()
+      if (provider === 'comfyui') {
+        comfyUiResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'ensureComfyUiRunning', {
+          endpoint: 'GET /system_stats or sh ./start.sh',
+          baseUrl: comfyuiBaseUrl,
+          cwd: process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI'
+        }, () => ensureComfyUiRunning(comfyuiBaseUrl, {
+          comfyRoot: process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI',
+          waitTimeoutMs: Math.max(60000, Number(step.params?.timeoutMs || 90000))
+        }))
+      }
+    }
+    const ok = Boolean(serverHealth.ok && editorHealth.ok && (comfyUiResult === null || comfyUiResult.ok))
     const result = buildGameStudioBootstrapResult({
       action,
       ok,
       summary: ok
-        ? `GameStudio 已就绪：server=${healthUrl} editor=${editorUrl}`
-        : `GameStudio 未完全就绪：server=${serverHealth.ok ? 'ok' : 'fail'} editor=${editorHealth.ok ? 'ok' : 'fail'}`,
-      data: { serverBaseUrl, editorUrl, serverHealth, editorHealth, startResult },
+        ? `GameStudio 已就绪：server=${healthUrl} editor=${editorUrl}${comfyUiResult?.started ? ' ComfyUI已启动' : comfyUiResult ? ' ComfyUI已就绪' : ''}`
+        : `GameStudio 未完全就绪：server=${serverHealth.ok ? 'ok' : 'fail'} editor=${editorHealth.ok ? 'ok' : 'fail'}${comfyUiResult ? ` comfyui=${comfyUiResult.ok ? 'ok' : 'fail'}` : ''}`,
+      data: { serverBaseUrl, editorUrl, serverHealth, editorHealth, startResult, comfyUi: comfyUiResult },
       evaluator: {
         name: 'evaluateGameStudioRunning',
         passed: ok,
-        checks: { serverHealth, editorHealth, startExitCode: startResult?.exitCode ?? null }
+        checks: { serverHealth, editorHealth, comfyUi: comfyUiResult, startExitCode: startResult?.exitCode ?? null }
       },
-      failedStage: ok ? null : 'gamestudio_startup',
+      failedStage: ok ? null : (!serverHealth.ok ? 'gamestudio_startup' : (!editorHealth.ok ? 'gamestudio_editor_unreachable' : 'comfyui_startup')),
       retryable: !ok
     })
     updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result)
@@ -7856,6 +8357,21 @@ async function executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepI
     const diagnose = await observeGameStudioOperation(sessionId, step, stepIndex, 'diagnoseStudio', {
       endpoint: 'POST /api/studio/diagnose'
     }, () => gameStudioServerClient.diagnoseStudio({ service: 'all', deepText: false, deepImages: false, timeoutMs }))
+    let comfyUiResult = null
+    if (step.params?.ensureComfyUi !== false && settings.ok) {
+      const provider = settings?.data?.effective?.image?.provider || 'none'
+      const comfyuiBaseUrl = String(settings?.data?.effective?.image?.comfyuiBaseUrl || 'http://127.0.0.1:8188').trim()
+      if (provider === 'comfyui') {
+        comfyUiResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'ensureComfyUiRunning', {
+          endpoint: 'GET /system_stats or sh ./start.sh',
+          baseUrl: comfyuiBaseUrl,
+          cwd: process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI'
+        }, () => ensureComfyUiRunning(comfyuiBaseUrl, {
+          comfyRoot: process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI',
+          waitTimeoutMs: Math.max(60000, Number(step.params?.timeoutMs || 90000))
+        }))
+      }
+    }
     const imagePreflightMode = String(step.params?.imagePreflightMode || step.params?.mode || 'basic').trim().toLowerCase() === 'storyboard' ? 'storyboard' : 'basic'
     const preflight = step.params?.imagePreflight === false
       ? null
@@ -7863,18 +8379,20 @@ async function executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepI
         endpoint: 'POST /api/studio/image/preflight'
       }, () => gameStudioServerClient.preflightImageProvider({ mode: imagePreflightMode, timeoutMs }))
     const preflightOk = preflight ? Boolean(preflight.ok && preflight?.data?.checks?.ok !== false) : true
-    const ok = Boolean(health.ok && settings.ok && diagnose.ok && preflightOk)
+    const comfyUiOk = comfyUiResult === null || comfyUiResult.ok
+    const ok = Boolean(health.ok && settings.ok && diagnose.ok && comfyUiOk && preflightOk)
     const imageProvider = settings?.data?.effective?.image?.provider || preflight?.data?.checks?.provider || 'none'
     const result = buildGameStudioBootstrapResult({
       action,
       ok,
       summary: ok
-        ? `GameStudio 自检通过：health ok，image provider=${imageProvider}`
-        : `GameStudio 自检未通过：health=${health.ok ? 'ok' : 'fail'} diagnose=${diagnose.ok ? 'ok' : 'fail'} preflight=${preflightOk ? 'ok' : 'fail'}`,
+        ? `GameStudio 自检通过：health ok，image provider=${imageProvider}${comfyUiResult?.started ? '，ComfyUI已启动' : ''}`
+        : `GameStudio 自检未通过：health=${health.ok ? 'ok' : 'fail'} diagnose=${diagnose.ok ? 'ok' : 'fail'} comfyui=${comfyUiOk ? 'ok' : 'fail'} preflight=${preflightOk ? 'ok' : 'fail'}`,
       data: {
         health: { ok: health.ok, status: health.status, data: health.data || null },
         settings: settings?.data || null,
         diagnose: diagnose?.data || null,
+        comfyUi: comfyUiResult,
         preflight: preflight?.data || null
       },
       evaluator: {
@@ -7884,13 +8402,14 @@ async function executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepI
           healthOk: health.ok,
           settingsOk: settings.ok,
           diagnoseOk: diagnose.ok,
+          comfyUiOk,
           imagePreflightOk: preflightOk,
           imagePreflightMode,
           imageProvider,
           preflightReason: preflight?.data?.checks?.reason || preflight?.error || null
         }
       },
-      failedStage: ok ? null : (!health.ok ? 'gamestudio_health' : (!settings.ok ? 'gamestudio_settings' : (!diagnose.ok ? 'gamestudio_diagnose' : 'gamestudio_image_preflight'))),
+      failedStage: ok ? null : (!health.ok ? 'gamestudio_health' : (!settings.ok ? 'gamestudio_settings' : (!diagnose.ok ? 'gamestudio_diagnose' : (!comfyUiOk ? 'comfyui_startup' : 'gamestudio_image_preflight')))),
       retryable: Boolean(health.retryable || settings.retryable || diagnose.retryable || preflight?.retryable)
     })
     updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result)
@@ -7957,6 +8476,281 @@ async function executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepI
   throw new Error(`unsupported_gamestudio_bootstrap_action_${action}`)
 }
 
+async function executeMetaAnalysisStep(sessionId, step, userPrompt, stepIndex) {
+  const action = step.action
+  const scope = step.params?.scope || 'overview'
+  const targetSessionId = step.params?.sessionId || null
+
+  function persistResult(result) {
+    updateReasoningSession(sessionId, (session) => {
+      const meta = session.artifacts?.metaAnalysis && typeof session.artifacts.metaAnalysis === 'object'
+        ? session.artifacts.metaAnalysis
+        : {}
+      return {
+        ...session,
+        artifacts: {
+          ...session.artifacts,
+          metaAnalysis: {
+            ...meta,
+            lastResult: result,
+            steps: {
+              ...(meta.steps || {}),
+              [step.stepId]: result,
+            },
+          },
+        },
+      }
+    })
+  }
+
+  try {
+    appendReasoningEvent(sessionId, 'tool_progress', step.title, '正在聚合系统运行数据...', {
+      stepId: step.stepId,
+    })
+
+    // 1. 聚合数据
+    const data = await aggregateMetaAnalysisData(scope, targetSessionId)
+    if (data.error) {
+      const result = {
+        success: false,
+        stepId: step.stepId,
+        action,
+        error: `数据聚合失败: ${data.error} (${data.path})`,
+        artifacts: {},
+      }
+      persistResult(result)
+      return result
+    }
+
+    appendReasoningEvent(sessionId, 'tool_progress', step.title, `数据聚合完成: ${data.totalCount} 个会话`, {
+      stepId: step.stepId,
+    })
+
+    // 2. 构建 prompt
+    const messages = buildMetaAnalysisPrompt(data, scope, userPrompt)
+
+    // 3. 解析模型路由（通过 actionRoutes 配置强制走右脑）
+    const binding = buildHermesBinding()
+    const resolved = resolveModelRouteForPhase(binding, 'meta_analysis', { action: 'meta_analysis' })
+
+    if (resolved.provider !== 'moonshot' || !resolved.apiKey) {
+      const result = {
+        success: false,
+        stepId: step.stepId,
+        action,
+        error: '右脑未启用或配置不完整，无法执行元分析。请先在引擎配置中启用右脑并配置 API Key。',
+        artifacts: {},
+      }
+      persistResult(result)
+      return result
+    }
+
+    const route = {
+      transport: resolved.transport,
+      baseUrl: resolved.baseUrl,
+      model: resolved.model,
+      headers: {
+        ...resolved.headers,
+        'User-Agent': 'Kilo-Code/1.0',
+      },
+    }
+
+    appendReasoningEvent(sessionId, 'tool_progress', step.title, `正在调用右脑模型 ${route.model} 进行分析...`, {
+      stepId: step.stepId,
+    })
+
+    // 4. 调用 Kimi
+    const response = await requestHermesChatCompletion({
+      sessionId,
+      phase: 'meta_analysis',
+      messages,
+      maxTokens: 4000,
+      temperature: 0.3,
+      route,
+      timeoutMs: 120000,
+    })
+
+    const analysis = response?.choices?.[0]?.message?.content || ''
+    const usage = response?.usage
+      ? {
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+        }
+      : null
+
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `元分析完成${usage ? ` (tokens: ${usage.totalTokens})` : ''}`, {
+      stepId: step.stepId,
+      data: { analysisLength: analysis.length },
+    })
+
+    const result = {
+      success: true,
+      stepId: step.stepId,
+      action,
+      answer: analysis,
+      artifacts: {
+        metaAnalysis: {
+          scope,
+          dataSnapshot: data,
+          analysis,
+          usage,
+        },
+      },
+    }
+
+    persistResult(result)
+    return result
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[META_ANALYSIS] step failed: ${message}`)
+    const result = {
+      success: false,
+      stepId: step.stepId,
+      action,
+      error: message,
+      artifacts: {},
+    }
+    persistResult(result)
+    return result
+  }
+}
+
+async function executeSupervisionStep(sessionId, step, userPrompt, stepIndex) {
+  const action = step.action
+
+  function persistResult(result) {
+    updateReasoningSession(sessionId, (session) => {
+      const sup = session.artifacts?.supervision && typeof session.artifacts.supervision === 'object'
+        ? session.artifacts.supervision
+        : {}
+      return {
+        ...session,
+        artifacts: {
+          ...session.artifacts,
+          supervision: {
+            ...sup,
+            lastResult: result,
+            steps: { ...(sup.steps || {}), [step.stepId]: result },
+          },
+        },
+      }
+    })
+  }
+
+  try {
+    appendReasoningEvent(sessionId, 'tool_progress', step.title, '正在聚合左脑执行数据...', { stepId: step.stepId })
+    writeStructuredLog('supervision', 'info', 'Aggregating supervision data', { sessionId, stepId: step.stepId })
+
+    // 1. 聚合数据
+    const data = await aggregateSupervisionData({ gamestudioRoot: GAMESTUDIO_ROOT })
+
+    // 2. 构建评分卡
+    const scorecard = buildSupervisionScorecard(data)
+
+    appendReasoningEvent(sessionId, 'tool_progress', step.title, `评分完成：总体 ${scorecard.overallScore} 分（${scorecard.overallStatus}）`, {
+      stepId: step.stepId,
+      data: { overallScore: scorecard.overallScore, overallStatus: scorecard.overallStatus },
+    })
+    writeStructuredLog('supervision', 'info', 'Scorecard built', { sessionId, stepId: step.stepId, overallScore: scorecard.overallScore, overallStatus: scorecard.overallStatus, categories: scorecard.categories.map((c) => ({ name: c.name, score: c.score, status: c.status })) })
+
+    // 如果评分 >= 90 全部通过，直接返回，不走模型
+    if (scorecard.overallScore >= 90 && scorecard.categories.every((c) => c.status === 'passed')) {
+      const result = {
+        success: true,
+        stepId: step.stepId,
+        action,
+        answer: `左脑运行优秀（${scorecard.overallScore} 分）。所有 ${scorecard.categories.length} 项检查全部通过，无需修正。`,
+        artifacts: { supervision: { scorecard, data, correctionPlan: null } },
+      }
+      persistResult(result)
+      writeStructuredLog('supervision', 'info', 'Auto-passed (score >= 90)', { sessionId, stepId: step.stepId, overallScore: scorecard.overallScore })
+      return result
+    }
+
+    // 3. 构建 prompt 调用右脑
+    const messages = buildSupervisionPrompt(data, scorecard)
+    const binding = buildHermesBinding()
+    const resolved = resolveModelRouteForPhase(binding, 'meta_analysis', { action: 'meta_analysis' })
+
+    if (resolved.provider !== 'moonshot' || !resolved.apiKey) {
+      const result = {
+        success: false,
+        stepId: step.stepId,
+        action,
+        error: '右脑未启用或配置不完整，无法执行监督评估。请先在引擎配置中启用右脑并配置 API Key。',
+        artifacts: {},
+      }
+      persistResult(result)
+      return result
+    }
+
+    const route = {
+      transport: resolved.transport,
+      baseUrl: resolved.baseUrl,
+      model: resolved.model,
+      headers: { ...resolved.headers, 'User-Agent': 'Kilo-Code/1.0' },
+    }
+
+    appendReasoningEvent(sessionId, 'tool_progress', step.title, `正在调用右脑模型 ${route.model} 生成修正建议...`, { stepId: step.stepId })
+
+    const response = await requestHermesChatCompletion({
+      sessionId,
+      phase: 'meta_analysis',
+      messages,
+      maxTokens: 6000,
+      temperature: 0.2,
+      route,
+      timeoutMs: 120000,
+    })
+
+    const analysis = response?.choices?.[0]?.message?.content || ''
+    const usage = response?.usage
+      ? { promptTokens: response.usage.prompt_tokens, completionTokens: response.usage.completion_tokens, totalTokens: response.usage.total_tokens }
+      : null
+
+    // 4. 解析修正指令
+    const correctionPlan = parseCorrectionPlan(analysis)
+
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `监督评估完成${usage ? ` (tokens: ${usage.totalTokens})` : ''}`, {
+      stepId: step.stepId,
+      data: { analysisLength: analysis.length, correctionActions: correctionPlan.actions?.length || 0 },
+    })
+
+    const result = {
+      success: true,
+      stepId: step.stepId,
+      action,
+      answer: analysis,
+      artifacts: {
+        supervision: {
+          scorecard,
+          dataSnapshot: data,
+          analysis,
+          correctionPlan,
+          usage,
+        },
+      },
+    }
+
+    persistResult(result)
+    return result
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[SUPERVISION] step failed: ${message}`)
+    writeStructuredLog('supervision', 'error', 'Step execution failed', { sessionId, stepId: step.stepId, error: message })
+    const result = {
+      success: false,
+      stepId: step.stepId,
+      action,
+      error: message,
+      artifacts: {},
+    }
+    persistResult(result)
+    return result
+  }
+}
+
 async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
   const correctionPrompt = String(options.correctionPrompt || '').trim()
   const sessionBeforeRun = readReasoningSession(sessionId)
@@ -7984,6 +8778,14 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
 
   if (String(step.action || '').startsWith('gamestudio_')) {
     return executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepIndex)
+  }
+
+  if (step.action === 'meta_analysis') {
+    return executeMetaAnalysisStep(sessionId, step, userPrompt, stepIndex)
+  }
+
+  if (step.action === 'supervision_evaluate') {
+    return executeSupervisionStep(sessionId, step, userPrompt, stepIndex)
   }
 
   if (step.action === 'read_recent_context') {
@@ -8256,6 +9058,553 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       })
     })
     return { pausedForReview: false }
+  }
+
+  if (step.action === 'web_search') {
+    const query = String(step.params?.query || '').trim()
+    if (!query) {
+      throw new Error('web_search_missing_query')
+    }
+    const limit = Number(step.params?.limit) || 5
+    const result = await performWebSearch({ query, limit })
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        webSearch: result,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool, query, limit },
+          rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+          structuredResult: result
+        }
+      }
+    }))
+    const resultCount = result.results?.length || 0
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `搜索 "${query}"，返回 ${resultCount} 条结果（provider=${result.provider}）`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, {
+        query,
+        limit,
+        provider: result.provider,
+        resultCount,
+        results: result.results,
+        observableOps: buildReasoningObservableOps(step, result)
+      })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, '网页搜索完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'web_extract') {
+    const urls = step.params?.urls
+    const urlList = Array.isArray(urls) ? urls : (urls ? [urls] : [])
+    if (urlList.length === 0) {
+      throw new Error('web_extract_missing_urls')
+    }
+    const result = await performWebExtract({ urls: urlList })
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        webExtract: result,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool, urls: urlList },
+          rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+          structuredResult: result
+        }
+      }
+    }))
+    const successCount = result.results?.filter((r) => r.success).length || 0
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `提取 ${urlList.length} 个网页，成功 ${successCount} 个`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, {
+        urls: urlList,
+        provider: result.provider,
+        successCount,
+        results: result.results,
+        observableOps: buildReasoningObservableOps(step, result)
+      })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, '网页提取完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'shell_execute') {
+    const command = String(step.params?.command || '').trim()
+    if (!command) {
+      throw new Error('shell_execute_missing_command')
+    }
+    const timeoutMs = Math.max(5000, Math.min(Number(step.params?.timeoutMs) || 30000, 120000))
+    let stdout = ''
+    let stderr = ''
+    let exitCode = null
+    let killed = false
+    try {
+      const { stdout: out, stderr: err } = await execAsync(command, {
+        cwd: GAMESTUDIO_ROOT,
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, PATH: process.env.PATH }
+      })
+      stdout = out
+      stderr = err
+      exitCode = 0
+    } catch (execError) {
+      stdout = execError.stdout || ''
+      stderr = execError.stderr || ''
+      exitCode = typeof execError.code === 'number' ? execError.code : 1
+      killed = execError.killed || false
+    }
+    const truncatedStdout = stdout.length > 8000 ? stdout.slice(0, 8000) + '\n...[truncated]' : stdout
+    const truncatedStderr = stderr.length > 4000 ? stderr.slice(0, 4000) + '\n...[truncated]' : stderr
+    const result = {
+      command,
+      cwd: GAMESTUDIO_ROOT,
+      exitCode,
+      killed,
+      timeoutMs,
+      stdout: truncatedStdout,
+      stderr: truncatedStderr
+    }
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        shellExecute: result,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool, command },
+          rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+          structuredResult: result
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `执行命令: ${command}，exitCode=${exitCode}${killed ? ' (killed)' : ''}`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, {
+        command,
+        exitCode,
+        killed,
+        stdoutLength: stdout.length,
+        stderrLength: stderr.length,
+        observableOps: buildReasoningObservableOps(step, result)
+      })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, 'Shell 命令执行完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'vision_analyze') {
+    const imagePath = String(step.params?.imagePath || '').trim()
+    const question = String(step.params?.question || '描述这张图片').trim()
+    if (!imagePath) {
+      throw new Error('vision_analyze_missing_imagePath')
+    }
+    const resolvedImagePath = path.isAbsolute(imagePath) ? imagePath : path.resolve(GAMESTUDIO_ROOT, imagePath)
+    const isLocalFile = !/^https?:\/\//i.test(imagePath)
+    if (isLocalFile && (!fs.existsSync(resolvedImagePath) || !fs.statSync(resolvedImagePath).isFile())) {
+      throw new Error(`vision_analyze_file_not_found: ${resolvedImagePath}`)
+    }
+    const config = getPersistedHermesControlConfig()
+    const visionCapableModels = ['qwen', 'gpt-oss', 'gemma-3', 'claude', 'gpt-4o', 'gemini']
+    const modelLower = String(config.model || '').toLowerCase()
+    const isVisionCapable = visionCapableModels.some((m) => modelLower.includes(m))
+    if (!isVisionCapable) {
+      const result = {
+        imagePath: resolvedImagePath,
+        question,
+        error: `当前模型 ${config.model || 'unknown'} 不支持视觉分析。请切换到支持 vision 的模型（如 qwen-vl、gpt-4o、claude-3-sonnet 等）。`,
+        answer: null
+      }
+      updateReasoningSession(sessionId, (session) => ({
+        ...session,
+        artifacts: {
+          ...session.artifacts,
+          visionAnalyze: result,
+          latestStepReviewEvidence: {
+            targetType: 'step',
+            stepId: step.stepId,
+            stepTitle: step.title,
+            tool: step.tool,
+            outboundPreview: { tool: step.tool, imagePath: resolvedImagePath, question },
+            rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+            structuredResult: result
+          }
+        }
+      }))
+      appendReasoningEvent(sessionId, 'tool_result', step.title, `视觉分析跳过：当前模型不支持 vision`, {
+        stepId: step.stepId,
+        data: buildReasoningStepEventData(step, stepIndex, { imagePath: resolvedImagePath, question, skipped: true, reason: 'model_not_vision_capable' })
+      })
+      appendReasoningEvent(sessionId, 'step_completed', step.title, '视觉分析完成（模型不支持）', {
+        stepId: step.stepId,
+        data: buildReasoningStepEventData(step, stepIndex)
+      })
+      return
+    }
+    // Vision-capable path: call Hermes chat with image
+    const binding = buildHermesBinding()
+    const history = readHermesChatHistory({ includeAllSessions: true })
+    const messages = buildHermesChatMessages(history, question, binding, {}).messages
+    // Replace last user message with image+text multimodal content
+    const lastUserIndex = messages.map((m) => m.role).lastIndexOf('user')
+    if (lastUserIndex >= 0) {
+      messages[lastUserIndex] = {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: isLocalFile ? `file://${resolvedImagePath}` : imagePath } },
+          { type: 'text', text: question }
+        ]
+      }
+    }
+    const chatResult = await requestHermesChatCompletion({
+      messages,
+      model: config.model,
+      temperature: 0.4,
+      max_tokens: 2048
+    })
+    const answerText = chatResult?.reply || chatResult?.choices?.[0]?.message?.content || ''
+    const result = {
+      imagePath: resolvedImagePath,
+      question,
+      answer: answerText,
+      model: config.model,
+      usage: chatResult?.usage || null
+    }
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        visionAnalyze: result,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool, imagePath: resolvedImagePath, question },
+          rawResponsePreview: truncateReasoningPreview(answerText, 2400),
+          structuredResult: result
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `视觉分析完成，回答长度 ${answerText.length} 字符`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, { imagePath: resolvedImagePath, question, answerLength: answerText.length })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, '视觉分析完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'git_status') {
+    const result = await execAsync('git status --short', { cwd: GAMESTUDIO_ROOT, timeout: 15000, maxBuffer: 512 * 1024 })
+    const output = result.stdout || ''
+    const lines = output.split('\n').filter((l) => l.trim().length > 0)
+    const structured = { status: 'ok', cwd: GAMESTUDIO_ROOT, changedCount: lines.length, output }
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        gitStatus: structured,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool },
+          rawResponsePreview: truncateReasoningPreview(output, 2400),
+          structuredResult: structured
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `Git status: ${lines.length} 个文件有变更`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, { changedCount: lines.length, output })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, 'Git 状态查询完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'git_diff') {
+    const filePath = String(step.params?.filePath || '').trim()
+    const cmd = filePath ? `git diff -- "${filePath}"` : 'git diff --stat'
+    const result = await execAsync(cmd, { cwd: GAMESTUDIO_ROOT, timeout: 15000, maxBuffer: 1024 * 1024 })
+    const output = result.stdout || ''
+    const structured = { status: 'ok', cwd: GAMESTUDIO_ROOT, filePath: filePath || null, output }
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        gitDiff: structured,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool, filePath: filePath || null },
+          rawResponsePreview: truncateReasoningPreview(output, 2400),
+          structuredResult: structured
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `Git diff 完成，输出 ${output.length} 字符`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, { outputLength: output.length, output })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, 'Git 差异查询完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'git_log') {
+    const maxCount = Math.min(Math.max(1, Number(step.params?.maxCount) || 10), 50)
+    const result = await execAsync(`git log --oneline -n ${maxCount}`, { cwd: GAMESTUDIO_ROOT, timeout: 15000, maxBuffer: 512 * 1024 })
+    const output = result.stdout || ''
+    const lines = output.split('\n').filter((l) => l.trim().length > 0)
+    const structured = { status: 'ok', cwd: GAMESTUDIO_ROOT, maxCount, commitCount: lines.length, output }
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        gitLog: structured,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool, maxCount },
+          rawResponsePreview: truncateReasoningPreview(output, 2400),
+          structuredResult: structured
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `Git log: ${lines.length} 条提交记录`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, { commitCount: lines.length, output })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, 'Git 日志查询完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'git_branch') {
+    const result = await execAsync('git branch -a', { cwd: GAMESTUDIO_ROOT, timeout: 15000, maxBuffer: 256 * 1024 })
+    const output = result.stdout || ''
+    const lines = output.split('\n').filter((l) => l.trim().length > 0)
+    const structured = { status: 'ok', cwd: GAMESTUDIO_ROOT, branchCount: lines.length, output }
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        gitBranch: structured,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool },
+          rawResponsePreview: truncateReasoningPreview(output, 2400),
+          structuredResult: structured
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `Git branch: ${lines.length} 个分支`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, { branchCount: lines.length, output })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, 'Git 分支查询完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'test_run') {
+    let command = String(step.params?.command || '').trim()
+    const timeoutMs = Math.max(5000, Math.min(Number(step.params?.timeoutMs) || 60000, 300000))
+    if (!command) {
+      // Auto-detect test runner
+      if (fs.existsSync(path.join(GAMESTUDIO_ROOT, 'package.json'))) {
+        command = 'npm test'
+      } else if (fs.existsSync(path.join(GAMESTUDIO_ROOT, 'pytest.ini')) || fs.existsSync(path.join(GAMESTUDIO_ROOT, 'setup.py'))) {
+        command = 'pytest'
+      } else if (fs.existsSync(path.join(GAMESTUDIO_ROOT, 'jest.config.js')) || fs.existsSync(path.join(GAMESTUDIO_ROOT, 'jest.config.ts'))) {
+        command = 'npx jest'
+      } else {
+        command = 'npm test'
+      }
+    }
+    let stdout = ''
+    let stderr = ''
+    let exitCode = null
+    let killed = false
+    try {
+      const { stdout: out, stderr: err } = await execAsync(command, {
+        cwd: GAMESTUDIO_ROOT,
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, PATH: process.env.PATH, FORCE_COLOR: '0', CI: 'true' }
+      })
+      stdout = out
+      stderr = err
+      exitCode = 0
+    } catch (execError) {
+      stdout = execError.stdout || ''
+      stderr = execError.stderr || ''
+      exitCode = typeof execError.code === 'number' ? execError.code : 1
+      killed = execError.killed || false
+    }
+    const truncatedStdout = stdout.length > 8000 ? stdout.slice(0, 8000) + '\n...[truncated]' : stdout
+    const truncatedStderr = stderr.length > 4000 ? stderr.slice(0, 4000) + '\n...[truncated]' : stderr
+    const result = {
+      command,
+      cwd: GAMESTUDIO_ROOT,
+      exitCode,
+      killed,
+      timeoutMs,
+      stdout: truncatedStdout,
+      stderr: truncatedStderr
+    }
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        testRun: result,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool, command },
+          rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+          structuredResult: result
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'tool_result', step.title, `运行测试: ${command}，exitCode=${exitCode}${killed ? ' (killed)' : ''}`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, {
+        command,
+        exitCode,
+        killed,
+        stdoutLength: stdout.length,
+        stderrLength: stderr.length,
+        observableOps: buildReasoningObservableOps(step, result)
+      })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, '测试运行完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
+  }
+
+  if (step.action === 'mcp_call') {
+    const serverName = String(step.params?.serverName || '').trim()
+    const toolName = String(step.params?.toolName || '').trim()
+    const args = step.params?.args || {}
+    if (!serverName || !toolName) {
+      throw new Error('mcp_call_missing_params')
+    }
+    const status = getMcpStatus()
+    if (!status.enabled) {
+      const result = {
+        serverName,
+        toolName,
+        args,
+        error: 'MCP 未启用。请在 config/hermes/mcp.json 中配置 MCP 服务器后重试。',
+        output: null
+      }
+      updateReasoningSession(sessionId, (session) => ({
+        ...session,
+        artifacts: {
+          ...session.artifacts,
+          mcpCall: result,
+          latestStepReviewEvidence: {
+            targetType: 'step',
+            stepId: step.stepId,
+            stepTitle: step.title,
+            tool: step.tool,
+            outboundPreview: { tool: step.tool, serverName, toolName },
+            rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+            structuredResult: result
+          }
+        }
+      }))
+      appendReasoningEvent(sessionId, 'tool_result', step.title, 'MCP 调用跳过：未配置服务器', {
+        stepId: step.stepId,
+        data: buildReasoningStepEventData(step, stepIndex, { serverName, toolName, skipped: true })
+      })
+      appendReasoningEvent(sessionId, 'step_completed', step.title, 'MCP 调用完成（未启用）', {
+        stepId: step.stepId,
+        data: buildReasoningStepEventData(step, stepIndex)
+      })
+      return
+    }
+    const mcpResult = await callMcpTool(serverName, toolName, args)
+    const result = {
+      serverName,
+      toolName,
+      args,
+      output: mcpResult.ok ? mcpResult.output : null,
+      error: mcpResult.ok ? null : mcpResult.error
+    }
+    updateReasoningSession(sessionId, (session) => ({
+      ...session,
+      artifacts: {
+        ...session.artifacts,
+        mcpCall: result,
+        latestStepReviewEvidence: {
+          targetType: 'step',
+          stepId: step.stepId,
+          stepTitle: step.title,
+          tool: step.tool,
+          outboundPreview: { tool: step.tool, serverName, toolName },
+          rawResponsePreview: truncateReasoningPreview(JSON.stringify(result, null, 2), 2400),
+          structuredResult: result
+        }
+      }
+    }))
+    appendReasoningEvent(sessionId, 'tool_result', step.title, mcpResult.ok
+      ? `MCP 调用成功: ${serverName}/${toolName}`
+      : `MCP 调用失败: ${serverName}/${toolName} — ${mcpResult.error}`, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, { serverName, toolName, ok: mcpResult.ok })
+    })
+    appendReasoningEvent(sessionId, 'step_completed', step.title, 'MCP 调用完成', {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex)
+    })
+    return
   }
 
   if (step.action === 'read_file_content') {
@@ -8639,7 +9988,7 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       'restart_control.sh',
       'restart_server.sh',
       'reporter.sh',
-      'openclaw_selfcheck.sh'
+
     ])
     const scriptName = String(step.params?.scriptName || '').trim()
     if (!scriptName || !ALLOWED_LIFECYCLE_SCRIPTS.has(scriptName)) {
@@ -9716,6 +11065,32 @@ export function buildProjectMemorySystemMessage(binding, userPrompt, options = {
   }
 }
 
+function estimateTokensFromMessages(messages) {
+  return messages.reduce((sum, m) => sum + Math.ceil(String(m.content || '').length / 2), 0)
+}
+
+function compressChatMessages(messages, contextLength) {
+  if (!contextLength || contextLength <= 0) return messages
+  const threshold = Math.floor(contextLength * 0.75)
+  let tokens = estimateTokensFromMessages(messages)
+  if (tokens <= threshold) return messages
+
+  // Keep system messages, compress history by removing oldest user-assistant pairs
+  const systemMessages = messages.filter((m) => m.role === 'system')
+  const historyMessages = messages.filter((m) => m.role !== 'system')
+  const lastUserIndex = historyMessages.map((m) => m.role).lastIndexOf('user')
+
+  while (tokens > threshold && historyMessages.length > 2) {
+    // Remove oldest user-assistant pair (or single message if no pair)
+    const removed = historyMessages.shift()
+    if (removed) tokens -= Math.ceil(String(removed.content || '').length / 2)
+    // Ensure we don't remove the last user message (current prompt)
+    if (historyMessages.length <= 1) break
+  }
+
+  return [...systemMessages, ...historyMessages]
+}
+
 function buildHermesChatMessages(history, userPrompt, binding, options = {}) {
   const projectMemory = buildProjectMemorySystemMessage(binding, userPrompt, options)
   const messages = [
@@ -9735,10 +11110,18 @@ function buildHermesChatMessages(history, userPrompt, binding, options = {}) {
   })
 
   messages.push(...replayableMessages)
-
   messages.push({ role: 'user', content: userPrompt })
+
+  const contextLength = Number(binding?.contextLength || 0)
+  const compressed = contextLength > 0 ? compressChatMessages(messages, contextLength) : messages
+  const compressedCount = compressed.length
+  const originalCount = messages.length
+  if (originalCount > compressedCount) {
+    appendHermesLog(`[CONTEXT] Compressed chat messages: ${originalCount} → ${compressedCount} (contextLength=${contextLength})`)
+  }
+
   return {
-    messages,
+    messages: compressed,
     projectMemory,
     replayedMessageCount: replayableMessages.length
   }

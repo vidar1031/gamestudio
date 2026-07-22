@@ -1,5 +1,4 @@
 import { enqueueHumanCorrectionProposal } from '../intents/proposals.js'
-import { classifyReasoningRequest } from '../reasoning/requestClassifier.js'
 
 export function registerReasoningRoutes(app, context) {
   let activeProductionTestSession = null
@@ -22,6 +21,7 @@ export function registerReasoningRoutes(app, context) {
     getHermesControlState,
     getPersistedHermesControlConfig,
     hermesAgentDefinition,
+    listReasoningSessions,
     markReasoningSessionFailed,
     persistHermesChatPrompt,
     persistHermesChatReply,
@@ -115,23 +115,15 @@ export function registerReasoningRoutes(app, context) {
 
     const productionTest = Boolean(body.productionTest || body.submissionContext?.productionTest)
     const requireModelAnswer = Boolean(body.requireModelAnswer || body.requireHermesModelAnswer || body.submissionContext?.requireModelAnswer || body.submissionContext?.requireHermesModelAnswer)
-    const requestDecision = classifyReasoningRequest(userPrompt, { contextSelection: { productionTest } })
-    const allowDeterministicStoryRuntimeBypass = productionTest
-      && !requireModelAnswer
-      && requestDecision.type === 'story_workflow_execute'
-      && requestDecision.deterministicPlan
-    const allowDeterministicGameStudioBootstrapBypass = !requireModelAnswer
-      && requestDecision.type === 'gamestudio_bootstrap_execute'
-      && requestDecision.deterministicPlan
-    const allowDeterministicRuntimeBypass = allowDeterministicStoryRuntimeBypass || allowDeterministicGameStudioBootstrapBypass
 
+    // 系统级硬 gate：模型未就绪不得进行任何 story 生产工作，禁止 deterministic bypass
     const runtimeStatus = getHermesRuntimeState()
-    if (runtimeStatus.state !== 'running' && !allowDeterministicRuntimeBypass) {
+    if (runtimeStatus.state !== 'running') {
       return c.json({ ok: false, error: 'runtime_not_running', runtimeStatus }, 409)
     }
 
     const startBlocker = buildReasoningStartBlocker()
-    if (startBlocker && !allowDeterministicRuntimeBypass) {
+    if (startBlocker) {
       return c.json({ ok: false, ...startBlocker, runtimeStatus, controlState: getHermesControlState() }, 409)
     }
 
@@ -144,14 +136,14 @@ export function registerReasoningRoutes(app, context) {
     const disableQualityAutoRetry = body.disableQualityAutoRetry ?? body.submissionContext?.disableQualityAutoRetry
     const session = await createReasoningSession(agentId, userPrompt, {
       parentSessionId,
-      reviewMode: String(body.reviewMode || body.submissionContext?.reviewMode || '').trim().toLowerCase() === 'auto' ? 'auto' : 'manual',
+      reviewMode: String(body.reviewMode || body.submissionContext?.reviewMode || '').trim().toLowerCase() || 'manual',
       childGoals: body.childGoals,
       selectedSourceIds: body.selectedSourceIds,
       selectedContextPoolIds: body.selectedContextPoolIds,
       confirmedContextSummary: body.confirmedContextSummary,
       productionTest,
       requireModelAnswer,
-      disableMemorySync: Boolean(body.disableMemorySync || body.submissionContext?.disableMemorySync || allowDeterministicGameStudioBootstrapBypass),
+      disableMemorySync: Boolean(body.disableMemorySync || body.submissionContext?.disableMemorySync),
       ...(disableQualityAutoRetry === undefined ? {} : { disableQualityAutoRetry: Boolean(disableQualityAutoRetry) }),
       stageId: String(body.stageId || body.submissionContext?.stageId || '').trim() || null,
       caseId: String(body.caseId || body.submissionContext?.caseId || '').trim() || null,
@@ -185,6 +177,21 @@ export function registerReasoningRoutes(app, context) {
 
   app.post('/api/control/agents/:agentId/reasoning-sessions', createRuntimeSession)
   app.post('/api/control/agents/:agentId/agent-runtime-sessions', createRuntimeSession)
+
+  app.get('/api/control/agents/:agentId/reasoning-sessions', async (c) => {
+    const { agentId } = c.req.param()
+    if (agentId !== hermesAgentDefinition.id) {
+      return c.json({ ok: false, error: 'agent_not_found' }, 404)
+    }
+    const limit = Math.min(200, Math.max(1, parseInt(c.req.query('limit') || '50', 10)))
+    const includeTerminal = c.req.query('includeTerminal') !== 'false'
+    try {
+      const sessions = listReasoningSessions({ limit, includeTerminal })
+      return c.json({ ok: true, sessions, count: sessions.length })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
 
   app.get('/api/control/agents/:agentId/production-test-session', (c) => {
     const { agentId } = c.req.param()

@@ -50,6 +50,28 @@ import {
   inferWorkspaceDirectoriesFromRecentContext,
 } from '../controlServerCore.js'
 
+function estimateTokensFromMessages(messages) {
+  return messages.reduce((sum, m) => sum + Math.ceil(String(m.content || '').length / 2), 0)
+}
+
+function compressPlannerMessages(messages, contextLength) {
+  if (!contextLength || contextLength <= 0) return messages
+  const threshold = Math.floor(contextLength * 0.75)
+  let tokens = estimateTokensFromMessages(messages)
+  if (tokens <= threshold) return messages
+
+  const systemMessages = messages.filter((m) => m.role === 'system')
+  const historyMessages = messages.filter((m) => m.role !== 'system')
+
+  while (tokens > threshold && historyMessages.length > 2) {
+    const removed = historyMessages.shift()
+    if (removed) tokens -= Math.ceil(String(removed.content || '').length / 2)
+    if (historyMessages.length <= 1) break
+  }
+
+  return [...systemMessages, ...historyMessages]
+}
+
 export function buildReasoningPlannerMessages(history, userPrompt, binding, correctionPrompt = '', contextSelection = {}, priorArtifacts = null) {
   const projectMemory = buildReasoningPlannerProjectMemory(binding, userPrompt, contextSelection)
   const replayWindowMessages = Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
@@ -63,65 +85,80 @@ export function buildReasoningPlannerMessages(history, userPrompt, binding, corr
   const hintedActionsText = [...new Set(matchedIntentRules.flatMap((rule) => [...(rule.requiredActions || []), rule.answerAction]).filter(Boolean))].join(', ')
   const previousDraft = buildPriorDraftSummary(priorArtifacts)
 
+  const rawMessages = [
+    {
+      role: 'system',
+      content: buildHermesRuntimeSystemMessage(binding)
+    },
+    {
+      role: 'system',
+      content: projectMemory.message
+    },
+    {
+      role: 'system',
+      content: [
+        'You are the planning layer for the GameStudio observable reasoning pipeline.',
+        'Return one strict JSON object only. Do not include markdown fences or extra commentary.',
+        'Generate a short sequential execution plan for the current user request using the nearby conversation and injected markdown memory as the primary context.',
+        'The latest user request is the source of truth for the plan goal. Treat replayed conversation as optional context, not as the task to execute.',
+        'Before using replayed conversation, classify whether it is directly related to the latest user request. Use it only when the user explicitly continues, compares, repeats, corrects, or refers to prior work.',
+        'If the latest request names a concrete module, directory, file, workflow, or test case, plan for that explicit target even if replayed history contains a different target.',
+        'If the latest request repeats an earlier question, run the normal evidence-gathering workflow again; do not copy or drift from the earlier answer unless current artifacts support it.',
+        contextSelection?.requestDecision?.needsContext ? 'The request classification layer has marked this request as context-dependent. You must use directly relevant replayed conversation and project memory when choosing the target object or scope.' : '',
+        `Allowed actions: ${allowedActionsText}.`,
+        hintedActionsText ? `Selected skill and intent hints suggest these actions when relevant: ${hintedActionsText}.` : '',
+        'Do not speculate about databases, APIs, or external folders when a local project-listing tool exists.',
+        'Stay inside the GameStudio workspace and prefer observable tool results over generic assumptions.',
+        'If the user asks what is inside a workspace directory, first identify the directory mentioned in the prompt and use list_directory_contents.',
+        'Do not invent fixed file-specific scanners or templates. Use generic directory, file, and search actions that match the actual request.',
+        'When the run changes project state, fixes runtime behavior, updates workflow rules, or advances a multi-step task, include memory sync steps before the final answer so STATUS, TASK_QUEUE, DECISIONS, and LONG_TASKS stay current when relevant.',
+        'Use skipReview: true for pure read, routing, and evidence-gathering steps that may proceed automatically.',
+        'Do not set skipReview: true on file-write steps.',
+        'For write actions (edit_workspace_file, write_memory_file, update_task_queue), the step MUST include a "params" field with the required parameters.',
+        'For edit_workspace_file: params must contain "filePath" (relative to workspace) and "content" (edit intent or desired content).',
+        'For write_memory_file: params must contain "filePath" (relative to workspace, under ai/) and "content" (the full file content to write).',
+        'For update_task_queue: params must contain "content" (the task entry text to append) and optionally "replaceAll" (boolean).',
+        'For run_lifecycle_script: params must contain "scriptName" (one of: restart_control.sh, restart_server.sh, reporter.sh).',
+        'For read_file_content: params must contain "filePath" (relative to workspace).',
+        'For list_directory_contents: params must contain "dirPath" and may also use legacy "startDir" for compatibility.',
+        'For search_workspace_text: params must contain "query" and may contain "startDir" and "maxResults".',
+        'For create_workspace_file: params must contain "filePath" and "content".',
+        'For rename_workspace_path: params must contain "fromPath" and "toPath".',
+        'For delete_workspace_path: params must contain "targetPath".',
+        'For run_workspace_script: params must contain "scriptPath" (workspace-relative and under allowed roots).',
+        'For web_search: params must contain "query" (search keywords) and optionally "limit" (number of results, 1-20, default 5).',
+        'For web_extract: params must contain "urls" (a string URL or an array of URLs, max 5).',
+        'For shell_execute: params must contain "command" (shell command string) and optionally "timeoutMs" (default 30000, max 120000).',
+        'For vision_analyze: params must contain "imagePath" (local path or URL) and optionally "question" (default "描述这张图片").',
+        'For git_status: no params required.',
+        'For git_diff: params may contain "filePath" (optional, default all changes).',
+        'For git_log: params may contain "maxCount" (optional, default 10, max 50).',
+        'For git_branch: no params required.',
+        'For test_run: params may contain "command" (optional, auto-detects npm test / pytest / jest) and "timeoutMs" (default 60000).',
+        'For mcp_call: params must contain "serverName" and "toolName", and optionally "args" (object).',
+        'Schema: {"goal": string, "strategy": "sequential", "steps": [{"title": string, "action": string, "params": object, "skipReview": boolean?}]}'
+      ].join('\n')
+    },
+    ...replayableMessages,
+    {
+      role: 'user',
+      content: [
+        `当前用户问题：${userPrompt}`,
+        correctionPrompt ? `审核修正条件：${correctionPrompt}` : '',
+        previousDraft ? `上一轮候选答案（仅作修订草稿，不能当作已验证事实）：\n${previousDraft}` : '',
+        '',
+        '请基于最近上下文和已注入的 markdown 项目记忆，输出严格 JSON plan。'
+      ].filter(Boolean).join('\n')
+    }
+  ]
+
+  const contextLength = Number(binding?.contextLength || 0)
+  const messages = contextLength > 0 ? compressPlannerMessages(rawMessages, contextLength) : rawMessages
+
   return {
     projectMemory,
     replayableMessages,
-    messages: [
-      {
-        role: 'system',
-        content: buildHermesRuntimeSystemMessage(binding)
-      },
-      {
-        role: 'system',
-        content: projectMemory.message
-      },
-      {
-        role: 'system',
-        content: [
-          'You are the planning layer for the GameStudio observable reasoning pipeline.',
-          'Return one strict JSON object only. Do not include markdown fences or extra commentary.',
-          'Generate a short sequential execution plan for the current user request using the nearby conversation and injected markdown memory as the primary context.',
-          'The latest user request is the source of truth for the plan goal. Treat replayed conversation as optional context, not as the task to execute.',
-          'Before using replayed conversation, classify whether it is directly related to the latest user request. Use it only when the user explicitly continues, compares, repeats, corrects, or refers to prior work.',
-          'If the latest request names a concrete module, directory, file, workflow, or test case, plan for that explicit target even if replayed history contains a different target.',
-          'If the latest request repeats an earlier question, run the normal evidence-gathering workflow again; do not copy or drift from the earlier answer unless current artifacts support it.',
-          contextSelection?.requestDecision?.needsContext ? 'The request classification layer has marked this request as context-dependent. You must use directly relevant replayed conversation and project memory when choosing the target object or scope.' : '',
-          `Allowed actions: ${allowedActionsText}.`,
-          hintedActionsText ? `Selected skill and intent hints suggest these actions when relevant: ${hintedActionsText}.` : '',
-          'Do not speculate about databases, APIs, or external folders when a local project-listing tool exists.',
-          'Stay inside the GameStudio workspace and prefer observable tool results over generic assumptions.',
-          'If the user asks what is inside a workspace directory, first identify the directory mentioned in the prompt and use list_directory_contents.',
-          'Do not invent fixed file-specific scanners or templates. Use generic directory, file, and search actions that match the actual request.',
-          'When the run changes project state, fixes runtime behavior, updates workflow rules, or advances a multi-step task, include memory sync steps before the final answer so STATUS, TASK_QUEUE, DECISIONS, and LONG_TASKS stay current when relevant.',
-          'Use skipReview: true for pure read, routing, and evidence-gathering steps that may proceed automatically.',
-          'Do not set skipReview: true on file-write steps.',
-          'For write actions (edit_workspace_file, write_memory_file, update_task_queue), the step MUST include a "params" field with the required parameters.',
-          'For edit_workspace_file: params must contain "filePath" (relative to workspace) and "content" (edit intent or desired content).',
-          'For write_memory_file: params must contain "filePath" (relative to workspace, under ai/) and "content" (the full file content to write).',
-          'For update_task_queue: params must contain "content" (the task entry text to append) and optionally "replaceAll" (boolean).',
-          'For run_lifecycle_script: params must contain "scriptName" (one of: restart_control.sh, restart_server.sh, reporter.sh, openclaw_selfcheck.sh).',
-          'For read_file_content: params must contain "filePath" (relative to workspace).',
-          'For list_directory_contents: params must contain "dirPath" and may also use legacy "startDir" for compatibility.',
-          'For search_workspace_text: params must contain "query" and may contain "startDir" and "maxResults".',
-          'For create_workspace_file: params must contain "filePath" and "content".',
-          'For rename_workspace_path: params must contain "fromPath" and "toPath".',
-          'For delete_workspace_path: params must contain "targetPath".',
-          'For run_workspace_script: params must contain "scriptPath" (workspace-relative and under allowed roots).',
-          'Schema: {"goal": string, "strategy": "sequential", "steps": [{"title": string, "action": string, "params": object, "skipReview": boolean?}]}'
-        ].join('\n')
-      },
-      ...replayableMessages,
-      {
-        role: 'user',
-        content: [
-          `当前用户问题：${userPrompt}`,
-          correctionPrompt ? `审核修正条件：${correctionPrompt}` : '',
-          previousDraft ? `上一轮候选答案（仅作修订草稿，不能当作已验证事实）：\n${previousDraft}` : '',
-          '',
-          '请基于最近上下文和已注入的 markdown 项目记忆，输出严格 JSON plan。'
-        ].filter(Boolean).join('\n')
-      }
-    ]
+    messages
   }
 }
 
@@ -137,6 +174,35 @@ export function extractJsonObjectString(text) {
     return candidate.slice(firstBrace, lastBrace + 1)
   }
   return candidate
+}
+
+function isMetaAnalysisPrompt(userPrompt) {
+  const text = String(userPrompt || '').toLowerCase()
+  return text.includes('元分析')
+    || text.includes('meta analysis')
+    || text.includes('meta-analysis')
+    || text.includes('系统分析')
+    || text.includes('分析系统')
+    || text.includes('系统诊断')
+    || text.includes('运行分析')
+    || text.includes('系统健康')
+    || text.includes('会话分析')
+    || text.includes('错误分析')
+    || text.includes('性能分析')
+    || text.includes('性能瓶颈')
+    || text.includes('性能诊断')
+    || text.includes('会话统计')
+    || text.includes('任务分析')
+    || text.includes('运行状态')
+    || text.includes('诊断系统')
+}
+
+function inferMetaAnalysisScope(userPrompt) {
+  const text = String(userPrompt || '').toLowerCase()
+  if (text.includes('错误') || text.includes('失败') || text.includes('error') || text.includes('fail')) return 'errors'
+  if (text.includes('性能') || text.includes('performance') || text.includes('瓶颈') || text.includes('慢')) return 'performance'
+  if (text.includes('会话') || text.includes('session') || text.includes('任务')) return 'sessions'
+  return 'overview'
 }
 
 export function buildReasoningFallbackPlan(userPrompt, history, binding, contextSelection = {}) {
@@ -390,6 +456,26 @@ export function buildReasoningFallbackPlan(userPrompt, history, binding, context
       goal: matchedIntentRules[0]?.goal || '结合最近上下文生成结构化回答',
       strategy: 'sequential',
       steps
+    }
+  }
+
+  if (isMetaAnalysisPrompt(userPrompt)) {
+    const scope = inferMetaAnalysisScope(userPrompt)
+    return {
+      planId: createOpaqueId('plan'),
+      goal: '对 Control 系统运行状态进行元分析',
+      strategy: 'sequential',
+      steps: [
+        {
+          stepId: 'step_meta_analysis',
+          title: '系统元分析',
+          action: 'meta_analysis',
+          tool: 'model.metaAnalysis',
+          params: { scope },
+          skipReview: true,
+          dependsOn: []
+        }
+      ]
     }
   }
 
@@ -1048,4 +1134,61 @@ export function buildReasoningFallbackAnswer(userPrompt, artifacts) {
     '当前没有足够的可观测结构化结果可直接回答。',
     `本次问题：${userPrompt}`
   ].join('\n\n')
+}
+
+export function buildSupervisionPrompt(data, scorecard) {
+  const systemMessage = `你是一名 Control 系统监督专家。你的职责是：
+1. 评估左脑（本地 OMLX 模型）的任务执行质量
+2. 识别失败模式和根因
+3. 生成具体、可执行的修正建议
+4. 判断哪些修正可以自动执行，哪些需要人工确认
+
+评分标准：
+- 系统自检（20%）：基础服务可用性（OMLX、GameStudio Server、Control Server、ComfyUI）
+- 故事生产（30%）：核心业务功能完整性（项目存在、ComfyUI 可达）
+- 推理执行（25%）：任务分解与执行成功率（reasoning sessions 成功比例）
+- 记忆管理（10%）：状态文件维护质量（STATUS.md、TASK_QUEUE.md 等时效性）
+- 配置路由（10%）：架构配置正确性（默认路由=omlx、meta_analysis 路由存在）
+- 可观测性（5%）：日志与事件完整性（agent-runtime-events、服务日志时效性）
+
+修正指令格式要求（必须在返回的 JSON 代码块中）：
+{
+  "correctionId": "corr-xxx",
+  "priority": "P0|P1|P2",
+  "category": "对应失败类别id",
+  "issue": "问题描述",
+  "rootCause": "根因分析",
+  "actions": [
+    { "step": 1, "type": "command|verify|retry_task|review", "description": "...", "command": "...", "reviewRequired": false }
+  ],
+  "estimatedFixTime": "x 分钟",
+  "rollbackPlan": "..."
+}
+
+重要规则：
+- 只读操作（检查状态、读取日志）reviewRequired = false，可自动执行
+- 修改配置、删除文件、重启服务等 reviewRequired = true，必须人工确认
+- 如果评分 >= 90 且全部通过，只返回简短结论，不生成修正指令`
+
+  const userContent = `请基于以下系统运行数据生成监督评估报告和修正指令：
+
+## 评分卡
+${JSON.stringify(scorecard, null, 2)}
+
+## 原始数据摘要
+- 服务探测: OMLX=${data.services.omlx.ok}, Server=${data.services.gamestudioServer.ok}, Control=${data.services.controlServer.ok}, ComfyUI=${data.services.comfyui.ok}
+- Sessions: 总计${data.sessions.totalCount}, 成功${data.sessions.successCount}, 失败${data.sessions.failedCount}, 最近24h=${data.sessions.last24hCount}
+- 记忆文件: ${Object.entries(data.memory).map(([k,v]) => `${k}=${v.exists ? '存在' : '缺失'}(${Math.round(v.ageHours)}h)`).join(', ')}
+- 配置: 默认路由=${data.config.defaultRoute}, meta_analysis路由=${data.config.hasMetaAnalysisRoute}, 右脑启用=${data.config.rightBrainEnabled}
+- 项目数: ${data.projects.count}
+
+请输出：
+1. 总体评估结论（2-3句话）
+2. 失败项的根因分析
+3. 可执行的修正指令（JSON 代码块格式）`
+
+  return [
+    { role: 'system', content: systemMessage },
+    { role: 'user', content: userContent },
+  ]
 }

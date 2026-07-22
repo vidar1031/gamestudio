@@ -525,14 +525,23 @@ export function registerRuntimeRoutes(app, context) {
   app.get('/api/control/local-models', async (c) => {
     const provider = c.req.query('provider') || 'omlx'
     const requestedBaseUrl = c.req.query('baseUrl') || undefined
-    return c.json(await fetchLocalModelCatalog({ provider, baseUrl: requestedBaseUrl }))
+    const config = getPersistedHermesControlConfig()
+    const rightBrainApiKey = (config.brains?.rightBrainEnabled && config.brains?.rightBrain && config.brains.rightBrain.provider === provider)
+      ? String(config.brains.rightBrain.apiKey || '').trim() || null
+      : null
+    return c.json(await fetchLocalModelCatalog({ provider, baseUrl: requestedBaseUrl, apiKeyOverride: rightBrainApiKey }))
   })
 
   app.get('/api/control/local-models/inspect', async (c) => {
     const provider = String(c.req.query('provider') || 'omlx')
     const model = String(c.req.query('model') || '').trim()
     const baseUrl = c.req.query('baseUrl') || undefined
-    return c.json({ ok: true, inspection: await inspectProviderModelState({ provider, baseUrl, model }) })
+    const config = getPersistedHermesControlConfig()
+    const rightBrainApiKey = (config.brains?.rightBrainEnabled && config.brains?.rightBrain && config.brains.rightBrain.provider === provider)
+      ? String(config.brains.rightBrain.apiKey || '').trim() || null
+      : null
+    appendHermesLog(`[INSPECT] provider=${provider} model=${model || 'unknown'} rightBrainApiKeyOverride=${Boolean(rightBrainApiKey)}`)
+    return c.json({ ok: true, inspection: await inspectProviderModelState({ provider, baseUrl, model, apiKeyOverride: rightBrainApiKey }) })
   })
 
   app.get('/api/control/agents/:agentId/self-check', async (c) => {

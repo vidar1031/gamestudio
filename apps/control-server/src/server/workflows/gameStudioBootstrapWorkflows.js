@@ -52,7 +52,8 @@ export function buildGameStudioBootstrapPlan(userPrompt) {
   add('step_gamestudio_ensure_running', '启动或确认 GameStudio Server/Editor', 'gamestudio_ensure_running', {
     startIfNeeded: true,
     serverUrl: 'http://127.0.0.1:1999',
-    editorUrl: 'http://localhost:8868'
+    editorUrl: 'http://localhost:8868',
+    comfyuiCheck: true
   })
   add('step_gamestudio_open_editor', '打开或返回 GameStudio Editor 界面', 'gamestudio_open_editor', {
     editorUrl: 'http://localhost:8868',
@@ -77,6 +78,7 @@ export function buildGameStudioBootstrapPlan(userPrompt) {
     add('step_gamestudio_self_check', '执行 GameStudio 自检并反馈给 Control', 'gamestudio_self_check', {
       imagePreflight: true,
       imagePreflightMode: 'storyboard',
+      ensureComfyUi: true,
       timeoutMs: 15000
     })
   }

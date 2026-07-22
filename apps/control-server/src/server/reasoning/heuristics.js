@@ -131,11 +131,15 @@ export function isWorkspaceFileQuestionPrompt(userPrompt) {
   return /负责|作用|用途|区别|分别|是什么|说明|解释|对比|含义|role|purpose|what|explain|compare/i.test(normalizedPrompt)
 }
 
+const ANSWER_ONLY_INDICATORS = /是什么|为什么|解释|说明|区别|含义|原理|建议|是否合理|会不会有问题|对不对|what|why|explain|suggest|reasonable|compare|对比|分别/i
+
 export function isWorkspaceDirectoryQuestionPrompt(userPrompt) {
   const normalizedPrompt = String(userPrompt || '').trim()
   if (!normalizedPrompt) return false
+  // 如果提示词明显是纯问答，不走 directory_inspection
+  if (ANSWER_ONLY_INDICATORS.test(normalizedPrompt)) return false
   if (inferWorkspaceDirectoriesFromPromptText(normalizedPrompt).length === 0) return false
-  return /分析|负责|职责|作用|用途|区别|分别|是什么|说明|解释|对比|含义|role|purpose|what|explain|compare/i.test(normalizedPrompt)
+  return /分析|负责|职责|作用|用途|说明|role|purpose/i.test(normalizedPrompt)
 }
 
 export function isImageServiceEntrypointPrompt(prompt) {
@@ -689,7 +693,7 @@ function answerExplainsDirectoryResponsibility(dirPath, answerText) {
     scripts: /脚本|自动化|测试|启动|停止|构建|生命周期/i,
     packages: /包|共享|runtime|schema|builder|库|模块/i,
     config: /配置|hermes|模型|技能|intent|状态/i,
-    monitor: /监控|dashboard|openclaw|观测|状态/i,
+    monitor: /监控|dashboard|观测|状态/i,
     ai: /记忆|agent|工作流|chat|memory|任务|状态/i
   }
 

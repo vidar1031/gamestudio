@@ -1,7 +1,26 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import {
   HERMES_API_SERVER_BASE_URL,
   HERMES_CHAT_REQUEST_TIMEOUT_MS,
 } from '../../config/constants.js'
+import { HERMES_HOME } from '../../config/paths.js'
+
+function readHermesApiServerKey() {
+  const envKey = String(process.env.API_SERVER_KEY || '').trim()
+  if (envKey) return envKey
+  try {
+    const envPath = path.join(HERMES_HOME, '.env')
+    if (!fs.existsSync(envPath)) return ''
+    const content = fs.readFileSync(envPath, 'utf8')
+    const match = content.match(/^API_SERVER_KEY\s*=\s*(.+)$/m)
+    return match ? String(match[1]).trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+const HERMES_API_SERVER_KEY = readHermesApiServerKey()
 
 const MAX_CONCURRENT_MODEL_TASKS = Math.max(1, Number(process.env.HERMES_MODEL_TASK_MAX_CONCURRENT || 1))
 const MAX_MODEL_CALLS_PER_SESSION = Math.max(1, Number(process.env.HERMES_MODEL_TASK_MAX_CALLS_PER_SESSION || 16))
@@ -193,6 +212,7 @@ export async function requestHermesChatCompletion({
             signal: controller.signal,
             headers: {
               'Content-Type': 'application/json',
+              ...(!directRoute && HERMES_API_SERVER_KEY ? { Authorization: `Bearer ${HERMES_API_SERVER_KEY}` } : {}),
               ...(directRoute?.headers || {})
             },
             body: requestBody

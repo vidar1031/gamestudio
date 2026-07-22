@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { GAMESTUDIO_ROOT, STORAGE_PROJECTS_ROOT } from '../../config/paths.js'
+import { assertStoryOutput } from './storyOutputGate.js'
 
 export const GAMESTUDIO_SERVER_BASE_URL = String(process.env.GAMESTUDIO_SERVER_BASE_URL || process.env.SERVER_BASE_URL || 'http://127.0.0.1:1999').replace(/\/$/, '')
 
@@ -153,11 +154,13 @@ export async function diagnoseStudio(payload = {}) {
 }
 
 export async function createProject({ title }) {
+  assertStoryOutput('story.project.create', { title })
   const result = await requestGameStudio('/api/projects', { method: 'POST', body: { title } })
   return withProjectEvidence(result, result?.data?.project?.id)
 }
 
 export async function createAiProject(payload) {
+  assertStoryOutput('story.project.create', payload || {})
   const result = await requestGameStudio('/api/projects/ai/create', {
     method: 'POST',
     body: payload || {},
@@ -185,12 +188,14 @@ export async function getScripts(projectId) {
 }
 
 export async function putScripts(projectId, scripts) {
+  assertStoryOutput('story.scripts.write', { projectId, scripts })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/scripts`, { method: 'PUT', body: { scripts } })
   return withProjectEvidence(result, projectId)
 }
 
 export async function compileBlueprint(projectId) {
+  assertStoryOutput('story.blueprint.compile', { projectId })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/compile/blueprint`, { method: 'POST', body: {} })
   return withProjectEvidence(result, projectId)
@@ -215,18 +220,21 @@ export async function fixScripts(projectId) {
 }
 
 export async function compileCompose(projectId) {
+  assertStoryOutput('story.compose.compile', { projectId })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/compile/compose`, { method: 'POST', body: {} })
   return withProjectEvidence(result, projectId)
 }
 
 export async function validateBlueprint(projectId) {
+  assertStoryOutput('story.validate.blueprint', { projectId })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/validate/blueprint`, { method: 'POST', body: {} })
   return withProjectEvidence(result, projectId)
 }
 
 export async function exportProject(projectId) {
+  assertStoryOutput('story.export.project', { projectId })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/export`, { method: 'POST', body: {} })
   return withProjectEvidence(result, projectId, {
@@ -274,6 +282,7 @@ export async function preflightImageProvider(payload = {}) {
 }
 
 export async function generateBackground(projectId, payload) {
+  assertStoryOutput('story.background.generate', { projectId, ...payload })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/ai/background`, {
     method: 'POST',
@@ -284,6 +293,7 @@ export async function generateBackground(projectId, payload) {
 }
 
 export async function createStoryBible(projectId, payload) {
+  assertStoryOutput('story.bible.generate', { projectId, ...payload })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/ai/story/bible`, {
     method: 'POST',
@@ -293,7 +303,18 @@ export async function createStoryBible(projectId, payload) {
   return withProjectEvidence(result, projectId)
 }
 
+export async function regenerateScripts(projectId, payload) {
+  const id = encodeURIComponent(normalizeProjectId(projectId))
+  const result = await requestGameStudio(`/api/projects/${id}/ai/regenerate`, {
+    method: 'POST',
+    body: payload || {},
+    timeoutMs: Math.max(DEFAULT_TIMEOUT_MS, Number(payload?.timeoutMs || 0) || 0)
+  })
+  return withProjectEvidence(result, projectId)
+}
+
 export async function createStoryAssetPlan(projectId, payload) {
+  assertStoryOutput('story.assets.plan', { projectId, ...payload })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/ai/story/assets/plan`, { method: 'POST', body: payload || {} })
   return withProjectEvidence(result, projectId)
@@ -320,8 +341,21 @@ export async function generateStoryAssetReference(projectId, payload) {
 }
 
 export async function selectStoryAssetReference(projectId, payload) {
+  assertStoryOutput('story.assets.reference.lock', { projectId, ...payload })
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/ai/story/assets/reference/select`, {
+    method: 'POST',
+    body: payload || {},
+    timeoutMs: Math.max(DEFAULT_TIMEOUT_MS, Number(payload?.timeoutMs || 0) || 0)
+  })
+  return withProjectEvidence(result, projectId)
+}
+
+export async function renderStoryScene(projectId, sceneId, payload = {}) {
+  assertStoryOutput('story.scene.render', { projectId, sceneId, ...payload })
+  const id = encodeURIComponent(normalizeProjectId(projectId))
+  const scene = encodeURIComponent(String(sceneId || '').trim())
+  const result = await requestGameStudio(`/api/projects/${id}/ai/story/scenes/${scene}/render`, {
     method: 'POST',
     body: payload || {},
     timeoutMs: Math.max(DEFAULT_TIMEOUT_MS, Number(payload?.timeoutMs || 0) || 0)
@@ -354,8 +388,10 @@ export const gameStudioServerClient = {
   preflightImageProvider,
   generateBackground,
   createStoryBible,
+  regenerateScripts,
   createStoryAssetPlan,
   storyLockTest,
   generateStoryAssetReference,
-  selectStoryAssetReference
+  selectStoryAssetReference,
+  renderStoryScene
 }

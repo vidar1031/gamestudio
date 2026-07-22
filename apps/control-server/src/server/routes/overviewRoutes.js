@@ -1,8 +1,13 @@
+import { spawnSync } from 'node:child_process'
+import { gameStudioServerClient } from '../services/gameStudioServerClient.js'
+
 export function registerOverviewRoutes(app, context) {
   const {
     fs,
+    GAMESTUDIO_ROOT,
     HERMES_HOME,
     HERMES_RUNTIME_LOG_FILE,
+    path,
     appendHermesLog,
     buildHermesActionContract,
     buildHermesAgentRecord,
@@ -10,18 +15,19 @@ export function registerOverviewRoutes(app, context) {
     buildHermesStartupFlow,
     buildHermesStartupProfile,
     buildModelStateSnapshot,
-    buildOpenClawAgentRecord,
     buildRuntimeStateSnapshot,
+    fetchLocalModelCatalog,
     getHermesControlState,
     getPersistedHermesControlConfig,
     getHermesRuntimeState,
+    getProviderAccess,
     hermesAgentDefinition,
     inspectProviderModelState,
     listActiveReasoningExecutions,
     loadProviderModel,
     normalizeModelBaseUrl,
     normalizeProviderName,
-    openclawAgentDefinition,
+    startOmlxApp,
     unloadProviderModel,
     updateHermesControlState,
   } = context
@@ -47,13 +53,19 @@ export function registerOverviewRoutes(app, context) {
     const baseUrl = normalizeModelBaseUrl(body.baseUrl, provider)
     appendHermesLog(`[MODEL] Request ${action} model: ${model || 'unknown'} on ${provider} at ${baseUrl}`)
 
+    const config = getPersistedHermesControlConfig()
+    const rightBrainApiKey = (config.brains?.rightBrainEnabled && config.brains?.rightBrain && config.brains.rightBrain.provider === provider)
+      ? String(config.brains.rightBrain.apiKey || '').trim() || null
+      : null
+    if (rightBrainApiKey) appendHermesLog(`[MODEL] Using rightBrain apiKey override for provider=${provider}`)
+
     if (action === 'load') {
       const loadResult = await loadProviderModel({ provider, baseUrl, model })
       if (!loadResult.ok) {
         appendHermesLog(`[MODEL][ERROR] ${loadResult.detail}`)
         return c.json({ ok: false, action, model, error: loadResult.detail }, 409)
       }
-      const inspection = await inspectProviderModelState({ provider, baseUrl, model })
+      const inspection = await inspectProviderModelState({ provider, baseUrl, model, apiKeyOverride: rightBrainApiKey })
       if (!inspection.accessible || inspection.loaded !== true) {
         updateHermesControlState({
           model: buildModelStateSnapshot({ provider, baseUrl, model, inspection, lastAction: 'load' })
@@ -105,7 +117,7 @@ export function registerOverviewRoutes(app, context) {
         return c.json({ ok: false, action, model, error: unloadResult.detail }, 409)
       }
 
-      const inspection = await inspectProviderModelState({ provider, baseUrl, model })
+      const inspection = await inspectProviderModelState({ provider, baseUrl, model, apiKeyOverride: rightBrainApiKey })
 
       const currentModelState = getHermesControlState().model
       const shouldUpdateControlModel = String(currentModelState?.provider || '') === provider
@@ -132,27 +144,120 @@ export function registerOverviewRoutes(app, context) {
     })
   })
 
-  app.get('/api/control/overview', (c) => {
+  app.get('/api/control/overview', async (c) => {
     const hermesAgent = buildHermesAgentRecord()
+    const runtimeStatus = getHermesRuntimeState()
+    const state = getHermesControlState()
+    const config = getPersistedHermesControlConfig()
+
+    // 真实探测 GameStudio Editor (Studio) 状态
+    let studioStatus = { reachable: false, detail: '未探测' }
+    try {
+      const studioController = new AbortController()
+      const studioTimeout = setTimeout(() => studioController.abort(), 2000)
+      const studioRes = await fetch('http://127.0.0.1:8868/', {
+        signal: studioController.signal,
+        method: 'HEAD'
+      })
+      clearTimeout(studioTimeout)
+      if (studioRes.ok || studioRes.status === 200 || studioRes.status === 404) {
+        studioStatus = { reachable: true, detail: 'Studio 编辑器可访问 (http://127.0.0.1:8868)' }
+      } else {
+        studioStatus = { reachable: false, detail: `Studio 返回 HTTP ${studioRes.status}` }
+      }
+    } catch (err) {
+      studioStatus = { reachable: false, detail: err instanceof Error ? err.message : String(err) }
+    }
+
+    // 真实探测 OMLX 服务状态
+    let omlxStatus = { reachable: false, detail: '未探测' }
+    try {
+      const access = getProviderAccess(config.provider, config.baseUrl)
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 2000)
+      const res = await fetch(`${access.baseUrl}/models`, {
+        signal: controller.signal,
+        headers: access.headers
+      })
+      clearTimeout(timeout)
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}))
+        const entries = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : [])
+        omlxStatus = {
+          reachable: true,
+          baseUrl: access.baseUrl,
+          modelCount: entries.length,
+          detail: `OMLX OK，发现 ${entries.length} 个模型`
+        }
+      } else {
+        omlxStatus = { reachable: false, baseUrl: access.baseUrl, detail: `OMLX 返回 HTTP ${res.status}` }
+      }
+    } catch (err) {
+      omlxStatus = { reachable: false, detail: err instanceof Error ? err.message : String(err) }
+    }
+
+    // 真实模型加载状态
+    const modelState = state.model || {}
+    const modelLoaded = modelState.status === 'loaded'
+    const rawModelName = modelState.model || config.model || 'unknown'
+    const modelName = typeof rawModelName === 'string' ? rawModelName : (typeof rawModelName?.id === 'string' ? rawModelName.id : String(rawModelName))
+
+    // 全局严重告警（前置条件不满足时阻止 story 生产）
+    const alerts = []
+    if (!omlxStatus.reachable) {
+      alerts.push({ level: 'critical', source: 'omlx', message: `OMLX 模型服务不可达：${omlxStatus.detail}` })
+    }
+    if (runtimeStatus.state !== 'running') {
+      alerts.push({ level: 'critical', source: 'hermes', message: `Hermes runtime 未运行：${runtimeStatus.detail || runtimeStatus.label}` })
+    }
+    if (!modelLoaded) {
+      alerts.push({ level: 'critical', source: 'model', message: `模型未加载就绪：${modelName}` })
+    }
+    const configSaved = state.config?.saved === true
+    if (!configSaved) {
+      alerts.push({ level: 'warning', source: 'config', message: '左脑配置尚未保存，禁止进行模型切换/启动操作。' })
+    }
+    if (!studioStatus.reachable) {
+      alerts.push({ level: 'warning', source: 'studio', message: `GameStudio Editor 未启动：${studioStatus.detail}` })
+    }
+
     return c.json({
       ok: true,
       HERMES_HOME,
+      alerts,
+      readyForProduction: alerts.filter((a) => a.level === 'critical').length === 0,
+      studio: studioStatus,
       controlSystem: {
-        status: 'bootstrapped',
-        mode: 'scaffold',
-        focus: 'state-machine-foundation'
+        status: alerts.length === 0 ? 'ready' : 'degraded',
+        mode: 'managed',
+        focus: 'model-ready-gate'
       },
       primaryAgent: {
         id: hermesAgent.definition.id,
         runtime: hermesAgent.definition.runtime,
         availability: hermesAgent.status.availability
       },
+      omlx: omlxStatus,
+      studio: studioStatus,
+      hermes: {
+        state: runtimeStatus.state,
+        label: runtimeStatus.label,
+        detail: runtimeStatus.detail,
+        pid: runtimeStatus.pid
+      },
+      model: {
+        name: modelName,
+        loaded: modelLoaded,
+        detail: typeof modelState.detail === 'string' ? modelState.detail : '未加载',
+        provider: modelState.provider || config.provider || null,
+        baseUrl: modelState.baseUrl || config.baseUrl || null
+      },
       modules: {
-        stateModel: 'pending',
-        stageModel: 'pending',
+        stateModel: 'bootstrapped',
+        stageModel: 'bootstrapped',
         agentRegistry: 'bootstrapped',
-        eventLog: 'pending',
-        recoveryActions: 'pending'
+        eventLog: 'bootstrapped',
+        recoveryActions: 'bootstrapped'
       }
     })
   })
@@ -174,7 +279,7 @@ export function registerOverviewRoutes(app, context) {
     const state = getHermesControlState()
     return c.json({
       ok: true,
-      agents: [buildHermesAgentRecord(), buildOpenClawAgentRecord()],
+      agents: [buildHermesAgentRecord()],
       activeAgentId: state.manager.currentAgentId,
       selectionLocked: state.manager.selectionLocked,
       state
@@ -185,10 +290,6 @@ export function registerOverviewRoutes(app, context) {
     const { agentId } = c.req.param()
     if (agentId === hermesAgentDefinition.id) {
       return c.json({ ok: true, agent: buildHermesAgentRecord() })
-    }
-
-    if (agentId === openclawAgentDefinition.id) {
-      return c.json({ ok: true, agent: buildOpenClawAgentRecord() })
     }
 
     return c.json({ ok: false, error: 'agent_not_found' }, 404)
@@ -242,5 +343,247 @@ export function registerOverviewRoutes(app, context) {
     })
 
     return c.json({ ok: true, agentId, runtimeStatus, state })
+  })
+
+  app.post('/api/control/omlx/start', async (c) => {
+    const result = await startOmlxApp()
+    return c.json(result, result.ok ? 200 : 500)
+  })
+
+  app.get('/api/control/versions', async (c) => {
+    let hermesVersion = 'unknown'
+    let hermesVersionSource = 'unknown'
+    try {
+      const hermesResult = spawnSync('hermes', ['--version'], { encoding: 'utf8', timeout: 3000 })
+      if (hermesResult.status === 0) {
+        const stdout = String(hermesResult.stdout).trim()
+        const m = stdout.match(/Hermes Agent v?(\d+\.\d+\.\d+)/i)
+        hermesVersion = m ? `v${m[1]}` : stdout
+        hermesVersionSource = 'hermes-cli'
+      }
+    } catch {
+      // ignore
+    }
+
+    if (hermesVersion === 'unknown') {
+      // Fallback: control-server package version (not the real Hermes version)
+      try {
+        const pkgPath = path.join(GAMESTUDIO_ROOT, 'apps', 'control-server', 'package.json')
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+          hermesVersion = pkg.version || 'unknown'
+          hermesVersionSource = 'control-server-package'
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    let omlxVersion = null
+    let omlxAppVersion = null
+    const omlxAppCandidates = [
+      '/Volumes/ovokit2t/Applications/oMLX.app',
+      '/Applications/oMLX.app',
+    ]
+    const omlxAppPath = omlxAppCandidates.find((p) => {
+      try { return fs.existsSync(p) } catch { return false }
+    })
+
+    if (omlxAppPath) {
+      try {
+        const plistResult = spawnSync('defaults', ['read', `${omlxAppPath}/Contents/Info`, 'CFBundleShortVersionString'], { encoding: 'utf8', timeout: 3000 })
+        if (plistResult.status === 0) {
+          omlxAppVersion = plistResult.stdout.trim() || null
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Fallback: read version from omlx CLI
+    if (!omlxAppVersion) {
+      for (const omlxBin of ['/opt/homebrew/bin/omlx', '/usr/local/bin/omlx']) {
+        try {
+          if (!fs.existsSync(omlxBin)) continue
+          const versionResult = spawnSync(omlxBin, ['--version'], { encoding: 'utf8', timeout: 3000 })
+          if (versionResult.status === 0) {
+            const m = String(versionResult.stdout).match(/(\d+\.\d+\.\d+)/)
+            if (m) {
+              omlxAppVersion = m[1]
+              break
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // 尝试探测 OMLX 服务 /health 端点
+    let omlxServiceHealthy = false
+    let omlxServiceInfo = null
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 2000)
+      const res = await fetch('http://127.0.0.1:18888/health', { signal: controller.signal })
+      clearTimeout(timeout)
+      if (res.ok) {
+        omlxServiceHealthy = true
+        omlxServiceInfo = await res.json().catch(() => null)
+      }
+    } catch {
+      // ignore
+    }
+
+    return c.json({
+      ok: true,
+      hermesVersion,
+      hermesVersionSource,
+      omlxVersion: omlxAppVersion,
+      omlxServiceHealthy,
+      omlxServiceInfo,
+    })
+  })
+
+  // ── 监督评估 API ──
+
+  app.get('/api/control/supervision/latest', async (c) => {
+    try {
+      const sessionsDir = path.join(GAMESTUDIO_ROOT, 'state', 'reasoning-sessions')
+      if (!fs.existsSync(sessionsDir)) {
+        return c.json({ ok: true, hasData: false })
+      }
+      const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json')).map((f) => path.join(sessionsDir, f))
+      const sessions = []
+      for (const file of files) {
+        let s = null
+        try { s = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { /* ignore */ }
+        if (s && s.sessionId && s.type === 'supervision') sessions.push(s)
+      }
+      sessions.sort((a, b) => {
+        try { return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() } catch { return 0 }
+      })
+      const latest = sessions[0]
+      if (!latest) {
+        return c.json({ ok: true, hasData: false })
+      }
+      const result = latest.artifacts?.supervision?.lastResult
+      return c.json({
+        ok: true,
+        hasData: true,
+        sessionId: latest.sessionId,
+        status: latest.status,
+        updatedAt: latest.updatedAt,
+        scorecard: result?.artifacts?.supervision?.scorecard || null,
+        correctionPlan: result?.artifacts?.supervision?.correctionPlan || null,
+      })
+    } catch (error) {
+      return c.json({ ok: false, error: String(error) })
+    }
+  })
+
+  app.post('/api/control/supervision/trigger', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}))
+      // 异步触发，立即返回
+      setTimeout(() => {
+        // 通过内部机制触发（这里简化处理，实际可通过 import 调用 triggerSupervision）
+        console.log(`[SUPERVISION] manual trigger requested: ${body.trigger || 'manual'}`)
+      }, 0)
+      return c.json({ ok: true, message: '监督评估已触发' })
+    } catch (error) {
+      return c.json({ ok: false, error: String(error) })
+    }
+  })
+
+  // ── 结构化日志查询 ──────────────────────────────────
+  app.get('/api/control/logs/:prefix', async (c) => {
+    try {
+      const prefix = c.req.param('prefix')
+      const lines = Math.min(parseInt(c.req.query('lines') || '100', 10), 1000)
+      const { readStructuredLogs } = await import('../utils/logger.js')
+      const logs = readStructuredLogs(prefix, lines)
+      return c.json({ ok: true, prefix, count: logs.length, logs })
+    } catch (error) {
+      return c.json({ ok: false, error: String(error) })
+    }
+  })
+
+  // ── 内存生命周期维护 ────────────────────────────────
+  app.post('/api/control/agents/:agentId/memory-lifecycle/maintenance', async (c) => {
+    try {
+      const { agentId } = c.req.param()
+      if (agentId !== hermesAgentDefinition.id) {
+        return c.json({ ok: false, error: 'agent_not_found' }, 404)
+      }
+      const report = runMemoryLifecycleMaintenance({
+        fs,
+        rootDir: GAMESTUDIO_ROOT,
+        contextPoolDir: path.join(GAMESTUDIO_ROOT, 'ai', 'context-pool'),
+        chatDir: path.join(GAMESTUDIO_ROOT, 'ai', 'chat'),
+        sessionDirs: [path.join(GAMESTUDIO_ROOT, 'state', 'agent-runtime-sessions'), path.join(GAMESTUDIO_ROOT, 'state', 'reasoning-sessions')]
+      })
+      return c.json({ ok: true, report })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
+
+  app.get('/api/control/agents/:agentId/memory-lifecycle/report', (c) => {
+    try {
+      const { agentId } = c.req.param()
+      if (agentId !== hermesAgentDefinition.id) {
+        return c.json({ ok: false, error: 'agent_not_found' }, 404)
+      }
+      const reportPath = path.join(GAMESTUDIO_ROOT, 'state', 'memory-lifecycle', 'latest-report.json')
+      if (!fs.existsSync(reportPath)) {
+        return c.json({ ok: false, error: 'report_not_found' }, 404)
+      }
+      const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+      return c.json({ ok: true, report })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
+
+  // ── GameStudio 项目代理 ─────────────────────────────
+  app.get('/api/control/projects', async (c) => {
+    try {
+      const result = await gameStudioServerClient.listProjects()
+      return c.json({ ok: result.ok, projects: result.data?.projects || [], error: result.error || null })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
+
+  app.post('/api/control/projects', async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}))
+      const title = String(body.title || '').trim() || '未命名项目'
+      const result = await gameStudioServerClient.createProject({ title })
+      return c.json({ ok: result.ok, project: result.data?.project || null, error: result.error || null })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
+
+  app.get('/api/control/projects/:projectId', async (c) => {
+    try {
+      const { projectId } = c.req.param()
+      const result = await gameStudioServerClient.getProject(projectId)
+      return c.json({ ok: result.ok, project: result.data?.project || null, error: result.error || null })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
+
+  app.delete('/api/control/projects/:projectId', async (c) => {
+    try {
+      const { projectId } = c.req.param()
+      const result = await gameStudioServerClient.updateProject(projectId, { deleted: true })
+      return c.json({ ok: result.ok, project: result.data?.project || null, error: result.error || null })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
   })
 }

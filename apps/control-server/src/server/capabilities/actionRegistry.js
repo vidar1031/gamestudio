@@ -45,6 +45,25 @@ export const REASONING_ACTIONS = {
     description: '整理问题与证据，准备进入最终回答阶段。',
     paramsSpec: []
   },
+  meta_analysis: {
+    title: '系统元分析',
+    tool: REASONING_TOOLS['model.metaAnalysis'].tool,
+    category: 'planner',
+    description: '调用右脑 Kimi 模型对 Control 系统运行状态进行深度元分析，识别瓶颈、错误模式并提供优化建议。',
+    paramsSpec: [
+      'scope?: 分析范围，可选值：overview(全局概览) / sessions(会话统计) / errors(错误分析) / performance(性能瓶颈)，默认 overview。',
+      'sessionId?: 指定会话 ID，若提供则重点分析该会话。'
+    ]
+  },
+  supervision_evaluate: {
+    title: '监督评估',
+    tool: REASONING_TOOLS['model.supervisionEvaluate'].tool,
+    category: 'planner',
+    description: '由右脑对左脑任务执行质量进行全面监督评估，生成评分卡和修正建议，并判断哪些修正可自动执行、哪些需人工确认。',
+    paramsSpec: [
+      'trigger?: 触发来源，可选 post_startup(启动后) / periodic(周期性) / manual(人工触发)，默认 manual。'
+    ]
+  },
   generate_default_answer: {
     title: '生成最终回答',
     tool: REASONING_TOOLS['model.answer'].tool,
@@ -137,7 +156,7 @@ export const REASONING_ACTIONS = {
     category: 'invoke',
     description: '执行 scripts/lifecycle/ 下已预设的生命周期脚本（如 restart_control.sh），只允许白名单内的脚本。',
     paramsSpec: [
-      'scriptName: restart_control.sh | restart_server.sh | reporter.sh | openclaw_selfcheck.sh'
+      'scriptName: restart_control.sh | restart_server.sh | reporter.sh'
     ]
   },
   run_workspace_script: {
@@ -154,7 +173,7 @@ export const REASONING_ACTIONS = {
     tool: REASONING_TOOLS['gamestudio.bootstrap.ensureRunning'].tool,
     category: 'gamestudio-bootstrap',
     description: '确认 GameStudio Server/Editor 可用；服务未启动时调用白名单启动脚本。',
-    paramsSpec: ['startIfNeeded?: 是否在未运行时启动。', 'serverUrl?: Server URL。', 'editorUrl?: Editor URL。']
+    paramsSpec: ['startIfNeeded?: 是否在未运行时启动。', 'serverUrl?: Server URL。', 'editorUrl?: Editor URL。', 'comfyuiCheck?: 是否检测并自动启动 ComfyUI（默认 true）。']
   },
   gamestudio_open_editor: {
     title: '打开 GameStudio Editor',
@@ -182,7 +201,7 @@ export const REASONING_ACTIONS = {
     tool: REASONING_TOOLS['gamestudio.bootstrap.selfCheck'].tool,
     category: 'gamestudio-bootstrap',
     description: '调用 health、settings、diagnose 和 image preflight，并把结果反馈给 Control artifacts。',
-    paramsSpec: ['imagePreflight?: 是否执行图片 preflight。', 'timeoutMs?: 自检超时时间。']
+    paramsSpec: ['imagePreflight?: 是否执行图片 preflight。', 'ensureComfyUi?: 是否在 preflight 前确保 ComfyUI 运行（默认 true）。', 'timeoutMs?: 自检超时时间。']
   },
   gamestudio_bootstrap_answer: {
     title: '汇总 GameStudio 打开结果',
@@ -323,6 +342,76 @@ export const REASONING_ACTIONS = {
     category: 'story-workflow',
     description: '调用 GameStudio Server 导出 H5，并返回 distUrl 与本地产物证据。',
     paramsSpec: ['projectId?: 项目标识。']
+  },
+  web_search: {
+    title: '搜索网页',
+    tool: REASONING_TOOLS['web.search'].tool,
+    category: 'web',
+    description: '使用搜索引擎查询网络信息，返回标题、链接和摘要列表。',
+    paramsSpec: ['query: 搜索关键词。', 'limit?: 返回结果数量（1-20，默认 5）。']
+  },
+  web_extract: {
+    title: '提取网页内容',
+    tool: REASONING_TOOLS['web.extract'].tool,
+    category: 'web',
+    description: '提取指定网页或 PDF 的文本内容，用于获取外部文档、API 参考或技术方案。',
+    paramsSpec: ['urls: 要提取的 URL 列表（最多 5 个）。']
+  },
+  shell_execute: {
+    title: '执行 Shell 命令',
+    tool: REASONING_TOOLS['shell.execute'].tool,
+    category: 'invoke',
+    description: '在工作区内执行 shell 命令，支持 npm test、git status、tsc、ls、cat 等常用命令。',
+    paramsSpec: ['command: 要执行的 shell 命令字符串。', 'timeoutMs?: 超时时间（默认 30000ms）。']
+  },
+  vision_analyze: {
+    title: '分析图片',
+    tool: REASONING_TOOLS['vision.analyze'].tool,
+    category: 'vision',
+    description: '使用视觉模型分析图片（本地路径或 URL），回答关于图片内容的问题。',
+    paramsSpec: ['imagePath: 图片本地路径或 URL。', 'question?: 关于图片的具体问题（默认"描述这张图片"）。']
+  },
+  git_status: {
+    title: 'Git 状态',
+    tool: REASONING_TOOLS['git.status'].tool,
+    category: 'git',
+    description: '查看当前 Git 工作区的修改状态。',
+    paramsSpec: []
+  },
+  git_diff: {
+    title: 'Git 差异',
+    tool: REASONING_TOOLS['git.diff'].tool,
+    category: 'git',
+    description: '查看 Git 修改差异。',
+    paramsSpec: ['filePath?: 指定文件路径，默认查看全部差异。']
+  },
+  git_log: {
+    title: 'Git 日志',
+    tool: REASONING_TOOLS['git.log'].tool,
+    category: 'git',
+    description: '查看 Git 提交历史。',
+    paramsSpec: ['maxCount?: 最大返回提交数（默认 10）。']
+  },
+  git_branch: {
+    title: 'Git 分支',
+    tool: REASONING_TOOLS['git.branch'].tool,
+    category: 'git',
+    description: '查看当前 Git 分支列表。',
+    paramsSpec: []
+  },
+  test_run: {
+    title: '运行测试',
+    tool: REASONING_TOOLS['test.run'].tool,
+    category: 'test',
+    description: '运行项目测试（npm test / pytest / jest 等），返回测试结果摘要。',
+    paramsSpec: ['command?: 测试命令（默认自动检测：npm test / pytest / jest）。', 'timeoutMs?: 超时时间（默认 60000）。']
+  },
+  mcp_call: {
+    title: '调用 MCP 工具',
+    tool: REASONING_TOOLS['mcp.call'].tool,
+    category: 'mcp',
+    description: '调用已配置的 MCP（Model Context Protocol）外部工具，如数据库查询、API 调用等。',
+    paramsSpec: ['serverName: MCP 服务器名称。', 'toolName: 要调用的工具名称。', 'args?: 工具参数对象。']
   }
 }
 
@@ -345,6 +434,7 @@ export const REASONING_STORY_WORKFLOW_ACTION_NAMES = [
   'story_create_asset_plan',
   'story_generate_lock_asset_references',
   'story_lock_test',
+  'story_render_scene',
   'story_generate_asset_candidate',
   'story_validate_project',
   'story_export_project'
@@ -370,6 +460,7 @@ export const REASONING_STORY_MUTATION_ACTION_NAMES = [
   'story_create_asset_plan',
   'story_generate_lock_asset_references',
   'story_lock_test',
+  'story_render_scene',
   'story_generate_asset_candidate',
   'story_export_project'
 ]
@@ -393,7 +484,7 @@ export function isReasoningWriteAction(action) {
 }
 
 export function isReasoningInvokeAction(action) {
-  return action === 'run_lifecycle_script' || action === 'run_workspace_script'
+  return action === 'run_lifecycle_script' || action === 'run_workspace_script' || action === 'shell_execute'
 }
 
 export function isReasoningAnswerAction(action) {

@@ -38,6 +38,7 @@ function inferToolForStoryAction(action) {
   if (action === 'story_generate_lock_asset_references') return 'gamestudio.story.generateLockAssetReferences'
   if (action === 'story_generate_asset_candidate') return 'gamestudio.story.generateAssetCandidate'
   if (action === 'story_lock_test') return 'gamestudio.story.lockTest'
+  if (action === 'story_render_scene') return 'gamestudio.story.renderScene'
   return `gamestudio.${action}`
 }
 
@@ -138,6 +139,35 @@ function appendPreComposeImagePreflight(add, { projectId }) {
   })
 }
 
+function appendP1AssetSteps(add, { projectId }) {
+  add('step_story_create_asset_plan', '基于 Story Bible 创建资产计划', 'story_create_asset_plan', {
+    projectId,
+    rebuild: false,
+    source: 'control_production_delivery'
+  })
+  add('step_story_preflight_image_provider', '检查图片 Provider 生产前置条件', 'story_preflight_image_provider', {
+    projectId,
+    mode: 'storyboard',
+    timeoutMs: 15000
+  })
+  add('step_story_generate_lock_asset_references', '绘制锁定事物参考图', 'story_generate_lock_asset_references', {
+    projectId,
+    maxAssets: 8,
+    batchSize: 1,
+    style: 'picture_book',
+    timeoutMs: 300000,
+    source: 'control_production_delivery'
+  })
+  add('step_story_render_scene', '渲染首个故事场景图', 'story_render_scene', {
+    projectId,
+    width: 768,
+    height: 1024,
+    timeoutMs: 300000
+  })
+  add('step_story_validate_project', '校验锁定资产引用和项目结构', 'story_validate_project', { projectId })
+  add('step_story_export_project', '重新导出带资产的互动故事项目', 'story_export_project', { projectId })
+}
+
 export function buildStoryWorkflowPlan(userPrompt) {
   const prompt = normalizePrompt(userPrompt)
   const projectId = extractProjectIdFromPrompt(prompt)
@@ -152,7 +182,8 @@ export function buildStoryWorkflowPlan(userPrompt) {
   }
 
   const referencesCreateOutcome = /创建.*失败|如果创建失败/i.test(prompt)
-  const wantsCreate = !referencesCreateOutcome && /创建|新建|制作|产出|create/i.test(prompt) && /故事|互动故事|项目|story/i.test(prompt)
+  const wantsProductionDelivery = /生产交付|完整交付|端到端交付|生产级|补齐.*生产|补齐.*交付|全链路交付/i.test(prompt)
+  const wantsCreate = !wantsProductionDelivery && !referencesCreateOutcome && /创建|新建|制作|产出|create/i.test(prompt) && /故事|互动故事|项目|story/i.test(prompt)
   const wantsReadConfig = /读取项目配置|确认写入|配置.*一致/i.test(prompt)
   const wantsConfig = !wantsReadConfig && /配置|生成配置|题材|风格|目标受众|输出语言|configure/i.test(prompt)
   const wantsConfigFailureAnalysis = wantsConfig && /如果.*(?:不能|失败)|还不能.*落盘|配置.*(?:不能|失败)|落盘.*(?:不能|失败)/i.test(prompt)
@@ -194,6 +225,18 @@ export function buildStoryWorkflowPlan(userPrompt) {
     return {
       planId: createPlanId(),
       goal: '通过 Control 托管 GameStudio AI 创建故事、蓝图智能体评审、必要修复和合成校验',
+      strategy: 'sequential',
+      steps
+    }
+  }
+
+  if (wantsProductionDelivery) {
+    appendFullP0Steps(add, { projectId, title, config, prompt })
+    appendP1AssetSteps(add, { projectId })
+    appendAnswerStep(steps)
+    return {
+      planId: createPlanId(),
+      goal: '执行 Control + Hermes/OMLX + GameStudio Server 的 P0 文本 + P1 图片资产完整生产交付闭环',
       strategy: 'sequential',
       steps
     }

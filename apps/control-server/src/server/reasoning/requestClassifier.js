@@ -44,12 +44,16 @@ export function shouldAskModelForRequestDecision(decision, options = {}) {
   if (!decision) return false
   if (options.contextSelection?.productionTest && !options.contextSelection?.requireModelAnswer && !options.contextSelection?.requireHermesModelAnswer) return false
   if (decision.deterministicPlan) return false
+  // 硬性规则：故事工作流和 bootstrap 不询问模型，规则表匹配即最终判定
   if (decision.type === 'story_workflow_execute') return false
+  if (decision.type === 'gamestudio_bootstrap_execute') return false
+  // 规则表明确匹配（非 fallback）的高置信度分类，不询问模型
+  if (decision.confidence >= 0.96 && decision.ruleId && !decision.modelDecision) return false
   return true
 }
 
 export function shouldUseDeterministicPlanForDecision(decision) {
-  return Boolean(decision?.deterministicPlan)
+  return Boolean(decision?.deterministicPlan) || decision?.type === 'answer_only'
 }
 
 export function buildReasoningRequestDecisionMessages(userPrompt, options = {}) {

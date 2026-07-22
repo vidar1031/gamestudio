@@ -705,6 +705,16 @@ export function registerConfigRoutes(app, context) {
     const body = await c.req.json().catch(() => ({}))
     const nextConfig = mergeHermesControlConfig(current, body)
 
+    if (typeof nextConfig.model !== 'string' || !String(nextConfig.model).trim()) {
+      return c.json({ ok: false, error: 'invalid_model', detail: 'model 必须是字符串且不能为空。' }, 400)
+    }
+    if (typeof nextConfig.provider !== 'string' || !String(nextConfig.provider).trim()) {
+      return c.json({ ok: false, error: 'invalid_provider', detail: 'provider 必须是字符串且不能为空。' }, 400)
+    }
+    if (typeof nextConfig.baseUrl !== 'string' || !String(nextConfig.baseUrl).trim()) {
+      return c.json({ ok: false, error: 'invalid_base_url', detail: 'baseUrl 必须是字符串且不能为空。' }, 400)
+    }
+
     setHermesControlConfig(nextConfig)
     const binding = buildHermesBindingFromConfig(nextConfig)
     const state = updateHermesControlState({
@@ -725,7 +735,8 @@ export function registerConfigRoutes(app, context) {
       }
     })
 
-    appendHermesLog(`[CONFIG][SAVE] model=${nextConfig.model || 'unknown'} provider=${nextConfig.provider || 'unknown'}`)
+    const rb = nextConfig.brains?.rightBrain
+    appendHermesLog(`[CONFIG][SAVE] model=${nextConfig.model || 'unknown'} provider=${nextConfig.provider || 'unknown'} rightBrainEnabled=${nextConfig.brains?.rightBrainEnabled || false} rightBrainProvider=${rb?.provider || '-'} rightBrainModel=${rb?.model || '-'} rightBrainApiKeyPresent=${Boolean(rb?.apiKey)}`)
 
     return c.json({
       ok: true,

@@ -140,7 +140,7 @@ export const REASONING_TOOLS = {
     category: 'gamestudio-bootstrap',
     executionMode: 'deterministic',
     reviewPolicy: 'auto',
-    description: '确认 GameStudio Server/Editor 可用；服务未启动时调用白名单启动脚本 start_project.sh --detached。',
+    description: '确认 GameStudio Server/Editor 可用；服务未启动时调用白名单启动脚本 start_project.sh --detached。若 image provider 为 comfyui，还会自动检测并启动 ComfyUI。',
     routes: ['internal:gamestudio/bootstrap.ensureRunning']
   },
   'gamestudio.bootstrap.openEditor': {
@@ -341,6 +341,15 @@ export const REASONING_TOOLS = {
     description: '通过 ComfyUI SDXL 对故事资产计划中的目标事物执行锁定出图测试，验证 checkpoint/LoRA/IP-Adapter 组合可用性。',
     routes: ['internal:gamestudio/projects.story.lock.test']
   },
+  'gamestudio.story.renderScene': {
+    tool: 'gamestudio.story.renderScene',
+    title: '渲染故事场景图',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '调用 GameStudio Server 对指定 scene 执行场景图渲染，使用已锁定的 reference assets 保证角色/道具/地点一致性。',
+    routes: ['internal:gamestudio/projects.story.scenes.render']
+  },
   'gamestudio.story.validateProject': {
     tool: 'gamestudio.story.validateProject',
     title: '校验互动故事项目',
@@ -367,6 +376,114 @@ export const REASONING_TOOLS = {
     reviewPolicy: 'auto',
     description: '结合上下文规划后续动作。',
     routes: ['internal:reasoning/planner.default']
+  },
+  'web.search': {
+    tool: 'web.search',
+    title: '搜索网页',
+    category: 'web',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '使用 Tavily 或 Brave Search 搜索网页，返回标题、URL 和摘要。',
+    routes: ['internal:web/search']
+  },
+  'web.extract': {
+    tool: 'web.extract',
+    title: '提取网页内容',
+    category: 'web',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '提取指定网页或 PDF 的文本内容，返回 Markdown 或纯文本。',
+    routes: ['internal:web/extract']
+  },
+  'shell.execute': {
+    tool: 'shell.execute',
+    title: '执行 Shell 命令',
+    category: 'invoke',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '在工作区内执行 shell 命令（如 npm test、git status、tsc 等），必须人工审核后执行。',
+    routes: ['internal:shell/execute']
+  },
+  'vision.analyze': {
+    tool: 'vision.analyze',
+    title: '分析图片',
+    category: 'vision',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'auto',
+    description: '使用视觉模型分析图片内容（本地路径或 URL），回答关于图片的具体问题。',
+    routes: ['internal:vision/analyze']
+  },
+  'git.status': {
+    tool: 'git.status',
+    title: 'Git 状态',
+    category: 'git',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '执行 git status 查看当前工作区的修改状态。',
+    routes: ['internal:git/status']
+  },
+  'git.diff': {
+    tool: 'git.diff',
+    title: 'Git 差异',
+    category: 'git',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '执行 git diff 查看修改差异，可指定文件或范围。',
+    routes: ['internal:git/diff']
+  },
+  'git.log': {
+    tool: 'git.log',
+    title: 'Git 日志',
+    category: 'git',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '执行 git log 查看提交历史，可指定行数。',
+    routes: ['internal:git/log']
+  },
+  'git.branch': {
+    tool: 'git.branch',
+    title: 'Git 分支',
+    category: 'git',
+    executionMode: 'deterministic',
+    reviewPolicy: 'auto',
+    description: '执行 git branch 查看当前分支列表。',
+    routes: ['internal:git/branch']
+  },
+  'test.run': {
+    tool: 'test.run',
+    title: '运行测试',
+    category: 'test',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '运行项目测试命令（如 npm test、pytest 等），解析并返回测试结果。',
+    routes: ['internal:test/run']
+  },
+  'mcp.call': {
+    tool: 'mcp.call',
+    title: '调用 MCP 工具',
+    category: 'mcp',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '调用已配置的 MCP（Model Context Protocol）外部工具。需要先在 config/hermes/mcp.json 中配置服务器。',
+    routes: ['internal:mcp/call']
+  },
+  'model.metaAnalysis': {
+    tool: 'model.metaAnalysis',
+    title: '系统元分析',
+    category: 'planner',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'auto',
+    description: '调用右脑 Kimi 模型对 Control 系统运行状态进行元分析，聚合日志、session 统计、失败模式等数据，并给出优化建议。',
+    routes: ['internal:reasoning/model.metaAnalysis']
+  },
+  'model.supervisionEvaluate': {
+    tool: 'model.supervisionEvaluate',
+    title: '监督评估',
+    category: 'planner',
+    executionMode: 'model-assisted',
+    reviewPolicy: 'auto',
+    description: '调用右脑 Kimi 模型对左脑任务执行质量进行监督评估，生成评分卡和可执行的修正指令。',
+    routes: ['internal:reasoning/model.supervisionEvaluate']
   },
   'model.answer': {
     tool: 'model.answer',

@@ -20,11 +20,11 @@ const RULE_TABLE_PATH = path.join(HERMES_CONFIG_ROOT, 'routing', 'request_classi
 
 const WRITE_OR_INVOKE_PATTERN = /写入|修改|编辑|删除|重命名|落盘|应用修改|执行脚本|运行脚本|重启|启动|停止|恢复|暂停|调用接口|run script|execute script|restart|start|stop|delete|rename|edit|write/i
 const WRITE_OR_INVOKE_NEGATIVE_PATTERN = /是否|为什么|解释|说明|检查|分析|能否|可否/i
-const STORY_WORKFLOW_PATTERN = /创建.*故事|新建.*故事|生成.*故事|故事项目|互动故事|项目配置|生成配置|配置.*落盘|生成结果|生成失败|写回|导出失败|导出成功|项目目录|导出产物|结构校验|资源引用|项目执行|interactive story|story workflow|大纲|脚本|分镜|资产|出图|导出项目|export project|validate project|锁定测试|事物锁定测试|锁定.*事物|事物.*锁定|lock.?test|lock_test/i
-const STORY_WORKFLOW_ACTION_PATTERN = /创建|新建|生成|配置|写入|读取|检查|确认|说明|校验|验证|导出|制作|产出|转换|转成|构建|执行|运行|测试|create|generate|configure|validate|export|convert|build|execute|run|test/i
+const STORY_WORKFLOW_PATTERN = /创建.*故事|新建.*故事|生成.*故事|生产.*故事|故事项目|互动故事|项目配置|生成配置|配置.*落盘|生成结果|生成失败|写回|导出失败|导出成功|项目目录|导出产物|结构校验|资源引用|项目执行|interactive story|story workflow|一口气|完整.*故事|故事.*闭环|大纲|脚本|分镜|资产|出图|导出项目|export project|validate project|锁定测试|事物锁定测试|锁定.*事物|事物.*锁定|lock.?test|lock_test/i
+const STORY_WORKFLOW_ACTION_PATTERN = /创建|新建|生成|生产|配置|写入|读取|检查|确认|说明|校验|验证|导出|制作|产出|转换|转成|构建|执行|运行|测试|create|generate|produce|configure|validate|export|convert|build|execute|run|test/i
 const GAMESTUDIO_BOOTSTRAP_PATTERN = /(?:gamestudio|game studio|游戏工作室).*(?:启动|打开|界面|工作台|editor|workbench|ai[-_\s]?create[-_\s]?story|自检|检查|配置|comfyui|本地模型|local model|diagnose|preflight|bootstrap|settings)|(?:启动|打开|open|launch|自检|配置).*(?:gamestudio|game studio|游戏工作室)/i
 const CONTEXTUAL_PLAN_PATTERN = /继续|接着|按照|基于|根据|上面|之前|刚才|这个设计|这套方案|实施|推进|修复|落地|同步文档|计划|规划|方案|检查|分析/i
-const ANSWER_ONLY_PATTERN = /是什么|为什么|解释|说明|区别|含义|原理|建议|是否合理|会不会有问题|对不对|what|why|explain|suggest|reasonable/i
+const ANSWER_ONLY_PATTERN = /是什么|为什么|解释|说明|区别|含义|原理|建议|是否合理|会不会有问题|对不对|what|why|explain|suggest|reasonable|^在吗|^(hi|hello|hey|hiya)\b|^你好|^您好|^早上好|^下午好|^晚上好/i
 
 function normalizePrompt(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
