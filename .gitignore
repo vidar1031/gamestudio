@@ -28,3 +28,11 @@ monitor/
 .qwen/
 .hermes/
 .openclaw/*.plist
+
+# Agent runtime event logs / chat history snapshots (session data, not source)
+/agent-runtime.*
+/hermes-runtime.*
+/supervision.*
+ai/chat/
+ai/memory/20*.md
+/memory/
