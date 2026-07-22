@@ -68,6 +68,49 @@
 - **禁止在 `ai/memory/` 下创建按日期的日志文件（如 `2026-05-18.md`）**；当日进展直接更新 `STATUS.md`，详细过程进入 `state/` 或测试 artifacts
 - 当多步骤执行改变了项目状态、流程规则或当前主线时，必须在最终回答前同步上述记忆文件，而不是只更新聊天历史。
 
+## 硬性生产规则（不可被模型覆盖）
+
+以下规则是 GameStudio 交互故事生产系统的核心契约，**无论本地模型分类结果如何，必须通过确定性规则强制执行**：
+
+### 1. Control → GameStudio 交互契约
+- Control 是所有故事生产操作的**唯一入口**。
+- 任何涉及 `创建故事`、`生成脚本`、`编译蓝图`、`导出项目` 的操作，必须走 Control 的 `agent-runtime-sessions` 或 reasoning 链路。
+- 禁止绕过 Control 直接调用 GameStudio Server API 进行故事生产。
+
+### 2. 故事生产工作流强制规则
+- 用户输入包含以下关键词时，**强制**走 `story_workflow_execute` 完整 P0 链路（13 步），不依赖模型判断：
+  - 创建/新建/生成/生产 + 故事
+  - 一口气 + 故事
+  - 完整/闭环 + 故事
+  - 互动故事、故事项目
+  - 大纲、脚本、分镜、资产、出图
+  - interactive story、story workflow
+- 完整 P0 链路必须包含以下步骤（不可跳过）：
+  1. `story_create_project` — 创建项目
+  2. `story_configure_project` — 写入配置
+  3. `story_generate_scripts_candidate` — 生成脚本候选
+  4. `story_write_scripts` — 写入脚本
+  5. `story_create_bible` — 生成 Story Bible
+  6. `story_compile_blueprint` — 编译蓝图
+  7. `story_review_blueprint_agent` — 蓝图评审
+  8. `story_repair_blueprint_if_needed` — 修复蓝图
+  9. `story_preflight_image_provider` — 图片预检
+  10. `story_compile_compose` — 编译合成
+  11. `story_validate_project` — 项目校验
+  12. `story_export_project` — 导出项目
+  13. `generate_default_answer` — 生成最终回答
+
+### 3. 本地模型能力不足时的兜底策略
+- 当本地模型（OMLX）分类错误或生成质量不达标时：
+  - 分类层优先使用**规则表关键词匹配**，不依赖模型判断。
+  - 故事脚本生成若出现截断、乱码、结构错误，必须触发重试或降级策略。
+  - 蓝图编译失败时，必须返回具体错误信息，不能静默跳过。
+
+### 4. 测试与验收规则
+- 所有功能测试必须通过 Control Console 聊天窗口驱动，在 UI 中可观测、可追踪。
+- S0（系统启动）→ L1（交互测试）→ L4（文本闭环）→ P1（图片资产）阶段必须依次通过。
+- 前一阶段未通过，不得进入下一阶段。
+
 ## 响应规则
 
 - 默认中文。

@@ -87,7 +87,7 @@ apps/control-console/src/
 ### 3.3 核心层
 
 - `apps/control-server/src/server/agentDefinitions.js`
-  - 当前静态 agent 定义，至少包含 `hermes-manager` 与 `openclaw`。
+  - 当前静态 agent 定义，仅包含 `hermes-manager`（`openclaw-manager` 已移除）。
 - `apps/control-server/src/server/controlServerCore.js`
   - 当前仍是主要规则与状态实现所在文件。
   - 已经从“单入口文件”退化为“核心实现模块”，不再承担启动装配职责。
@@ -143,7 +143,7 @@ apps/control-console/src/
 当前控制后端已稳定承载以下能力：
 
 - 健康检查与 control 概览
-- Hermes / OpenClaw agent 资源暴露
+- Hermes agent 资源暴露
 - Hermes lifecycle 控制
 - 左脑配置读取、保存、readiness、自检、workflow diagnostics
 - 本地模型目录获取与 inspection

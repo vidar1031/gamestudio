@@ -259,12 +259,12 @@ Control 的最终职责不是“自己生产成功”，而是基于 GameStudio 
 
 ### 9.1 服务就绪检查
 
-- [ ] OMLX (`:18888`) 健康检查通过：`curl http://127.0.0.1:18888/health`
-- [ ] OMLX 模型列表可获取：`curl http://127.0.0.1:18888/v1/models`
-- [ ] GameStudio Server (`:1999`) 健康检查通过：`curl http://127.0.0.1:1999/api/health`
-- [ ] Control Server (`:2099`) 健康检查通过：`curl http://127.0.0.1:2099/api/health`
-- [ ] Control Console (`:8870`) 可访问：`curl http://127.0.0.1:8870`
-- [ ] Hermes Gateway (`:8742`) API 就绪：`curl http://127.0.0.1:8742/v1/models`
+- [x] OMLX (`:18888`) 健康检查通过：`curl http://127.0.0.1:18888/health`
+- [x] OMLX 模型列表可获取：`curl http://127.0.0.1:18888/v1/models`
+- [x] GameStudio Server (`:1999`) 健康检查通过：`curl http://127.0.0.1:1999/api/health`
+- [x] Control Server (`:2099`) 健康检查通过：`curl http://127.0.0.1:2099/api/health`
+- [x] Control Console (`:8870`) 可访问：`curl http://127.0.0.1:8870`
+- [x] Hermes Gateway (`:8742`) API 就绪：`curl http://127.0.0.1:8742/v1/models`
 
 ### 9.2 配置检查
 
