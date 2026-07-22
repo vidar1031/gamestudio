@@ -17,8 +17,32 @@ export function getAgents() {
   return fetch('/api/control/agents')
 }
 
+export function getAgent(agentId: string) {
+  return fetch(`/api/control/agents/${agentId}`)
+}
+
 export function getAgentLogs(agentId: string) {
   return fetch(`/api/control/agents/${agentId}/logs`)
+}
+
+export function getAgentContract(agentId: string) {
+  return fetch(`/api/control/agents/${agentId}/contract`)
+}
+
+export function getAgentStartupProfile(agentId: string) {
+  return fetch(`/api/control/agents/${agentId}/startup-profile`)
+}
+
+export function getAgentStartupFlow(agentId: string) {
+  return fetch(`/api/control/agents/${agentId}/startup-flow`)
+}
+
+export function getAgentNextAction(agentId: string) {
+  return fetch(`/api/control/agents/${agentId}/next-action`)
+}
+
+export function getAgentWorkflowDiagnostics(agentId: string) {
+  return fetch(`/api/control/agents/${agentId}/workflow-diagnostics`)
 }
 
 export function getRuntimeStatus(agentId: string) {
@@ -103,4 +127,44 @@ export function runModelAction(action: 'load' | 'unload', body: unknown) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   })
+}
+
+export function getOverview() {
+  return fetch('/api/control/overview')
+}
+
+export function getBootstrap() {
+  return fetch('/api/control/bootstrap')
+}
+
+export function runMemoryLifecycleMaintenance(agentId: string, body: unknown = {}) {
+  return fetch(`/api/control/agents/${agentId}/memory-lifecycle/maintenance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+}
+
+export function getMemoryLifecycleReport(agentId: string) {
+  return fetch(`/api/control/agents/${agentId}/memory-lifecycle/report`)
+}
+
+export function triggerSupervision(body: unknown = {}) {
+  return fetch('/api/control/supervision/trigger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+}
+
+export function recoverReasoningSession(agentId: string, sessionId: string) {
+  return fetch(`/api/control/agents/${agentId}/reasoning-sessions/${sessionId}/recover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+}
+
+export function getStructuredLogs(prefix: string, lines = 100) {
+  return fetch(`/api/control/logs/${encodeURIComponent(prefix)}?${buildQuery({ lines })}`)
 }

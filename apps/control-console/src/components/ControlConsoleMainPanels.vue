@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, unref } from 'vue'
+import { computed, onMounted, unref } from 'vue'
 import { Codemirror } from 'vue-codemirror'
 import { renderChatMessage } from '../lib/chatMarkdown'
 import ControlConsoleSkillProposalsPanel from './ControlConsoleSkillProposalsPanel.vue'
@@ -78,6 +78,7 @@ const {
   handleProviderChange,
   healthError,
   inspectingLeft,
+  inspectSelectedModel,
   leftBrain,
   leftBrainBlockedReason,
   leftBrainConfigSaved,
@@ -143,6 +144,12 @@ const {
   reasoningTimelineRef,
   reviewModeLabel,
   rightBrain,
+  rightBrainEnabled,
+  rightBrainSummary,
+  rightBrainConfigSaved,
+  rightError,
+  fetchingRight,
+  inspectingRight,
   rightInspection,
   runLeftBrainPreflight,
   switchLeftBrainModel,
@@ -194,7 +201,20 @@ const {
   smartStartHermes,
   smartStartBusy,
   smartStartMessage,
+  startOmlxApp,
+  omlxStartBusy,
+  omlxStartMessage,
+  versions,
+  loadVersions,
+  supervisionResult,
+  supervisionLoading,
+  loadSupervisionResult,
 } = useControlConsoleAppContext<any>()
+
+onMounted(() => {
+  loadVersions()
+  loadSupervisionResult()
+})
 
 function memoryRecordsByScope(scope: string) {
   const records = unref(memoryRecords)
@@ -311,37 +331,64 @@ function getWorkflowPhaseTone(status: string) {
     <details class="panel" open style="margin-bottom: 16px; border: 1px solid #444;">
       <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,200,255,0.1)">
         <div style="display: flex; flex: 1; min-width: 0; align-items: center; gap: 12px; flex-wrap: wrap;">
-          <div class="panel-title" style="flex: 0 0 auto;">🧠 引擎配置 (Brain Configuration)</div>
+          <div class="panel-title" style="flex: 0 0 auto;">🧠 引擎配置</div>
           <div style="display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 12px; color: var(--c-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-wrap: wrap;">
-            <span>运行模型: {{ leftBrainSummary.modelLabel }}</span>
-            <span :style="{ color: leftBrainConfigSaved ? 'var(--c-success-dim)' : 'var(--c-error-dim)' }">{{ leftBrainConfigSaved ? '已保存左脑配置' : '未保存左脑配置' }}</span>
-            <span :style="{ color: leftBrainSummary.statusLabel === '已启动' ? 'var(--c-success-dim)' : 'var(--c-error-dim)' }">{{ leftBrainSummary.statusLabel }}</span>
+            <span>左脑 {{ leftBrainSummary.modelLabel }}</span>
+            <span :style="{ color: leftBrainRunning ? 'var(--c-success-dim)' : 'var(--c-error-dim)' }">{{ leftBrainRunning ? '🟢 运行中' : '🔴 已停止' }}</span>
+            <span style="color: var(--c-text-muted);">|</span>
+            <span>右脑 {{ rightBrainSummary.modelLabel }}</span>
+            <span v-if="rightBrainEnabled" :style="{ color: rightInspection?.accessible ? 'var(--c-success-dim)' : 'var(--c-error-dim)' }">{{ rightInspection?.accessible ? '🟢 已连接' : '🔴 未连接' }}</span>
+            <span v-else style="color: var(--c-text-muted);">⚪ 未启用</span>
+            <span style="color: var(--c-text-muted);">|</span>
+            <span style="color: var(--c-text-muted); font-size: 11px;">Hermes v{{ versions.hermesVersion }}</span>
+            <span v-if="versions.omlxVersion" :style="{ color: versions.omlxServiceHealthy ? 'var(--c-success-dim)' : 'var(--c-error-dim)', fontSize: '11px' }">· {{ versions.omlxServiceHealthy ? '🟢' : '🔴' }} OMLX v{{ versions.omlxVersion }}</span>
           </div>
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button class="action-btn outline" :disabled="preflightBusy || memoryConfigBusy || configSaving || smartStartBusy" @click.stop="runLeftBrainPreflight" style="padding: 2px 10px; font-size: 12px;" title="只跑左脑配置自检（OMLX / Ollama 连通、模型加载、记忆/技能配置等），不启动 runtime。">
-            {{ preflightBusy ? '自检中...' : '🔎 自检' }}
-          </button>
+          <!-- 未启动时：一键启动 + 启动 OMLX -->
           <button
+            v-if="!leftBrainRunning"
             class="action-btn"
-            :disabled="runtimeBusy || memoryConfigBusy || configSaving || smartStartBusy || leftBrainRunning"
+            :disabled="runtimeBusy || memoryConfigBusy || configSaving || smartStartBusy"
             @click.stop="smartStartHermes"
             style="padding: 2px 10px; font-size: 12px; background: var(--c-success-dim, #2f9e44); color: #fff;"
-            title="一键串起：保存左脑配置 → 运行自检 → 启动 Hermes。等价于按顺序点「保存」+「自检」+「启动 Hermes」。"
+            title="一键串起：保存左脑配置 → 运行自检 → 启动 Hermes → 探测右脑。"
           >
-            {{ smartStartBusy ? '一键启动中...' : '⚡ 一键启动 (保存→自检→启动)' }}
+            {{ smartStartBusy ? '一键启动中...' : '⚡ 一键启动' }}
           </button>
-          <button class="action-btn" :disabled="runtimeBusy || memoryConfigBusy || configSaving || smartStartBusy" @click.stop="toggleHermesRuntime('left')" style="padding: 2px 10px; font-size: 12px;" title="启动 / 停止 Hermes runtime（即左脑进程）。与顶部「启动 Hermes（左脑）」是同一个动作。">
-            {{ runtimeBusy ? '处理中...' : (leftBrainRunning ? '🔴 停止 Hermes' : '🚀 启动 Hermes (应用此配置)') }}
+          <!-- 已启动时：停止 Hermes -->
+          <button
+            v-if="leftBrainRunning"
+            class="action-btn"
+            :disabled="runtimeBusy || memoryConfigBusy || configSaving || smartStartBusy"
+            @click.stop="toggleHermesRuntime('left')"
+            style="padding: 2px 10px; font-size: 12px; background: rgba(255,80,80,0.2); border-color: rgba(255,80,80,0.5); color: var(--c-error-dim);"
+            title="停止 Hermes runtime（左脑进程）。"
+          >
+            {{ runtimeBusy ? '处理中...' : '🔴 停止 Hermes' }}
           </button>
         </div>
       </summary>
       <div class="panel-content" style="padding: 0;">
         <div v-if="smartStartMessage" :style="{ padding: '6px 12px', fontSize: '12px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(94,204,255,0.08)', color: 'var(--c-accent)' }">{{ smartStartMessage }}</div>
+
+        <!-- 监督评估状态条 -->
+        <div v-if="supervisionLoading" :style="{ padding: '6px 12px', fontSize: '12px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(246,201,78,0.08)', color: 'var(--c-warn)' }">
+          <span>🔮</span> 右脑监督中：正在评估左脑执行质量...
+        </div>
+        <div v-else-if="supervisionResult?.hasData && supervisionResult.scorecard" :style="{ padding: '6px 12px', fontSize: '12px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: supervisionResult.scorecard.overallStatus === 'excellent' || supervisionResult.scorecard.overallStatus === 'passed' ? 'rgba(77,214,140,0.08)' : 'rgba(246,201,78,0.08)', color: supervisionResult.scorecard.overallStatus === 'excellent' || supervisionResult.scorecard.overallStatus === 'passed' ? 'var(--c-success-dim)' : 'var(--c-warn)' }">
+          <span>{{ supervisionResult.scorecard.overallStatus === 'excellent' || supervisionResult.scorecard.overallStatus === 'passed' ? '✅' : '⚠️' }}</span>
+          左脑评估：{{ supervisionResult.scorecard.overallScore }} 分（{{ supervisionResult.scorecard.overallStatus === 'excellent' ? '优秀' : supervisionResult.scorecard.overallStatus === 'passed' ? '通过' : supervisionResult.scorecard.overallStatus === 'needs_improvement' ? '需改进' : '严重' }}）
+          <span v-if="supervisionResult.scorecard.categories" style="margin-left: 8px; opacity: 0.8;">
+            {{ supervisionResult.scorecard.categories.filter((c: any) => c.status !== 'passed').length }} 项待修正
+          </span>
+          <button @click="loadSupervisionResult" :style="{ marginLeft: '10px', fontSize: '11px', padding: '2px 8px', cursor: 'pointer', background: 'transparent', border: '1px solid currentColor', borderRadius: '4px', color: 'inherit' }">刷新</button>
+        </div>
+
         <!-- Tab switcher -->
         <div style="display: flex; border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.18);">
           <button @click="brainActiveTab = 'left'" :style="{ padding: '8px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', background: 'transparent', border: 'none', borderBottom: brainActiveTab === 'left' ? '2px solid var(--c-accent)' : '2px solid transparent', color: brainActiveTab === 'left' ? 'var(--c-accent)' : 'var(--c-text-sub)' }">🧠 左脑</button>
-          <button @click="brainActiveTab = 'right'" :style="{ padding: '8px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', background: 'transparent', border: 'none', borderBottom: brainActiveTab === 'right' ? '2px solid var(--c-warn)' : '2px solid transparent', color: brainActiveTab === 'right' ? 'var(--c-warn)' : 'var(--c-text-sub)', opacity: 0.7 }">🔮 右脑 <span style="font-size: 11px; opacity: 0.7;">[未开放]</span></button>
+          <button @click="brainActiveTab = 'right'" :style="{ padding: '8px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', background: 'transparent', border: 'none', borderBottom: brainActiveTab === 'right' ? '2px solid var(--c-warn)' : '2px solid transparent', color: brainActiveTab === 'right' ? 'var(--c-warn)' : 'var(--c-text-sub)' }">🔮 右脑 <span v-if="!rightBrainEnabled" style="font-size: 11px; opacity: 0.7;">[未启用]</span></button>
         </div>
 
         <!-- Left Brain Tab -->
@@ -358,18 +405,52 @@ function getWorkflowPhaseTone(status: string) {
                 <label>服务地址</label>
                 <input type="text" v-model="leftBrain.baseUrl" />
               </div>
+              <div v-if="leftBrain.provider === 'omlx'" style="display: flex; flex-direction: column; gap: 4px;">
+                <label>&nbsp;</label>
+                <button
+                  v-if="!versions.omlxServiceHealthy"
+                  @click="startOmlxApp"
+                  :disabled="omlxStartBusy"
+                  :style="{ background: omlxStartBusy ? undefined : 'rgba(94,204,255,0.12)', borderColor: 'var(--c-accent)', color: 'var(--c-accent)', minWidth: '120px', padding: '6px 12px' }"
+                  title="启动本地 OMLX App（macOS）。OMLX 启动后会自动在 18888 端口提供模型服务。"
+                >
+                  {{ omlxStartBusy ? '启动中...' : '🚀 启动 OMLX' }}
+                </button>
+                <div
+                  v-else
+                  :style="{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--c-success-dim)', fontSize: '13px', minWidth: '120px', padding: '6px 12px', border: '1px solid rgba(77,214,140,0.3)', borderRadius: '4px', background: 'rgba(77,214,140,0.08)' }"
+                >
+                  <span>✅</span>
+                  <span>OMLX 已启动<span v-if="versions.omlxVersion"> v{{ versions.omlxVersion }}</span></span>
+                </div>
+              </div>
+              <div v-if="!leftBrainConfigSaved" style="display: flex; flex-direction: column; gap: 4px;">
+                <label>&nbsp;</label>
+                <button
+                  class="action-btn"
+                  @click="saveLeftBrainConfig"
+                  :disabled="configSaving || memoryConfigBusy || !memoryConfig"
+                  :style="{ background: 'rgba(94,204,255,0.18)', borderColor: 'var(--c-accent)', color: 'var(--c-accent)', minWidth: '100px', padding: '6px 12px' }"
+                  title="保存当前左脑配置（推理平台、服务地址、模型等）到控制服务器。"
+                >
+                  {{ configSaving ? '保存中...' : '💾 保存配置' }}
+                </button>
+              </div>
+            </div>
+            <div v-if="omlxStartMessage" :style="{ marginTop: '8px', fontSize: '12px', color: omlxStartMessage.includes('失败') || omlxStartMessage.includes('超时') || omlxStartMessage.includes('未找到') ? 'var(--c-error-dim)' : 'var(--c-success-dim)' }">
+              {{ omlxStartMessage }}
             </div>
             <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
               <label>运行模型</label>
-              <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
                 <select v-model="leftBrain.model" @change="handleModelChange('left')" style="flex: 1; min-width: 160px;">
                   <option value="">-- 请选择模型 --</option>
                   <option v-for="mod in availableLeftModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option>
                 </select>
                 <div style="display: flex; gap: 8px;">
                   <button @click="fetchLocalModels('left')" :disabled="fetchingLeft" :style="{ background: fetchingLeft ? undefined : 'rgba(94,204,255,0.12)', borderColor: 'var(--c-accent)', color: 'var(--c-accent)', minWidth: '56px' }">{{ fetchingLeft ? '刷新中...' : '🔄 刷新' }}</button>
-                  <button @click="actOnModel('left', 'load')" :disabled="!leftBrain.model || fetchingLeft || inspectingLeft || leftBrainSummary.statusLabel === '已启动'">➕加载</button>
-                  <button @click="actOnModel('left', 'unload')" :disabled="!leftBrain.model || fetchingLeft || inspectingLeft || leftBrainSummary.statusLabel !== '已启动'">➖卸载</button>
+                  <button @click="actOnModel('left', 'load')" :disabled="!leftBrain.model || fetchingLeft || inspectingLeft || leftBrainRunning">➕加载</button>
+                  <button @click="actOnModel('left', 'unload')" :disabled="!leftBrain.model || fetchingLeft || inspectingLeft || !leftBrainRunning">➖卸载</button>
                   <button
                     class="action-btn"
                     @click="switchLeftBrainModel"
@@ -379,18 +460,14 @@ function getWorkflowPhaseTone(status: string) {
                   >{{ modelSwitchBusy ? '切换中...' : '🔁 切换并应用' }}</button>
                 </div>
               </div>
-              <div v-if="availableLeftModels.length === 0 && !fetchingLeft && !leftError" style="margin-top: 6px; font-size: 12px; color: var(--c-text-muted);">未获取到模型列表，请确认推理服务已启动后点击「刷新」。</div>
-              <div v-if="modelSwitchMessage" style="margin-top: 6px; font-size: 12px; color: var(--c-success-dim);">{{ modelSwitchMessage }}</div>
-              <div v-else-if="leftBrainSwitchNeeded" style="margin-top: 6px; font-size: 12px; color: var(--c-text-muted);">当前选择与运行绑定不一致，点击「切换并应用」后由 Control 统一执行停机、卸载、自检和恢复。</div>
+              <div v-if="availableLeftModels.length === 0 && !fetchingLeft && !leftError" style="margin-top: 6px; font-size: 12px; color: var(--c-text-muted);">未获取到模型列表，请确认推理服务已启动。</div>
             </div>
             <div v-if="leftInspection" style="margin-top: 8px; font-size: 12px; color: var(--c-text-muted); padding: 6px 12px; border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; background: rgba(0,0,0,0.15);">
-              探测:
               <span :style="{color: leftInspection.loaded === true ? 'var(--c-success-dim)' : leftInspection.accessible ? 'var(--c-warn)' : 'var(--c-error-dim)'}">
-                {{ leftInspection.loaded === true ? '已加载' : leftInspection.isLoading ? '加载中' : leftInspection.accessible ? '未加载' : '异常' }}
+                {{ leftInspection.loaded === true ? '🟢 已加载' : leftInspection.accessible ? '🟡 未加载' : '🔴 异常' }}
               </span>
-              | 上下文窗口: {{ leftInspection.contextLength || '-' }}
-              | Tokens: {{ leftInspection.usage?.totalTokens || '-' }}
-              <span v-if="leftInspection.detail" style="margin-left: 8px;" :style="{ color: leftInspection.loaded === true ? 'var(--c-success-dim)' : leftInspection.accessible ? 'var(--c-warn)' : 'var(--c-error-dim)' }">· {{ leftInspection.detail }}</span>
+              <span v-if="leftInspection.contextLength">| 上下文 {{ leftInspection.contextLength }}</span>
+              <span v-if="leftInspection.detail" style="margin-left: 8px;">· {{ leftInspection.detail }}</span>
             </div>
             <div v-if="leftError" class="text-error" style="margin-top: 8px; font-size: 12px; padding: 6px 10px; border-radius: 6px; background: rgba(255,80,80,0.08);">{{ leftError }}</div>
             <div v-if="leftBrainBlockedReason && !leftBrainRunning" style="margin-top: 10px; font-size: 12px; color: var(--c-warn); padding: 6px 10px; border: 1px solid rgba(246,201,78,0.2); border-radius: 6px; background: rgba(246,201,78,0.06);">⚠ {{ leftBrainBlockedReason }}</div>
@@ -484,28 +561,193 @@ function getWorkflowPhaseTone(status: string) {
               </div>
             </div>
 
-            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px;">
-              <button class="action-btn" @click="saveLeftBrainConfig" :disabled="configSaving || memoryConfigBusy || !memoryConfig">{{ configSaving ? '保存中...' : (leftBrainConfigSaved ? '已保存左脑配置' : '未保存左脑配置') }}</button>
-              <button class="action-btn outline" @click="loadEngineConfig" :disabled="memoryConfigBusy || configSaving">{{ memoryConfigBusy ? '读取中...' : '刷新配置' }}</button>
-              <span v-if="configSaveMessage" style="font-size: 12px; color: var(--c-accent);">{{ configSaveMessage }}</span>
-            </div>
+            <div v-if="configSaveMessage" style="margin-top: 8px; font-size: 12px; color: var(--c-accent);">{{ configSaveMessage }}</div>
             <div v-if="configSaveError" class="text-error" style="margin-top: 8px;">{{ configSaveError }}</div>
         </div>
 
         <!-- Right Brain Tab -->
-        <div v-else style="padding: 12px; opacity: 0.65;">
-            <div style="margin-bottom: 12px; font-size: 12px; color: var(--c-text-muted); padding: 8px 12px; border: 1px solid rgba(246,201,78,0.2); border-radius: 6px; background: rgba(246,201,78,0.05);">
-              右脑当前保持置灰，只作为后续扩展占位，不参与 HermesManager 启动。
+        <div v-else style="padding: 12px;">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px; padding: 8px 12px; border: 1px solid rgba(246,201,78,0.2); border-radius: 6px; background: rgba(246,201,78,0.05);">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--c-text);">
+                <input type="checkbox" v-model="rightBrainEnabled" />
+                <span>启用右脑（用于 Meta-Analysis / 自动优化等独立任务）</span>
+              </label>
+            </div>
+            <div v-if="!rightBrainEnabled" style="margin-bottom: 12px; font-size: 12px; color: var(--c-text-muted); padding: 8px 12px; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; background: rgba(0,0,0,0.1);">
+              右脑未启用。启用后可独立配置云端模型（如 Kimi），用于元分析、代码审查等非实时推理任务。
             </div>
             <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-              <div style="flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 4px;"><label>推理平台</label><select v-model="rightBrain.provider" disabled><option value="omlx">OMLX (Local)</option><option value="ollama">Ollama</option></select></div>
-              <div style="flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 4px;"><label>服务地址</label><input type="text" v-model="rightBrain.baseUrl" disabled /></div>
+              <div style="flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 4px;">
+                <label>推理平台</label>
+                <select v-model="rightBrain.provider" @change="handleProviderChange('right')" :disabled="!rightBrainEnabled">
+                  <option value="omlx">OMLX (Local)</option>
+                  <option value="ollama">Ollama</option>
+                  <option value="moonshot">Moonshot (Kimi)</option>
+                </select>
+              </div>
+              <div style="flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 4px;">
+                <label>服务地址</label>
+                <input type="text" v-model="rightBrain.baseUrl" :disabled="!rightBrainEnabled" />
+              </div>
+              <div v-if="rightBrain.provider !== 'ollama'" style="flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 4px;">
+                <label>API Key</label>
+                <input type="password" v-model="rightBrain.apiKey" placeholder="输入 API Key（保存在本地配置中）" :disabled="!rightBrainEnabled" />
+              </div>
+              <div v-if="!leftBrainConfigSaved && rightBrainEnabled" style="display: flex; flex-direction: column; gap: 4px;">
+                <label>&nbsp;</label>
+                <button
+                  class="action-btn"
+                  @click="saveLeftBrainConfig"
+                  :disabled="configSaving || memoryConfigBusy || !memoryConfig"
+                  :style="{ background: 'rgba(94,204,255,0.18)', borderColor: 'var(--c-accent)', color: 'var(--c-accent)', minWidth: '100px', padding: '6px 12px' }"
+                  title="保存当前配置（含右脑设置）到控制服务器。"
+                >
+                  {{ configSaving ? '保存中...' : '💾 保存配置' }}
+                </button>
+              </div>
             </div>
             <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
               <label>运行模型</label>
-              <div style="display: flex; gap: 8px;"><select v-model="rightBrain.model" style="flex: 1;" disabled><option value="">-- 未开放 --</option><option v-for="mod in availableRightModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option></select><button disabled>未开放</button></div>
+              <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <select v-model="rightBrain.model" @change="handleModelChange('right')" style="flex: 1; min-width: 160px;" :disabled="!rightBrainEnabled">
+                  <option value="">-- 请选择模型 --</option>
+                  <option v-for="mod in availableRightModels" :key="mod.id" :value="mod.id">{{ mod.id }}</option>
+                  <option v-if="rightBrain.provider === 'moonshot' && availableRightModels.length === 0" value="kimi-for-coding">kimi-for-coding</option>
+                </select>
+                <div style="display: flex; gap: 8px;">
+                  <button @click="fetchLocalModels('right')" :disabled="fetchingRight || !rightBrainEnabled" :style="{ background: fetchingRight ? undefined : 'rgba(94,204,255,0.12)', borderColor: 'var(--c-accent)', color: 'var(--c-accent)', minWidth: '56px' }">{{ fetchingRight ? '刷新中...' : '🔄 刷新' }}</button>
+                  <button @click="actOnModel('right', 'load')" :disabled="!rightBrain.model || fetchingRight || inspectingRight || !rightBrainEnabled">➕加载</button>
+                  <button @click="actOnModel('right', 'unload')" :disabled="!rightBrain.model || fetchingRight || inspectingRight || !rightBrainEnabled">➖卸载</button>
+                  <button @click="inspectSelectedModel('right')" :disabled="!rightBrain.model || fetchingRight || inspectingRight || !rightBrainEnabled">🔎探测</button>
+                </div>
+              </div>
+              <div v-if="availableRightModels.length === 0 && !fetchingRight && !rightError && rightBrainEnabled" style="margin-top: 6px; font-size: 12px; color: var(--c-text-muted);">未获取到模型列表。云端模型可直接从下拉框选择预设模型，或输入自定义模型名。</div>
             </div>
-            <div v-if="rightInspection" style="margin-top: 12px; font-size: 12px; color: var(--c-text-muted);">状态: <span :style="{color: rightInspection.accessible ? 'var(--c-success-dim)' : 'var(--c-error-dim)'}">{{ rightInspection.accessible ? '就绪' : '异常' }}</span> | 窗口: {{ rightInspection.contextLength || '-' }} | 探测Tokens: {{ rightInspection.usage?.totalTokens || '-' }}</div>
+            <div v-if="rightInspection" style="margin-top: 8px; font-size: 12px; color: var(--c-text-muted); padding: 6px 12px; border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; background: rgba(0,0,0,0.15);">
+              探测:
+              <span :style="{color: rightInspection.loaded === true ? 'var(--c-success-dim)' : rightInspection.accessible ? 'var(--c-warn)' : 'var(--c-error-dim)'}">
+                {{ rightInspection.loaded === true ? '已加载' : rightInspection.isLoading ? '加载中' : rightInspection.accessible ? '未加载' : '异常' }}
+              </span>
+              | 上下文窗口: {{ rightInspection.contextLength || '-' }}
+              | Tokens: {{ rightInspection.usage?.totalTokens || '-' }}
+              <span v-if="rightInspection.detail" style="margin-left: 8px;" :style="{ color: rightInspection.loaded === true ? 'var(--c-success-dim)' : rightInspection.accessible ? 'var(--c-warn)' : 'var(--c-error-dim)' }">· {{ rightInspection.detail }}</span>
+            </div>
+            <div v-if="rightError" class="text-error" style="margin-top: 8px; font-size: 12px; padding: 6px 10px; border-radius: 6px; background: rgba(255,80,80,0.08);">{{ rightError }}</div>
+            <div v-if="configSaveMessage" style="margin-top: 8px; font-size: 12px; color: var(--c-accent);">{{ configSaveMessage }}</div>
+
+            <!-- 右脑功能规划 -->
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 16px; padding: 14px; background: rgba(0,0,0,0.24); border-radius: 8px; border: 1px solid rgba(246,201,78,0.15);">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 15px; font-weight: 700; color: var(--c-warn);">🔮 右脑功能规划</span>
+                <span v-if="rightInspection?.accessible" class="reasoning-plan-step-chip" :style="{ color: 'var(--c-success-dim)', borderColor: 'var(--c-success-dim)' }">✅ 已连接</span>
+                <span v-else-if="!rightBrainEnabled" class="reasoning-plan-step-chip" style="opacity: 0.6;">⚪ 未启用</span>
+                <span v-else class="reasoning-plan-step-chip" :style="{ color: 'var(--c-error-dim)', borderColor: 'var(--c-error-dim)' }">🔴 未连接</span>
+              </div>
+              <div style="font-size: 12px; color: var(--c-text-muted); line-height: 1.6;">
+                右脑是 Control 系统的<strong style="color: var(--c-text);">独立分析引擎</strong>，用于处理左脑无法胜任的大上下文、强推理任务。右脑不依赖本地硬件，通过云端 API 直接调用。
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <div style="font-size: 12px; color: var(--c-text-muted); font-weight: 600;">核心能力</div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px;">
+                  <div style="padding: 8px 10px; background: rgba(255,255,255,0.03); border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+                    <div style="font-size: 12px; color: var(--c-text); font-weight: 600;">🧠 大上下文分析</div>
+                    <div style="font-size: 11px; color: var(--c-text-muted); margin-top: 2px;">262K tokens 上下文窗口，可分析数百个 sessions 的历史数据</div>
+                  </div>
+                  <div style="padding: 8px 10px; background: rgba(255,255,255,0.03); border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+                    <div style="font-size: 12px; color: var(--c-text); font-weight: 600;">🔍 系统元分析</div>
+                    <div style="font-size: 11px; color: var(--c-text-muted); margin-top: 2px;">识别系统瓶颈、失败模式、性能趋势，输出诊断报告</div>
+                  </div>
+                  <div style="padding: 8px 10px; background: rgba(255,255,255,0.03); border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+                    <div style="font-size: 12px; color: var(--c-text); font-weight: 600;">📝 代码审查</div>
+                    <div style="font-size: 11px; color: var(--c-text-muted); margin-top: 2px;">跨文件关联分析、架构设计建议（预留）</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <div style="font-size: 12px; color: var(--c-text-muted); font-weight: 600;">专用任务路由</div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(246,201,78,0.05); border-radius: 4px; border-left: 2px solid var(--c-warn);">
+                    <span style="font-size: 12px; color: var(--c-text); font-weight: 600; min-width: 80px;">meta_analysis</span>
+                    <span style="font-size: 11px; color: var(--c-text-muted);">系统元分析 — 分析 reasoning sessions、识别瓶颈、输出优化建议</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(255,255,255,0.02); border-radius: 4px; border-left: 2px solid rgba(255,255,255,0.1);">
+                    <span style="font-size: 12px; color: var(--c-text); font-weight: 600; min-width: 80px;">code_review</span>
+                    <span style="font-size: 11px; color: var(--c-text-muted);">复杂代码审查 — 跨文件关联分析（预留）</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(255,255,255,0.02); border-radius: 4px; border-left: 2px solid rgba(255,255,255,0.1);">
+                    <span style="font-size: 12px; color: var(--c-text); font-weight: 600; min-width: 80px;">architecture</span>
+                    <span style="font-size: 11px; color: var(--c-text-muted);">架构设计建议 — 大上下文理解整个系统（预留）</span>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="rightBrainEnabled && rightInspection" style="display: flex; flex-wrap: wrap; gap: 12px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                <div style="font-size: 12px; color: var(--c-text-muted);">
+                  <strong style="color: var(--c-text);">当前模型:</strong> {{ rightBrain.model || '-' }}
+                </div>
+                <div style="font-size: 12px; color: var(--c-text-muted);">
+                  <strong style="color: var(--c-text);">上下文窗口:</strong> {{ rightInspection.contextLength || '-' }}
+                </div>
+                <div style="font-size: 12px; color: var(--c-text-muted);">
+                  <strong style="color: var(--c-text);">Provider:</strong> {{ rightBrain.provider }}
+                </div>
+                <div style="font-size: 12px; color: var(--c-text-muted);">
+                  <strong style="color: var(--c-text);">状态:</strong>
+                  <span :style="{ color: rightInspection.accessible ? 'var(--c-success-dim)' : 'var(--c-error-dim)' }">{{ rightInspection.accessible ? '可达' : '不可达' }}</span>
+                </div>
+              </div>
+            </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- 系统健康监督面板 -->
+    <details v-if="supervisionResult?.hasData && supervisionResult.scorecard" class="panel" open style="margin-bottom: 16px; border: 1px solid rgba(246,201,78,0.15);">
+      <summary class="panel-header" style="display: flex; align-items: center; justify-content: space-between; background: rgba(246,201,78,0.05);">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span class="panel-title">🔮 系统健康监督</span>
+          <span style="font-size: 12px; color: var(--c-text-muted);">右脑评估报告</span>
+          <span :style="{ fontSize: '13px', fontWeight: 700, color: supervisionResult.scorecard.overallStatus === 'excellent' || supervisionResult.scorecard.overallStatus === 'passed' ? 'var(--c-success-dim)' : 'var(--c-warn)' }">
+            {{ supervisionResult.scorecard.overallScore }} 分
+          </span>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="action-btn outline" @click.stop="loadSupervisionResult" :disabled="supervisionLoading" style="padding: 2px 10px; font-size: 12px;">{{ supervisionLoading ? '刷新中...' : '🔄 刷新评估' }}</button>
+        </div>
+      </summary>
+      <div class="panel-content" style="padding: 12px;">
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div v-for="cat in supervisionResult.scorecard.categories" :key="cat.id" style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06);">
+            <div style="min-width: 24px; text-align: center;">
+              <span v-if="cat.status === 'passed'" style="color: var(--c-success-dim);">✅</span>
+              <span v-else-if="cat.status === 'warning'" style="color: var(--c-warn);">⚠️</span>
+              <span v-else style="color: var(--c-error-dim);">🔴</span>
+            </div>
+            <div style="flex: 1;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 13px; color: var(--c-text); font-weight: 600;">{{ cat.name }}</span>
+                <span style="font-size: 11px; color: var(--c-text-muted);">权重 {{ Math.round(cat.weight * 100) }}%</span>
+                <span :style="{ fontSize: '12px', fontWeight: 700, color: cat.score >= 80 ? 'var(--c-success-dim)' : cat.score >= 50 ? 'var(--c-warn)' : 'var(--c-error-dim)' }">{{ cat.score }} 分</span>
+              </div>
+              <div style="font-size: 11px; color: var(--c-text-muted); margin-top: 2px;">{{ cat.details }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 修正指令 -->
+        <div v-if="supervisionResult.correctionPlan && supervisionResult.correctionPlan.actions?.length" style="margin-top: 12px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 6px; border-left: 3px solid var(--c-warn);">
+          <div style="font-size: 12px; color: var(--c-text); font-weight: 600; margin-bottom: 6px;">修正建议（{{ supervisionResult.correctionPlan.priority }}）</div>
+          <div style="font-size: 11px; color: var(--c-text-muted); margin-bottom: 6px;">{{ supervisionResult.correctionPlan.issue }}</div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <div v-for="action in supervisionResult.correctionPlan.actions" :key="action.step" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: rgba(255,255,255,0.02); border-radius: 4px;">
+              <span style="font-size: 11px; color: var(--c-text-muted); min-width: 50px;">步骤 {{ action.step }}</span>
+              <span style="font-size: 12px; color: var(--c-text);">{{ action.description }}</span>
+              <span v-if="action.reviewRequired" class="reasoning-plan-step-chip" :style="{ color: 'var(--c-warn)', borderColor: 'var(--c-warn)', fontSize: '10px' }">需确认</span>
+              <span v-else class="reasoning-plan-step-chip" :style="{ color: 'var(--c-success-dim)', borderColor: 'var(--c-success-dim)', fontSize: '10px' }">自动</span>
+            </div>
+          </div>
         </div>
       </div>
     </details>
@@ -555,7 +797,7 @@ function getWorkflowPhaseTone(status: string) {
             <div class="chat-composer-actions">
               <label class="reasoning-auto-approve-toggle"><input v-model="reasoningAutoApproveEnabled" type="checkbox" /><span>{{ reviewModeLabel }}</span></label>
               <button class="action-btn" @click="sendObservableReasoningChat" :disabled="reasoningBusy || !sandboxPrompt.trim() || !!reasoningSubmitBlockedReason" :title="reasoningSubmitBlockedReason || ''">{{ primaryComposerActionLabel }}</button>
-              <button v-if="reasoningBusy && activeReasoningSession" class="action-btn outline" @click="cancelReasoningSession" :disabled="reasoningStopBusy">{{ reasoningStopBusy ? '停止中...' : '停止' }}</button>
+              <button v-if="activeReasoningSession" class="action-btn outline" @click="cancelReasoningSession" :disabled="reasoningStopBusy">{{ reasoningStopBusy ? '停止中...' : '停止' }}</button>
             </div>
           </div>
         </div>

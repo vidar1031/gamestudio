@@ -953,7 +953,7 @@ export default function Hub(props: Props) {
         <div className="panel">
           <div className="section">
             <div style={{ fontWeight: 700, marginBottom: 8 }}>故事草稿</div>
-            <div className="hint">点击草稿后，可在顶部激活进入分镜/蓝图/合成/预览。</div>
+            <div className="hint">点击草稿直接进入分镜编辑。</div>
 
             <div className="hr" />
 
@@ -963,7 +963,7 @@ export default function Hub(props: Props) {
                   key={p.id}
                   className={`item ${selectedId === p.id ? 'active' : ''}`}
                   onClick={() => {
-                    setSelectedId(p.id)
+                    props.onOpenProject(p.id, 'script')
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>

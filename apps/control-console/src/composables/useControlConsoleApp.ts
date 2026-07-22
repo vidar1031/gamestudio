@@ -11,6 +11,7 @@ import {
   getAgentLogs,
   getAgents,
   getHealth,
+  getOverview,
   getRuntimeStatus,
   getSelfCheck,
   inspectLocalModel,
@@ -90,6 +91,52 @@ type SelfCheckResponse = {
     workspace: string
     command: string
     interactionMode: string
+  }
+}
+
+type OverviewAlert = {
+  level: 'critical' | 'warning' | 'info'
+  source: string
+  message: string
+}
+
+type OverviewResponse = {
+  ok: boolean
+  HERMES_HOME: string
+  alerts: OverviewAlert[]
+  readyForProduction: boolean
+  controlSystem: {
+    status: string
+    mode: string
+    focus: string
+  }
+  primaryAgent: {
+    id: string
+    runtime: string
+    availability: string
+  }
+  omlx: {
+    reachable: boolean
+    baseUrl?: string
+    modelCount?: number
+    detail: string
+  }
+  studio: {
+    reachable: boolean
+    detail: string
+  }
+  hermes: {
+    state: string
+    label: string
+    detail: string
+    pid: number | null
+  }
+  model: {
+    name: string | null
+    loaded: boolean
+    detail: string
+    provider: string | null
+    baseUrl: string | null
   }
 }
 
@@ -594,6 +641,8 @@ type HermesControlState = {
 
 export function useControlConsoleApp() {
   const managerHealth = ref<HealthResponse | null>(null)
+  const overview = ref<OverviewResponse | null>(null)
+  const overviewError = ref('')
   const agentOptions = ref<AgentListItem[]>([])
   const selectedAgentId = ref('')
   const activeAgentId = ref('hermes-manager')
@@ -616,6 +665,11 @@ export function useControlConsoleApp() {
   const skillProposalsActionBusy = ref('')
   const smartStartBusy = ref(false)
   const smartStartMessage = ref('')
+  const omlxStartBusy = ref(false)
+  const omlxStartMessage = ref('')
+  const versions = ref<{ hermesVersion: string; omlxVersion: string | null; omlxServiceHealthy: boolean }>({ hermesVersion: 'unknown', omlxVersion: null, omlxServiceHealthy: false })
+  const supervisionResult = ref<{ hasData: boolean; scorecard: any; correctionPlan: any; sessionId?: string; status?: string } | null>(null)
+  const supervisionLoading = ref(false)
   const chatContextInfo = ref<ChatContextInfo | null>(null)
   const chatMemoryFile = ref<ChatMemoryFileSummary | null>(null)
   const chatMemoryEditorOpen = ref(false)
@@ -708,6 +762,7 @@ export function useControlConsoleApp() {
   const editorTheme = [oneDark]
   const leftBrainRunning = ref(false)
   const rightBrainRunning = ref(false)
+  const rightBrainEnabled = ref(false)
   const rawLiveLogs = ref('')
   const clearedLogLineCount = ref(0)
   const chatScrollContainer = ref<HTMLElement | null>(null)
@@ -715,7 +770,7 @@ export function useControlConsoleApp() {
   const reasoningTimelineRef = ref<HTMLElement | null>(null)
   const chatUiNow = ref(Date.now())
   const leftBrain = ref({ provider: 'omlx', baseUrl: 'http://127.0.0.1:18888/v1', model: '', contextLength: null as number | null, recommendedMaxOutputTokens: null as number | null, tokenizer: null as string | null, metadataSource: 'unavailable' })
-  const rightBrain = ref({ provider: 'omlx', baseUrl: 'http://127.0.0.1:18888/v1', model: '', contextLength: null as number | null, recommendedMaxOutputTokens: null as number | null, tokenizer: null as string | null, metadataSource: 'unavailable' })
+  const rightBrain = ref({ provider: 'omlx', baseUrl: 'http://127.0.0.1:18888/v1', model: '', apiKey: '', contextLength: null as number | null, recommendedMaxOutputTokens: null as number | null, tokenizer: null as string | null, metadataSource: 'unavailable' })
   const availableLeftModels = ref<any[]>([])
   const availableRightModels = ref<any[]>([])
   const fetchingLeft = ref(false)
@@ -735,6 +790,7 @@ export function useControlConsoleApp() {
   let logInterval: ReturnType<typeof setInterval> | null = null
   let chatUiClockInterval: ReturnType<typeof setInterval> | null = null
   let memoryRecordPollInterval: ReturnType<typeof setInterval> | null = null
+  let overviewPollInterval: ReturnType<typeof setInterval> | null = null
   let reasoningPollTimer: ReturnType<typeof setTimeout> | null = null
   let productionTestPollInterval: ReturnType<typeof setInterval> | null = null
   let productionTestFollowPausedUntil = 0
@@ -766,7 +822,7 @@ export function useControlConsoleApp() {
         : '')
   const visibleLogLines = computed(() => (rawLiveLogs.value ? rawLiveLogs.value.split('\n') : []).slice(clearedLogLineCount.value).filter((line) => line.length > 0))
   const selectedAgent = computed(() => agentOptions.value.find((item) => item.definition.id === selectedAgentId.value) || null)
-  const runtimeStatus = computed(() => selectedAgent.value?.definition.runtime === 'openclaw' ? '待开放 (占位)' : runtimeState.value?.label || '未选择')
+  const runtimeStatus = computed(() => runtimeState.value?.label || '未选择')
   const runtimePrimaryAction = computed<'start' | 'pause' | 'resume' | null>(() => {
     const actions = runtimeState.value?.availableActions || []
     if (actions.includes('pause')) return 'pause'
@@ -779,6 +835,29 @@ export function useControlConsoleApp() {
   const persistedModelLoaded = computed(() => controlState.value?.model?.status === 'loaded' && controlState.value.model.model === leftBrain.value.model && controlState.value.model.provider === leftBrain.value.provider && controlState.value.model.baseUrl === leftBrain.value.baseUrl)
   const leftSelectedModelLoaded = computed(() => persistedModelLoaded.value || (!!leftBrain.value.model && leftInspection.value?.model === leftBrain.value.model && leftInspection.value?.loaded === true))
   const leftBrainSummary = computed(() => ({ providerLabel: leftBrain.value.provider === 'ollama' ? 'Ollama' : 'OMLX (Local)', baseUrlLabel: leftBrain.value.baseUrl || '默认', modelLabel: leftBrain.value.model || '未选择模型', tokenLabel: leftInspection.value?.usage?.totalTokens ?? '-', statusLabel: leftSelectedModelLoaded.value ? '已启动' : '未启动' }))
+  const rightBrainSummary = computed(() => {
+    if (!rightBrainEnabled.value) return { providerLabel: '-', modelLabel: '未启用', statusLabel: '未启用', statusColor: 'var(--c-text-muted)' }
+    const providerLabel = rightBrain.value.provider === 'moonshot' ? 'Moonshot' : (rightBrain.value.provider === 'ollama' ? 'Ollama' : 'OMLX')
+    const modelLabel = rightBrain.value.model || '未选择模型'
+    const accessible = rightInspection.value?.accessible === true
+    const loaded = rightInspection.value?.loaded === true
+    const statusLabel = loaded ? '已就绪' : (accessible ? '可连接' : '待探测')
+    const statusColor = loaded ? 'var(--c-success-dim)' : (accessible ? 'var(--c-warn)' : 'var(--c-text-muted)')
+    return { providerLabel, modelLabel, statusLabel, statusColor }
+  })
+  const rightBrainConfigSignature = computed(() => JSON.stringify({
+    rightBrainEnabled: rightBrainEnabled.value,
+    rightBrain: {
+      provider: rightBrain.value.provider,
+      baseUrl: rightBrain.value.baseUrl,
+      model: rightBrain.value.model
+    }
+  }))
+  const persistedRightBrainConfigSignature = ref('')
+  const rightBrainConfigSaved = computed(() => {
+    if (!rightBrainEnabled.value) return true
+    return !!persistedRightBrainConfigSignature.value && rightBrainConfigSignature.value === persistedRightBrainConfigSignature.value
+  })
   const leftBrainSwitchNeeded = computed(() => {
     if (!leftBrain.value.model) return false
     return String(controlState.value?.model?.provider || '') !== String(leftBrain.value.provider || '')
@@ -786,10 +865,16 @@ export function useControlConsoleApp() {
       || String(controlState.value?.model?.model || '') !== String(leftBrain.value.model || '')
   })
   const leftBrainConfigSignature = computed(() => JSON.stringify(buildLeftBrainConfigPayload()))
-  const leftBrainConfigSaved = computed(() => !!persistedLeftBrainConfigSignature.value && leftBrainConfigSignature.value === persistedLeftBrainConfigSignature.value && controlState.value?.config?.saved === true)
+  const leftBrainConfigSaved = computed(() => {
+    // Hermes 已运行时，配置视为已保存（运行时配置必然有效）
+    if (leftBrainRunning.value) return true
+    return !!persistedLeftBrainConfigSignature.value && leftBrainConfigSignature.value === persistedLeftBrainConfigSignature.value && controlState.value?.config?.saved === true
+  })
   const effectivePreflightReady = computed(() => Boolean(preflightResult.value?.ready) || (controlState.value?.preflight?.ready === true && controlState.value.preflight.configFingerprint === leftBrainConfigSignature.value))
   const leftBrainBlockedReason = computed(() => {
     if (memoryConfigBusy.value || configSaving.value || runtimeBusy.value) return '控制面处理中，请稍候。'
+    // Hermes 已运行时，不再显示阻塞提示
+    if (leftBrainRunning.value) return ''
     if (!leftBrainConfigSaved.value) return '未保存左脑配置，请先保存。'
     if (!leftSelectedModelLoaded.value) return controlState.value?.model?.detail || '模型未启动，请先加载模型。'
     if (!configReadiness.value?.ready) return '左脑配置校验未通过，请先修复配置项。'
@@ -853,7 +938,15 @@ export function useControlConsoleApp() {
         dailyLogDir: memoryConfig.value.dailyLogDir,
       } : null,
       skills: { skillRoot: skillConfig.value?.skillRoot || '', skillFiles: skillFilesText.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) },
-      brains: { rightBrainEnabled: false }
+      brains: {
+        rightBrainEnabled: rightBrainEnabled.value,
+        rightBrain: {
+          provider: rightBrain.value.provider,
+          baseUrl: rightBrain.value.baseUrl,
+          model: rightBrain.value.model,
+          apiKey: rightBrain.value.apiKey
+        }
+      }
     }
   }
 
@@ -1200,6 +1293,21 @@ export function useControlConsoleApp() {
     finally { logsRequestInFlight = false }
   }
 
+  async function fetchOverview() {
+    try {
+      const res = await getOverview()
+      const data = await res.json()
+      if (data.ok) {
+        overview.value = data
+        overviewError.value = ''
+      } else {
+        overviewError.value = data.error || 'overview_failed'
+      }
+    } catch (caught) {
+      overviewError.value = caught instanceof Error ? caught.message : String(caught)
+    }
+  }
+
   async function actOnModel(side: 'left' | 'right', action: 'load' | 'unload') {
     const brain = side === 'left' ? leftBrain.value : rightBrain.value
     if (!brain.model) return
@@ -1236,7 +1344,8 @@ export function useControlConsoleApp() {
     err.value = ''
     if (side === 'left') resetPreflightState()
     try {
-      const resp = await listLocalModels({ provider: brain.value.provider === 'ollama' ? 'ollama' : 'omlx', baseUrl: brain.value.baseUrl })
+      const providerLabel = brain.value.provider === 'ollama' ? 'ollama' : (brain.value.provider === 'moonshot' ? 'moonshot' : 'omlx')
+      const resp = await listLocalModels({ provider: providerLabel, baseUrl: brain.value.baseUrl })
       if (resp.ok) {
         const data = await resp.json()
         if (data.ok) {
@@ -1269,7 +1378,8 @@ export function useControlConsoleApp() {
     if (!brain.value.model) { inspection.value = null; return }
     inspecting.value = true
     try {
-      const response = await inspectLocalModel({ provider: brain.value.provider === 'ollama' ? 'ollama' : 'omlx', model: brain.value.model, baseUrl: brain.value.baseUrl })
+      const providerLabel = brain.value.provider === 'ollama' ? 'ollama' : (brain.value.provider === 'moonshot' ? 'moonshot' : 'omlx')
+      const response = await inspectLocalModel({ provider: providerLabel, model: brain.value.model, baseUrl: brain.value.baseUrl })
       if (!response.ok) throw new Error('inspect_' + response.status)
       const payload = await response.json()
       inspection.value = payload.inspection || null
@@ -1294,7 +1404,9 @@ export function useControlConsoleApp() {
 
   function handleProviderChange(side: 'left' | 'right') {
     const brain = side === 'left' ? leftBrain : rightBrain
-    brain.value.baseUrl = brain.value.provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : 'http://127.0.0.1:18888/v1'
+    if (brain.value.provider === 'ollama') brain.value.baseUrl = 'http://127.0.0.1:11434/v1'
+    else if (brain.value.provider === 'moonshot') brain.value.baseUrl = 'https://api.kimi.com/coding/v1'
+    else brain.value.baseUrl = 'http://127.0.0.1:18888/v1'
     brain.value.model = ''
     if (side === 'left') { resetPreflightState(); availableLeftModels.value = []; leftInspection.value = null }
     else { availableRightModels.value = []; rightInspection.value = null }
@@ -1330,9 +1442,14 @@ export function useControlConsoleApp() {
       leftBrain.value.provider = payload.config.provider
       leftBrain.value.baseUrl = payload.config.baseUrl
       leftBrain.value.model = payload.config.model
-      rightBrain.value.provider = payload.config.provider
-      rightBrain.value.baseUrl = payload.config.baseUrl
-      rightBrain.value.model = payload.config.model
+      const rb = payload.config.brains?.rightBrain
+      if (rb && typeof rb === 'object') {
+        rightBrain.value.provider = String(rb.provider || payload.config.provider)
+        rightBrain.value.baseUrl = String(rb.baseUrl || payload.config.baseUrl)
+        rightBrain.value.model = String(rb.model || '')
+        rightBrain.value.apiKey = String(rb.apiKey || '')
+      }
+      rightBrainEnabled.value = Boolean(payload.config.brains?.rightBrainEnabled)
       rightBrainRunning.value = false
       memoryConfig.value = payload.config.memory || null
       skillConfig.value = payload.config.skills || null
@@ -1340,6 +1457,15 @@ export function useControlConsoleApp() {
       applyControlState(payload.config.state || null)
       shortTermMinContextTokens.value = payload.config.shortTerm?.minContextTokens || 65536
       skillFilesText.value = (payload.config.skills?.skillFiles || []).join('\n')
+      persistedRightBrainConfigSignature.value = JSON.stringify({
+        rightBrainEnabled: rightBrainEnabled.value,
+        rightBrain: {
+          provider: rightBrain.value.provider,
+          baseUrl: rightBrain.value.baseUrl,
+          model: rightBrain.value.model,
+          apiKey: rightBrain.value.apiKey
+        }
+      })
       persistedLeftBrainConfigSignature.value = JSON.stringify({
         provider: payload.config.provider,
         baseUrl: payload.config.baseUrl,
@@ -1356,7 +1482,15 @@ export function useControlConsoleApp() {
           dailyLogDir: payload.config.memory.dailyLogDir
         } : null,
         skills: { skillRoot: payload.config.skills?.skillRoot || '', skillFiles: payload.config.skills?.skillFiles || [] },
-        brains: { rightBrainEnabled: false }
+        brains: {
+          rightBrainEnabled: rightBrainEnabled.value,
+          rightBrain: {
+            provider: rightBrain.value.provider,
+            baseUrl: rightBrain.value.baseUrl,
+            model: rightBrain.value.model,
+            apiKey: rightBrain.value.apiKey
+          }
+        }
       })
       resetPreflightState()
       memoryConfigError.value = ''
@@ -1384,7 +1518,18 @@ export function useControlConsoleApp() {
   }
 
   async function saveLeftBrainConfig() {
-    if (!memoryConfig.value || !skillConfig.value || !selectedAgentId.value) return
+    if (!selectedAgentId.value) {
+      configSaveError.value = '未选择 Agent，无法保存配置。'
+      return
+    }
+    if (!memoryConfig.value || !skillConfig.value) {
+      configSaveMessage.value = '正在加载引擎配置...'
+      await loadEngineConfig()
+      if (!memoryConfig.value || !skillConfig.value) {
+        configSaveError.value = '无法加载引擎配置，保存失败。请检查 Control Server 是否正常运行。'
+        return
+      }
+    }
     configSaving.value = true
     configSaveError.value = ''
     configSaveMessage.value = ''
@@ -1394,7 +1539,7 @@ export function useControlConsoleApp() {
       if (!response.ok || !payload?.ok) throw new Error(payload?.error || `save_config_http_${response.status}`)
       applyControlState(payload.state || null)
       await loadEngineConfig()
-      configSaveMessage.value = '已保存左脑配置。'
+      configSaveMessage.value = '配置已保存。'
       resetPreflightState()
     } catch (caught) {
       configSaveError.value = String(caught)
@@ -1688,6 +1833,9 @@ export function useControlConsoleApp() {
     await restoreBufferedReasoningSession()
     if (runtimeState.value?.state === 'running') await loadHermesSelfCheck()
     else selfCheck.value = null
+    if (rightBrainEnabled.value && rightBrain.value.model) {
+      await inspectSelectedModel('right')
+    }
   }
 
   async function toggleHermesRuntime(side: 'left' | 'right') {
@@ -2008,7 +2156,7 @@ export function useControlConsoleApp() {
     try {
       const response = await createReasoningSession('hermes-manager', {
         prompt: userText,
-        reviewMode: reasoningAutoApproveEnabled.value ? 'auto' : 'manual',
+        reviewMode: reasoningAutoApproveEnabled.value ? 'full-auto' : 'manual',
         ...submissionContext,
       })
       const payload = await response.json().catch(() => null)
@@ -2060,7 +2208,12 @@ export function useControlConsoleApp() {
       const session = await loadReasoningSession(sessionId)
       if (!session) return
       if (session.status === 'planning' || session.status === 'running') { scheduleReasoningPolling(delayMs); return }
-      if (session.status === 'waiting_review' && reasoningAutoApproveEnabled.value) { await submitReasoningReview('approve', { skipManualDraft: true }); return }
+      if (session.status === 'waiting_review' && reasoningAutoApproveEnabled.value) {
+        await submitReasoningReview('approve', { skipManualDraft: true })
+        // 自动审核提交后延迟重新轮询，让后端有时间处理；避免审核失败或未被处理时永久卡住
+        scheduleReasoningPolling(3000)
+        return
+      }
       reasoningBusy.value = false
       stopReasoningPolling()
       if (session.status === 'waiting_review') return
@@ -2096,6 +2249,7 @@ export function useControlConsoleApp() {
     const session = await loadReasoningSession(sessionId)
     if (!session) { persistActiveReasoningSessionId(null); return }
     if (session.status === 'planning' || session.status === 'running') scheduleReasoningPolling()
+    if (session.status === 'waiting_review') scheduleReasoningPolling()
   }
 
   async function loadActiveProductionTestSession() {
@@ -2300,9 +2454,11 @@ export function useControlConsoleApp() {
     logInterval = setInterval(fetchLogs, 1500)
     chatUiClockInterval = setInterval(() => { chatUiNow.value = Date.now() }, 1000)
     memoryRecordPollInterval = setInterval(() => { void loadMemoryRecords() }, 5000)
+    overviewPollInterval = setInterval(() => { void fetchOverview() }, 3000)
     productionTestPollInterval = setInterval(() => { void loadActiveProductionTestSession() }, 1500)
     window.addEventListener('keydown', handleEditorModalWindowKeydown, true)
     void loadContextCandidates()
+    void fetchOverview()
     void (async () => {
       const [healthResult, agentsResult] = await Promise.allSettled([getHealth(), getAgents()])
       if (healthResult.status === 'fulfilled') {
@@ -2336,6 +2492,7 @@ export function useControlConsoleApp() {
     if (logInterval) clearInterval(logInterval)
     if (chatUiClockInterval) clearInterval(chatUiClockInterval)
     if (memoryRecordPollInterval) clearInterval(memoryRecordPollInterval)
+    if (overviewPollInterval) clearInterval(overviewPollInterval)
     if (productionTestPollInterval) clearInterval(productionTestPollInterval)
     stopChatHistoryPolling()
     stopReasoningPolling()
@@ -2432,8 +2589,79 @@ export function useControlConsoleApp() {
     }
   }
 
+  // ---------------------- Versions ----------------------
+  async function loadVersions() {
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 3000)
+      const response = await fetch('/api/control/versions', { signal: controller.signal })
+      clearTimeout(timeout)
+      if (!response.ok) return
+      const payload = await response.json()
+      if (payload.ok) {
+        versions.value = {
+          hermesVersion: payload.hermesVersion || 'unknown',
+          omlxVersion: payload.omlxVersion || null,
+          omlxServiceHealthy: payload.omlxServiceHealthy || false,
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // ---------------------- Supervision ----------------------
+  async function loadSupervisionResult() {
+    if (supervisionLoading.value) return
+    supervisionLoading.value = true
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5000)
+      const response = await fetch('/api/control/supervision/latest', { signal: controller.signal })
+      clearTimeout(timeout)
+      if (!response.ok) return
+      const payload = await response.json()
+      if (payload.ok) {
+        supervisionResult.value = payload
+      }
+    } catch {
+      // ignore
+    } finally {
+      supervisionLoading.value = false
+    }
+  }
+
+  // ---------------------- OMLX start helper ----------------------
+  async function startOmlxApp() {
+    if (omlxStartBusy.value) return
+    omlxStartBusy.value = true
+    omlxStartMessage.value = '正在启动 OMLX...'
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 35000)
+      const response = await fetch('/api/control/omlx/start', { method: 'POST', signal: controller.signal })
+      clearTimeout(timeoutId)
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) {
+        throw new Error(payload?.message || `OMLX 启动失败 (${response.status})`)
+      }
+      omlxStartMessage.value = payload.alreadyRunning ? 'OMLX 已在运行' : 'OMLX 启动成功，正在刷新模型列表...'
+      // 刷新模型列表
+      await fetchLocalModels('left')
+    } catch (caught) {
+      const msg = caught instanceof Error ? caught.message : String(caught)
+      if (msg.includes('abort') || msg.includes('Abort')) {
+        omlxStartMessage.value = 'OMLX 启动请求超时，请检查 OMLX App 是否正常运行'
+      } else {
+        omlxStartMessage.value = msg
+      }
+    } finally {
+      omlxStartBusy.value = false
+    }
+  }
+
   // ---------------------- Smart start chain ----------------------
-  // 一键串起：保存配置 → 自检 → 启动 Hermes runtime。
+  // 一键串起：保存配置 → 自检 → 启动左脑 → 探测右脑。
   // 这只是把现有三个独立按钮的步骤按正确顺序串起来，
   // 不替换原本的三个按钮，符合 control 非回归约束。
   async function smartStartHermes() {
@@ -2444,7 +2672,7 @@ export function useControlConsoleApp() {
       return
     }
     smartStartBusy.value = true
-    smartStartMessage.value = '步骤 1/3：保存左脑配置...'
+    smartStartMessage.value = '步骤 1/4：保存左脑配置...'
     try {
       if (!leftBrainConfigSaved.value) {
         await saveLeftBrainConfig()
@@ -2453,7 +2681,7 @@ export function useControlConsoleApp() {
           return
         }
       }
-      smartStartMessage.value = '步骤 2/3：运行左脑自检...'
+      smartStartMessage.value = '步骤 2/4：运行左脑自检...'
       if (!effectivePreflightReady.value) {
         await runLeftBrainPreflight()
         if (preflightError.value) {
@@ -2461,11 +2689,23 @@ export function useControlConsoleApp() {
           return
         }
       }
-      smartStartMessage.value = '步骤 3/3：启动 Hermes runtime...'
+      smartStartMessage.value = '步骤 3/4：启动 Hermes runtime...'
       await toggleHermesRuntime('left')
-      smartStartMessage.value = leftBrainRunning.value
-        ? '一键启动完成，Hermes 智能体已就绪。'
-        : (error.value ? `启动失败：${error.value}` : '启动流程已发起，请观察右上方运行状态。')
+      if (!leftBrainRunning.value) {
+        smartStartMessage.value = error.value ? `启动失败：${error.value}` : '启动流程已发起，请观察右上方运行状态。'
+        return
+      }
+      // 步骤 4：如果右脑已启用，自动探测
+      if (rightBrainEnabled.value && rightBrain.value.model) {
+        smartStartMessage.value = '步骤 4/4：探测右脑连通性...'
+        await inspectSelectedModel('right')
+        const rightOk = rightInspection.value?.accessible
+        smartStartMessage.value = rightOk
+          ? '✅ 一键启动完成。左脑已就绪，右脑探测通过。'
+          : '⚠️ 左脑已就绪，右脑探测未通过，请检查右脑配置。'
+      } else {
+        smartStartMessage.value = '✅ 一键启动完成，Hermes 智能体已就绪。'
+      }
     } catch (caught) {
       smartStartMessage.value = caught instanceof Error ? caught.message : String(caught)
     } finally {
@@ -2604,6 +2844,9 @@ export function useControlConsoleApp() {
     openMemoryRecordInEditor,
     openEditorModal,
     openSubmitGate,
+    overview,
+    overviewError,
+    fetchOverview,
     preflightBusy,
     preflightError,
     preflightResult,
@@ -2632,6 +2875,10 @@ export function useControlConsoleApp() {
     reviewModeLabel,
     rightBrain,
     rightBrainRunning,
+    rightBrainEnabled,
+    rightBrainSummary,
+    rightBrainConfigSaved,
+    persistedRightBrainConfigSignature,
     rightError,
     rightInspection,
     runLeftBrainPreflight,
@@ -2700,5 +2947,13 @@ export function useControlConsoleApp() {
     smartStartHermes,
     smartStartBusy,
     smartStartMessage,
+    startOmlxApp,
+    omlxStartBusy,
+    omlxStartMessage,
+    versions,
+    loadVersions,
+    supervisionResult,
+    supervisionLoading,
+    loadSupervisionResult,
   }
 }
