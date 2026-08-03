@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "2.0",
+  "startNodeId": "bn_start",
+  "nodes": [
+    {
+      "id": "bn_start",
+      "name": "开场",
+      "kind": "scene",
+      "body": {
+        "text": "霓虹灯在积水的街道上晕开，像融化的糖果。你推开“深渊”咖啡馆的门，风铃发出清脆的响声。这是你第三次来到这个雨夜。前两次，你都没能走出这里。柜台后的咖啡师抬起头，眼神空洞：“还是美式吗？”"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_start_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "霓虹灯在积水的街道上晕开，像融化的糖果。你推开“深渊”咖啡馆的门，风铃发出清脆的响声。这是你第三次来到这个雨夜。前两次，你都没能走出这里。柜台后的咖啡师抬起头，眼神空洞：“还是美式吗？”"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "start",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_start",
+          "text": "继续",
+          "toNodeId": "bn_choice_1",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_choice_1",
+      "name": "关键抉择",
+      "kind": "scene",
+      "body": {
+        "text": "你注意到咖啡师的手在微微颤抖，桌面上有一张被水浸湿的纸条。你必须做出决定：\n\n选项1：无视纸条，直接询问咖啡师关于时间循环的秘密。\n选项2：拿起那张纸条，看看上面写了什么。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_choice_1_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "你注意到咖啡师的手在微微颤抖，桌面上有一张被水浸湿的纸条。你必须做出决定：\n\n选项1：无视纸条，直接询问咖啡师关于时间循环的秘密。\n选项2：拿起那张纸条，看看上面写了什么。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "choice_1",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_choice_1_1",
+          "text": "无视纸条，直接询问咖啡师关于时间循环的秘密。",
+          "toNodeId": "bn_1后果1",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        },
+        {
+          "id": "bc_choice_1_2",
+          "text": "拿起那张纸条，看看上面写了什么。",
+          "toNodeId": "bn_1后果1",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_1后果1",
+      "name": "询问秘密",
+      "kind": "scene",
+      "body": {
+        "text": "你直视咖啡师的眼睛，问道：“为什么我会被困在这里？”咖啡师的笑容突然凝固，周围的雨声瞬间消失，取而代之的是刺耳的电流声。墙壁开始剥落，露出黑色的虚空。你意识到，有些秘密不该被提前揭开。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_1后果1_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "你直视咖啡师的眼睛，问道：“为什么我会被困在这里？”咖啡师的笑容突然凝固，周围的雨声瞬间消失，取而代之的是刺耳的电流声。墙壁开始剥落，露出黑色的虚空。你意识到，有些秘密不该被提前揭开。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "1后果1",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_1后果1",
+          "text": "继续",
+          "toNodeId": "bn_1后果2",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_1后果2",
+      "name": "查看纸条",
+      "kind": "scene",
+      "body": {
+        "text": "你拿起纸条，上面用潦草的字迹写着：“别喝那杯咖啡，那是记忆清除剂。去后门，那里有出口。”你抬头看向咖啡师，他正将一杯冒着热气的咖啡推到你面前。这一次，你有了线索。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_1后果2_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "你拿起纸条，上面用潦草的字迹写着：“别喝那杯咖啡，那是记忆清除剂。去后门，那里有出口。”你抬头看向咖啡师，他正将一杯冒着热气的咖啡推到你面前。这一次，你有了线索。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "1后果2",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_1后果2",
+          "text": "继续",
+          "toNodeId": "bn_结局1",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_结局1",
+      "name": "结局：永恒的雨",
+      "kind": "ending",
+      "body": {
+        "text": "你选择了询问秘密，却触发了防御机制。黑暗吞噬了你，风铃再次响起，你回到了咖啡馆门口。雨还在下，霓虹灯依旧闪烁。这是第四次循环，你依然一无所知。结局：永恒的雨。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_结局1_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局：永恒的雨",
+                  "bullets": [],
+                  "moral": "你选择了询问秘密，却触发了防御机制。黑暗吞噬了你，风铃再次响起，你回到了咖啡馆门口。雨还在下，霓虹灯依旧闪烁。这是第四次循环，你依然一无所知。结局：永恒的雨。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "结局1",
+        "actorIds": [],
+        "eventIds": []
+      }
+    },
+    {
+      "id": "bn_结局2",
+      "name": "结局：破晓",
+      "kind": "ending",
+      "body": {
+        "text": "你推开了咖啡，转身冲向后门。身后传来咖啡师愤怒的吼声，但你没有回头。推开后门的瞬间，雨停了。东方的天空泛起鱼肚白，第一缕阳光洒在你的脸上。你成功了，时间循环终于结束。结局：破晓。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_结局2_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局：破晓",
+                  "bullets": [],
+                  "moral": "你推开了咖啡，转身冲向后门。身后传来咖啡师愤怒的吼声，但你没有回头。推开后门的瞬间，雨停了。东方的天空泛起鱼肚白，第一缕阳光洒在你的脸上。你成功了，时间循环终于结束。结局：破晓。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "结局2",
+        "actorIds": [],
+        "eventIds": []
+      }
+    }
+  ]
+}

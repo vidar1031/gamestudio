@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "id": "8f886814-fb64-4c80-ac18-a976e97935a2",
+  "title": "小红帽",
+  "stage": "script",
+  "createdAt": "2026-06-06T15:06:03.892Z",
+  "updatedAt": "2026-06-06T15:27:55.335Z",
+  "aiFormula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 2,
+    "optionsPerChoice": 2,
+    "endings": 2
+  }
+}

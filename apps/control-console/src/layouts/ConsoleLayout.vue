@@ -8,6 +8,7 @@ const router = useRouter()
 const app = useControlConsoleApp()
 
 const navItems = [
+  { name: 'Chat', path: '/chat', icon: '◉', label: '聊天' },
   { name: 'Dashboard', path: '/dashboard', icon: '□', label: '总览' },
   { name: 'Generators', path: '/generators', icon: '⚙', label: '生成工具' },
   { name: 'Agents', path: '/agents', icon: '◆', label: '本地 Agent' },
@@ -64,8 +65,8 @@ function navigate(item: typeof navItems[number]) {
   <div class="console-layout">
     <aside class="console-sidebar">
       <div class="sidebar-brand">
-        <span class="brand-icon">🎮</span>
-        <span class="brand-text">GameStudio</span>
+        <span class="brand-icon">🛡</span>
+        <span class="brand-text">守护台</span>
       </div>
       <nav class="sidebar-nav">
         <button
@@ -98,7 +99,7 @@ function navigate(item: typeof navItems[number]) {
     <main class="console-main">
       <header class="console-topbar">
         <div class="topbar-left">
-          <h1 class="page-title">{{ route.meta.title || '管理控制台' }}</h1>
+          <h1 class="page-title">{{ route.meta.title || '守护台' }}</h1>
         </div>
         <div class="topbar-right">
           <button

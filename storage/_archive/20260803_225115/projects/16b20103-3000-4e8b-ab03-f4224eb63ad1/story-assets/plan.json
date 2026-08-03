@@ -1,0 +1,737 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-05-12T07:36:25.059Z",
+  "worldAnchor": "A rustic mountain pastoral setting at early dawn, misty hills, soft golden light, wide‑angle horizon, tranquil but alert atmosphere",
+  "forbiddenSubstitutes": [
+    "rope",
+    "string",
+    "vine",
+    "chain",
+    "bungee",
+    "straw mat",
+    "fabric sheet",
+    "blanket",
+    "dog",
+    "wolf pack",
+    "horse",
+    "goat",
+    "cloth sheet",
+    "fabric mat"
+  ],
+  "eventChain": [
+    "Child shouts 'Wolf came!'",
+    "Child pulls rope from sheep pen",
+    "Child examines hillside, finds no wolf",
+    "Child counts sheep at pasture",
+    "Wolf howl heard in distance",
+    "Child rushes to source of howl",
+    "Child ties rope to fence posts",
+    "Child wraps grass mat over wounded wolf",
+    "Village trusts child",
+    "Village invites child to manage sheep",
+    "Village remains skeptical"
+  ],
+  "excludedAssetIds": [],
+  "assets": [
+    {
+      "id": "char_child",
+      "name": "牧童",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+      "negativePrompt": "",
+      "aliases": [
+        "child",
+        "shepherd boy"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_sc_1778499346783_dnle3h",
+        "bn_sc_1778499346783_7tqi75",
+        "bn_sc_1778499346783_wkp73u",
+        "bn_sc_1778499346783_yvxegf",
+        "bn_sc_1778499346783_rc68yu",
+        "bn_sc_1778499346783_ms8hvq",
+        "bn_sc_1778499346783_zvop7v",
+        "bn_sc_1778499346783_p5uyib",
+        "bn_sc_1778499346783_teao2b",
+        "bn_sc_1778499346783_yfmbb0"
+      ],
+      "sceneCount": 10,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+    },
+    {
+      "id": "loc_hill",
+      "name": "山坡",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+      "negativePrompt": "",
+      "aliases": [
+        "hillside",
+        "ridge"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_sc_1778499346783_psj7br",
+        "bn_sc_1778499346783_dnle3h",
+        "bn_sc_1778499346783_7tqi75",
+        "bn_sc_1778499346783_wkp73u",
+        "bn_sc_1778499346783_rc68yu",
+        "bn_sc_1778499346783_ms8hvq",
+        "bn_sc_1778499346783_zvop7v"
+      ],
+      "sceneCount": 7,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+    },
+    {
+      "id": "loc_village",
+      "name": "牧场",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+      "negativePrompt": "",
+      "aliases": [
+        "village",
+        "herd farm"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_sc_1778499346783_yvxegf",
+        "bn_sc_1778499346783_p5uyib",
+        "bn_sc_1778499346783_teao2b",
+        "bn_sc_1778499346783_yfmbb0"
+      ],
+      "sceneCount": 4,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+    },
+    {
+      "id": "prop_rope",
+      "name": "羊圈绳索",
+      "category": "prop",
+      "lockProfile": "generic_prop",
+      "lockWorkflow": "prop_product",
+      "persistence": "low",
+      "renderStrategy": "prompt_only",
+      "anchorPrompt": "natural fiber rope, knotted at both ends, tied to fence posts, about 3 meters long",
+      "negativePrompt": "",
+      "aliases": [
+        "rope",
+        "cord",
+        "string"
+      ],
+      "forbiddenSubstitutes": [
+        "vine",
+        "chain",
+        "bungee",
+        "string"
+      ],
+      "sceneIds": [
+        "bn_sc_1778499346783_dnle3h"
+      ],
+      "sceneCount": 1,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, no person, no head, no hand, not being worn, no collage, no multi-view sheet, no environment"
+    },
+    {
+      "id": "prop_grass_mat",
+      "name": "草席",
+      "category": "prop",
+      "lockProfile": "soft_prop",
+      "lockWorkflow": "prop_soft",
+      "persistence": "low",
+      "renderStrategy": "prompt_only",
+      "anchorPrompt": "woven straw mat, rectangular, about 1 meter by 0.5 meter, lying on grass",
+      "negativePrompt": "",
+      "aliases": [
+        "grass mat",
+        "straw mat",
+        "burlap mat"
+      ],
+      "forbiddenSubstitutes": [
+        "cloth sheet",
+        "blanket",
+        "fabric mat"
+      ],
+      "sceneIds": [
+        "bn_sc_1778499346783_zvop7v"
+      ],
+      "sceneCount": 1,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single soft-form object reference, isolated on clean light background, stable contour and readable volume, no wearer, no person, no environment clutter"
+    }
+  ],
+  "scenes": [
+    {
+      "sceneId": "bn_sc_1778499346783_psj7br",
+      "sceneIndex": 1,
+      "sceneName": "清晨山坡",
+      "summary": "清晨山坡：黎明的山坡上，雾气轻轻笼罩，羊群在缓慢的步伐中踱步，远处的山脉像青铜盔甲一样静默。",
+      "sourceKey": "bn_sc_1778499346783_psj7br",
+      "workflow": "scene_prompt_only",
+      "missingRequiredAssetIds": [],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "loc_hill"
+      ],
+      "promptAssets": [
+        {
+          "id": "loc_hill",
+          "name": "山坡",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_dnle3h",
+      "sceneIndex": 2,
+      "sceneName": "牧童的喊声",
+      "summary": "牧童的喊声：孩子忽然高喊：“狼来了！”他扯起羊圈的绳索，急切地望向山脊，想要引起村民的注意。",
+      "sourceKey": "bn_sc_1778499346783_dnle3h",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "prop_rope",
+        "loc_hill"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_rope",
+          "name": "羊圈绳索",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "natural fiber rope, knotted at both ends, tied to fence posts, about 3 meters long",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "vine",
+            "chain",
+            "bungee",
+            "string"
+          ]
+        },
+        {
+          "id": "loc_hill",
+          "name": "山坡",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_7tqi75",
+      "sceneIndex": 3,
+      "sceneName": "第一选择点",
+      "summary": "第一选择点：孩子决定下一步该怎么做？",
+      "sourceKey": "bn_sc_1778499346783_7tqi75",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "loc_hill"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_hill",
+          "name": "山坡",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_wkp73u",
+      "sceneIndex": 4,
+      "sceneName": "1后果1",
+      "summary": "1后果1：他来到山坡，细致检查周围，发现没有狼的踪迹，山羊安然无恙。村民听到他的报告后，对他产生了些许尊敬。",
+      "sourceKey": "bn_sc_1778499346783_wkp73u",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "loc_hill"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_hill",
+          "name": "山坡",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_yvxegf",
+      "sceneIndex": 5,
+      "sceneName": "1后果2",
+      "summary": "1后果2：他回到牧场，仔细数羊，确认羊群安全。村民听他不断的话语后，开始怀疑他的真实性，低声议论。",
+      "sourceKey": "bn_sc_1778499346783_yvxegf",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "loc_village"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_village",
+          "name": "牧场",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_rc68yu",
+      "sceneIndex": 6,
+      "sceneName": "山间嚎叫",
+      "summary": "山间嚎叫：正当孩子巡视时，远处传来低沉的狼嚎，寒风带着尖利的声音刺进耳膜。",
+      "sourceKey": "bn_sc_1778499346783_rc68yu",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "loc_hill"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_hill",
+          "name": "山坡",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_ms8hvq",
+      "sceneIndex": 7,
+      "sceneName": "第二选择点",
+      "summary": "第二选择点：面对狼嚎，孩子该怎么应对？",
+      "sourceKey": "bn_sc_1778499346783_ms8hvq",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "loc_hill"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_hill",
+          "name": "山坡",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_zvop7v",
+      "sceneIndex": 8,
+      "sceneName": "2后果1",
+      "summary": "2后果1：他冲向声音源，发现一只受伤的狼躲在草丛中，伤口流血。孩子用手中的草席轻轻包扎，狼顿时静止，感谢他的帮助。",
+      "sourceKey": "bn_sc_1778499346783_zvop7v",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "prop_grass_mat",
+        "loc_hill"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_grass_mat",
+          "name": "草席",
+          "category": "prop",
+          "lockProfile": "soft_prop",
+          "lockWorkflow": "prop_soft",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "woven straw mat, rectangular, about 1 meter by 0.5 meter, lying on grass",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "cloth sheet",
+            "blanket",
+            "fabric mat"
+          ]
+        },
+        {
+          "id": "loc_hill",
+          "name": "山坡",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_p5uyib",
+      "sceneIndex": 9,
+      "sceneName": "2后果2",
+      "summary": "2后果2：他选择等待，等到村民赶来后才报告，随后大家在草原上检查，没有发现狼。村民们对他之前的言辞仍持怀疑态度。",
+      "sourceKey": "bn_sc_1778499346783_p5uyib",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "loc_village"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_village",
+          "name": "牧场",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_teao2b",
+      "sceneIndex": 10,
+      "sceneName": "结局1",
+      "summary": "结局1：村民们终于相信了孩子的诚实，重新把信任交给他，村民甚至邀请他参与管理羊群，孩子的责任感大增。",
+      "sourceKey": "bn_sc_1778499346783_teao2b",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "loc_village"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_village",
+          "name": "牧场",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_sc_1778499346783_yfmbb0",
+      "sceneIndex": 11,
+      "sceneName": "结局2",
+      "summary": "结局2：村民们对孩子的诚实产生了保留，暂时不再把他视为可靠的守护者，孩子只能在边缘观察，明白了诚信的重要。",
+      "sourceKey": "bn_sc_1778499346783_yfmbb0",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_child"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_child",
+        "loc_village"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_child",
+          "name": "牧童",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_village",
+          "name": "牧场",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "assetCount": 5,
+    "sceneCount": 11,
+    "refRequiredCount": 1,
+    "refReadyCount": 0,
+    "refMissingCount": 1,
+    "workflows": {
+      "scene_prompt_only": 1,
+      "scene_prompt_only_fallback": 10
+    }
+  }
+}

@@ -1,3 +1,5 @@
+import path from 'node:path'
+
 function normalizePrompt(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }

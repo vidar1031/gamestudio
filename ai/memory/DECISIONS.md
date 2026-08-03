@@ -1,1 +1,17 @@
-Refresh ai/memory/DECISIONS.md with only stable rules validated by this run. Remove temporary progress notes. Keep decisions about runtime memory injection, daily log selection, review boundaries, and control/Hermes workflow behavior when they are newly established or corrected.
+# DECISIONS.md — 生效中的规则与取舍
+
+> 本文件只记录已验证的稳定决策，由人工或经审核的流程更新。上次重建：2026-07-23（此前内容误写为刷新指令，已清理）。
+
+## 架构定位（2026-07-23 确认）
+- Hermes = 本地智能常驻助手（24/7 daemon），GameStudio 是其第一个实测项目。
+- 治理中台 = 「守护台」（原 control-console，UI 层已改名），负责让助手不黑盒、可管理、可审核。
+- 生产链（分类→plan→执行→生成→评审→导出）保持 Control + GameStudio Server 确定性实现；Hermes 从"模型代理"角色退役，在助手层启用 cron/子 agent/多渠道等原生能力。
+
+## 生产纪律（2026-07-22 起生效）
+- 模型输出只能是候选；脚本生成/蓝图评审失败必须显式失败，禁止确定性兜底冒充成功（F-12/F-13）。
+- 生产代码不得包含测试用例关键词与回答关键词填充（F-11）。
+- 写入/删除/导出/脚本动作全部过 review gate 并落审核记录；密钥只存 `.env`（`MOONSHOT_API_KEY`），不进 git。
+
+## 模型路由（当前生效）
+- 左脑绑定模型：gpt-oss-20b-MXFP4-Q8（2026-07-23 由 Qwen3.5-9B 切换，9B 对话能力不足）。
+- 路由配置声明的 hermes+strict 会被运行时静默降级为 direct——strict 语义待修正或删除。

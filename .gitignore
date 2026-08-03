@@ -29,6 +29,9 @@ monitor/
 .hermes/
 .openclaw/*.plist
 
+# Hermes control runtime state (machine-local, may contain provider fingerprints)
+config/hermes/manager.left-brain.state.json
+
 # Agent runtime event logs / chat history snapshots (session data, not source)
 /agent-runtime.*
 /hermes-runtime.*

@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "2.0",
+  "id": "e505a52d-b99b-4768-880c-ebe69ae5e0c3",
+  "title": "雨夜咖啡馆的时间循环",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-05-12T10:16:35.269Z",
+  "updatedAt": "2026-05-18T05:11:42.555Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Neon-lit rainy alley, late-night urban cafe, reflective puddles, dim interior, moody atmosphere, consistent characters and locations across scenes",
+        "characters": [
+          {
+            "id": "barista",
+            "name": "Barista",
+            "aliases": [],
+            "anchorPrompt": "Barista in a neon-lit rainy cafe, wearing a simple apron, neutral expression, slightly trembling hands",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "bell",
+            "name": "Wind chime bell",
+            "aliases": [],
+            "anchorPrompt": "Metal wind chime bell hanging, small, jingling, reflecting light",
+            "forbiddenSubstitutes": [],
+            "locked": true
+          },
+          {
+            "id": "neon_sign",
+            "name": "Neon sign",
+            "aliases": [],
+            "anchorPrompt": "Neon sign with stylized letters, glowing, flickering, reflecting on puddles",
+            "forbiddenSubstitutes": [],
+            "locked": true
+          },
+          {
+            "id": "coffee_cup",
+            "name": "Coffee cup",
+            "aliases": [],
+            "anchorPrompt": "Steaming ceramic coffee cup, black mug, small steam curls",
+            "forbiddenSubstitutes": [],
+            "locked": true
+          },
+          {
+            "id": "paper_note",
+            "name": "Paper note",
+            "aliases": [],
+            "anchorPrompt": "Wet paper note, crumpled, water droplets, handwritten text",
+            "forbiddenSubstitutes": [],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "cafe_interior",
+            "name": "Cafe interior",
+            "aliases": [],
+            "anchorPrompt": "Dim interior of a rainy cafe, wooden counter, neon glow, reflective puddles on floor",
+            "locked": true
+          },
+          {
+            "id": "cafe_exterior",
+            "name": "Cafe exterior",
+            "aliases": [],
+            "anchorPrompt": "Neon-lit street outside the cafe, puddled street, rain falling, neon sign glowing",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Protagonist enters the rainy cafe, neon sign glows, wind chime rings.",
+          "Barista's hands tremble, a wet paper note appears on the table.",
+          "Protagonist asks barista about the time loop, barista smiles, rain stops, electric hum, walls peel.",
+          "Protagonist reads paper note warning against coffee, barista offers steaming cup.",
+          "Choosing to ask the secret triggers defense, darkness engulfs, wind chime rings, protagonist returns to entrance.",
+          "Choosing to read note, protagonist runs to back door, rain stops, dawn breaks, protagonist escapes loop."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf"
+        ],
+        "sceneRefs": {
+          "bn_start": {
+            "characters": [
+              "barista"
+            ],
+            "props": [
+              "bell",
+              "neon_sign"
+            ],
+            "locations": [
+              "cafe_interior"
+            ]
+          },
+          "bn_choice_1": {
+            "characters": [
+              "barista"
+            ],
+            "props": [
+              "bell",
+              "neon_sign"
+            ],
+            "locations": [
+              "cafe_interior"
+            ]
+          },
+          "bn_1后果1": {
+            "characters": [
+              "barista"
+            ],
+            "props": [
+              "bell",
+              "neon_sign",
+              "coffee_cup"
+            ],
+            "locations": [
+              "cafe_interior"
+            ]
+          },
+          "bn_1后果2": {
+            "characters": [
+              "barista"
+            ],
+            "props": [
+              "bell",
+              "neon_sign",
+              "coffee_cup",
+              "paper_note"
+            ],
+            "locations": [
+              "cafe_interior"
+            ]
+          },
+          "bn_结局1": {
+            "characters": [],
+            "props": [
+              "bell",
+              "neon_sign"
+            ],
+            "locations": [
+              "cafe_interior"
+            ]
+          },
+          "bn_结局2": {
+            "characters": [],
+            "props": [
+              "neon_sign"
+            ],
+            "locations": [
+              "cafe_exterior"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Neon-lit rainy alley, late-night urban cafe, reflective puddles, dim interior, moody atmosphere, consistent characters and locations across scenes\",\n  \"characters\": [\n    {\n      \"id\": \"barista\",\n      \"name\": \"Barista\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"Barista in a neon-lit rainy cafe, wearing a simple apron, neutral expression, slightly trembling hands\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"bell\",\n      \"name\": \"Wind chime bell\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"Metal wind chime bell hanging, small, jingling, reflecting light\",\n      \"forbiddenSubstitutes\": [],\n      \"locked\": true\n    },\n    {\n      \"id\": \"neon_sign\",\n      \"name\": \"Neon sign\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"Neon sign with stylized letters, glowing, flickering, reflecting on puddles\",\n      \"forbiddenSubstitutes\": [],\n      \"locked\": true\n    },\n    {\n      \"id\": \"coffee_cup\",\n      \"name\": \"Coffee cup\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"Steaming ceramic coffee cup, black mug, small steam curls\",\n      \"forbiddenSubstitutes\": [],\n      \"locked\": true\n    },\n    {\n      \"id\": \"paper_note\",\n      \"name\": \"Paper note\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"Wet paper note, crumpled, water droplets, handwritten text\",\n      \"forbiddenSubstitutes\": [],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"cafe_interior\",\n      \"name\": \"Cafe interior\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"Dim interior of a rainy cafe, wooden counter, neon glow, reflective puddles on floor\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"cafe_exterior\",\n      \"name\": \"Cafe exterior\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"Neon-lit street outside the cafe, puddled street, rain falling, neon sign glowing\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Protagonist enters the rainy cafe, neon sign glows, wind chime rings.\",\n    \"Barista's hands tremble, a wet paper note appears on the table.\",\n    \"Protagonist asks barista about the time loop, barista smiles, rain stops, electric hum, walls peel.\",\n    \"Protagonist reads paper note warning against coffee, barista offers steaming cup.\",\n    \"Choosing to ask the secret triggers defense, darkness engulfs, wind chime rings, protagonist returns to entrance.\",\n    \"Choosing to read note, protagonist runs to back door, rain stops, dawn breaks, protagonist escapes loop.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\"\n  ],\n  \"sceneRefs\": {\n    \"bn_start\": {\n      \"characters\": [\n        \"barista\"\n      ],\n      \"props\": [\n        \"bell\",\n        \"neon_sign\"\n      ],\n      \"locations\": [\n        \"cafe_interior\"\n      ]\n    },\n    \"bn_choice_1\": {\n      \"characters\": [\n        \"barista\"\n      ],\n      \"props\": [\n        \"bell\",\n        \"neon_sign\"\n      ],\n      \"locations\": [\n        \"cafe_interior\"\n      ]\n    },\n    \"bn_1后果1\": {\n      \"characters\": [\n        \"barista\"\n      ],\n      \"props\": [\n        \"bell\",\n        \"neon_sign\",\n        \"coffee_cup\"\n      ],\n      \"locations\": [\n        \"cafe_interior\"\n      ]\n    },\n    \"bn_1后果2\": {\n      \"characters\": [\n        \"barista\"\n      ],\n      \"props\": [\n        \"bell\",\n        \"neon_sign\",\n        \"coffee_cup\",\n        \"paper_note\"\n      ],\n      \"locations\": [\n        \"cafe_interior\"\n      ]\n    },\n    \"bn_结局1\": {\n      \"characters\": [],\n      \"props\": [\n        \"bell\",\n        \"neon_sign\"\n      ],\n      \"locations\": [\n        \"cafe_interior\"\n      ]\n    },\n    \"bn_结局2\": {\n      \"characters\": [],\n      \"props\": [\n        \"neon_sign\"\n      ],\n      \"locations\": [\n        \"cafe_exterior\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-05-18T05:11:42.554Z"
+    }
+  }
+}

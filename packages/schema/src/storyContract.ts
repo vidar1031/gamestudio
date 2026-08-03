@@ -105,6 +105,19 @@ export const StoryBibleGeneratePayloadSchema = z.object({
     characters: z.array(z.any()).optional(),
     props: z.array(z.any()).optional(),
     locations: z.array(z.any()).optional(),
+    // Control 侧衍生的候选提示（服务端 storyBible.js 实际消费，仅作候选不作真相源）
+    candidateWorldHints: z.object({
+      worldAnchor: z.string().optional(),
+      forbiddenSubstitutes: z.array(z.string()).optional(),
+      eventChain: z.array(z.string()).optional(),
+    }).passthrough().optional(),
+    candidateEntities: z.object({
+      characters: z.array(z.any()).optional(),
+      props: z.array(z.any()).optional(),
+      locations: z.array(z.any()).optional(),
+    }).passthrough().optional(),
+    scenePresenceRules: z.array(z.string()).optional(),
+    source: z.string().optional(),
   }).strict(),
   timeoutMs: z.number().int().min(1000).max(600000).optional(),
 })

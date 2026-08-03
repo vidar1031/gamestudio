@@ -8,6 +8,12 @@ const routes = [
     redirect: '/dashboard',
     children: [
       {
+        path: 'chat',
+        name: 'Chat',
+        component: () => import('../pages/ChatPage.vue'),
+        meta: { title: '聊天', icon: '◉' }
+      },
+      {
         path: 'dashboard',
         name: 'Dashboard',
         component: () => import('../pages/DashboardPage.vue'),

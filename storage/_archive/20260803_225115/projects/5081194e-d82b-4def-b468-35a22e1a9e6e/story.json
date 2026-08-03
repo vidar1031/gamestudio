@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "2.0",
+  "startNodeId": "start",
+  "nodes": [
+    {
+      "id": "start",
+      "name": "开始",
+      "kind": "scene",
+      "body": {
+        "text": "这是一个新的故事。请在右侧属性面板编辑内容。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_start_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "这是一个新的故事。请在右侧属性面板编辑内容。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "choices": [
+        {
+          "id": "c1",
+          "text": "继续",
+          "toNodeId": "end"
+        }
+      ],
+      "visuals": {
+        "placements": []
+      }
+    },
+    {
+      "id": "end",
+      "name": "结局",
+      "kind": "ending",
+      "body": {
+        "text": "故事结束。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_end_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "故事结束",
+                  "bullets": [],
+                  "moral": "故事结束。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      }
+    }
+  ]
+}

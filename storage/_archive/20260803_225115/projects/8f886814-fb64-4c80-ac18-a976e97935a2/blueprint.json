@@ -1,0 +1,182 @@
+{
+  "schemaVersion": "1.0",
+  "startNodeId": "bn_sc_1780759675333_3efam0",
+  "placeholders": [],
+  "nodes": [
+    {
+      "id": "bn_sc_1780759675333_3efam0",
+      "scriptCardId": "sc_1780759675333_3efam0",
+      "name": "小红帽的旅程开始",
+      "kind": "scene",
+      "textDraft": "小红帽的旅程开始\n小红帽收到了奶奶的邀请，准备去奶奶家送点心。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_3efam0",
+          "text": "继续",
+          "toNodeId": "bn_sc_1780759675333_48gwhr"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_48gwhr",
+      "scriptCardId": "sc_1780759675333_48gwhr",
+      "name": "小红帽踏上小径",
+      "kind": "scene",
+      "textDraft": "小红帽踏上小径\n她踏上通往奶奶家的小路，树影婆娑，空气清新。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_48gwhr",
+          "text": "继续",
+          "toNodeId": "bn_sc_1780759675333_5nezdi"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_5nezdi",
+      "scriptCardId": "sc_1780759675333_5nezdi",
+      "name": "第一道选择",
+      "kind": "scene",
+      "textDraft": "第一道选择\n小红帽站在分叉路口，左边是一条曲折的小径，右边是一条通往河边的宽阔小路。\n选项1：走曲折的小径。\n选项2：走河边的小路。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_5nezdi_1",
+          "text": "走曲折的小径。",
+          "toNodeId": "bn_sc_1780759675333_1f7p3v"
+        },
+        {
+          "id": "bc_sc_1780759675333_5nezdi_2",
+          "text": "走河边的小路。",
+          "toNodeId": "bn_sc_1780759675333_a63ftc"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_1f7p3v",
+      "scriptCardId": "sc_1780759675333_1f7p3v",
+      "name": "1后果1",
+      "kind": "scene",
+      "textDraft": "1后果1\n小红帽走进曲折的小径，忽然听到树叶沙沙声，转身看到一只狡猾的狼正盯着她。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_1f7p3v",
+          "text": "继续",
+          "toNodeId": "bn_sc_1780759675333_3688fr"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_a63ftc",
+      "scriptCardId": "sc_1780759675333_a63ftc",
+      "name": "1后果2",
+      "kind": "scene",
+      "textDraft": "1后果2\n小红帽沿着河边的宽阔小路前行，风吹过河面，远处传来狼的低吼。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_a63ftc",
+          "text": "继续",
+          "toNodeId": "bn_sc_1780759675333_3688fr"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_3688fr",
+      "scriptCardId": "sc_1780759675333_3688fr",
+      "name": "狼的阴谋",
+      "kind": "scene",
+      "textDraft": "狼的阴谋\n狼想先去奶奶家，假扮小红帽，等她到达时再吃掉奶奶。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_3688fr",
+          "text": "继续",
+          "toNodeId": "bn_sc_1780759675333_9e11j0"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_9e11j0",
+      "scriptCardId": "sc_1780759675333_9e11j0",
+      "name": "第二道选择",
+      "kind": "scene",
+      "textDraft": "第二道选择\n小红帽遇到狼，狼说自己迷路，需要帮助。\n选项1：不相信狼，继续前行。\n选项2：相信狼，跟随它。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_9e11j0_1",
+          "text": "不相信狼，继续前行。",
+          "toNodeId": "bn_sc_1780759675333_uptgpt"
+        },
+        {
+          "id": "bc_sc_1780759675333_9e11j0_2",
+          "text": "相信狼，跟随它。",
+          "toNodeId": "bn_sc_1780759675333_4pjf5y"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_uptgpt",
+      "scriptCardId": "sc_1780759675333_uptgpt",
+      "name": "2后果1",
+      "kind": "scene",
+      "textDraft": "2后果1\n小红帽拒绝狼的请求，跑回小径，及时发现狼的阴谋，逃离危险。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_uptgpt",
+          "text": "继续",
+          "toNodeId": "bn_sc_1780759675333_3axxn9"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_4pjf5y",
+      "scriptCardId": "sc_1780759675333_4pjf5y",
+      "name": "2后果2",
+      "kind": "scene",
+      "textDraft": "2后果2\n小红帽跟随狼来到奶奶家，狼把她吞下，奶奶被困在屋里。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1780759675333_4pjf5y",
+          "text": "继续",
+          "toNodeId": "bn_sc_1780759675333_ua7n64"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1780759675333_3axxn9",
+      "scriptCardId": "sc_1780759675333_3axxn9",
+      "name": "结局1",
+      "kind": "ending",
+      "textDraft": "结局1\n小红帽安全抵达奶奶家，奶奶和猎人一起将狼赶走，她们一家团聚。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    },
+    {
+      "id": "bn_sc_1780759675333_ua7n64",
+      "scriptCardId": "sc_1780759675333_ua7n64",
+      "name": "结局2",
+      "kind": "ending",
+      "textDraft": "结局2\n小红帽被狼吞下，奶奶永远失去了她的孩子。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    }
+  ],
+  "updatedAt": "2026-06-06T15:27:55.334Z"
+}

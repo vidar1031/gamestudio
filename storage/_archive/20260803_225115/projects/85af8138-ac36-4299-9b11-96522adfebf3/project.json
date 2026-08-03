@@ -1,0 +1,262 @@
+{
+  "schemaVersion": "2.0",
+  "id": "85af8138-ac36-4299-9b11-96522adfebf3",
+  "title": "雨夜咖啡馆的时间循环",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T13:58:29.898Z",
+  "updatedAt": "2026-08-03T14:05:48.003Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "A cozy Chinese coffee shop interior on a rainy night, warm yellow lamplight, soft reflections, cinematic framing, steady camera focus on the protagonist.",
+        "characters": [
+          {
+            "id": "char_protagonist",
+            "name": "主角",
+            "aliases": [
+              "Protagonist",
+              "Player"
+            ],
+            "anchorPrompt": "A young adult, average build, wearing a dark hoodie and jeans, holding a ceramic coffee cup, standing in a dimly lit coffee shop.",
+            "negativePrompt": "",
+            "locked": true
+          },
+          {
+            "id": "char_friend",
+            "name": "朋友",
+            "aliases": [
+              "Friend",
+              "Companion"
+            ],
+            "anchorPrompt": "A close friend in a jacket, carrying a briefcase, standing beside the protagonist in the coffee shop.",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_coffee_cup",
+            "name": "Coffee Cup",
+            "aliases": [
+              "Ceramic cup",
+              "Hot beverage holder"
+            ],
+            "anchorPrompt": "White ceramic coffee cup with a saucer, steam visible, placed on a wooden table.",
+            "forbiddenSubstitutes": [
+              "plastic cup",
+              "paper cup"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_window",
+            "name": "Frosted Window",
+            "aliases": [
+              "Rainy window",
+              "Window view"
+            ],
+            "anchorPrompt": "Large frosted window with rain streaks, offering a view of a quiet street outside.",
+            "forbiddenSubstitutes": [
+              "open window",
+              "transparent glass"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_espresso_machine",
+            "name": "Espresso Machine",
+            "aliases": [
+              "Coffee machine",
+              "Barista machine"
+            ],
+            "anchorPrompt": "Black industrial espresso machine with a steam vent, placed behind the counter.",
+            "forbiddenSubstitutes": [
+              "single shot machine",
+              "home espresso"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_clock",
+            "name": "Wall Clock",
+            "aliases": [
+              "Analog clock",
+              "Timepiece"
+            ],
+            "anchorPrompt": "Wall-mounted analog clock showing 3:00, classic design with brass hands.",
+            "forbiddenSubstitutes": [
+              "digital clock",
+              "mobile clock"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_menu_board",
+            "name": "Chalkboard Menu",
+            "aliases": [
+              "Menu board",
+              "Coffee list"
+            ],
+            "anchorPrompt": "Chalkboard with handwritten coffee options, positioned near the counter.",
+            "forbiddenSubstitutes": [
+              "printed menu",
+              "digital menu"
+            ],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_cafe",
+            "name": "Rainy Night Coffee Shop",
+            "aliases": [
+              "Cafe",
+              "Coffee house"
+            ],
+            "anchorPrompt": "Interior of a small Chinese coffee shop, wooden tables, dim yellow lamp glow, rain visible through window, steady ambient sound.",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Opening: Protagonist realizes tonight's choice will change everyone's fate.",
+          "Choice 1: Investigate anomaly or protect companion.",
+          "Result 1: Protagonist finds a repeatable pattern behind apparent random events.",
+          "Result 2: Protagonist protects companion, missing first clue but gains deeper trust.",
+          "Ending 1: Protagonist breaks the loop, walking toward a new dawn.",
+          "Ending 2: Protagonist keeps the secret, maintaining the status quo but knowing how to choose next time."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf",
+          "plastic cup",
+          "paper cup",
+          "open window",
+          "transparent glass",
+          "single shot machine",
+          "home espresso",
+          "digital clock",
+          "mobile clock",
+          "printed menu",
+          "digital menu"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_window",
+              "prop_espresso_machine",
+              "prop_clock",
+              "prop_menu_board"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_window",
+              "prop_espresso_machine",
+              "prop_clock",
+              "prop_menu_board"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_window",
+              "prop_espresso_machine",
+              "prop_clock",
+              "prop_menu_board"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_window",
+              "prop_espresso_machine",
+              "prop_clock",
+              "prop_menu_board"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_window",
+              "prop_espresso_machine",
+              "prop_clock",
+              "prop_menu_board"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_window",
+              "prop_espresso_machine",
+              "prop_clock",
+              "prop_menu_board"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"A cozy Chinese coffee shop interior on a rainy night, warm yellow lamplight, soft reflections, cinematic framing, steady camera focus on the protagonist.\",\n  \"characters\": [\n    {\n      \"id\": \"char_protagonist\",\n      \"name\": \"主角\",\n      \"aliases\": [\n        \"Protagonist\",\n        \"Player\"\n      ],\n      \"anchorPrompt\": \"A young adult, average build, wearing a dark hoodie and jeans, holding a ceramic coffee cup, standing in a dimly lit coffee shop.\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"char_friend\",\n      \"name\": \"朋友\",\n      \"aliases\": [\n        \"Friend\",\n        \"Companion\"\n      ],\n      \"anchorPrompt\": \"A close friend in a jacket, carrying a briefcase, standing beside the protagonist in the coffee shop.\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_coffee_cup\",\n      \"name\": \"Coffee Cup\",\n      \"aliases\": [\n        \"Ceramic cup\",\n        \"Hot beverage holder\"\n      ],\n      \"anchorPrompt\": \"White ceramic coffee cup with a saucer, steam visible, placed on a wooden table.\",\n      \"forbiddenSubstitutes\": [\n        \"plastic cup\",\n        \"paper cup\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_window\",\n      \"name\": \"Frosted Window\",\n      \"aliases\": [\n        \"Rainy window\",\n        \"Window view\"\n      ],\n      \"anchorPrompt\": \"Large frosted window with rain streaks, offering a view of a quiet street outside.\",\n      \"forbiddenSubstitutes\": [\n        \"open window\",\n        \"transparent glass\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_espresso_machine\",\n      \"name\": \"Espresso Machine\",\n      \"aliases\": [\n        \"Coffee machine\",\n        \"Barista machine\"\n      ],\n      \"anchorPrompt\": \"Black industrial espresso machine with a steam vent, placed behind the counter.\",\n      \"forbiddenSubstitutes\": [\n        \"single shot machine\",\n        \"home espresso\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_clock\",\n      \"name\": \"Wall Clock\",\n      \"aliases\": [\n        \"Analog clock\",\n        \"Timepiece\"\n      ],\n      \"anchorPrompt\": \"Wall-mounted analog clock showing 3:00, classic design with brass hands.\",\n      \"forbiddenSubstitutes\": [\n        \"digital clock\",\n        \"mobile clock\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_menu_board\",\n      \"name\": \"Chalkboard Menu\",\n      \"aliases\": [\n        \"Menu board\",\n        \"Coffee list\"\n      ],\n      \"anchorPrompt\": \"Chalkboard with handwritten coffee options, positioned near the counter.\",\n      \"forbiddenSubstitutes\": [\n        \"printed menu\",\n        \"digital menu\"\n      ],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_cafe\",\n      \"name\": \"Rainy Night Coffee Shop\",\n      \"aliases\": [\n        \"Cafe\",\n        \"Coffee house\"\n      ],\n      \"anchorPrompt\": \"Interior of a small Chinese coffee shop, wooden tables, dim yellow lamp glow, rain visible through window, steady ambient sound.\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Opening: Protagonist realizes tonight's choice will change everyone's fate.\",\n    \"Choice 1: Investigate anomaly or protect companion.\",\n    \"Result 1: Protagonist finds a repeatable pattern behind apparent random events.\",\n    \"Result 2: Protagonist protects companion, missing first clue but gains deeper trust.\",\n    \"Ending 1: Protagonist breaks the loop, walking toward a new dawn.\",\n    \"Ending 2: Protagonist keeps the secret, maintaining the status quo but knowing how to choose next time.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\",\n    \"plastic cup\",\n    \"paper cup\",\n    \"open window\",\n    \"transparent glass\",\n    \"single shot machine\",\n    \"home espresso\",\n    \"digital clock\",\n    \"mobile clock\",\n    \"printed menu\",\n    \"digital menu\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_window\",\n        \"prop_espresso_machine\",\n        \"prop_clock\",\n        \"prop_menu_board\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_window\",\n        \"prop_espresso_machine\",\n        \"prop_clock\",\n        \"prop_menu_board\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_window\",\n        \"prop_espresso_machine\",\n        \"prop_clock\",\n        \"prop_menu_board\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_window\",\n        \"prop_espresso_machine\",\n        \"prop_clock\",\n        \"prop_menu_board\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_window\",\n        \"prop_espresso_machine\",\n        \"prop_clock\",\n        \"prop_menu_board\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_window\",\n        \"prop_espresso_machine\",\n        \"prop_clock\",\n        \"prop_menu_board\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T14:05:48.001Z"
+    }
+  }
+}

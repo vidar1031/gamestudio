@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "id": "16b20103-3000-4e8b-ab03-f4224eb63ad1",
+  "title": "狼来了",
+  "stage": "script",
+  "createdAt": "2026-05-11T11:35:46.792Z",
+  "updatedAt": "2026-05-12T07:36:26.282Z",
+  "aiFormula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 2,
+    "optionsPerChoice": 2,
+    "endings": 2
+  }
+}

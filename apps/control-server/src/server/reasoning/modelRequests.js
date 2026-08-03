@@ -57,62 +57,6 @@ function normalizeReasoningText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
-function getProductionTestExpectations(contextSelection = {}) {
-  if (contextSelection?.expectations && typeof contextSelection.expectations === 'object') {
-    return contextSelection.expectations
-  }
-  const caseId = String(contextSelection?.caseId || '').trim()
-  if (caseId === 'L1-21') {
-    return {
-      requireAll: ['用户目标', 'story workflow', 'artifact', 'evaluator', '达标程度', 'Hermes', 'OMLX'],
-      requireAny: ['未达标', '部分达标', '尚未', '未完成']
-    }
-  }
-  if (caseId === 'L1-22') {
-    return {
-      requireAll: ['heartbeat', 'orphan', 'recover', 'UI', '达标程度', 'Hermes', 'OMLX'],
-      requireAny: ['部分达标', '未达标', '仍缺', '尚未']
-    }
-  }
-  if (caseId === 'L1-23') {
-    return {
-      requireAll: ['correctionPrompt', '_inbox', 'proposal', '人工', '达标程度', 'Hermes', 'OMLX'],
-      requireAny: ['不会', '不能', '不得', '不会直接']
-    }
-  }
-  return null
-}
-
-function applyProductionTestTermCoverage(reply, contextSelection = {}) {
-  const text = String(reply || '')
-  const expectations = getProductionTestExpectations(contextSelection)
-  const shouldApply = Boolean(contextSelection?.productionTest)
-    && Boolean(contextSelection?.requireModelAnswer || contextSelection?.requireHermesModelAnswer)
-    && expectations
-  if (!shouldApply) return text
-
-  const lower = text.toLowerCase()
-  const requireAll = Array.isArray(expectations.requireAll)
-    ? expectations.requireAll.map((item) => String(item || '').trim()).filter(Boolean)
-    : []
-  const requireAny = Array.isArray(expectations.requireAny)
-    ? expectations.requireAny.map((item) => String(item || '').trim()).filter(Boolean)
-    : []
-  const missingAll = requireAll.filter((item) => !lower.includes(item.toLowerCase()))
-  const hasAny = requireAny.length === 0 || requireAny.some((item) => lower.includes(item.toLowerCase()))
-  const coverageTerms = [...new Set([
-    ...missingAll,
-    ...(!hasAny && requireAny.length > 0 ? [requireAny[0]] : [])
-  ])]
-  if (coverageTerms.length === 0) return text
-
-  return [
-    text.trimEnd(),
-    '',
-    `门禁术语覆盖（非新增事实，仅保留本题要求的字面术语）：${coverageTerms.join('、')}。`
-  ].join('\n')
-}
-
 function shouldUseProductionTestDeterministicAnswer(contextSelection = {}) {
   return Boolean(contextSelection?.productionTest)
     && String(contextSelection?.stageId || '').trim().toLowerCase() === 'l5'
@@ -263,13 +207,15 @@ async function requestReasoningAnswerFromModel({
     sessionId,
     phase: 'reasoning_answer',
     messages: answerMessages,
-    maxTokens: 220,
+    maxTokens: 8192,
     route: answerRoute,
     signal,
     timeoutMs: HERMES_CHAT_REQUEST_TIMEOUT_MS
   })
+  const rawContent = String(data.choices?.[0]?.message?.content || '').trim()
+  const reply = rawContent || '[模型未返回可见回答内容]'
   return {
-    reply: data.choices?.[0]?.message?.content || JSON.stringify(data),
+    reply,
     usage: data.usage || null,
     outboundPreview: buildStructuredOutboundPreview({
       binding: routedBinding,
@@ -286,7 +232,7 @@ async function requestReasoningAnswerFromModel({
       contextSelection: contextSelection || {},
       history
     }),
-    rawResponsePreview: truncateReasoningPreview(data.choices?.[0]?.message?.content || JSON.stringify(data), 2400)
+    rawResponsePreview: truncateReasoningPreview(rawContent || '[模型未返回可见回答内容]', 2400)
   }
 }
 
@@ -655,7 +601,7 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
     })
     const contradiction = detectModelAnswerSelfContradiction(firstAttempt.reply, binding, options)
     if (!contradiction) {
-      const reply = applyProductionTestTermCoverage(firstAttempt.reply, options.contextSelection || {})
+      const reply = firstAttempt.reply
       return {
         reply,
         usage: firstAttempt.usage,
@@ -687,7 +633,7 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
       contextSelection: options.contextSelection || {},
       signal: controller.signal,
     })
-    const reply = applyProductionTestTermCoverage(repairedAttempt.reply, options.contextSelection || {})
+    const reply = repairedAttempt.reply
     return {
       reply,
       usage: repairedAttempt.usage,

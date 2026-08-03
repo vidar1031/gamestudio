@@ -1,0 +1,821 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-08-03T12:32:13.134Z",
+  "worldAnchor": "Cozy rain‑soaked urban café interior, warm amber lighting, large window with streaked rain, soft jazz in the background, contemporary Chinese aesthetic.",
+  "forbiddenSubstitutes": [
+    "modern city",
+    "science fiction",
+    "horror gore",
+    "photorealistic adults replacing child",
+    "dog replacing wolf",
+    "tea cup",
+    "tea mug",
+    "digital clock"
+  ],
+  "eventChain": [
+    "Protagonist enters rainy night café and sits at a wooden table with Friend.",
+    "They observe subtle time anomalies and the Protagonist realizes the evening may repeat.",
+    "A choice is presented: investigate the anomaly or protect Friend.",
+    "If investigate, the Protagonist gathers clues inside the cafe, uncovering a repeatable pattern.",
+    "If protect, the Protagonist shields Friend, strengthening trust but missing the first clue.",
+    "At the loop’s conclusion, the Protagonist either breaks the cycle and steps into dawn.",
+    "Alternatively the Protagonist keeps the secret, preserves the status quo, and knows how to choose next time."
+  ],
+  "excludedAssetIds": [],
+  "assets": [
+    {
+      "id": "char_friend",
+      "name": "Friend",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Young adult, casual clothing, slight puzzled expression, standing beside protagonist.",
+      "negativePrompt": "",
+      "aliases": [
+        "同伴"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit",
+      "latestReferenceBatch": [],
+      "latestReferenceReview": null,
+      "latestRecommendedReferenceAssetUri": "",
+      "primaryReferenceSelectedAt": "",
+      "lineartHintAssetId": "",
+      "lineartHintAssetUri": "",
+      "lineartFinalAssetId": "",
+      "lineartFinalAssetUri": "",
+      "lineartStatus": "missing",
+      "lineartPrompt": "",
+      "lineartNegativePrompt": "",
+      "lineartMeta": null,
+      "lineartGeneratedAt": ""
+    },
+    {
+      "id": "char_protagonist",
+      "name": "Protagonist",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.",
+      "negativePrompt": "",
+      "aliases": [
+        "主角"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+    },
+    {
+      "id": "prop_clock",
+      "name": "Wall Clock",
+      "category": "prop",
+      "lockProfile": "rigid_prop",
+      "lockWorkflow": "prop_product",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Analog wall clock with round face, pendulum swinging, placed above the stove.",
+      "negativePrompt": "",
+      "aliases": [
+        "墙钟"
+      ],
+      "forbiddenSubstitutes": [
+        "digital clock"
+      ],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single rigid object reference, stable perspective, exactly one object only, centered composition, clear major structural parts, pure white background, no people, no environment"
+    },
+    {
+      "id": "loc_cafe",
+      "name": "Rainy Night Café",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.",
+      "negativePrompt": "",
+      "aliases": [
+        "咖啡馆"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference",
+      "latestReferenceBatch": [],
+      "latestReferenceReview": null,
+      "latestRecommendedReferenceAssetUri": "",
+      "primaryReferenceSelectedAt": "",
+      "lineartHintAssetId": "",
+      "lineartHintAssetUri": "",
+      "lineartFinalAssetId": "",
+      "lineartFinalAssetUri": "",
+      "lineartStatus": "missing",
+      "lineartPrompt": "",
+      "lineartNegativePrompt": "",
+      "lineartMeta": null,
+      "lineartGeneratedAt": ""
+    },
+    {
+      "id": "prop_coffee_cup",
+      "name": "Coffee Cup",
+      "category": "prop",
+      "lockProfile": "ambient_prop",
+      "lockWorkflow": "prop_ambient",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.",
+      "negativePrompt": "",
+      "aliases": [
+        "咖啡杯"
+      ],
+      "forbiddenSubstitutes": [
+        "tea cup",
+        "tea mug"
+      ],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single atmospheric motif reference, isolated simple form, clean pale background, no landscape, no horizon, no characters, no complex scene",
+      "latestReferenceBatch": [],
+      "latestReferenceReview": null,
+      "latestRecommendedReferenceAssetUri": "",
+      "primaryReferenceSelectedAt": "",
+      "lineartHintAssetId": "",
+      "lineartHintAssetUri": "",
+      "lineartFinalAssetId": "",
+      "lineartFinalAssetUri": "",
+      "lineartStatus": "missing",
+      "lineartPrompt": "",
+      "lineartNegativePrompt": "",
+      "lineartMeta": null,
+      "lineartGeneratedAt": ""
+    }
+  ],
+  "scenes": [
+    {
+      "sceneId": "bn_card_intro",
+      "sceneIndex": 1,
+      "sceneName": "开场",
+      "summary": "开场：未命名互动故事。基于 brief 生成最小 scripts 候选并写回项目：雨夜咖啡馆、三次循环、至少一个选择点、两个结局。必须返回 scripts 卡片数和写回证据。 主角在一个关键时刻意识到，今晚的选择会改变所有人的命运。",
+      "sourceKey": "bn_card_intro",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_clock"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_coffee_cup",
+        "prop_clock",
+        "loc_cafe"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_friend",
+          "name": "Friend",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, casual clothing, slight puzzled expression, standing beside protagonist.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "tea cup",
+            "tea mug"
+          ]
+        },
+        {
+          "id": "prop_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Analog wall clock with round face, pendulum swinging, placed above the stove.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock"
+          ]
+        },
+        {
+          "id": "loc_cafe",
+          "name": "Rainy Night Café",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1",
+      "sceneIndex": 2,
+      "sceneName": "选择1",
+      "summary": "选择1",
+      "sourceKey": "bn_card_choice_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_clock"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_coffee_cup",
+        "prop_clock",
+        "loc_cafe"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_friend",
+          "name": "Friend",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, casual clothing, slight puzzled expression, standing beside protagonist.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "tea cup",
+            "tea mug"
+          ]
+        },
+        {
+          "id": "prop_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Analog wall clock with round face, pendulum swinging, placed above the stove.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock"
+          ]
+        },
+        {
+          "id": "loc_cafe",
+          "name": "Rainy Night Café",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_1",
+      "sceneIndex": 3,
+      "sceneName": "1后果1",
+      "summary": "1后果1：主角追查线索，发现看似偶然的事件背后藏着可重复验证的规律。",
+      "sourceKey": "bn_card_choice_1_result_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_clock"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_coffee_cup",
+        "prop_clock",
+        "loc_cafe"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_friend",
+          "name": "Friend",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, casual clothing, slight puzzled expression, standing beside protagonist.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "tea cup",
+            "tea mug"
+          ]
+        },
+        {
+          "id": "prop_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Analog wall clock with round face, pendulum swinging, placed above the stove.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock"
+          ]
+        },
+        {
+          "id": "loc_cafe",
+          "name": "Rainy Night Café",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_2",
+      "sceneIndex": 4,
+      "sceneName": "1后果2",
+      "summary": "1后果2：主角选择保护同伴，因此错过了第一条线索，却获得了更深的信任。",
+      "sourceKey": "bn_card_choice_1_result_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_clock"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_coffee_cup",
+        "prop_clock",
+        "loc_cafe"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_friend",
+          "name": "Friend",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, casual clothing, slight puzzled expression, standing beside protagonist.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "tea cup",
+            "tea mug"
+          ]
+        },
+        {
+          "id": "prop_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Analog wall clock with round face, pendulum swinging, placed above the stove.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock"
+          ]
+        },
+        {
+          "id": "loc_cafe",
+          "name": "Rainy Night Café",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_1",
+      "sceneIndex": 5,
+      "sceneName": "结局1",
+      "summary": "结局1：主角打破循环，带着真相走向新的清晨。",
+      "sourceKey": "bn_card_ending_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_clock"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_coffee_cup",
+        "prop_clock",
+        "loc_cafe"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_friend",
+          "name": "Friend",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, casual clothing, slight puzzled expression, standing beside protagonist.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "tea cup",
+            "tea mug"
+          ]
+        },
+        {
+          "id": "prop_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Analog wall clock with round face, pendulum swinging, placed above the stove.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock"
+          ]
+        },
+        {
+          "id": "loc_cafe",
+          "name": "Rainy Night Café",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_2",
+      "sceneIndex": 6,
+      "sceneName": "结局2",
+      "summary": "结局2：主角保留秘密，让世界暂时维持原状，但心里已经知道下一次该如何选择。",
+      "sourceKey": "bn_card_ending_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_clock"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_friend",
+        "prop_coffee_cup",
+        "prop_clock",
+        "loc_cafe"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_friend",
+          "name": "Friend",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Young adult, casual clothing, slight puzzled expression, standing beside protagonist.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "tea cup",
+            "tea mug"
+          ]
+        },
+        {
+          "id": "prop_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Analog wall clock with round face, pendulum swinging, placed above the stove.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock"
+          ]
+        },
+        {
+          "id": "loc_cafe",
+          "name": "Rainy Night Café",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "assetCount": 5,
+    "sceneCount": 6,
+    "refRequiredCount": 3,
+    "refReadyCount": 0,
+    "refMissingCount": 3,
+    "workflows": {
+      "scene_prompt_only_fallback": 6
+    }
+  }
+}

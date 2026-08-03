@@ -2425,3 +2425,141 @@ code {
 .story-lock-workspace-overlay .ai-storyboard-asset-placeholder-title {
   color: #f8fafc;
 }
+
+/* ===== Hub 项目库卡片画廊（E1） ===== */
+.hub-hero-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.hub-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+.hub-project-card {
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.55);
+  padding: 14px;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+.hub-project-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(94, 204, 255, 0.55);
+  background: rgba(15, 23, 42, 0.75);
+}
+.hub-project-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+.hub-project-title {
+  font-weight: 700;
+  color: #e5e7eb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.hub-project-delete {
+  flex: none;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: transparent;
+  color: #9daab8;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.hub-project-delete:hover {
+  color: #fca5a5;
+  border-color: rgba(252, 165, 165, 0.5);
+}
+.hub-mini-track {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.hub-mini-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.25);
+  flex: none;
+}
+.hub-mini-dot.done {
+  background: #5eccff;
+  box-shadow: 0 0 6px rgba(94, 204, 255, 0.6);
+}
+.hub-mini-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(148, 163, 184, 0.2);
+}
+.hub-stage-label {
+  font-size: 12px;
+  color: #9daab8;
+}
+.hub-stage-label.playable {
+  color: #4dd68c;
+  font-weight: 700;
+}
+.hub-project-meta {
+  font-size: 11px;
+  color: #5e6e82;
+}
+.hub-rail-section + .hub-rail-section {
+  margin-top: 14px;
+}
+.hub-rail-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #e5e7eb;
+}
+.hub-rail-kv span {
+  display: block;
+  color: #9daab8;
+  font-size: 11px;
+  margin-top: 2px;
+  word-break: break-all;
+}
+.hub-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #9daab8;
+}
+
+/* ===== Hub 布局（E1 修正：内容+右栏） ===== */
+.hub-layout {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+}
+.hub-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+.hub-rail {
+  width: 300px;
+  flex: none;
+  overflow-y: auto;
+  border-left: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.55);
+  color: #e5e7eb;
+}
+.hub-rail .section {
+  padding: 12px;
+}

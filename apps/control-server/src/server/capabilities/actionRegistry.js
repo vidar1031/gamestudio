@@ -329,6 +329,13 @@ export const REASONING_ACTIONS = {
     description: '通过 ComfyUI SDXL 对故事资产计划中选出的事物执行锁定出图测试，验证 checkpoint/LoRA 组合可用并返回测试图像和评审结果。',
     paramsSpec: ['projectId?: 项目标识。', 'model?: ComfyUI checkpoint 文件名。', 'maxAttempts?: 最大尝试次数（1-4）。', 'style?: 风格（picture_book）。']
   },
+  story_render_scene: {
+    title: '渲染故事场景图',
+    tool: REASONING_TOOLS['gamestudio.story.renderScene'].tool,
+    category: 'story-workflow',
+    description: '调用 GameStudio Server 对指定 scene 执行场景图渲染，使用已锁定的 reference assets 保证角色/道具/地点一致性。',
+    paramsSpec: ['projectId?: 项目标识。', 'sceneId?: 场景标识。']
+  },
   story_validate_project: {
     title: '校验互动故事项目',
     tool: REASONING_TOOLS['gamestudio.story.validateProject'].tool,

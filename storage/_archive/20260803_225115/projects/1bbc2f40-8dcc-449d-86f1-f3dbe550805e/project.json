@@ -1,0 +1,159 @@
+{
+  "schemaVersion": "2.0",
+  "id": "1bbc2f40-8dcc-449d-86f1-f3dbe550805e",
+  "title": "雨夜咖啡馆的时间循环",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T13:36:30.524Z",
+  "updatedAt": "2026-08-03T13:43:53.738Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Cozy, rain-soaked café in a small town, warm lamplight, nostalgic ambience, subtle camera focus on intimate moments.",
+        "characters": [
+          {
+            "id": "protagonist",
+            "name": "Lee",
+            "aliases": [
+              "主人公",
+              "主角"
+            ],
+            "anchorPrompt": "Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_coffee_cup",
+            "name": "Coffee Cup",
+            "aliases": [
+              "咖啡杯"
+            ],
+            "anchorPrompt": "small white ceramic coffee cup with a blue rim, placed on a wooden table, steam gently rising",
+            "forbiddenSubstitutes": [
+              "plastic mug",
+              "empty cup"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_umbrella",
+            "name": "Umbrella",
+            "aliases": [
+              "雨伞"
+            ],
+            "anchorPrompt": "folded dark blue umbrella hanging on a hook beside the window, wooden handle, fabric panels",
+            "forbiddenSubstitutes": [
+              "storm umbrella",
+              "plastic umbrella"
+            ],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_cafe",
+            "name": "Rainy Night Café",
+            "aliases": [
+              "咖啡馆"
+            ],
+            "anchorPrompt": "cozy indoor café with wooden tables, low lamps, faded wallpaper, a window showing rain, chalkboard menu, mid-20th century style",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Protagonist sits at the rain-soaked café, realizing tonight’s choice will change everyone’s fate.",
+          "Protagonist confronts a decision: investigate the anomaly or protect a companion.",
+          "If investigating, the protagonist follows clues and uncovers a repeating pattern.",
+          "If protecting, the protagonist shields a companion, missing a clue but gaining deeper trust.",
+          "The protagonist breaks the time loop and walks into a new morning holding the truth.",
+          "The protagonist keeps the secret, leaving the world unchanged while knowing the next choice."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf",
+          "plastic mug",
+          "empty cup",
+          "storm umbrella",
+          "plastic umbrella"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_umbrella"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_umbrella"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": []
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": []
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": []
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": []
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Cozy, rain-soaked café in a small town, warm lamplight, nostalgic ambience, subtle camera focus on intimate moments.\",\n  \"characters\": [\n    {\n      \"id\": \"protagonist\",\n      \"name\": \"Lee\",\n      \"aliases\": [\n        \"主人公\",\n        \"主角\"\n      ],\n      \"anchorPrompt\": \"Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_coffee_cup\",\n      \"name\": \"Coffee Cup\",\n      \"aliases\": [\n        \"咖啡杯\"\n      ],\n      \"anchorPrompt\": \"small white ceramic coffee cup with a blue rim, placed on a wooden table, steam gently rising\",\n      \"forbiddenSubstitutes\": [\n        \"plastic mug\",\n        \"empty cup\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_umbrella\",\n      \"name\": \"Umbrella\",\n      \"aliases\": [\n        \"雨伞\"\n      ],\n      \"anchorPrompt\": \"folded dark blue umbrella hanging on a hook beside the window, wooden handle, fabric panels\",\n      \"forbiddenSubstitutes\": [\n        \"storm umbrella\",\n        \"plastic umbrella\"\n      ],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_cafe\",\n      \"name\": \"Rainy Night Café\",\n      \"aliases\": [\n        \"咖啡馆\"\n      ],\n      \"anchorPrompt\": \"cozy indoor café with wooden tables, low lamps, faded wallpaper, a window showing rain, chalkboard menu, mid-20th century style\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Protagonist sits at the rain-soaked café, realizing tonight’s choice will change everyone’s fate.\",\n    \"Protagonist confronts a decision: investigate the anomaly or protect a companion.\",\n    \"If investigating, the protagonist follows clues and uncovers a repeating pattern.\",\n    \"If protecting, the protagonist shields a companion, missing a clue but gaining deeper trust.\",\n    \"The protagonist breaks the time loop and walks into a new morning holding the truth.\",\n    \"The protagonist keeps the secret, leaving the world unchanged while knowing the next choice.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\",\n    \"plastic mug\",\n    \"empty cup\",\n    \"storm umbrella\",\n    \"plastic umbrella\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_umbrella\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_umbrella\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": []\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": []\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": []\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": []\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T13:43:53.737Z"
+    }
+  }
+}

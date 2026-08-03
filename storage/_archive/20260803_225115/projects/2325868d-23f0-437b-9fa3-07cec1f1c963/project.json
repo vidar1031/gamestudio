@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "2.0",
+  "id": "2325868d-23f0-437b-9fa3-07cec1f1c963",
+  "title": "未命名互动故事",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T13:00:32.387Z",
+  "updatedAt": "2026-08-03T13:00:32.387Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": ""
+    }
+  }
+}

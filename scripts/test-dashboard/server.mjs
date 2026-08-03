@@ -411,7 +411,7 @@ function parseScriptLine(res, stageId, line) {
   }
 
   // Fallback: auto verdict text
-  const verdictMatch = line.match(/(\S+)\s+自动判定:\s*(PASS|FAIL|SOFT PASS|BLOCKED)/)
+  const verdictMatch = line.match(/(\S+)\s+自动判定:\s*(PASS|FAIL|BLOCKED|CANCELLED)/)
   if (verdictMatch) {
     sendSSE(res, 'case_result', {
       id: verdictMatch[1],

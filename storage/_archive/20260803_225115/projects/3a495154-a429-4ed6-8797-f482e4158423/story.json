@@ -1,0 +1,501 @@
+{
+  "schemaVersion": "2.0",
+  "startNodeId": "bn_sc_1781788971641_cirh1f",
+  "nodes": [
+    {
+      "id": "bn_sc_1781788971641_cirh1f",
+      "name": "冒险开始",
+      "kind": "scene",
+      "body": {
+        "text": "黎明的雾气在林间悄悄弥漫，少年阿翔背着背包踏入密林，寻找传说中的古井。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_cirh1f_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "黎明的雾气在林间悄悄弥漫，少年阿翔背着背包踏入密林，寻找传说中的古井。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_cirh1f",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_cirh1f",
+          "text": "继续",
+          "toNodeId": "bn_sc_1781788971641_ub7zt6",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_ub7zt6",
+      "name": "发现地图",
+      "kind": "scene",
+      "body": {
+        "text": "他在岩石缝中发现一张旧地图，指向两条可能的路线：左侧黑暗森林与右侧河岸。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_ub7zt6_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "他在岩石缝中发现一张旧地图，指向两条可能的路线：左侧黑暗森林与右侧河岸。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_ub7zt6",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_ub7zt6",
+          "text": "继续",
+          "toNodeId": "bn_sc_1781788971641_52xdbm",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_52xdbm",
+      "name": "选择点1",
+      "kind": "scene",
+      "body": {
+        "text": "阿翔面前是两条路，路口的标记显得模糊。你会选择？\n选项1：深入黑暗森林，寻找传说的秘宝。\n选项2：沿着河岸前行，寻找潜在的安全避难所。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_52xdbm_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "阿翔面前是两条路，路口的标记显得模糊。你会选择？\n选项1：深入黑暗森林，寻找传说的秘宝。\n选项2：沿着河岸前行，寻找潜在的安全避难所。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_52xdbm",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_52xdbm_1",
+          "text": "深入黑暗森林，寻找传说的秘宝。",
+          "toNodeId": "bn_sc_1781788971641_okit7c",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        },
+        {
+          "id": "bc_sc_1781788971641_52xdbm_2",
+          "text": "沿着河岸前行，寻找潜在的安全避难所。",
+          "toNodeId": "bn_sc_1781788971641_fj0ewg",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_okit7c",
+      "name": "1后果1",
+      "kind": "scene",
+      "body": {
+        "text": "他踏入森林，树影交错，突然被一股寒风吹拂，映出暗处一双发光的眼睛。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_okit7c_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "他踏入森林，树影交错，突然被一股寒风吹拂，映出暗处一双发光的眼睛。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_okit7c",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_okit7c",
+          "text": "继续",
+          "toNodeId": "bn_sc_1781788971641_m0ubsi",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_fj0ewg",
+      "name": "1后果2",
+      "kind": "scene",
+      "body": {
+        "text": "沿河岸，他听见潺潺流水声，偶然发现一条古老木桥，桥下有光亮闪烁的石门。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_fj0ewg_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "沿河岸，他听见潺潺流水声，偶然发现一条古老木桥，桥下有光亮闪烁的石门。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_fj0ewg",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_fj0ewg",
+          "text": "继续",
+          "toNodeId": "bn_sc_1781788971641_m0ubsi",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_m0ubsi",
+      "name": "交叉点",
+      "kind": "scene",
+      "body": {
+        "text": "无论哪条路，阿翔都被一阵强光吸引，来到一个古老的石碑前，石碑刻着古老的警告。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_m0ubsi_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "无论哪条路，阿翔都被一阵强光吸引，来到一个古老的石碑前，石碑刻着古老的警告。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_m0ubsi",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_m0ubsi",
+          "text": "继续",
+          "toNodeId": "bn_sc_1781788971641_ckekmk",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_ckekmk",
+      "name": "选择点2",
+      "kind": "scene",
+      "body": {
+        "text": "石碑警告后，他需要决定：\n选项1：帮助石碑旁隐藏的村民，揭开真相。\n选项2：继续冒险，寻找更深的秘密。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_ckekmk_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "石碑警告后，他需要决定：\n选项1：帮助石碑旁隐藏的村民，揭开真相。\n选项2：继续冒险，寻找更深的秘密。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_ckekmk",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_ckekmk_1",
+          "text": "帮助石碑旁隐藏的村民，揭开真相。",
+          "toNodeId": "bn_sc_1781788971641_m26bje",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        },
+        {
+          "id": "bc_sc_1781788971641_ckekmk_2",
+          "text": "继续冒险，寻找更深的秘密。",
+          "toNodeId": "bn_sc_1781788971641_c1z0l2",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_m26bje",
+      "name": "2后果1",
+      "kind": "scene",
+      "body": {
+        "text": "他帮助村民，得到一枚古老护符，村民称其为“守护之光”，能抵御黑暗力量。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_m26bje_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "他帮助村民，得到一枚古老护符，村民称其为“守护之光”，能抵御黑暗力量。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_m26bje",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_m26bje",
+          "text": "继续",
+          "toNodeId": "bn_sc_1781788971641_w36q71",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_w36q71",
+      "name": "结局1",
+      "kind": "ending",
+      "body": {
+        "text": "凭借护符的庇护，阿翔顺利找到了古井并获得智慧之泉，成为传奇英雄。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_w36q71_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局1",
+                  "bullets": [],
+                  "moral": "凭借护符的庇护，阿翔顺利找到了古井并获得智慧之泉，成为传奇英雄。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_w36q71",
+        "actorIds": [],
+        "eventIds": []
+      }
+    },
+    {
+      "id": "bn_sc_1781788971641_c1z0l2",
+      "name": "2后果2",
+      "kind": "scene",
+      "body": {
+        "text": "他继续冒险，深入黑暗，最终发现一枚隐藏的宝石，却被狂风掀翻了背包，失去所有装备。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_c1z0l2_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "他继续冒险，深入黑暗，最终发现一枚隐藏的宝石，却被狂风掀翻了背包，失去所有装备。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_c1z0l2",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1781788971641_c1z0l2",
+          "text": "继续",
+          "toNodeId": "bn_sc_1781788971641_kwhtz0",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1781788971641_kwhtz0",
+      "name": "结局2",
+      "kind": "ending",
+      "body": {
+        "text": "失去一切的阿翔在黑暗中迷失，未能完成使命，留给世人一个未解的谜团。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1781788971641_kwhtz0_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局2",
+                  "bullets": [],
+                  "moral": "失去一切的阿翔在黑暗中迷失，未能完成使命，留给世人一个未解的谜团。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1781788971641_kwhtz0",
+        "actorIds": [],
+        "eventIds": []
+      }
+    }
+  ]
+}

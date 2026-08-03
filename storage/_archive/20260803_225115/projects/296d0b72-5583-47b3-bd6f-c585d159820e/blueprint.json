@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "1.0",
+  "startNodeId": "bn_sc_1774598421896_r7saqk",
+  "placeholders": [],
+  "nodes": [
+    {
+      "id": "bn_sc_1774598421896_r7saqk",
+      "scriptCardId": "sc_1774598421896_r7saqk",
+      "name": "清晨出发",
+      "kind": "scene",
+      "textDraft": "春天清晨，阳光洒在公园湖面上。小猫戴着小草帽，背着小鱼桶，拿着竹鱼竿蹦蹦跳跳来到湖边。妈妈叮嘱道：“钓鱼要专心，千万别三心二意。”",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1774598421896_r7saqk",
+          "text": "继续",
+          "toNodeId": "bn_sc_1774598421896_zqmmha"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1774598421896_zqmmha",
+      "scriptCardId": "sc_1774598421896_zqmmha",
+      "name": "鱼竿下水",
+      "kind": "scene",
+      "textDraft": "小猫把鱼钩轻轻抛进清澈的水里，浮漂微微晃动。它坐在柳树下的草地上，眼睛盯着水面，等待鱼儿上钩。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1774598421896_zqmmha",
+          "text": "继续",
+          "toNodeId": "bn_sc_1774598421897_85xgul"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1774598421897_85xgul",
+      "scriptCardId": "sc_1774598421897_85xgul",
+      "name": "蝴蝶飞来",
+      "kind": "scene",
+      "textDraft": "一只色彩斑斓的蝴蝶翩翩飞来，停在小猫鼻尖前又飞走。它围着小猫转了一圈，飞向盛开的野花丛。小猫看得入迷，手里鱼竿还泡在水里。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1774598421897_85xgul",
+          "text": "继续",
+          "toNodeId": "bn_sc_1774598421897_ycdnhk"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1774598421897_ycdnhk",
+      "scriptCardId": "sc_1774598421897_ycdnhk",
+      "name": "1选择点",
+      "kind": "scene",
+      "textDraft": "小猫心里痒痒的，要不要去追蝴蝶呢？\n选项1：放下鱼竿去追蝴蝶\n选项2：摇摇头，继续盯着浮漂",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1774598421897_ycdnhk_1",
+          "text": "放下鱼竿去追蝴蝶",
+          "toNodeId": "bn_sc_1774598421897_e1op40"
+        },
+        {
+          "id": "bc_sc_1774598421897_ycdnhk_2",
+          "text": "摇摇头，继续盯着浮漂",
+          "toNodeId": "bn_sc_1774598421897_h80bqn"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1774598421897_e1op40",
+      "scriptCardId": "sc_1774598421897_e1op40",
+      "name": "1后果1",
+      "kind": "scene",
+      "textDraft": "小猫放下鱼竿去追蝴蝶，在草地上跑啊跑，蝴蝶飞进花丛不见踪影。等它气喘吁吁回到湖边，发现浮漂早就不动了。鱼竿还孤零零地插在地上。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1774598421897_e1op40",
+          "text": "继续",
+          "toNodeId": "bn_sc_1774598421897_ddxe7c"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1774598421897_ddxe7c",
+      "scriptCardId": "sc_1774598421897_ddxe7c",
+      "name": "结局1",
+      "kind": "ending",
+      "textDraft": "太阳升高了，小猫空着手回家。妈妈问：“钓到鱼了吗？”小猫挠挠头：“蝴蝶太漂亮了，我没捉住。”妈妈摸摸它的头：“下次记住，专心才能收获。”",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    },
+    {
+      "id": "bn_sc_1774598421897_h80bqn",
+      "scriptCardId": "sc_1774598421897_h80bqn",
+      "name": "1后果2",
+      "kind": "scene",
+      "textDraft": "小猫摇摇头，继续盯着浮漂。蝴蝶飞走了，它没有离开。过了好久，浮漂突然猛地一沉！小猫急忙提起鱼竿，一条银色小鱼在空中闪闪发光。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1774598421897_h80bqn",
+          "text": "继续",
+          "toNodeId": "bn_sc_1774598421897_9xp8xu"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1774598421897_9xp8xu",
+      "scriptCardId": "sc_1774598421897_9xp8xu",
+      "name": "结局2",
+      "kind": "ending",
+      "textDraft": "小猫把小鱼放进桶里，开心地笑了。回家路上，它回头望望湖面：“专心真有用！”妈妈微笑点头：“坚持和耐心，比贪玩更能带来收获。”",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    }
+  ],
+  "updatedAt": "2026-03-27T08:00:21.899Z"
+}

@@ -71,6 +71,30 @@ export async function listProjects(): Promise<ProjectV1[]> {
 }
 
 /**
+ * 项目库卡片摘要：阶段健康与可玩性
+ */
+export type ProjectSummary = {
+  id: string
+  title: string
+  updatedAt: string
+  createdAt: string
+  cards: number
+  blueprintNodes: number
+  storyNodes: number
+  stages: { scripts: boolean; blueprint: boolean; compose: boolean; export: boolean }
+  stage: 'script' | 'blueprint' | 'compose' | 'export' | 'playable'
+  distUrl: string | null
+}
+
+/**
+ * 获取项目卡片摘要列表（阶段健康/可玩性）
+ */
+export async function listProjectSummaries(): Promise<ProjectSummary[]> {
+  const json = await j(`${base()}/api/projects/summary`, { method: 'GET' })
+  return Array.isArray(json.items) ? (json.items as ProjectSummary[]) : []
+}
+
+/**
  * 创建新项目
  * @param title - 项目标题
  * @returns 创建的项目对象

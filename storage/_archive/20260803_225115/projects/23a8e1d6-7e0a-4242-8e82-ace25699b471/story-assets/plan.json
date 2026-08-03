@@ -1,0 +1,373 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-08-03T14:19:41.453Z",
+  "worldAnchor": "Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes",
+  "forbiddenSubstitutes": [
+    "modern city",
+    "science fiction",
+    "horror gore",
+    "photorealistic adults replacing child",
+    "dog replacing wolf"
+  ],
+  "eventChain": [
+    "Intro: protagonist realizes tonight's choice changes everyone's fate.",
+    "Choice: protagonist must decide to investigate the anomaly or protect companions.",
+    "Outcome 1: protagonist finds a repeating pattern behind the event.",
+    "Outcome 2: protagonist misses the clue but earns deeper trust.",
+    "Ending 1: protagonist breaks the cycle and walks into a new dawn.",
+    "Ending 2: protagonist keeps the secret, maintaining the world for now, knowing how to choose next time."
+  ],
+  "excludedAssetIds": [],
+  "assets": [
+    {
+      "id": "protagonist",
+      "name": "Protagonist",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "A young Chinese villager wearing a simple tunic and straw hat, standing determined.",
+      "negativePrompt": "",
+      "aliases": [
+        "Hero",
+        "主角"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+    },
+    {
+      "id": "village_court",
+      "name": "Village Courtyard",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.",
+      "negativePrompt": "",
+      "aliases": [
+        "Village Square",
+        "Home courtyard"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+    }
+  ],
+  "scenes": [
+    {
+      "sceneId": "bn_card_intro",
+      "sceneIndex": 1,
+      "sceneName": "开场",
+      "summary": "开场：未命名互动故事。基于当前 story workflow artifacts（projectId 已在 L4-01 创建），最终汇总该项目的 P0 文本故事闭环哪些部分已达标，哪些仍属于 P1 图片资产缺口。必须基于 artifacts，不得编造图片成功，不得列出其他项目。 主角在一个关键时刻意识到，今晚的选择会改变所有人的命运。",
+      "sourceKey": "bn_card_intro",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist",
+        "village_court"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A young Chinese villager wearing a simple tunic and straw hat, standing determined.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "village_court",
+          "name": "Village Courtyard",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1",
+      "sceneIndex": 2,
+      "sceneName": "选择1",
+      "summary": "选择1",
+      "sourceKey": "bn_card_choice_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist",
+        "village_court"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A young Chinese villager wearing a simple tunic and straw hat, standing determined.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "village_court",
+          "name": "Village Courtyard",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_1",
+      "sceneIndex": 3,
+      "sceneName": "1后果1",
+      "summary": "1后果1：主角追查线索，发现看似偶然的事件背后藏着可重复验证的规律。",
+      "sourceKey": "bn_card_choice_1_result_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist",
+        "village_court"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A young Chinese villager wearing a simple tunic and straw hat, standing determined.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "village_court",
+          "name": "Village Courtyard",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_2",
+      "sceneIndex": 4,
+      "sceneName": "1后果2",
+      "summary": "1后果2：主角选择保护同伴，因此错过了第一条线索，却获得了更深的信任。",
+      "sourceKey": "bn_card_choice_1_result_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist",
+        "village_court"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A young Chinese villager wearing a simple tunic and straw hat, standing determined.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "village_court",
+          "name": "Village Courtyard",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_1",
+      "sceneIndex": 5,
+      "sceneName": "结局1",
+      "summary": "结局1：主角打破循环，带着真相走向新的清晨。",
+      "sourceKey": "bn_card_ending_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist",
+        "village_court"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A young Chinese villager wearing a simple tunic and straw hat, standing determined.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "village_court",
+          "name": "Village Courtyard",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_2",
+      "sceneIndex": 6,
+      "sceneName": "结局2",
+      "summary": "结局2：主角保留秘密，让世界暂时维持原状，但心里已经知道下一次该如何选择。",
+      "sourceKey": "bn_card_ending_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist",
+        "village_court"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A young Chinese villager wearing a simple tunic and straw hat, standing determined.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "village_court",
+          "name": "Village Courtyard",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "assetCount": 2,
+    "sceneCount": 6,
+    "refRequiredCount": 1,
+    "refReadyCount": 0,
+    "refMissingCount": 1,
+    "workflows": {
+      "scene_prompt_only_fallback": 6
+    }
+  }
+}

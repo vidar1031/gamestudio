@@ -1,0 +1,153 @@
+{
+  "schemaVersion": "2.0",
+  "id": "27756590-1582-48a0-9811-52d8570b5bef",
+  "title": "小红帽",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-06-06T15:22:45.284Z",
+  "updatedAt": "2026-06-06T15:30:51.981Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes",
+        "characters": [
+          {
+            "id": "char_red_riding_hood",
+            "name": "Red Riding Hood",
+            "aliases": [
+              "小红帽",
+              "Red Hood"
+            ],
+            "anchorPrompt": "Red Riding Hood child girl wearing a red hooded cape, simple rural clothing",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [],
+        "locations": [
+          {
+            "id": "loc_forest_path",
+            "name": "Forest Path",
+            "aliases": [
+              "林间小径",
+              "Forest Trail"
+            ],
+            "anchorPrompt": "A winding forest path with dappled sunlight filtering through tall trees, mossy stones, and scattered pine needles",
+            "locked": true
+          },
+          {
+            "id": "loc_village",
+            "name": "Village",
+            "aliases": [
+              "村庄",
+              "Village Center"
+            ],
+            "anchorPrompt": "A quiet rural village with thatched roofs, stone walls, and a central square, bathed in warm afternoon light",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Start: story introduction, no visual elements.",
+          "Card_intro: Red Riding Hood stands at a crossroads in a forest path, contemplating her choice.",
+          "Card_choice_1: Red Riding Hood faces a decision, still in the forest path.",
+          "Card_choice_1_result_1: Red Riding Hood investigates clues in the forest path, discovering a repeating pattern.",
+          "Card_choice_1_result_2: Red Riding Hood protects her companion in the village, missing the clue but gaining trust.",
+          "Card_ending_1: Red Riding Hood breaks the cycle, walking into a new dawn from the forest path.",
+          "Card_ending_2: Red Riding Hood keeps the secret, the world remains unchanged in the village.",
+          "End: story concludes."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf"
+        ],
+        "sceneRefs": {
+          "start": {
+            "characters": [],
+            "props": [],
+            "locations": []
+          },
+          "card_intro": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [],
+            "locations": [
+              "loc_forest_path"
+            ]
+          },
+          "card_choice_1": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [],
+            "locations": [
+              "loc_forest_path"
+            ]
+          },
+          "card_choice_1_result_1": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [],
+            "locations": [
+              "loc_forest_path"
+            ]
+          },
+          "card_choice_1_result_2": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [],
+            "locations": [
+              "loc_village"
+            ]
+          },
+          "card_ending_1": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [],
+            "locations": [
+              "loc_forest_path"
+            ]
+          },
+          "card_ending_2": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [],
+            "locations": [
+              "loc_village"
+            ]
+          },
+          "end": {
+            "characters": [],
+            "props": [],
+            "locations": []
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes\",\n  \"characters\": [\n    {\n      \"id\": \"char_red_riding_hood\",\n      \"name\": \"Red Riding Hood\",\n      \"aliases\": [\n        \"小红帽\",\n        \"Red Hood\"\n      ],\n      \"anchorPrompt\": \"Red Riding Hood child girl wearing a red hooded cape, simple rural clothing\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [],\n  \"locations\": [\n    {\n      \"id\": \"loc_forest_path\",\n      \"name\": \"Forest Path\",\n      \"aliases\": [\n        \"林间小径\",\n        \"Forest Trail\"\n      ],\n      \"anchorPrompt\": \"A winding forest path with dappled sunlight filtering through tall trees, mossy stones, and scattered pine needles\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"loc_village\",\n      \"name\": \"Village\",\n      \"aliases\": [\n        \"村庄\",\n        \"Village Center\"\n      ],\n      \"anchorPrompt\": \"A quiet rural village with thatched roofs, stone walls, and a central square, bathed in warm afternoon light\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Start: story introduction, no visual elements.\",\n    \"Card_intro: Red Riding Hood stands at a crossroads in a forest path, contemplating her choice.\",\n    \"Card_choice_1: Red Riding Hood faces a decision, still in the forest path.\",\n    \"Card_choice_1_result_1: Red Riding Hood investigates clues in the forest path, discovering a repeating pattern.\",\n    \"Card_choice_1_result_2: Red Riding Hood protects her companion in the village, missing the clue but gaining trust.\",\n    \"Card_ending_1: Red Riding Hood breaks the cycle, walking into a new dawn from the forest path.\",\n    \"Card_ending_2: Red Riding Hood keeps the secret, the world remains unchanged in the village.\",\n    \"End: story concludes.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\"\n  ],\n  \"sceneRefs\": {\n    \"start\": {\n      \"characters\": [],\n      \"props\": [],\n      \"locations\": []\n    },\n    \"card_intro\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_forest_path\"\n      ]\n    },\n    \"card_choice_1\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_forest_path\"\n      ]\n    },\n    \"card_choice_1_result_1\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_forest_path\"\n      ]\n    },\n    \"card_choice_1_result_2\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    },\n    \"card_ending_1\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_forest_path\"\n      ]\n    },\n    \"card_ending_2\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    },\n    \"end\": {\n      \"characters\": [],\n      \"props\": [],\n      \"locations\": []\n    }\n  }\n}",
+      "updatedAt": "2026-06-06T15:24:21.784Z"
+    }
+  }
+}

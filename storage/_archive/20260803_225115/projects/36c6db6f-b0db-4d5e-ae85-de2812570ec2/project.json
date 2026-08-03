@@ -1,0 +1,193 @@
+{
+  "schemaVersion": "2.0",
+  "id": "36c6db6f-b0db-4d5e-ae85-de2812570ec2",
+  "title": "雨夜咖啡馆的时间循环",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T12:17:37.007Z",
+  "updatedAt": "2026-08-03T12:32:13.102Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Cozy rain‑soaked urban café interior, warm amber lighting, large window with streaked rain, soft jazz in the background, contemporary Chinese aesthetic.",
+        "characters": [
+          {
+            "id": "char_protagonist",
+            "name": "Protagonist",
+            "aliases": [
+              "主角"
+            ],
+            "anchorPrompt": "Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.",
+            "negativePrompt": "",
+            "locked": false
+          },
+          {
+            "id": "char_friend",
+            "name": "Friend",
+            "aliases": [
+              "同伴"
+            ],
+            "anchorPrompt": "Young adult, casual clothing, slight puzzled expression, standing beside protagonist.",
+            "negativePrompt": "",
+            "locked": false
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_coffee_cup",
+            "name": "Coffee Cup",
+            "aliases": [
+              "咖啡杯"
+            ],
+            "anchorPrompt": "Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.",
+            "forbiddenSubstitutes": [
+              "tea cup",
+              "tea mug"
+            ],
+            "locked": false
+          },
+          {
+            "id": "prop_clock",
+            "name": "Wall Clock",
+            "aliases": [
+              "墙钟"
+            ],
+            "anchorPrompt": "Analog wall clock with round face, pendulum swinging, placed above the stove.",
+            "forbiddenSubstitutes": [
+              "digital clock"
+            ],
+            "locked": false
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_cafe",
+            "name": "Rainy Night Café",
+            "aliases": [
+              "咖啡馆"
+            ],
+            "anchorPrompt": "Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.",
+            "locked": false
+          }
+        ],
+        "eventChain": [
+          "Protagonist enters rainy night café and sits at a wooden table with Friend.",
+          "They observe subtle time anomalies and the Protagonist realizes the evening may repeat.",
+          "A choice is presented: investigate the anomaly or protect Friend.",
+          "If investigate, the Protagonist gathers clues inside the cafe, uncovering a repeatable pattern.",
+          "If protect, the Protagonist shields Friend, strengthening trust but missing the first clue.",
+          "At the loop’s conclusion, the Protagonist either breaks the cycle and steps into dawn.",
+          "Alternatively the Protagonist keeps the secret, preserves the status quo, and knows how to choose next time."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf",
+          "tea cup",
+          "tea mug",
+          "digital clock"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_clock"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_clock"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_clock"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_clock"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_clock"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "char_protagonist",
+              "char_friend"
+            ],
+            "props": [
+              "prop_coffee_cup",
+              "prop_clock"
+            ],
+            "locations": [
+              "loc_cafe"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Cozy rain‑soaked urban café interior, warm amber lighting, large window with streaked rain, soft jazz in the background, contemporary Chinese aesthetic.\",\n  \"characters\": [\n    {\n      \"id\": \"char_protagonist\",\n      \"name\": \"Protagonist\",\n      \"aliases\": [\n        \"主角\"\n      ],\n      \"anchorPrompt\": \"Young adult, realistic attire, neutral expression, facing the viewer, wearing a dark jacket.\",\n      \"negativePrompt\": \"\",\n      \"locked\": false\n    },\n    {\n      \"id\": \"char_friend\",\n      \"name\": \"Friend\",\n      \"aliases\": [\n        \"同伴\"\n      ],\n      \"anchorPrompt\": \"Young adult, casual clothing, slight puzzled expression, standing beside protagonist.\",\n      \"negativePrompt\": \"\",\n      \"locked\": false\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_coffee_cup\",\n      \"name\": \"Coffee Cup\",\n      \"aliases\": [\n        \"咖啡杯\"\n      ],\n      \"anchorPrompt\": \"Ceramic mug, medium size, black coffee inside, gentle steam rising, worn handle.\",\n      \"forbiddenSubstitutes\": [\n        \"tea cup\",\n        \"tea mug\"\n      ],\n      \"locked\": false\n    },\n    {\n      \"id\": \"prop_clock\",\n      \"name\": \"Wall Clock\",\n      \"aliases\": [\n        \"墙钟\"\n      ],\n      \"anchorPrompt\": \"Analog wall clock with round face, pendulum swinging, placed above the stove.\",\n      \"forbiddenSubstitutes\": [\n        \"digital clock\"\n      ],\n      \"locked\": false\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_cafe\",\n      \"name\": \"Rainy Night Café\",\n      \"aliases\": [\n        \"咖啡馆\"\n      ],\n      \"anchorPrompt\": \"Cozy café interior, wooden décor, warm amber lighting, rain visible through window, quiet ambient music.\",\n      \"locked\": false\n    }\n  ],\n  \"eventChain\": [\n    \"Protagonist enters rainy night café and sits at a wooden table with Friend.\",\n    \"They observe subtle time anomalies and the Protagonist realizes the evening may repeat.\",\n    \"A choice is presented: investigate the anomaly or protect Friend.\",\n    \"If investigate, the Protagonist gathers clues inside the cafe, uncovering a repeatable pattern.\",\n    \"If protect, the Protagonist shields Friend, strengthening trust but missing the first clue.\",\n    \"At the loop’s conclusion, the Protagonist either breaks the cycle and steps into dawn.\",\n    \"Alternatively the Protagonist keeps the secret, preserves the status quo, and knows how to choose next time.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\",\n    \"tea cup\",\n    \"tea mug\",\n    \"digital clock\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_clock\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_clock\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_clock\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_clock\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_clock\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_friend\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\",\n        \"prop_clock\"\n      ],\n      \"locations\": [\n        \"loc_cafe\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T12:32:13.101Z"
+    }
+  }
+}

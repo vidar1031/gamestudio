@@ -1,4 +1,6 @@
 import fs from 'node:fs'
+import http from 'node:http'
+import https from 'node:https'
 import path from 'node:path'
 
 import { GAMESTUDIO_ROOT, STORAGE_PROJECTS_ROOT } from '../../config/paths.js'
@@ -66,20 +68,36 @@ async function requestGameStudio(pathname, options = {}) {
   const method = String(options.method || 'GET').toUpperCase()
   const endpoint = `${method} ${pathname}`
   const url = `${GAMESTUDIO_SERVER_BASE_URL}${pathname}`
-  const controller = new AbortController()
   const timeoutMs = Math.max(1000, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS))
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetch(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers || {})
-      },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: controller.signal
+    // 使用 node:http 而非全局 fetch：长生成请求（如 Story Bible 需 8 分钟以上）
+    // 会被 undici 内置 headersTimeout（约 300s）提前掐断，且不受 AbortController 控制。
+    const { status, text } = await new Promise((resolve, reject) => {
+      const target = new URL(url)
+      const client = target.protocol === 'https:' ? https : http
+      const body = options.body === undefined ? undefined : JSON.stringify(options.body)
+      const req = client.request({
+        method,
+        hostname: target.hostname,
+        port: target.port,
+        path: `${target.pathname}${target.search}`,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
+          ...(options.headers || {})
+        },
+        timeout: timeoutMs
+      }, (res) => {
+        const chunks = []
+        res.on('data', (chunk) => chunks.push(chunk))
+        res.on('end', () => resolve({ status: res.statusCode || 0, text: Buffer.concat(chunks).toString('utf8') }))
+        res.on('error', reject)
+      })
+      req.on('timeout', () => req.destroy(new Error(`gamestudio_request_timeout_${timeoutMs}ms`)))
+      req.on('error', reject)
+      if (body) req.write(body)
+      req.end()
     })
-    const text = await response.text()
     let data = null
     try {
       data = text ? JSON.parse(text) : null
@@ -88,21 +106,21 @@ async function requestGameStudio(pathname, options = {}) {
     }
     const apiSuccess = data && typeof data === 'object' && Object.prototype.hasOwnProperty.call(data, 'success')
       ? data.success !== false
-      : response.ok
-    if (!response.ok || !apiSuccess) {
-      const error = String(data?.error || response.statusText || 'gamestudio_server_request_failed')
+      : status >= 200 && status < 300
+    if (!(status >= 200 && status < 300) || !apiSuccess) {
+      const error = String(data?.error || `http_${status}` || 'gamestudio_server_request_failed')
       return {
         ok: false,
-        status: response.status,
+        status,
         endpoint,
         url,
         error,
         message: String(data?.message || error),
         data,
-        retryable: classifyRetryable(response.status, error)
+        retryable: classifyRetryable(status, error)
       }
     }
-    return { ok: true, status: response.status, endpoint, url, data }
+    return { ok: true, status, endpoint, url, data }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     return {
@@ -115,8 +133,6 @@ async function requestGameStudio(pathname, options = {}) {
       data: null,
       retryable: true
     }
-  } finally {
-    clearTimeout(timeout)
   }
 }
 
@@ -258,8 +274,8 @@ export async function getAiStatus() {
     const snap = result.data.ai
     if (!snap.effective || typeof snap.effective !== 'object') {
       const provider = String(snap.provider || 'local').toLowerCase()
-      const hasTextProvider = provider === 'localoxml' || provider === 'openai' || provider === 'ollama' || provider === 'doubao'
-      const hasImageProvider = provider === 'localoxml' || provider === 'openai' || provider === 'doubao'
+      const hasTextProvider = provider === 'local' || provider === 'localoxml' || provider === 'openai' || provider === 'ollama' || provider === 'doubao'
+      const hasImageProvider = provider === 'local' || provider === 'localoxml' || provider === 'openai' || provider === 'doubao'
       snap.effective = {
         enabled: {
           scripts: hasTextProvider,

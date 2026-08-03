@@ -104,7 +104,7 @@ function appendFullP0Steps(add, { projectId, title, config, prompt }) {
   add('step_story_configure_project', '写入故事生成配置', 'story_configure_project', { projectId, config })
   add('step_story_generate_scripts_candidate', '生成故事脚本候选', 'story_generate_scripts_candidate', { projectId, brief: prompt, title })
   add('step_story_write_scripts', '写入故事脚本到项目', 'story_write_scripts', { projectId })
-  add('step_story_create_bible', '生成 Story Bible', 'story_create_bible', { projectId, timeoutMs: 300000 })
+  add('step_story_create_bible', '生成 Story Bible', 'story_create_bible', { projectId, timeoutMs: 600000 })
   add('step_story_compile_blueprint', '编译脚本为蓝图', 'story_compile_blueprint', { projectId })
   add('step_story_review_blueprint_agent', '智能体评审交互蓝图', 'story_review_blueprint_agent', { projectId })
   add('step_story_repair_blueprint_if_needed', '按评审结果修复蓝图', 'story_repair_blueprint_if_needed', { projectId })
@@ -121,7 +121,7 @@ function appendAiStoryToComposeSteps(add, { projectId, title, prompt }) {
     choicePoints: 2,
     optionsPerChoice: 2,
     endings: 2,
-    timeoutMs: 300000
+    timeoutMs: 600000
   })
   add('step_story_analyze_scripts', '分析脚本并生成蓝图建议', 'story_analyze_scripts', { projectId })
   add('step_story_review_blueprint_agent', '智能体评审交互蓝图', 'story_review_blueprint_agent', { projectId })
@@ -155,14 +155,14 @@ function appendP1AssetSteps(add, { projectId }) {
     maxAssets: 8,
     batchSize: 1,
     style: 'picture_book',
-    timeoutMs: 300000,
+    timeoutMs: 600000,
     source: 'control_production_delivery'
   })
   add('step_story_render_scene', '渲染首个故事场景图', 'story_render_scene', {
     projectId,
     width: 768,
     height: 1024,
-    timeoutMs: 300000
+    timeoutMs: 600000
   })
   add('step_story_validate_project', '校验锁定资产引用和项目结构', 'story_validate_project', { projectId })
   add('step_story_export_project', '重新导出带资产的互动故事项目', 'story_export_project', { projectId })
@@ -196,12 +196,26 @@ export function buildStoryWorkflowPlan(userPrompt) {
   const wantsStoryBibleOnly = /story\s*bible|圣经|故事圣经/i.test(prompt) && /只执行|仅执行|只生成|仅生成|只做|仅做|只跑|仅跑/i.test(prompt)
   const forbidsAssetPlan = /不执行\s*asset\s*plan|不做\s*asset\s*plan|不要\s*asset\s*plan|不执行\s*资产计划|不做\s*资产计划|不要\s*资产计划/i.test(prompt)
   const forbidsLockTest = /不执行\s*lock\s*test|不做\s*lock\s*test|不要\s*lock\s*test|不执行\s*锁定测试|不做\s*锁定测试|不要\s*锁定测试/i.test(prompt)
-  const wantsValidate = /校验|验证|validate|结构校验|资源引用/i.test(prompt)
+  const wantsValidate = !wantsConfig && /校验|验证|validate|结构校验|资源引用/i.test(prompt)
   const wantsExport = /导出|export|dist|产物/i.test(prompt)
   const wantsInspect = /列出|读取|检查|说明|判断|是否|哪些部分|目录|直接子项/i.test(prompt)
   const wantsFullP0 = wantsCreate && /完整|闭环|端到端|一口气|全链路|生产|P0|导出|交付|从.*到/i.test(prompt)
   const wantsAiStoryToCompose = /AI\s*创建故事|AI\s*生成.*故事|生成.*故事|蓝图|合成|交互故事|ai[-_\s]?create[-_\s]?story/i.test(prompt)
-  const wantsBlueprintReviewToCompose = /蓝图|合成|评审|评分|修复|交互故事/i.test(prompt) && !wantsCreate
+  const wantsCompileOnly = !wantsCreate && /将|把/i.test(prompt) && /编译|合成/i.test(prompt) && /blueprint|compose|story/i.test(prompt)
+  const wantsBlueprintReviewToCompose = !wantsCompileOnly && /蓝图|合成|评审|评分|修复|交互故事/i.test(prompt) && !wantsCreate
+
+  if (wantsCompileOnly) {
+    add('step_story_compile_blueprint', '编译脚本为蓝图', 'story_compile_blueprint', { projectId })
+    add('step_story_compile_compose', '编译蓝图为可运行故事', 'story_compile_compose', { projectId })
+    add('step_story_validate_project', '校验互动故事项目', 'story_validate_project', { projectId })
+    appendAnswerStep(steps)
+    return {
+      planId: createPlanId(),
+      goal: '编译脚本为蓝图并编译为可运行故事',
+      strategy: 'sequential',
+      steps
+    }
+  }
 
   if (wantsBlueprintReviewToCompose) {
     add('step_story_analyze_scripts', '分析脚本并生成蓝图建议', 'story_analyze_scripts', { projectId })
@@ -269,7 +283,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsStoryBibleOnly && forbidsAssetPlan && forbidsLockTest) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 300000
+      timeoutMs: 600000
     })
     appendAnswerStep(steps, { skipReview: true })
     return {
@@ -283,7 +297,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsLockTest) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 300000
+      timeoutMs: 600000
     })
     add('step_story_create_asset_plan', '基于 Story Bible 创建资产计划', 'story_create_asset_plan', {
       projectId,
@@ -300,7 +314,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
       projectId,
       style: 'picture_book',
       maxAttempts: 3,
-      timeoutMs: 300000
+      timeoutMs: 600000
     })
     appendAnswerStep(steps)
     return {
@@ -314,7 +328,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsLockAssets) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 300000
+      timeoutMs: 600000
     })
     add('step_story_create_asset_plan', '锁定故事必须包括的事物', 'story_create_asset_plan', {
       projectId,
@@ -332,7 +346,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
       maxAssets: 8,
       batchSize: 1,
       style: 'picture_book',
-      timeoutMs: 300000,
+      timeoutMs: 600000,
       source: 'control_lock_object_stage'
     })
     add('step_story_validate_project', '校验锁定资产引用和项目结构', 'story_validate_project', { projectId })
@@ -348,12 +362,12 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsAssets) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 300000
+      timeoutMs: 600000
     })
     add('step_story_create_asset_plan', '创建故事资产计划', 'story_create_asset_plan', {
       projectId,
       rebuild: /重建|重新|rebuild/i.test(prompt),
-      source: 'control_story_workflow'
+      source: 'control_production_delivery'
     })
     add('step_story_preflight_image_provider', '检查图片 provider 生产前置条件', 'story_preflight_image_provider', {
       projectId,

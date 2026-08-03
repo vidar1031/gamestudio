@@ -1,0 +1,131 @@
+{
+  "schemaVersion": "2.0",
+  "id": "23a8e1d6-7e0a-4242-8e82-ace25699b471",
+  "title": "未命名互动故事",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T14:06:27.513Z",
+  "updatedAt": "2026-08-03T14:19:41.425Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes",
+        "characters": [
+          {
+            "id": "protagonist",
+            "name": "Protagonist",
+            "aliases": [
+              "Hero",
+              "主角"
+            ],
+            "anchorPrompt": "A young Chinese villager wearing a simple tunic and straw hat, standing determined.",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [],
+        "locations": [
+          {
+            "id": "village_court",
+            "name": "Village Courtyard",
+            "aliases": [
+              "Village Square",
+              "Home courtyard"
+            ],
+            "anchorPrompt": "A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Intro: protagonist realizes tonight's choice changes everyone's fate.",
+          "Choice: protagonist must decide to investigate the anomaly or protect companions.",
+          "Outcome 1: protagonist finds a repeating pattern behind the event.",
+          "Outcome 2: protagonist misses the clue but earns deeper trust.",
+          "Ending 1: protagonist breaks the cycle and walks into a new dawn.",
+          "Ending 2: protagonist keeps the secret, maintaining the world for now, knowing how to choose next time."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village_court"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village_court"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village_court"
+            ]
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village_court"
+            ]
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village_court"
+            ]
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village_court"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes\",\n  \"characters\": [\n    {\n      \"id\": \"protagonist\",\n      \"name\": \"Protagonist\",\n      \"aliases\": [\n        \"Hero\",\n        \"主角\"\n      ],\n      \"anchorPrompt\": \"A young Chinese villager wearing a simple tunic and straw hat, standing determined.\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [],\n  \"locations\": [\n    {\n      \"id\": \"village_court\",\n      \"name\": \"Village Courtyard\",\n      \"aliases\": [\n        \"Village Square\",\n        \"Home courtyard\"\n      ],\n      \"anchorPrompt\": \"A sunlit rural courtyard with a wooden fence, stone paths, and distant rice paddies, in a warm illustration style.\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Intro: protagonist realizes tonight's choice changes everyone's fate.\",\n    \"Choice: protagonist must decide to investigate the anomaly or protect companions.\",\n    \"Outcome 1: protagonist finds a repeating pattern behind the event.\",\n    \"Outcome 2: protagonist misses the clue but earns deeper trust.\",\n    \"Ending 1: protagonist breaks the cycle and walks into a new dawn.\",\n    \"Ending 2: protagonist keeps the secret, maintaining the world for now, knowing how to choose next time.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village_court\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village_court\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village_court\"\n      ]\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village_court\"\n      ]\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village_court\"\n      ]\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village_court\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T14:19:41.423Z"
+    }
+  }
+}

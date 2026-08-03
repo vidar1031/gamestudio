@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "1.0",
+  "startNodeId": "bn_card_intro",
+  "placeholders": [],
+  "nodes": [
+    {
+      "id": "bn_card_intro",
+      "scriptCardId": "card_intro",
+      "name": "开场",
+      "kind": "scene",
+      "textDraft": "未命名互动故事。基于 brief 生成最小 scripts 候选并写回项目：雨夜咖啡馆、三次循环、至少一个选择点、两个结局。必须返回 scripts 卡片数和写回证据。 主角在一个关键时刻意识到，今晚的选择会改变所有人的命运。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_card_intro",
+          "text": "继续",
+          "toNodeId": "bn_card_choice_1"
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1",
+      "scriptCardId": "card_choice_1",
+      "name": "选择1",
+      "kind": "scene",
+      "textDraft": "选项1：主动追查异常的源头。\n选项2：先保护身边重要的人。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_card_choice_1_1",
+          "text": "主动追查异常的源头。",
+          "toNodeId": "bn_card_choice_1_result_1"
+        },
+        {
+          "id": "bc_card_choice_1_2",
+          "text": "先保护身边重要的人。",
+          "toNodeId": "bn_card_choice_1_result_2"
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1_result_1",
+      "scriptCardId": "card_choice_1_result_1",
+      "name": "1后果1",
+      "kind": "scene",
+      "textDraft": "主角追查线索，发现看似偶然的事件背后藏着可重复验证的规律。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_card_choice_1_result_1",
+          "text": "继续",
+          "toNodeId": "bn_card_ending_1"
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1_result_2",
+      "scriptCardId": "card_choice_1_result_2",
+      "name": "1后果2",
+      "kind": "scene",
+      "textDraft": "主角选择保护同伴，因此错过了第一条线索，却获得了更深的信任。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_card_choice_1_result_2",
+          "text": "继续",
+          "toNodeId": "bn_card_ending_2"
+        }
+      ]
+    },
+    {
+      "id": "bn_card_ending_1",
+      "scriptCardId": "card_ending_1",
+      "name": "结局1",
+      "kind": "ending",
+      "textDraft": "主角打破循环，带着真相走向新的清晨。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    },
+    {
+      "id": "bn_card_ending_2",
+      "scriptCardId": "card_ending_2",
+      "name": "结局2",
+      "kind": "ending",
+      "textDraft": "主角保留秘密，让世界暂时维持原状，但心里已经知道下一次该如何选择。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    }
+  ],
+  "updatedAt": "2026-08-03T14:23:39.133Z"
+}

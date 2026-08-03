@@ -13,6 +13,29 @@ import {
 } from './heuristics.js'
 import { buildProjectMemorySystemMessage } from '../controlServerCore.js'
 
+// 权威记忆文件拒绝写入的内容模式：指令/模板/空白/刷新请求
+const MEMORY_GARBAGE_PATTERNS = [
+  /^[\s]*$/,
+  /刷新本文件|Refresh this file|Rewrite this file|refresh this file|rewrite this file/i,
+  /^[\s]*Refresh\s+/i,
+  /^[\s]*Rewrite\s+/i,
+  /^[\s]*请刷新/i,
+  /^[\s]*请重写/i,
+  /^(#+\s*)?(Refresh|Rewrite|刷新|重写)/i
+]
+
+export function isGarbageMemoryContent(content) {
+  const text = String(content || '')
+  if (!text.trim()) return true
+  return MEMORY_GARBAGE_PATTERNS.some((pattern) => pattern.test(text))
+}
+
+export function assertAuthoritativeMemoryContent(content, context = '') {
+  if (isGarbageMemoryContent(content)) {
+    throw new Error(`authoritative_memory_rejected_garbage:${context || 'unknown'}`)
+  }
+}
+
 export function buildReasoningRecentContextArtifact(projectMemory, replayableMessages, plannerSource) {
   return {
     replayedMessageCount: replayableMessages.length,
@@ -121,7 +144,7 @@ export function appendReasoningMemorySyncSteps(steps, userPrompt, binding, optio
       tool: REASONING_ACTIONS['write_memory_file'].tool,
       params: {
         filePath: path.relative(GAMESTUDIO_ROOT, binding.memory.statusFile),
-        content: 'Refresh ai/memory/STATUS.md after this run. Keep sections 当前目标 / 当前结果 / 当前阻塞 / 下一步. Remove stale items and summarize the latest observable project state plus this run\'s completed fixes and remaining verification work.'
+        content: '根据本次会话的观察结果，生成并更新 ai/memory/STATUS.md 的完整内容。必须包含：当前目标、当前结果、当前阻塞、下一步。只写入可观测事实，不得只返回刷新指令。'
       },
       skipReview: false,
       dependsOn: []
@@ -135,7 +158,7 @@ export function appendReasoningMemorySyncSteps(steps, userPrompt, binding, optio
       tool: REASONING_ACTIONS['update_task_queue'].tool,
       params: {
         replaceAll: true,
-        content: 'Rewrite ai/memory/TASK_QUEUE.md so it keeps only active short tasks after this run. Remove completed items, keep the next concrete verification and follow-up tasks, and preserve concise acceptance criteria.'
+        content: '根据本次会话的完成情况，生成并更新 ai/memory/TASK_QUEUE.md 的完整内容。保留未完成的活跃短任务和后续验证项，移除已完成项，不得只返回重写指令。'
       },
       skipReview: false,
       dependsOn: []
@@ -149,7 +172,7 @@ export function appendReasoningMemorySyncSteps(steps, userPrompt, binding, optio
       tool: REASONING_ACTIONS['write_memory_file'].tool,
       params: {
         filePath: path.relative(GAMESTUDIO_ROOT, binding.memory.decisionsFile),
-        content: 'Refresh ai/memory/DECISIONS.md with only stable rules validated by this run. Remove temporary progress notes. Keep decisions about runtime memory injection, daily log selection, review boundaries, and control/Hermes workflow behavior when they are newly established or corrected.'
+        content: '如果本次会话确立了新的稳定决策，生成并更新 ai/memory/DECISIONS.md 的完整内容；否则保持原有决策不变。只写入已验证的规则，不得只返回刷新指令。'
       },
       skipReview: false,
       dependsOn: []
@@ -163,7 +186,7 @@ export function appendReasoningMemorySyncSteps(steps, userPrompt, binding, optio
       tool: REASONING_ACTIONS['write_memory_file'].tool,
       params: {
         filePath: path.relative(GAMESTUDIO_ROOT, binding.memory.longTasksFile),
-        content: 'Refresh ai/memory/LONG_TASKS.md so it reflects the current long-running end-to-end workflow closure. Keep only stable multi-session tracks, update milestones and completion standards, and remove obsolete long-horizon items.'
+        content: '根据本次会话进展，生成并更新 ai/memory/LONG_TASKS.md 的完整内容。保留稳定的多 session 长任务主线，更新里程碑和验收标准，移除已过时项，不得只返回刷新指令。'
       },
       skipReview: false,
       dependsOn: []

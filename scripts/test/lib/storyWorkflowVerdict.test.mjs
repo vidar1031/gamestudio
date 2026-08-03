@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { inspectStoryWorkflowFailure, hasStoryWorkflowSteps } from './storyWorkflowVerdict.mjs'
+import { inspectStoryWorkflowFailure, hasStoryWorkflowSteps, REASONING_VERDICT, resolveSessionVerdict } from './storyWorkflowVerdict.mjs'
 
 test('evaluator 失败但 step.ok=true 也必须记为失败(L4-04 false-pass 回归)', () => {
   const session = {
@@ -27,7 +27,7 @@ test('全部步骤 ok 且 evaluator passed 时无失败', () => {
       storyProduction: {
         steps: {
           a: { action: 'story_compile_compose', ok: true, evaluator: { passed: true } },
-          b: { action: 'story_validate_project', ok: true }
+          b: { action: 'story_validate_project', ok: true, evaluator: { passed: true } }
         }
       }
     }
@@ -56,4 +56,111 @@ test('无 storyProduction artifacts 时无失败且 hasStoryWorkflowSteps=false'
   assert.equal(inspectStoryWorkflowFailure({}).hasFailure, false)
   assert.equal(hasStoryWorkflowSteps({}), false)
   assert.equal(hasStoryWorkflowSteps({ artifacts: { storyProduction: { steps: { a: { ok: true } } } } }), true)
+})
+
+test('evaluator 缺失且 step.ok=true 时必须判定为 evaluator_unavailable 失败', () => {
+  const session = {
+    artifacts: {
+      storyProduction: {
+        steps: {
+          step_story_compile_compose: {
+            action: 'story_compile_compose',
+            ok: true
+            // 没有 evaluator 字段：视为 evaluator 不可用，必须失败
+          }
+        }
+      }
+    }
+  }
+  const result = inspectStoryWorkflowFailure(session)
+  assert.equal(result.hasFailure, true)
+  assert.match(result.detail, /story_compile_compose:evaluator_unavailable/)
+})
+
+test('evaluator.passed 不是 boolean 时必须判定为 evaluator_indeterminate 失败', () => {
+  const session = {
+    artifacts: {
+      storyProduction: {
+        steps: {
+          step_story_compile_compose: {
+            action: 'story_compile_compose',
+            ok: true,
+            evaluator: { passed: undefined }
+          }
+        }
+      }
+    }
+  }
+  const result = inspectStoryWorkflowFailure(session)
+  assert.equal(result.hasFailure, true)
+  assert.match(result.detail, /story_compile_compose:evaluator_indeterminate/)
+})
+
+test('resolveSessionVerdict: story workflow 失败时返回 FAIL', () => {
+  const session = {
+    status: 'completed',
+    artifacts: {
+      finalAnswer: 'some answer',
+      storyProduction: {
+        steps: {
+          step_story_compile_compose: {
+            action: 'story_compile_compose',
+            ok: true,
+            evaluator: { passed: false, issues: ['compose evaluator failed'] }
+          }
+        }
+      }
+    }
+  }
+  const result = resolveSessionVerdict(session)
+  assert.equal(result.verdict, REASONING_VERDICT.FAIL)
+  assert.match(result.reason, /story workflow failure/)
+})
+
+test('resolveSessionVerdict: session cancelled 时返回 CANCELLED', () => {
+  const session = {
+    status: 'cancelled',
+    error: 'user cancelled',
+    artifacts: { finalAnswer: '' }
+  }
+  const result = resolveSessionVerdict(session)
+  assert.equal(result.verdict, REASONING_VERDICT.CANCELLED)
+})
+
+test('resolveSessionVerdict: session waiting_review 时返回 BLOCKED', () => {
+  const session = {
+    status: 'waiting_review',
+    artifacts: { finalAnswer: '' }
+  }
+  const result = resolveSessionVerdict(session)
+  assert.equal(result.verdict, REASONING_VERDICT.BLOCKED)
+})
+
+test('resolveSessionVerdict: session completed 且有最终回答时返回 PASS', () => {
+  const session = {
+    status: 'completed',
+    artifacts: { finalAnswer: '最终回答内容' }
+  }
+  const result = resolveSessionVerdict(session)
+  assert.equal(result.verdict, REASONING_VERDICT.PASS)
+})
+
+test('resolveSessionVerdict: session completed 但 final answer 缺失时返回 FAIL', () => {
+  const session = {
+    status: 'completed',
+    artifacts: { finalAnswer: '' }
+  }
+  const result = resolveSessionVerdict(session)
+  assert.equal(result.verdict, REASONING_VERDICT.FAIL)
+  assert.equal(result.reason, 'final_answer_missing')
+})
+
+test('resolveSessionVerdict: 未知 session 状态返回 BLOCKED', () => {
+  const session = {
+    status: 'orphaned',
+    artifacts: { finalAnswer: '' }
+  }
+  const result = resolveSessionVerdict(session)
+  assert.equal(result.verdict, REASONING_VERDICT.BLOCKED)
+  assert.match(result.reason, /unexpected session status: orphaned/)
 })

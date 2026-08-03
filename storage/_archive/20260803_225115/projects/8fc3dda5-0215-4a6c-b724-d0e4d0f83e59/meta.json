@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "id": "8fc3dda5-0215-4a6c-b724-d0e4d0f83e59",
+  "title": "狼来了Control全链路验证",
+  "stage": "script",
+  "createdAt": "2026-05-11T12:06:06.089Z",
+  "updatedAt": "2026-05-11T12:07:02.412Z",
+  "aiFormula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 2,
+    "optionsPerChoice": 2,
+    "endings": 2
+  }
+}

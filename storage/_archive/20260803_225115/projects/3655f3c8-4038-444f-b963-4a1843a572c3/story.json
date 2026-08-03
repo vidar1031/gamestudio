@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "2.0",
+  "startNodeId": "bn_c1",
+  "nodes": [
+    {
+      "id": "bn_c1",
+      "name": "开始",
+      "kind": "scene",
+      "body": {
+        "text": "小红帽踏上前往奶奶家的路途。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_c1_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "小红帽踏上前往奶奶家的路途。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "c1",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_c1",
+          "text": "继续",
+          "toNodeId": "bn_c2",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_c2",
+      "name": "选择",
+      "kind": "scene",
+      "body": {
+        "text": "你看到一条小路，是否走？\n选项1：走小路\n选项2：走大路"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_c2_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "你看到一条小路，是否走？\n选项1：走小路\n选项2：走大路"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "c2",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_c2_1",
+          "text": "走小路",
+          "toNodeId": "bn_c3",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        },
+        {
+          "id": "bc_c2_2",
+          "text": "走大路",
+          "toNodeId": "bn_c4",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_c3",
+      "name": "1后果1",
+      "kind": "scene",
+      "body": {
+        "text": "你走了小路，遇见了狼。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_c3_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "你走了小路，遇见了狼。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "c3",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_c3",
+          "text": "继续",
+          "toNodeId": "bn_c5",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_c4",
+      "name": "1后果2",
+      "kind": "scene",
+      "body": {
+        "text": "你走了大路，安全到达奶奶家。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_c4_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "你走了大路，安全到达奶奶家。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "c4",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_c4",
+          "text": "继续",
+          "toNodeId": "bn_c6",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_c5",
+      "name": "结局1",
+      "kind": "ending",
+      "body": {
+        "text": "狼吃掉了小红帽，故事结束。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_c5_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局1",
+                  "bullets": [],
+                  "moral": "狼吃掉了小红帽，故事结束。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "c5",
+        "actorIds": [],
+        "eventIds": []
+      }
+    },
+    {
+      "id": "bn_c6",
+      "name": "结局2",
+      "kind": "ending",
+      "body": {
+        "text": "小红帽安全到达奶奶家，大家开心。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_c6_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局2",
+                  "bullets": [],
+                  "moral": "小红帽安全到达奶奶家，大家开心。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "c6",
+        "actorIds": [],
+        "eventIds": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "1.0",
+  "startNodeId": "bn_card_intro",
+  "placeholders": [],
+  "nodes": [
+    {
+      "id": "bn_card_intro",
+      "scriptCardId": "card_intro",
+      "name": "开场",
+      "kind": "scene",
+      "textDraft": "P0 smoke。主角在雨夜咖啡馆醒来，发现时间正在循环。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_card_intro",
+          "text": "继续",
+          "toNodeId": "bn_card_choice_1"
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1",
+      "scriptCardId": "card_choice_1",
+      "name": "选择1",
+      "kind": "scene",
+      "textDraft": "选项1：追查咖啡馆后的钟声。\n选项2：留下保护陌生人。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_card_choice_1_1",
+          "text": "追查咖啡馆后的钟声。",
+          "toNodeId": "bn_card_choice_1_result_1"
+        },
+        {
+          "id": "bc_card_choice_1_2",
+          "text": "留下保护陌生人。",
+          "toNodeId": "bn_card_choice_1_result_2"
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1_result_1",
+      "scriptCardId": "card_choice_1_result_1",
+      "name": "1后果1",
+      "kind": "scene",
+      "textDraft": "钟声指向地下室的旧录音机，里面记录了上一轮的留言。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_card_choice_1_result_1",
+          "text": "继续",
+          "toNodeId": "bn_card_ending_1"
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1_result_2",
+      "scriptCardId": "card_choice_1_result_2",
+      "name": "1后果2",
+      "kind": "scene",
+      "textDraft": "陌生人说出只有下一轮才会发生的事，证明循环还未结束。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_card_choice_1_result_2",
+          "text": "继续",
+          "toNodeId": "bn_card_ending_2"
+        }
+      ]
+    },
+    {
+      "id": "bn_card_ending_1",
+      "scriptCardId": "card_ending_1",
+      "name": "结局1",
+      "kind": "ending",
+      "textDraft": "主角修好录音机，循环在清晨停止。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    },
+    {
+      "id": "bn_card_ending_2",
+      "scriptCardId": "card_ending_2",
+      "name": "结局2",
+      "kind": "ending",
+      "textDraft": "主角选择保留秘密，等待下一次更好的选择。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    }
+  ],
+  "updatedAt": "2026-05-11T01:50:32.862Z"
+}

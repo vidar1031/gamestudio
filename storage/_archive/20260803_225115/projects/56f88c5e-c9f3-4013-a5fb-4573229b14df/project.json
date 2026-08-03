@@ -1,0 +1,224 @@
+{
+  "schemaVersion": "2.0",
+  "id": "56f88c5e-c9f3-4013-a5fb-4573229b14df",
+  "title": "未命名互动故事",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-06-06T15:34:19.381Z",
+  "updatedAt": "2026-06-06T15:37:32.004Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes",
+        "characters": [
+          {
+            "id": "char_red_riding_hood",
+            "name": "Red Riding Hood",
+            "aliases": [
+              "小红帽"
+            ],
+            "anchorPrompt": "small child, Chinese rural setting, wearing a simple dress, child with a red hooded cape",
+            "negativePrompt": "",
+            "locked": true
+          },
+          {
+            "id": "char_grandmother",
+            "name": "Grandmother",
+            "aliases": [
+              "奶奶"
+            ],
+            "anchorPrompt": "elderly woman, Chinese rural setting, wearing simple dress, white hair, gentle face",
+            "negativePrompt": "",
+            "locked": true
+          },
+          {
+            "id": "char_wolf",
+            "name": "Wolf",
+            "aliases": [
+              "狼"
+            ],
+            "anchorPrompt": "brown wolf, Chinese folklore wolf, standing, eyes",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_red_hood",
+            "name": "Red Hood",
+            "aliases": [
+              "红色帽子"
+            ],
+            "anchorPrompt": "red hooded cape, cloth, red, detachable, worn over head",
+            "forbiddenSubstitutes": [
+              "black hood",
+              "blue hood"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_basket",
+            "name": "Basket",
+            "aliases": [
+              "篮子"
+            ],
+            "anchorPrompt": "wooden basket, woven, medium size, used to carry food",
+            "forbiddenSubstitutes": [
+              "plastic bag",
+              "metal box"
+            ],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_forest",
+            "name": "Forest",
+            "aliases": [
+              "森林"
+            ],
+            "anchorPrompt": "dense forest, Chinese rural setting, trees, dappled sunlight, misty",
+            "locked": true
+          },
+          {
+            "id": "loc_village",
+            "name": "Village",
+            "aliases": [
+              "村庄"
+            ],
+            "anchorPrompt": "small rural village, wooden houses, cobblestone path, warm light",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Red Riding Hood begins the story in the village.",
+          "Red Riding Hood faces a key choice at night.",
+          "Red Riding Hood chooses to investigate the anomaly.",
+          "Red Riding Hood discovers a repeating pattern behind the event.",
+          "Red Riding Hood chooses to protect her companion instead.",
+          "Red Riding Hood gains deeper trust from her companion.",
+          "Red Riding Hood breaks the cycle and walks into a new dawn.",
+          "Red Riding Hood keeps the secret, maintaining the status quo.",
+          "Red Riding Hood knows how to choose next time.",
+          "Story concludes with a new morning."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf",
+          "black hood",
+          "blue hood",
+          "plastic bag",
+          "metal box"
+        ],
+        "sceneRefs": {
+          "start": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [
+              "prop_red_hood",
+              "prop_basket"
+            ],
+            "locations": [
+              "loc_village"
+            ]
+          },
+          "choice_night": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [],
+            "locations": [
+              "loc_forest"
+            ]
+          },
+          "investigate": {
+            "characters": [
+              "char_red_riding_hood"
+            ],
+            "props": [
+              "prop_red_hood",
+              "prop_basket"
+            ],
+            "locations": [
+              "loc_forest"
+            ]
+          },
+          "protect": {
+            "characters": [
+              "char_red_riding_hood",
+              "char_grandmother"
+            ],
+            "props": [
+              "prop_red_hood",
+              "prop_basket"
+            ],
+            "locations": [
+              "loc_forest"
+            ]
+          },
+          "break_cycle": {
+            "characters": [
+              "char_red_riding_hood",
+              "char_wolf"
+            ],
+            "props": [
+              "prop_red_hood",
+              "prop_basket"
+            ],
+            "locations": [
+              "loc_forest"
+            ]
+          },
+          "keep_secret": {
+            "characters": [
+              "char_red_riding_hood",
+              "char_grandmother"
+            ],
+            "props": [
+              "prop_red_hood",
+              "prop_basket"
+            ],
+            "locations": [
+              "loc_village"
+            ]
+          },
+          "end": {
+            "characters": [
+              "char_red_riding_hood",
+              "char_grandmother"
+            ],
+            "props": [
+              "prop_red_hood",
+              "prop_basket"
+            ],
+            "locations": [
+              "loc_village"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes\",\n  \"characters\": [\n    {\n      \"id\": \"char_red_riding_hood\",\n      \"name\": \"Red Riding Hood\",\n      \"aliases\": [\n        \"小红帽\"\n      ],\n      \"anchorPrompt\": \"small child, Chinese rural setting, wearing a simple dress, child with a red hooded cape\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"char_grandmother\",\n      \"name\": \"Grandmother\",\n      \"aliases\": [\n        \"奶奶\"\n      ],\n      \"anchorPrompt\": \"elderly woman, Chinese rural setting, wearing simple dress, white hair, gentle face\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"char_wolf\",\n      \"name\": \"Wolf\",\n      \"aliases\": [\n        \"狼\"\n      ],\n      \"anchorPrompt\": \"brown wolf, Chinese folklore wolf, standing, eyes\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_red_hood\",\n      \"name\": \"Red Hood\",\n      \"aliases\": [\n        \"红色帽子\"\n      ],\n      \"anchorPrompt\": \"red hooded cape, cloth, red, detachable, worn over head\",\n      \"forbiddenSubstitutes\": [\n        \"black hood\",\n        \"blue hood\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_basket\",\n      \"name\": \"Basket\",\n      \"aliases\": [\n        \"篮子\"\n      ],\n      \"anchorPrompt\": \"wooden basket, woven, medium size, used to carry food\",\n      \"forbiddenSubstitutes\": [\n        \"plastic bag\",\n        \"metal box\"\n      ],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_forest\",\n      \"name\": \"Forest\",\n      \"aliases\": [\n        \"森林\"\n      ],\n      \"anchorPrompt\": \"dense forest, Chinese rural setting, trees, dappled sunlight, misty\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"loc_village\",\n      \"name\": \"Village\",\n      \"aliases\": [\n        \"村庄\"\n      ],\n      \"anchorPrompt\": \"small rural village, wooden houses, cobblestone path, warm light\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Red Riding Hood begins the story in the village.\",\n    \"Red Riding Hood faces a key choice at night.\",\n    \"Red Riding Hood chooses to investigate the anomaly.\",\n    \"Red Riding Hood discovers a repeating pattern behind the event.\",\n    \"Red Riding Hood chooses to protect her companion instead.\",\n    \"Red Riding Hood gains deeper trust from her companion.\",\n    \"Red Riding Hood breaks the cycle and walks into a new dawn.\",\n    \"Red Riding Hood keeps the secret, maintaining the status quo.\",\n    \"Red Riding Hood knows how to choose next time.\",\n    \"Story concludes with a new morning.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\",\n    \"black hood\",\n    \"blue hood\",\n    \"plastic bag\",\n    \"metal box\"\n  ],\n  \"sceneRefs\": {\n    \"start\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [\n        \"prop_red_hood\",\n        \"prop_basket\"\n      ],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    },\n    \"choice_night\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_forest\"\n      ]\n    },\n    \"investigate\": {\n      \"characters\": [\n        \"char_red_riding_hood\"\n      ],\n      \"props\": [\n        \"prop_red_hood\",\n        \"prop_basket\"\n      ],\n      \"locations\": [\n        \"loc_forest\"\n      ]\n    },\n    \"protect\": {\n      \"characters\": [\n        \"char_red_riding_hood\",\n        \"char_grandmother\"\n      ],\n      \"props\": [\n        \"prop_red_hood\",\n        \"prop_basket\"\n      ],\n      \"locations\": [\n        \"loc_forest\"\n      ]\n    },\n    \"break_cycle\": {\n      \"characters\": [\n        \"char_red_riding_hood\",\n        \"char_wolf\"\n      ],\n      \"props\": [\n        \"prop_red_hood\",\n        \"prop_basket\"\n      ],\n      \"locations\": [\n        \"loc_forest\"\n      ]\n    },\n    \"keep_secret\": {\n      \"characters\": [\n        \"char_red_riding_hood\",\n        \"char_grandmother\"\n      ],\n      \"props\": [\n        \"prop_red_hood\",\n        \"prop_basket\"\n      ],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    },\n    \"end\": {\n      \"characters\": [\n        \"char_red_riding_hood\",\n        \"char_grandmother\"\n      ],\n      \"props\": [\n        \"prop_red_hood\",\n        \"prop_basket\"\n      ],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-06-06T15:36:43.786Z"
+    }
+  }
+}

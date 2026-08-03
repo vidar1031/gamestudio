@@ -1,0 +1,501 @@
+{
+  "schemaVersion": "2.0",
+  "startNodeId": "bn_sc_1784725060569_gglf6u",
+  "nodes": [
+    {
+      "id": "bn_sc_1784725060569_gglf6u",
+      "name": "灯塔暮色",
+      "kind": "scene",
+      "body": {
+        "text": "傍晚的灯塔映出一抹金黄，少年阿山悄悄爬上山顶。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_gglf6u_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "傍晚的灯塔映出一抹金黄，少年阿山悄悄爬上山顶。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_gglf6u",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_gglf6u",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_gx61k7",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_gx61k7",
+      "name": "隐藏门扉",
+      "kind": "scene",
+      "body": {
+        "text": "他在墙壁上发现一扇古老铁门，门口刻着奇怪的符文。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_gx61k7_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "他在墙壁上发现一扇古老铁门，门口刻着奇怪的符文。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_gx61k7",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_gx61k7",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_klvny8",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_klvny8",
+      "name": "选择1",
+      "kind": "scene",
+      "body": {
+        "text": "他必须决定先探索什么。\n选项1：沿着墙壁的暗巷继续前进。\n选项2：走到灯塔顶端眺望远方寻找线索。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_klvny8_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "他必须决定先探索什么。\n选项1：沿着墙壁的暗巷继续前进。\n选项2：走到灯塔顶端眺望远方寻找线索。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_klvny8",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_klvny8_1",
+          "text": "沿着墙壁的暗巷继续前进。",
+          "toNodeId": "bn_sc_1784725060569_534w21",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        },
+        {
+          "id": "bc_sc_1784725060569_klvny8_2",
+          "text": "走到灯塔顶端眺望远方寻找线索。",
+          "toNodeId": "bn_sc_1784725060569_7qvsyb",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_534w21",
+      "name": "1后果1",
+      "kind": "scene",
+      "body": {
+        "text": "沿暗巷，他听见脚步声，脚下的石阶摇晃，门突然打开一条通往地下的通道。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_534w21_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "沿暗巷，他听见脚步声，脚下的石阶摇晃，门突然打开一条通往地下的通道。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_534w21",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_534w21",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_m01c96",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_7qvsyb",
+      "name": "1后果2",
+      "kind": "scene",
+      "body": {
+        "text": "站在顶端，他看到远处一座山洞闪着微光，雾气在洞口盘旋。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_7qvsyb_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "站在顶端，他看到远处一座山洞闪着微光，雾气在洞口盘旋。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_7qvsyb",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_7qvsyb",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_m01c96",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_m01c96",
+      "name": "合流点",
+      "kind": "scene",
+      "body": {
+        "text": "不论选择，二者都抵达灯塔底部的古旧仓库，仓库里堆满灰尘的木箱。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_m01c96_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "不论选择，二者都抵达灯塔底部的古旧仓库，仓库里堆满灰尘的木箱。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_m01c96",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_m01c96",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_i80x5x",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_i80x5x",
+      "name": "选择2",
+      "kind": "scene",
+      "body": {
+        "text": "他需要决定如何开启箱子。\n选项1：使用手中找到的铁匠锤敲击箱子。\n选项2：尝试打开破旧的钥匙孔。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_i80x5x_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "他需要决定如何开启箱子。\n选项1：使用手中找到的铁匠锤敲击箱子。\n选项2：尝试打开破旧的钥匙孔。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_i80x5x",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_i80x5x_1",
+          "text": "使用手中找到的铁匠锤敲击箱子。",
+          "toNodeId": "bn_sc_1784725060569_cd1e6l",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        },
+        {
+          "id": "bc_sc_1784725060569_i80x5x_2",
+          "text": "尝试打开破旧的钥匙孔。",
+          "toNodeId": "bn_sc_1784725060569_tqoa8m",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_cd1e6l",
+      "name": "2后果1",
+      "kind": "scene",
+      "body": {
+        "text": "敲击后，木箱发出沉闷响声，慢慢打开，露出一枚发光的符文石。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_cd1e6l_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "敲击后，木箱发出沉闷响声，慢慢打开，露出一枚发光的符文石。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_cd1e6l",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_cd1e6l",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_s7301a",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_tqoa8m",
+      "name": "2后果2",
+      "kind": "scene",
+      "body": {
+        "text": "钥匙孔滴滴作响，符文石在尘埃中闪烁，随后箱子微微晃动，露出一把古剑。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_tqoa8m_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "钥匙孔滴滴作响，符文石在尘埃中闪烁，随后箱子微微晃动，露出一把古剑。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_tqoa8m",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_tqoa8m",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_nfsgc9",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_s7301a",
+      "name": "结局1",
+      "kind": "ending",
+      "body": {
+        "text": "符文石升起光芒，照亮古老预言，阿山获得守护灯塔的力量，成为传说中的灯塔守卫。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_s7301a_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局1",
+                  "bullets": [],
+                  "moral": "符文石升起光芒，照亮古老预言，阿山获得守护灯塔的力量，成为传说中的灯塔守卫。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_s7301a",
+        "actorIds": [],
+        "eventIds": []
+      }
+    },
+    {
+      "id": "bn_sc_1784725060569_nfsgc9",
+      "name": "结局2",
+      "kind": "ending",
+      "body": {
+        "text": "古剑在月光下闪耀，他继承了这把遗失已久的剑，踏上寻找更大冒险的旅程。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_sc_1784725060569_nfsgc9_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局2",
+                  "bullets": [],
+                  "moral": "古剑在月光下闪耀，他继承了这把遗失已久的剑，踏上寻找更大冒险的旅程。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "sc_1784725060569_nfsgc9",
+        "actorIds": [],
+        "eventIds": []
+      }
+    }
+  ]
+}

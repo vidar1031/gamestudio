@@ -3474,6 +3474,54 @@ app.get('/api/projects', async (c) => {
   return c.json({ success: true, items })
 })
 
+// 项目库卡片摘要：阶段健康（脚本/蓝图/合成/导出）与可玩性，只读。
+app.get('/api/projects/summary', async (c) => {
+  await ensureDirs()
+  const items = []
+  const dirs = await readdir(PROJECTS_DIR).catch(() => [])
+  for (const id of dirs) {
+    const dir = projectDir(id)
+    if (!(await existsDir(dir))) continue
+    try {
+      const p0 = await readJson(path.join(dir, 'project.json'))
+      const { project: p } = normalizeProjectAndDetectChanges(p0)
+      const scripts = await readJson(path.join(dir, 'scripts.json')).catch(() => null)
+      const blueprint = await readJson(path.join(dir, 'blueprint.json')).catch(() => null)
+      const story = await readJson(path.join(dir, 'story.json')).catch(() => null)
+      const cards = Array.isArray(scripts?.cards) ? scripts.cards.length : 0
+      const blueprintNodes = Array.isArray(blueprint?.nodes) ? blueprint.nodes.length : 0
+      const storyNodes = story?.nodes && typeof story.nodes === 'object' ? Object.keys(story.nodes).length : 0
+      const distPath = path.join(dir, 'builds', 'latest', 'dist', 'index.html')
+      const distExists = await existsFile(distPath)
+      const stages = {
+        scripts: cards > 0,
+        blueprint: blueprintNodes > 0,
+        compose: storyNodes > 2,
+        export: distExists
+      }
+      const stage = !stages.scripts ? 'script'
+        : !stages.blueprint ? 'blueprint'
+        : !stages.compose ? 'compose'
+        : !stages.export ? 'export'
+        : 'playable'
+      items.push({
+        id: p.id || id,
+        title: p.title || '',
+        updatedAt: p.updatedAt || '',
+        createdAt: p.createdAt || '',
+        cards,
+        blueprintNodes,
+        storyNodes,
+        stages,
+        stage,
+        distUrl: distExists ? `/demos/${p.id || id}/latest/dist/index.html` : null
+      })
+    } catch (_) {}
+  }
+  items.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+  return c.json({ success: true, items })
+})
+
 app.post('/api/projects', storyInputGate('story.project.create'), async (c) => {
   await ensureDirs()
   const body = await c.req.json().catch(() => ({}))

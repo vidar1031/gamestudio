@@ -7,7 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
-import { inspectStoryWorkflowFailure, hasStoryWorkflowSteps } from './lib/storyWorkflowVerdict.mjs'
+import { REASONING_VERDICT, resolveSessionVerdict } from './lib/storyWorkflowVerdict.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -112,13 +112,13 @@ const STAGES = [
     description: '验证 Control 编排、Hermes/OMLX 候选生成、GameStudio Server 落盘、evaluator、导出证据和 P1 图片生产前置门禁。',
     kind: 'reasoning',
     cases: [
-      casePrompt('L4-01', '创建一个新的互动故事项目，题目为 雨夜咖啡馆的时间循环。必须返回 projectId、storage/projects 目录、顶层文件和 create evaluator。'),
-      casePrompt('L4-02', '为该项目写入生成配置：题材=悬疑时间循环，风格=电影感，目标受众=青少年，输出语言=zh-CN。必须读回验证。'),
-      casePrompt('L4-03', '基于 brief 生成最小 scripts 候选并写回项目：雨夜咖啡馆、三次循环、至少一个选择点、两个结局。必须返回 scripts 卡片数和写回证据。'),
+      casePrompt('L4-01', '创建一个新的互动故事项目，题目为 狼来了。必须返回 projectId、storage/projects 目录、顶层文件和 create evaluator。'),
+      casePrompt('L4-02', '调用 step_story_configure_project 为该项目写入生成配置：题材=寓言故事，风格=教育警示，目标受众=儿童，输出语言=zh-CN。必须读回验证配置已写入。'),
+      casePrompt('L4-03', '基于 brief 生成最小 scripts 候选并写回项目：狼来了、牧童两次谎称狼来了、村民不再相信、狼真的来了、至少一个选择点、两个结局。必须返回 scripts 卡片数和写回证据。'),
       casePrompt('L4-04', '将 scripts 编译为 blueprint，再编译为可运行 story/project 合成层。必须返回 blueprint 节点数、story 节点数和 compose evaluator。'),
       casePrompt('L4-05', '对该项目执行结构校验和资源引用校验。没有真实图片资产时不得宣称 P1 资产闭环成功。'),
       casePrompt('L4-06', '对该项目执行 H5 导出。必须返回 distUrl、本地产物路径、导出时间、项目标识和 export evaluator。'),
-      casePrompt('L4-07', '最终汇总本项目 P0 文本故事闭环哪些部分已达标，哪些仍属于 P1 图片资产缺口。必须基于 artifacts，不得编造图片成功。'),
+      casePrompt('L4-07', '基于当前 story workflow artifacts（projectId 已在 L4-01 创建），最终汇总该项目的 P0 文本故事闭环哪些部分已达标，哪些仍属于 P1 图片资产缺口。必须基于 artifacts，不得编造图片成功，不得列出其他项目。'),
       casePrompt('L4-08', '对该项目执行图片 provider preflight。必须返回 provider、preflight evaluator、通过或阻断原因；如果 ComfyUI/provider 未配置，只能给 BLOCKED，不得继续出图。', {
         requireAny: ['preflight', 'provider_not_configured', 'image_disabled', 'preflight_failed', 'BLOCKED'],
         requireAll: ['provider', 'evaluator']
@@ -347,7 +347,10 @@ async function runReasoningStage(stage, stageRecord) {
       const verdict = AUTO_VERDICT ? autoVerdict(item.id, finalSession) : await promptVerdict(item.id, finalSession)
       caseRecord.result = verdict.result
       caseRecord.notes = verdict.notes
-      caseRecord.status = verdict.result === 'PASS' ? 'passed' : 'needs-review'
+      caseRecord.status = verdict.result === 'PASS' ? 'passed'
+        : verdict.result === 'BLOCKED' ? 'blocked'
+        : verdict.result === 'CANCELLED' ? 'cancelled'
+        : 'failed'
       caseRecord.endedAt = new Date().toISOString()
       emitProgress({ type: 'case_result', stage: stage.id, case: item.id, result: verdict.result, detail: verdict.notes })
 
@@ -365,14 +368,14 @@ async function runReasoningStage(stage, stageRecord) {
     }
   }
 
-  return stageRecord.cases.every((item) => item.result === 'PASS' || item.status === 'passed')
+  return stageRecord.cases.every((item) => item.result === 'PASS')
 }
 
 async function runManualGate(stageRecord) {
   const summary = buildSummary(results)
   console.log(`\n当前阶段摘要:\n${summary}`)
   if (AUTO_VERDICT) {
-    const hasFailure = results.stages.some((stage) => (stage.cases || []).some((item) => item.result === 'FAIL' || item.result === 'BLOCKED' || item.status === 'failed'))
+    const hasFailure = results.stages.some((stage) => (stage.cases || []).some((item) => item.result === 'FAIL' || item.result === 'BLOCKED' || item.result === 'CANCELLED' || item.status === 'failed'))
     const verdict = hasFailure ? 'FAIL' : 'PASS'
     stageRecord.manualConclusion = verdict
     stageRecord.notes = hasFailure ? '自动结论：存在失败或阻塞项，未达到生产放行条件。' : '自动结论：所有自动覆盖项通过。'
@@ -591,7 +594,6 @@ async function promptVerdict(caseId, session) {
   }
   const result = await chooseFromList('请输入该题人工判定', [
     { value: 'PASS', label: 'PASS - 结果正确且证据完整' },
-    { value: 'SOFT PASS', label: 'SOFT PASS - 结论基本正确，但证据或格式不完整' },
     { value: 'FAIL', label: 'FAIL - 结果错误或缺关键步骤/证据' },
     { value: 'BLOCKED', label: 'BLOCKED - 当前系统还不具备该能力' }
   ])
@@ -602,13 +604,23 @@ async function promptVerdict(caseId, session) {
 function autoVerdict(caseId, session) {
   const finalAnswer = String(session?.artifacts?.finalAnswer || '').trim()
   const stageId = String(session?.submissionContext?.stageId || '').trim().toLowerCase()
-  const workflowFailure = inspectStoryWorkflowFailure(session)
-  // L4-04 false-pass 根因修复:story workflow 任一步骤失败(含 step.ok=true 但 evaluator.passed=false)
-  // 必须先于关键词命中判定记为 FAIL,不能只看最终回答里出现了期望词。
-  if (hasStoryWorkflowSteps(session) && workflowFailure.hasFailure) {
-    console.log(`${caseId} 自动判定: FAIL`)
-    return { result: 'FAIL', notes: `自动判定：story workflow 存在失败步骤(含 evaluator 失败),不能计为业务 PASS。${workflowFailure.detail}` }
+
+  // AUTO-A02:统一 verdict 基础判定。session 状态 + story workflow 失败证据
+  // 必须先于关键词命中判定,不能只看最终回答里出现了期望词。
+  const baseVerdict = resolveSessionVerdict(session)
+  if (baseVerdict.verdict === REASONING_VERDICT.CANCELLED) {
+    console.log(`${caseId} 自动判定: CANCELLED`)
+    return { result: 'CANCELLED', notes: `自动判定：${baseVerdict.reason}` }
   }
+  if (baseVerdict.verdict === REASONING_VERDICT.BLOCKED) {
+    console.log(`${caseId} 自动判定: BLOCKED`)
+    return { result: 'BLOCKED', notes: `自动判定：${baseVerdict.reason}` }
+  }
+  if (baseVerdict.verdict === REASONING_VERDICT.FAIL) {
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: `自动判定：${baseVerdict.reason}` }
+  }
+
   if (/api call failed|http 5\d\d|cannot free enough memory|connection error|request timeout|timeout_error|timed out waiting|failed after \d+ retries/i.test(finalAnswer)) {
     console.log(`${caseId} 自动判定: FAIL`)
     return { result: 'FAIL', notes: '自动判定：最终回答包含模型/API 错误，不计为有效答案。' }
@@ -658,11 +670,11 @@ function autoVerdict(caseId, session) {
     return { result: 'PASS', notes: '自动判定：session completed 且存在最终回答。' }
   }
   if (session.status === 'completed') {
-    console.log(`${caseId} 自动判定: SOFT PASS`)
-    return { result: 'SOFT PASS', notes: '自动判定：session completed，但最终回答为空或缺失。' }
+    console.log(`${caseId} 自动判定: FAIL`)
+    return { result: 'FAIL', notes: '自动判定：session completed，但最终回答为空或缺失（final_answer_missing）。' }
   }
-  console.log(`${caseId} 自动判定: FAIL`)
-  return { result: 'FAIL', notes: `自动判定：session 状态为 ${session.status}。` }
+  console.log(`${caseId} 自动判定: BLOCKED`)
+  return { result: 'BLOCKED', notes: `自动判定：session 状态为 ${session.status}，无法解释。` }
 }
 
 function isL5NonAnswer(finalAnswer) {
@@ -680,6 +692,9 @@ function hasInvisibleBusinessAnswer(finalAnswer) {
   if (!text) return true
   if (/模型在工具执行后未返回可见文本/i.test(text)) return true
   if (/以下是最近工具结果摘要/i.test(text) && /请基于以上结果继续下一步/i.test(text)) return true
+  // 原始模型 API 响应（如 {"id":"chatcmpl-...","object":"chat.completion"}）不是面向用户的业务答案
+  if (/^\{[\s\S]*"object"\s*:\s*"chat\.completion"[\s\S]*\}$/.test(text)) return true
+  if (/^\{[\s\S]*"choices"\s*:\s*\[[\s\S]*"message"[\s\S]*"finish_reason"[\s\S]*\}$/.test(text)) return true
   return false
 }
 
@@ -687,8 +702,11 @@ function hasBoundaryOnlyBusinessAnswer(finalAnswer) {
   const text = String(finalAnswer || '').trim()
   if (!text) return false
   if (/失败边界[:：]\s*未发现失败步骤/i.test(text)) return false
-  return /blocked_by_previous_story_step|invalid_story_bible|validation_failed|项目校验未通过|已跳过 .*前置步骤 .* 未通过|未达到生产放行标准/i.test(text)
-    || (/失败边界/i.test(text) && !/未发现失败步骤/i.test(text))
+  if (/blocked_by_previous_story_step|invalid_story_bible|validation_failed|项目校验未通过|已跳过 .*前置步骤 .* 未通过|未达到生产放行标准/i.test(text)) return true
+  if (/无法(?:完成|执行).*(?:失败|被跳过|前置|未通过|缺少|没有|不可用|未生成)/i.test(text)) return true
+  if (/无法.*根据.*判断|无法.*给出.*结论|无法.*确定/i.test(text)) return true
+  if (/失败边界/i.test(text) && !/未发现失败步骤/i.test(text)) return true
+  return false
 }
 
 function inspectHermesModelAnswerEvidence(session) {
@@ -928,13 +946,13 @@ async function waitForManual(message) {
 function buildSummary(currentResults) {
   const lines = []
   for (const stage of currentResults.stages) {
-    const counts = { PASS: 0, 'SOFT PASS': 0, FAIL: 0, BLOCKED: 0 }
+    const counts = { PASS: 0, FAIL: 0, BLOCKED: 0, CANCELLED: 0 }
     for (const item of stage.cases || []) {
       if (item.result && counts[item.result] !== undefined) {
         counts[item.result] += 1
       }
     }
-    lines.push(`${stage.title}: status=${stage.status} PASS=${counts.PASS} SOFT PASS=${counts['SOFT PASS']} FAIL=${counts.FAIL} BLOCKED=${counts.BLOCKED}`)
+    lines.push(`${stage.title}: status=${stage.status} PASS=${counts.PASS} FAIL=${counts.FAIL} BLOCKED=${counts.BLOCKED} CANCELLED=${counts.CANCELLED}`)
   }
   return lines.join('\n')
 }

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1.0",
+  "updatedAt": "2026-05-11T12:06:24.106Z",
+  "projectId": "8fc3dda5-0215-4a6c-b724-d0e4d0f83e59",
+  "scriptsUpdatedAt": "2026-05-11T12:06:06.088Z",
+  "formula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 2,
+    "optionsPerChoice": 2,
+    "endings": 2
+  },
+  "review": {
+    "verdict": "ok",
+    "summary": "脚本中不存在错误或不可达节点，所有选择点、后果卡以及结局均已正确连接，符合公式规定。",
+    "rootCauses": [],
+    "userFacingExplanation": [],
+    "suggestedEdits": []
+  },
+  "meta": {
+    "provider": "localoxml",
+    "api": "responses",
+    "model": "gpt-oss-20b-MXFP4-Q8",
+    "durationMs": 17942
+  }
+}

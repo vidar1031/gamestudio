@@ -88,6 +88,44 @@ export type ReasoningStoryIndexItem = {
   nodeNames: string[]
 }
 
+export type ReasoningStoryStepResult = {
+  action: string
+  projectId?: string | null
+  ok: boolean
+  status?: string
+  summary?: string
+  failedStage?: string | null
+  retryable?: boolean
+  evaluator?: {
+    name?: string
+    passed?: boolean
+    checks?: Record<string, unknown>
+  } | null
+  snapshot?: {
+    projectDir?: string
+    fileNames?: string[]
+    distExists?: boolean
+  } | null
+  evidence?: {
+    distExists?: boolean
+    distUrl?: string | null
+    distPath?: string | null
+  } | null
+  data?: Record<string, unknown> | null
+}
+
+export type ReasoningStoryProductionArtifacts = {
+  projectId?: string | null
+  steps?: Record<string, ReasoningStoryStepResult>
+  scriptsCandidate?: unknown
+  scriptsCandidateMeta?: {
+    fallback?: boolean
+    fallbackReason?: string | null
+    provider?: string | null
+    model?: string | null
+  } | null
+}
+
 export type ReasoningSession = {
   sessionId: string
   runtimeSessionId?: string | null
@@ -107,6 +145,7 @@ export type ReasoningSession = {
   artifacts: {
     projectRoot?: string
     storyIndex?: ReasoningStoryIndexItem[]
+    storyProduction?: ReasoningStoryProductionArtifacts
     finalAnswer?: string
     finalAnswerPersisted?: boolean
     workspaceStructure?: Record<string, unknown>

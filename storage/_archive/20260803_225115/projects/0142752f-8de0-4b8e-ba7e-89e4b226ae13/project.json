@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "2.0",
+  "id": "0142752f-8de0-4b8e-ba7e-89e4b226ae13",
+  "title": "雨夜咖啡馆的时间循环",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T14:23:34.376Z",
+  "updatedAt": "2026-08-03T14:30:31.760Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "A cozy rainy night in a small town coffee shop, soft warm lighting, gentle rain on the window, familiar vintage interior.",
+        "characters": [
+          {
+            "id": "char_protagonist",
+            "name": "Liu",
+            "aliases": [
+              "the Protagonist",
+              "主角"
+            ],
+            "anchorPrompt": "Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.",
+            "negativePrompt": "child, baby, childlike features",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_coffee_cup",
+            "name": "Coffee Cup",
+            "aliases": [
+              "咖啡杯"
+            ],
+            "anchorPrompt": "Small ceramic coffee cup, black glaze, round body, small handle, slight steam rising, resting on a wooden table.",
+            "forbiddenSubstitutes": [
+              "paper cup",
+              "plastic cup"
+            ],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_coffee_shop",
+            "name": "Rainy Night Coffee Shop",
+            "aliases": [
+              "咖啡馆",
+              "雨夜咖啡馆"
+            ],
+            "anchorPrompt": "Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Scene 1: Liu enters the coffee shop on a rainy night and senses that tonight’s choice will change everyone’s fate.",
+          "Scene 2: Liu faces a choice: investigate the anomaly or protect a nearby companion.",
+          "Scene 3: Liu chooses to investigate and uncovers a repeatable pattern behind the events.",
+          "Scene 4: Liu chooses to protect the companion, missing the first clue but gaining deeper trust.",
+          "Scene 5: Liu breaks the loop and walks toward a new dawn holding the truth.",
+          "Scene 6: Liu keeps the secret, maintaining the status quo while knowing what to do next time."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf",
+          "paper cup",
+          "plastic cup"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_cup"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"A cozy rainy night in a small town coffee shop, soft warm lighting, gentle rain on the window, familiar vintage interior.\",\n  \"characters\": [\n    {\n      \"id\": \"char_protagonist\",\n      \"name\": \"Liu\",\n      \"aliases\": [\n        \"the Protagonist\",\n        \"主角\"\n      ],\n      \"anchorPrompt\": \"Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.\",\n      \"negativePrompt\": \"child, baby, childlike features\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_coffee_cup\",\n      \"name\": \"Coffee Cup\",\n      \"aliases\": [\n        \"咖啡杯\"\n      ],\n      \"anchorPrompt\": \"Small ceramic coffee cup, black glaze, round body, small handle, slight steam rising, resting on a wooden table.\",\n      \"forbiddenSubstitutes\": [\n        \"paper cup\",\n        \"plastic cup\"\n      ],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_coffee_shop\",\n      \"name\": \"Rainy Night Coffee Shop\",\n      \"aliases\": [\n        \"咖啡馆\",\n        \"雨夜咖啡馆\"\n      ],\n      \"anchorPrompt\": \"Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Scene 1: Liu enters the coffee shop on a rainy night and senses that tonight’s choice will change everyone’s fate.\",\n    \"Scene 2: Liu faces a choice: investigate the anomaly or protect a nearby companion.\",\n    \"Scene 3: Liu chooses to investigate and uncovers a repeatable pattern behind the events.\",\n    \"Scene 4: Liu chooses to protect the companion, missing the first clue but gaining deeper trust.\",\n    \"Scene 5: Liu breaks the loop and walks toward a new dawn holding the truth.\",\n    \"Scene 6: Liu keeps the secret, maintaining the status quo while knowing what to do next time.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\",\n    \"paper cup\",\n    \"plastic cup\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_cup\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T14:30:31.759Z"
+    }
+  }
+}

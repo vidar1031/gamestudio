@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1.0",
+  "updatedAt": "2026-07-22T13:07:04.706Z",
+  "projectId": "f443a272-b20d-4931-a002-23c6c6344316",
+  "scriptsUpdatedAt": "2026-07-22T12:57:43.815Z",
+  "formula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 2,
+    "optionsPerChoice": 2,
+    "endings": 2
+  },
+  "review": {
+    "verdict": "ok",
+    "summary": "结构与连线看起来合理。",
+    "rootCauses": [],
+    "userFacingExplanation": [
+      "本次分析基于本地规则（非 AI），按“选项1..N / i后果k / 结局k”约定解析脚本生成蓝图。"
+    ],
+    "suggestedEdits": []
+  },
+  "meta": {
+    "provider": "local",
+    "durationMs": 0
+  }
+}

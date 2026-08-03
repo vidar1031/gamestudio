@@ -14,6 +14,7 @@ import {
   getGlobalAiRules,
   listStoryPromptTemplates,
   listProjects,
+  listProjectSummaries,
   regenerateProjectScriptsWithAiDetailed,
   reviewStoryPrompt,
   reviewBlueprintWithAi,
@@ -24,6 +25,7 @@ import {
   type StoryPromptTemplateItem,
   type StoryPromptReview,
   type ProjectV1,
+  type ProjectSummary,
   type StudioEffectiveConfig
 } from '../api'
 
@@ -155,6 +157,7 @@ type InlineConfirmState = {
 export default function Hub(props: Props) {
   const draft = loadAiDraft()
   const [projects, setProjects] = useState<ProjectV1[]>([])
+  const [summaries, setSummaries] = useState<ProjectSummary[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [effectiveAi, setEffectiveAi] = useState<StudioEffectiveConfig | null>(null)
@@ -350,8 +353,9 @@ export default function Hub(props: Props) {
     setBusy(true)
     setError('')
     try {
-      const [items, st, templates] = await Promise.all([listProjects(), getStudioSettings().catch(() => null), listStoryPromptTemplates().catch(() => [])])
+      const [items, st, templates, sums] = await Promise.all([listProjects(), getStudioSettings().catch(() => null), listStoryPromptTemplates().catch(() => []), listProjectSummaries().catch(() => [])])
       setProjects(items)
+      setSummaries(Array.isArray(sums) ? sums : [])
       if (st && st.effective) setEffectiveAi(st.effective)
       setSavedPromptTemplates(Array.isArray(templates) ? templates : [])
       setSavedTemplateId((prev) => {
@@ -900,6 +904,30 @@ export default function Hub(props: Props) {
     return false
   }, [analysis, blueprintReview, blueprintReviewIsFallback, aiResult])
 
+  const lastOpened = useMemo(() => {
+    try {
+      const pid = localStorage.getItem('gamestudio.projectId')
+      if (!pid) return null
+      return summaries.find((s) => s.id === pid) || null
+    } catch {
+      return null
+    }
+  }, [summaries])
+
+  function stageTargetOf(s: ProjectSummary): 'script' | 'blueprint' | 'compose' {
+    if (s.stage === 'script') return 'script'
+    if (s.stage === 'blueprint') return 'blueprint'
+    return 'compose'
+  }
+
+  function stageLabelOf(s: ProjectSummary): string {
+    if (s.stage === 'script') return '脚本层'
+    if (s.stage === 'blueprint') return '蓝图层'
+    if (s.stage === 'compose') return '合成层'
+    if (s.stage === 'export') return '待导出'
+    return '可玩'
+  }
+
   return (
     <div className="app">
       <div className="topbar">
@@ -910,126 +938,117 @@ export default function Hub(props: Props) {
           </button>
         </div>
         <div className="right">
-          <div className="hint">分镜 → 蓝图 → 合成</div>
-          {selected ? (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 12, flexWrap: 'wrap' }}>
-              <button className="btn secondary" disabled={busy} onClick={() => props.onOpenProject(selected.id, 'script')}>
-                激活分镜
-              </button>
-              <button
-                className="btn secondary"
-                disabled={busy || selectedProgressLoading || !(selectedProgress && selectedProgress.scriptsReady)}
-                onClick={() => props.onOpenProject(selected.id, 'blueprint')}
-              >
-                激活蓝图
-              </button>
-              <button
-                className="btn secondary"
-                disabled={busy || selectedProgressLoading || !(selectedProgress && selectedProgress.blueprintReady)}
-                onClick={() => props.onOpenProject(selected.id, 'compose')}
-              >
-                激活合成
-              </button>
-              <button
-                className="btn secondary"
-                disabled={busy || selectedProgressLoading || !(selectedProgress && selectedProgress.previewReady)}
-                onClick={() => props.onOpenProject(selected.id, 'compose')}
-              >
-                激活预览
-              </button>
-              <div className="hint">
-                {selectedProgressLoading
-                  ? '进度检查中...'
-                  : selectedProgress
-                    ? `分镜:${selectedProgress.scriptsReady ? '√' : '×'} 蓝图:${selectedProgress.blueprintReady ? '√' : '×'} 合成:${selectedProgress.composeReady ? '√' : '×'}`
-                    : ''}
-              </div>
-            </div>
-          ) : null}
+          <div className="hint">脚本 → 蓝图 → 合成 → 导出</div>
         </div>
       </div>
 
-      <div className="main">
-        <div className="panel">
-          <div className="section">
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>故事草稿</div>
-            <div className="hint">点击草稿直接进入分镜编辑。</div>
-
-            <div className="hr" />
-
-            <div className="list">
-              {projects.map((p) => (
+      <div className="hub-layout">
+        <div className="hub-content">
+          <div style={{ width: '100%', maxWidth: 1120, padding: 16, margin: '0 auto' }}>
+              <div className="hub-hero-row">
+                {lastOpened ? (
+                  <div
+                    className="hub-card"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => props.onOpenProject(lastOpened.id, stageTargetOf(lastOpened))}
+                  >
+                    <div className="hub-card-title">▶ 继续上次</div>
+                    <div className="hub-card-sub">{lastOpened.title || lastOpened.id} · {stageLabelOf(lastOpened)}</div>
+                  </div>
+                ) : null}
                 <div
-                  key={p.id}
-                  className={`item ${selectedId === p.id ? 'active' : ''}`}
+                  className="hub-card"
+                  role="button"
+                  tabIndex={0}
+                  style={{ opacity: busy ? 0.7 : 1 }}
                   onClick={() => {
-                    props.onOpenProject(p.id, 'script')
+                    if (busy) return
+                    openAiCreateStoryModal()
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {p.title || p.id}
-                      </div>
-                      <div className="meta">{p.updatedAt || ''}</div>
-                    </div>
-                    <button
-                      className="btn secondary"
-                      style={{ padding: '6px 10px' }}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void removeProject(p.id)
-                      }}
-                      disabled={busy}
-                      title="删除草稿"
-                    >
-                      删除
-                    </button>
-                  </div>
+                  <div className="hub-card-title">＋ 新建互动故事</div>
+                  <div className="hub-card-sub">一句话创意，AI 生成脚本层草稿，生成后进入蓝图结构审阅</div>
                 </div>
-              ))}
-              {!projects.length ? <div className="hint">暂无草稿</div> : null}
-            </div>
-
-            {error ? <div style={{ marginTop: 10, color: '#fca5a5' }}>{error}</div> : null}
-          </div>
-        </div>
-
-        <div className="canvas">
-          <div className="canvas-wrap">
-            <div style={{ width: 'min(860px, calc(100vw - 24px))', padding: 12, display: 'grid', gap: 12 }}>
-              <div
-                className="hub-card"
-                role="button"
-                tabIndex={0}
-                style={{ opacity: busy ? 0.7 : 1 }}
-                onClick={() => {
-                  if (busy) return
-                  openAiCreateStoryModal()
-                }}
-              >
-                <div className="hub-card-title">+ AI 创建故事</div>
-                <div className="hub-card-sub">基于当前设置的模型生成脚本层分镜草稿</div>
               </div>
 
-              {selected ? (
-                <div style={{ marginTop: 12 }} className="hint">
-                  最近选择：{selected.title}（{selected.id}）
-                </div>
-              ) : null}
+              <div className="hub-gallery">
+                {summaries.map((s) => (
+                  <div
+                    key={s.id}
+                    className="hub-project-card"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => props.onOpenProject(s.id, stageTargetOf(s))}
+                  >
+                    <div className="hub-project-head">
+                      <div className="hub-project-title">{s.title || s.id}</div>
+                      <button
+                        className="hub-project-delete"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void removeProject(s.id)
+                        }}
+                        disabled={busy}
+                        title="删除草稿"
+                      >
+                        删除
+                      </button>
+                    </div>
+                    <div className="hub-mini-track" aria-hidden="true">
+                      <span className={`hub-mini-dot ${s.stages.scripts ? 'done' : ''}`} />
+                      <span className="hub-mini-line" />
+                      <span className={`hub-mini-dot ${s.stages.blueprint ? 'done' : ''}`} />
+                      <span className="hub-mini-line" />
+                      <span className={`hub-mini-dot ${s.stages.compose ? 'done' : ''}`} />
+                      <span className="hub-mini-line" />
+                      <span className={`hub-mini-dot ${s.stages.export ? 'done' : ''}`} />
+                    </div>
+                    <div className={`hub-stage-label ${s.stage === 'playable' ? 'playable' : ''}`}>
+                      {s.stage === 'playable' ? '可玩 ↗' : stageLabelOf(s)} · {s.cards} 卡 / {s.blueprintNodes} 节点
+                    </div>
+                    <div className="hub-project-meta">{String(s.updatedAt || '').slice(0, 16).replace('T', ' ')}</div>
+                  </div>
+                ))}
+              </div>
+              {!summaries.length && !busy ? <div className="hint" style={{ marginTop: 12 }}>暂无故事项目，从「新建互动故事」开始。</div> : null}
+              {error ? <div style={{ marginTop: 10, color: '#fca5a5' }}>{error}</div> : null}
             </div>
           </div>
-        </div>
 
-        <div className="panel right">
+        <div className="hub-rail">
           <div className="section">
             <div style={{ fontWeight: 700, marginBottom: 8 }}>说明</div>
-            <div className="hint" style={{ fontWeight: 700, marginBottom: 6 }}>设置日志</div>
-            <textarea
-              readOnly
-              value={aiSettingLogs.length ? aiSettingLogs.join('\n') : '(暂无日志)'}
-              style={{ minHeight: 130, resize: 'none', width: '100%' }}
-            />
+            <div className="hub-rail-section">
+              <div className="hint" style={{ fontWeight: 700, marginBottom: 6 }}>环境状态</div>
+              {effectiveAi ? (
+                <div className="hub-rail-kv">
+                  <div>文本模型 {effectiveAi.enabled?.scripts ? '✓' : '✗'}<span>{effectiveAi.enabled?.scripts ? `${effectiveAi.scripts?.provider || 'none'} / ${effectiveAi.scripts?.model || '-'}` : '未配置'}</span></div>
+                  <div>图像服务 {effectiveAi.enabled?.image ? '✓' : '✗'}<span>{effectiveAi.enabled?.image ? `${effectiveAi.image?.provider || 'none'}` : '未配置'}</span></div>
+                </div>
+              ) : (
+                <div className="hint">读取中…</div>
+              )}
+            </div>
+            <div className="hub-rail-section">
+              <div className="hint" style={{ fontWeight: 700, marginBottom: 6 }}>最近动态</div>
+              <div className="hub-activity">
+                {summaries.slice(0, 5).map((s) => (
+                  <div key={s.id}>{s.title || s.id} · {stageLabelOf(s)}</div>
+                ))}
+                {!summaries.length ? <div className="hint">暂无动态</div> : null}
+              </div>
+            </div>
+            <div className="hub-rail-section">
+              <details>
+                <summary className="hint" style={{ cursor: 'pointer', fontWeight: 700 }}>诊断日志</summary>
+                <textarea
+                  readOnly
+                  value={aiSettingLogs.length ? aiSettingLogs.join('\n') : '(暂无日志)'}
+                  style={{ minHeight: 130, resize: 'none', width: '100%', marginTop: 6 }}
+                />
+              </details>
+            </div>
           </div>
         </div>
       </div>

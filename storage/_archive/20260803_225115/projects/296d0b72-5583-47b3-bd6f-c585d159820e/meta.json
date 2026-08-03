@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "id": "296d0b72-5583-47b3-bd6f-c585d159820e",
+  "title": "小猫钓鱼",
+  "stage": "script",
+  "createdAt": "2026-03-27T08:00:21.904Z",
+  "updatedAt": "2026-05-23T05:10:53.883Z",
+  "aiFormula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 1,
+    "optionsPerChoice": 2,
+    "endings": 2
+  }
+}

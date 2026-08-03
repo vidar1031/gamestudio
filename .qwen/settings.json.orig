@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(openclaw *)"
+      "Bash(*)",
+      "Bash(openclaw *)",
+      "Bash(rg *)",
+      "Bash(npm *)",
+      "Bash(node *)",
+      "Bash(git *)",
+      "Bash(curl *)",
+      "Bash(ls *)",
+      "Bash(cat *)"
     ]
   }
 }

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0",
+  "updatedAt": "2026-03-27T08:00:41.946Z",
+  "projectId": "296d0b72-5583-47b3-bd6f-c585d159820e",
+  "scriptsUpdatedAt": "2026-03-27T08:00:21.897Z",
+  "formula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 1,
+    "optionsPerChoice": 2,
+    "endings": 2
+  },
+  "review": {
+    "verdict": "warn",
+    "summary": "AI 分析失败（已回退为本地提示）。",
+    "rootCauses": [
+      "This operation was aborted"
+    ],
+    "userFacingExplanation": [],
+    "suggestedEdits": []
+  },
+  "meta": {
+    "provider": "localoxml",
+    "api": "responses",
+    "model": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
+    "durationMs": 20001,
+    "error": {
+      "message": "This operation was aborted",
+      "code": "20",
+      "name": "AbortError"
+    }
+  }
+}

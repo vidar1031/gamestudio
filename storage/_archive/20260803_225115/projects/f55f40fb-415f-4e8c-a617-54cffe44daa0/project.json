@@ -1,0 +1,152 @@
+{
+  "schemaVersion": "2.0",
+  "id": "f55f40fb-415f-4e8c-a617-54cffe44daa0",
+  "title": "雨夜咖啡馆的时间循环",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T11:59:09.637Z",
+  "updatedAt": "2026-08-03T12:13:33.739Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Rainy evening in a cozy town coffee shop with warm lamp light and misty window, illuminated by soft amber glow.",
+        "characters": [
+          {
+            "id": "char_protagonist",
+            "name": "Protagonist",
+            "aliases": [
+              "主角"
+            ],
+            "anchorPrompt": "Adult, casual modern clothing, mid-20s, contemplative expression",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_coffee_mug",
+            "name": "Coffee Mug",
+            "aliases": [
+              "咖啡杯"
+            ],
+            "anchorPrompt": "Ceramic coffee mug, slightly worn, with a subtle coffee stain, resting on a wooden counter",
+            "forbiddenSubstitutes": [],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_coffee_shop",
+            "name": "Rainy Night Café",
+            "aliases": [
+              "咖啡馆"
+            ],
+            "anchorPrompt": "Cozy interior of a small town coffee shop on a rainy night, warm amber lighting, rain pattering against windows, wooden tables",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Protagonist enters rainy night coffee shop",
+          "Protagonist observes subtle irregularities in the atmosphere",
+          "Protagonist faces a choice: investigate anomaly or protect companion",
+          "If investigate: protagonist traces pattern of events",
+          "If protect: protagonist misses clue but builds trust",
+          "Protagonist breaks cycle or keeps secret"
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_mug"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_mug"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_mug"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_mug"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_mug"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_mug"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Rainy evening in a cozy town coffee shop with warm lamp light and misty window, illuminated by soft amber glow.\",\n  \"characters\": [\n    {\n      \"id\": \"char_protagonist\",\n      \"name\": \"Protagonist\",\n      \"aliases\": [\n        \"主角\"\n      ],\n      \"anchorPrompt\": \"Adult, casual modern clothing, mid-20s, contemplative expression\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_coffee_mug\",\n      \"name\": \"Coffee Mug\",\n      \"aliases\": [\n        \"咖啡杯\"\n      ],\n      \"anchorPrompt\": \"Ceramic coffee mug, slightly worn, with a subtle coffee stain, resting on a wooden counter\",\n      \"forbiddenSubstitutes\": [],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_coffee_shop\",\n      \"name\": \"Rainy Night Café\",\n      \"aliases\": [\n        \"咖啡馆\"\n      ],\n      \"anchorPrompt\": \"Cozy interior of a small town coffee shop on a rainy night, warm amber lighting, rain pattering against windows, wooden tables\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Protagonist enters rainy night coffee shop\",\n    \"Protagonist observes subtle irregularities in the atmosphere\",\n    \"Protagonist faces a choice: investigate anomaly or protect companion\",\n    \"If investigate: protagonist traces pattern of events\",\n    \"If protect: protagonist misses clue but builds trust\",\n    \"Protagonist breaks cycle or keeps secret\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T12:13:33.738Z"
+    }
+  }
+}

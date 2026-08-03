@@ -1,0 +1,318 @@
+{
+  "schemaVersion": "2.0",
+  "id": "f443a272-b20d-4931-a002-23c6c6344316",
+  "title": "未命名互动故事",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-07-22T12:56:53.348Z",
+  "updatedAt": "2026-07-22T13:56:08.957Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Evening on a coastal cliff, golden lighthouse glow, warm illustration, rustic stone, dim ambient lighting",
+        "characters": [
+          {
+            "id": "char_ashan",
+            "name": "阿山",
+            "aliases": [],
+            "anchorPrompt": "young boy with short dark hair, simple clothing, determined expression, standing on a cliff or inside a dark tunnel",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_iron_gate",
+            "name": "古老铁门",
+            "aliases": [
+              "铁门"
+            ],
+            "anchorPrompt": "ancient iron gate, corroded rust, etched runes, narrow rectangular door, wall‑mounted",
+            "forbiddenSubstitutes": [
+              "wooden gate",
+              "steel gate"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_wooden_box",
+            "name": "木箱",
+            "aliases": [],
+            "anchorPrompt": "old dusty wooden crate, weathered oak planks, metal hinges, small lock, stacked with dust",
+            "forbiddenSubstitutes": [
+              "metal crate",
+              "new box"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_hammer",
+            "name": "铁匠锤",
+            "aliases": [
+              "锤子"
+            ],
+            "anchorPrompt": "heavy iron hammer, wooden handle, worn, used in blacksmith work, metallic head",
+            "forbiddenSubstitutes": [
+              "wooden hammer",
+              "plastic hammer"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_rune_stone",
+            "name": "符文石",
+            "aliases": [],
+            "anchorPrompt": "glowing rune stone, semi‑translucent stone, faint blue light, etched ancient symbols, pedestal",
+            "forbiddenSubstitutes": [
+              "gemstone",
+              "stone"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_sword",
+            "name": "古剑",
+            "aliases": [],
+            "anchorPrompt": "ancient sword, tarnished silver blade, carved hilt, leather sheath, faint glow",
+            "forbiddenSubstitutes": [
+              "modern sword",
+              "sword with guard"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_keyhole",
+            "name": "钥匙孔",
+            "aliases": [],
+            "anchorPrompt": "small rusty keyhole, recessed iron rim, worn, located on wooden box",
+            "forbiddenSubstitutes": [
+              "hole",
+              "door knob"
+            ],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_lighthouse",
+            "name": "灯塔",
+            "aliases": [
+              "灯塔顶端"
+            ],
+            "anchorPrompt": "coastal lighthouse, brick tower, lantern room, aging stone base, waves below",
+            "locked": true
+          },
+          {
+            "id": "loc_warehouse",
+            "name": "仓库",
+            "aliases": [
+              "古旧仓库"
+            ],
+            "anchorPrompt": "old warehouse, wooden beams, rusted metal shelves, dusty crates, dim light",
+            "locked": true
+          },
+          {
+            "id": "loc_underground_passage",
+            "name": "地下通道",
+            "aliases": [
+              "通道"
+            ],
+            "anchorPrompt": "dark stone corridor, narrow passage, damp air, faint light, stone steps",
+            "locked": true
+          },
+          {
+            "id": "loc_mountain_cave",
+            "name": "山洞",
+            "aliases": [],
+            "anchorPrompt": "rocky cave entrance, mist swirling, faint glow from inside, rugged cliffs",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Ashan climbs the lighthouse cliff at dusk, golden glow surrounds.",
+          "He discovers an ancient iron gate etched with runes on the wall.",
+          "Ashan considers exploring a dark alley or staying atop the lighthouse.",
+          "Along the alley, the stone steps tremble and the gate opens into an underground passage.",
+          "At the lighthouse top, Ashan spots a mist‑shrouded cave glowing faintly in the distance.",
+          "Both paths lead to the base of an old warehouse, where a dusty wooden crate lies.",
+          "Ashan decides to open the crate with either the iron hammer or the keyhole.",
+          "Hitting the crate with the hammer, it opens to reveal a glowing rune stone.",
+          "Using the keyhole, the crate opens to expose a flickering rune stone and an ancient sword.",
+          "The rune stone illuminates an ancient prophecy, granting Ashan lighthouse guardian powers.",
+          "The ancient sword shines under moonlight, and Ashan embarks on a greater adventure."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf",
+          "wooden gate",
+          "steel gate",
+          "metal crate",
+          "new box",
+          "wooden hammer",
+          "plastic hammer",
+          "gemstone",
+          "stone",
+          "modern sword",
+          "sword with guard",
+          "hole",
+          "door knob"
+        ],
+        "sceneRefs": {
+          "start": {
+            "characters": [],
+            "props": [],
+            "locations": []
+          },
+          "sc_1784725060569_gglf6u": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [],
+            "locations": [
+              "loc_lighthouse"
+            ]
+          },
+          "sc_1784725060569_gx61k7": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_iron_gate"
+            ],
+            "locations": [
+              "loc_lighthouse"
+            ]
+          },
+          "sc_1784725060569_klvny8": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_iron_gate"
+            ],
+            "locations": [
+              "loc_lighthouse"
+            ]
+          },
+          "sc_1784725060569_534w21": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_iron_gate"
+            ],
+            "locations": [
+              "loc_underground_passage"
+            ]
+          },
+          "sc_1784725060569_7qvsyb": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [],
+            "locations": [
+              "loc_lighthouse"
+            ]
+          },
+          "sc_1784725060569_m01c96": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_wooden_box"
+            ],
+            "locations": [
+              "loc_warehouse"
+            ]
+          },
+          "sc_1784725060569_i80x5x": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_wooden_box",
+              "prop_hammer",
+              "prop_keyhole"
+            ],
+            "locations": [
+              "loc_warehouse"
+            ]
+          },
+          "sc_1784725060569_cd1e6l": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_wooden_box",
+              "prop_rune_stone"
+            ],
+            "locations": [
+              "loc_warehouse"
+            ]
+          },
+          "sc_1784725060569_tqoa8m": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_wooden_box",
+              "prop_rune_stone",
+              "prop_sword"
+            ],
+            "locations": [
+              "loc_warehouse"
+            ]
+          },
+          "sc_1784725060569_s7301a": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_rune_stone"
+            ],
+            "locations": [
+              "loc_lighthouse"
+            ]
+          },
+          "sc_1784725060569_nfsgc9": {
+            "characters": [
+              "char_ashan"
+            ],
+            "props": [
+              "prop_sword"
+            ],
+            "locations": [
+              "loc_lighthouse"
+            ]
+          },
+          "end": {
+            "characters": [],
+            "props": [],
+            "locations": []
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Evening on a coastal cliff, golden lighthouse glow, warm illustration, rustic stone, dim ambient lighting\",\n  \"characters\": [\n    {\n      \"id\": \"char_ashan\",\n      \"name\": \"阿山\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"young boy with short dark hair, simple clothing, determined expression, standing on a cliff or inside a dark tunnel\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_iron_gate\",\n      \"name\": \"古老铁门\",\n      \"aliases\": [\n        \"铁门\"\n      ],\n      \"anchorPrompt\": \"ancient iron gate, corroded rust, etched runes, narrow rectangular door, wall‑mounted\",\n      \"forbiddenSubstitutes\": [\n        \"wooden gate\",\n        \"steel gate\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_wooden_box\",\n      \"name\": \"木箱\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"old dusty wooden crate, weathered oak planks, metal hinges, small lock, stacked with dust\",\n      \"forbiddenSubstitutes\": [\n        \"metal crate\",\n        \"new box\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_hammer\",\n      \"name\": \"铁匠锤\",\n      \"aliases\": [\n        \"锤子\"\n      ],\n      \"anchorPrompt\": \"heavy iron hammer, wooden handle, worn, used in blacksmith work, metallic head\",\n      \"forbiddenSubstitutes\": [\n        \"wooden hammer\",\n        \"plastic hammer\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_rune_stone\",\n      \"name\": \"符文石\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"glowing rune stone, semi‑translucent stone, faint blue light, etched ancient symbols, pedestal\",\n      \"forbiddenSubstitutes\": [\n        \"gemstone\",\n        \"stone\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_sword\",\n      \"name\": \"古剑\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"ancient sword, tarnished silver blade, carved hilt, leather sheath, faint glow\",\n      \"forbiddenSubstitutes\": [\n        \"modern sword\",\n        \"sword with guard\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_keyhole\",\n      \"name\": \"钥匙孔\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"small rusty keyhole, recessed iron rim, worn, located on wooden box\",\n      \"forbiddenSubstitutes\": [\n        \"hole\",\n        \"door knob\"\n      ],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_lighthouse\",\n      \"name\": \"灯塔\",\n      \"aliases\": [\n        \"灯塔顶端\"\n      ],\n      \"anchorPrompt\": \"coastal lighthouse, brick tower, lantern room, aging stone base, waves below\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"loc_warehouse\",\n      \"name\": \"仓库\",\n      \"aliases\": [\n        \"古旧仓库\"\n      ],\n      \"anchorPrompt\": \"old warehouse, wooden beams, rusted metal shelves, dusty crates, dim light\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"loc_underground_passage\",\n      \"name\": \"地下通道\",\n      \"aliases\": [\n        \"通道\"\n      ],\n      \"anchorPrompt\": \"dark stone corridor, narrow passage, damp air, faint light, stone steps\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"loc_mountain_cave\",\n      \"name\": \"山洞\",\n      \"aliases\": [],\n      \"anchorPrompt\": \"rocky cave entrance, mist swirling, faint glow from inside, rugged cliffs\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Ashan climbs the lighthouse cliff at dusk, golden glow surrounds.\",\n    \"He discovers an ancient iron gate etched with runes on the wall.\",\n    \"Ashan considers exploring a dark alley or staying atop the lighthouse.\",\n    \"Along the alley, the stone steps tremble and the gate opens into an underground passage.\",\n    \"At the lighthouse top, Ashan spots a mist‑shrouded cave glowing faintly in the distance.\",\n    \"Both paths lead to the base of an old warehouse, where a dusty wooden crate lies.\",\n    \"Ashan decides to open the crate with either the iron hammer or the keyhole.\",\n    \"Hitting the crate with the hammer, it opens to reveal a glowing rune stone.\",\n    \"Using the keyhole, the crate opens to expose a flickering rune stone and an ancient sword.\",\n    \"The rune stone illuminates an ancient prophecy, granting Ashan lighthouse guardian powers.\",\n    \"The ancient sword shines under moonlight, and Ashan embarks on a greater adventure.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\",\n    \"wooden gate\",\n    \"steel gate\",\n    \"metal crate\",\n    \"new box\",\n    \"wooden hammer\",\n    \"plastic hammer\",\n    \"gemstone\",\n    \"stone\",\n    \"modern sword\",\n    \"sword with guard\",\n    \"hole\",\n    \"door knob\"\n  ],\n  \"sceneRefs\": {\n    \"start\": {\n      \"characters\": [],\n      \"props\": [],\n      \"locations\": []\n    },\n    \"sc_1784725060569_gglf6u\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_lighthouse\"\n      ]\n    },\n    \"sc_1784725060569_gx61k7\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_iron_gate\"\n      ],\n      \"locations\": [\n        \"loc_lighthouse\"\n      ]\n    },\n    \"sc_1784725060569_klvny8\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_iron_gate\"\n      ],\n      \"locations\": [\n        \"loc_lighthouse\"\n      ]\n    },\n    \"sc_1784725060569_534w21\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_iron_gate\"\n      ],\n      \"locations\": [\n        \"loc_underground_passage\"\n      ]\n    },\n    \"sc_1784725060569_7qvsyb\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_lighthouse\"\n      ]\n    },\n    \"sc_1784725060569_m01c96\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_wooden_box\"\n      ],\n      \"locations\": [\n        \"loc_warehouse\"\n      ]\n    },\n    \"sc_1784725060569_i80x5x\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_wooden_box\",\n        \"prop_hammer\",\n        \"prop_keyhole\"\n      ],\n      \"locations\": [\n        \"loc_warehouse\"\n      ]\n    },\n    \"sc_1784725060569_cd1e6l\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_wooden_box\",\n        \"prop_rune_stone\"\n      ],\n      \"locations\": [\n        \"loc_warehouse\"\n      ]\n    },\n    \"sc_1784725060569_tqoa8m\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_wooden_box\",\n        \"prop_rune_stone\",\n        \"prop_sword\"\n      ],\n      \"locations\": [\n        \"loc_warehouse\"\n      ]\n    },\n    \"sc_1784725060569_s7301a\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_rune_stone\"\n      ],\n      \"locations\": [\n        \"loc_lighthouse\"\n      ]\n    },\n    \"sc_1784725060569_nfsgc9\": {\n      \"characters\": [\n        \"char_ashan\"\n      ],\n      \"props\": [\n        \"prop_sword\"\n      ],\n      \"locations\": [\n        \"loc_lighthouse\"\n      ]\n    },\n    \"end\": {\n      \"characters\": [],\n      \"props\": [],\n      \"locations\": []\n    }\n  }\n}",
+      "updatedAt": "2026-07-22T13:06:55.606Z"
+    }
+  }
+}

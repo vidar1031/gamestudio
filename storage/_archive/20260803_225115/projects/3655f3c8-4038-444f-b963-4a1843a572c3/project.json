@@ -1,0 +1,193 @@
+{
+  "schemaVersion": "2.0",
+  "id": "3655f3c8-4038-444f-b963-4a1843a572c3",
+  "title": "未命名互动故事",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-06-06T14:27:36.389Z",
+  "updatedAt": "2026-06-06T14:35:02.577Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes",
+        "characters": [
+          {
+            "id": "c_red",
+            "name": "Little Red Riding Hood",
+            "aliases": [
+              "Red Riding Hood",
+              "小红帽"
+            ],
+            "anchorPrompt": "Child wearing a red hooded cape, carrying a wooden basket",
+            "negativePrompt": "",
+            "locked": true
+          },
+          {
+            "id": "c_wolf",
+            "name": "Wolf",
+            "aliases": [
+              "狼"
+            ],
+            "anchorPrompt": "Large gray wolf standing in forest, eyes glowing",
+            "negativePrompt": "",
+            "locked": true
+          },
+          {
+            "id": "c_grandma",
+            "name": "Grandma",
+            "aliases": [
+              "奶奶"
+            ],
+            "anchorPrompt": "Elderly woman in simple dress, sitting in a wooden chair inside a cozy cottage",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "p_basket",
+            "name": "Basket",
+            "aliases": [
+              "木篮"
+            ],
+            "anchorPrompt": "Wooden basket, medium size, woven handle, open top",
+            "forbiddenSubstitutes": [
+              "plastic basket",
+              "metal basket"
+            ],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "l_forest",
+            "name": "Forest Path",
+            "aliases": [
+              "林间小路"
+            ],
+            "anchorPrompt": "Woodland path with tall trees, dappled sunlight, mossy stones",
+            "locked": true
+          },
+          {
+            "id": "l_house",
+            "name": "Grandma's House",
+            "aliases": [
+              "奶奶家"
+            ],
+            "anchorPrompt": "Cozy cottage with thatched roof, small garden, warm interior",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Little Red Riding Hood starts journey on forest path.",
+          "Little Red Riding Hood sees small path and big path.",
+          "Little Red Riding Hood chooses small path.",
+          "Little Red Riding Hood encounters wolf.",
+          "Wolf attacks Little Red Riding Hood.",
+          "Little Red Riding Hood is eaten by wolf.",
+          "Little Red Riding Hood chooses big path.",
+          "Little Red Riding Hood reaches grandma house safely.",
+          "Grandma is happy."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf",
+          "plastic basket",
+          "metal basket"
+        ],
+        "sceneRefs": {
+          "start": {
+            "characters": [
+              "c_red"
+            ],
+            "props": [
+              "p_basket"
+            ],
+            "locations": [
+              "l_forest"
+            ]
+          },
+          "c2": {
+            "characters": [
+              "c_red"
+            ],
+            "props": [
+              "p_basket"
+            ],
+            "locations": [
+              "l_forest"
+            ]
+          },
+          "c3": {
+            "characters": [
+              "c_red",
+              "c_wolf"
+            ],
+            "props": [
+              "p_basket"
+            ],
+            "locations": [
+              "l_forest"
+            ]
+          },
+          "c4": {
+            "characters": [
+              "c_red"
+            ],
+            "props": [
+              "p_basket"
+            ],
+            "locations": [
+              "l_house"
+            ]
+          },
+          "c5": {
+            "characters": [
+              "c_red",
+              "c_wolf"
+            ],
+            "props": [
+              "p_basket"
+            ],
+            "locations": [
+              "l_forest"
+            ]
+          },
+          "c6": {
+            "characters": [
+              "c_red",
+              "c_grandma"
+            ],
+            "props": [
+              "p_basket"
+            ],
+            "locations": [
+              "l_house"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes\",\n  \"characters\": [\n    {\n      \"id\": \"c_red\",\n      \"name\": \"Little Red Riding Hood\",\n      \"aliases\": [\n        \"Red Riding Hood\",\n        \"小红帽\"\n      ],\n      \"anchorPrompt\": \"Child wearing a red hooded cape, carrying a wooden basket\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"c_wolf\",\n      \"name\": \"Wolf\",\n      \"aliases\": [\n        \"狼\"\n      ],\n      \"anchorPrompt\": \"Large gray wolf standing in forest, eyes glowing\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"c_grandma\",\n      \"name\": \"Grandma\",\n      \"aliases\": [\n        \"奶奶\"\n      ],\n      \"anchorPrompt\": \"Elderly woman in simple dress, sitting in a wooden chair inside a cozy cottage\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"p_basket\",\n      \"name\": \"Basket\",\n      \"aliases\": [\n        \"木篮\"\n      ],\n      \"anchorPrompt\": \"Wooden basket, medium size, woven handle, open top\",\n      \"forbiddenSubstitutes\": [\n        \"plastic basket\",\n        \"metal basket\"\n      ],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"l_forest\",\n      \"name\": \"Forest Path\",\n      \"aliases\": [\n        \"林间小路\"\n      ],\n      \"anchorPrompt\": \"Woodland path with tall trees, dappled sunlight, mossy stones\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"l_house\",\n      \"name\": \"Grandma's House\",\n      \"aliases\": [\n        \"奶奶家\"\n      ],\n      \"anchorPrompt\": \"Cozy cottage with thatched roof, small garden, warm interior\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Little Red Riding Hood starts journey on forest path.\",\n    \"Little Red Riding Hood sees small path and big path.\",\n    \"Little Red Riding Hood chooses small path.\",\n    \"Little Red Riding Hood encounters wolf.\",\n    \"Wolf attacks Little Red Riding Hood.\",\n    \"Little Red Riding Hood is eaten by wolf.\",\n    \"Little Red Riding Hood chooses big path.\",\n    \"Little Red Riding Hood reaches grandma house safely.\",\n    \"Grandma is happy.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\",\n    \"plastic basket\",\n    \"metal basket\"\n  ],\n  \"sceneRefs\": {\n    \"start\": {\n      \"characters\": [\n        \"c_red\"\n      ],\n      \"props\": [\n        \"p_basket\"\n      ],\n      \"locations\": [\n        \"l_forest\"\n      ]\n    },\n    \"c2\": {\n      \"characters\": [\n        \"c_red\"\n      ],\n      \"props\": [\n        \"p_basket\"\n      ],\n      \"locations\": [\n        \"l_forest\"\n      ]\n    },\n    \"c3\": {\n      \"characters\": [\n        \"c_red\",\n        \"c_wolf\"\n      ],\n      \"props\": [\n        \"p_basket\"\n      ],\n      \"locations\": [\n        \"l_forest\"\n      ]\n    },\n    \"c4\": {\n      \"characters\": [\n        \"c_red\"\n      ],\n      \"props\": [\n        \"p_basket\"\n      ],\n      \"locations\": [\n        \"l_house\"\n      ]\n    },\n    \"c5\": {\n      \"characters\": [\n        \"c_red\",\n        \"c_wolf\"\n      ],\n      \"props\": [\n        \"p_basket\"\n      ],\n      \"locations\": [\n        \"l_forest\"\n      ]\n    },\n    \"c6\": {\n      \"characters\": [\n        \"c_red\",\n        \"c_grandma\"\n      ],\n      \"props\": [\n        \"p_basket\"\n      ],\n      \"locations\": [\n        \"l_house\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-06-06T14:34:16.022Z"
+    }
+  }
+}

@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "2.0",
+  "startNodeId": "bn_card_intro",
+  "nodes": [
+    {
+      "id": "bn_card_intro",
+      "name": "开场",
+      "kind": "scene",
+      "body": {
+        "text": "P0 smoke。主角在雨夜咖啡馆醒来，发现时间正在循环。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_card_intro_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "P0 smoke。主角在雨夜咖啡馆醒来，发现时间正在循环。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "card_intro",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_card_intro",
+          "text": "继续",
+          "toNodeId": "bn_card_choice_1",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1",
+      "name": "选择1",
+      "kind": "scene",
+      "body": {
+        "text": "选项1：追查咖啡馆后的钟声。\n选项2：留下保护陌生人。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_card_choice_1_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "选项1：追查咖啡馆后的钟声。\n选项2：留下保护陌生人。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "card_choice_1",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_card_choice_1_1",
+          "text": "追查咖啡馆后的钟声。",
+          "toNodeId": "bn_card_choice_1_result_1",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        },
+        {
+          "id": "bc_card_choice_1_2",
+          "text": "留下保护陌生人。",
+          "toNodeId": "bn_card_choice_1_result_2",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1_result_1",
+      "name": "1后果1",
+      "kind": "scene",
+      "body": {
+        "text": "钟声指向地下室的旧录音机，里面记录了上一轮的留言。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_card_choice_1_result_1_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "钟声指向地下室的旧录音机，里面记录了上一轮的留言。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "card_choice_1_result_1",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_card_choice_1_result_1",
+          "text": "继续",
+          "toNodeId": "bn_card_ending_1",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_card_choice_1_result_2",
+      "name": "1后果2",
+      "kind": "scene",
+      "body": {
+        "text": "陌生人说出只有下一轮才会发生的事，证明循环还未结束。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_card_choice_1_result_2_1",
+            "actions": [
+              {
+                "type": "ui.setText",
+                "mode": "replace",
+                "text": "陌生人说出只有下一轮才会发生的事，证明循环还未结束。"
+              }
+            ],
+            "advance": {
+              "type": "choice"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "card_choice_1_result_2",
+        "actorIds": [],
+        "eventIds": []
+      },
+      "choices": [
+        {
+          "id": "bc_card_choice_1_result_2",
+          "text": "继续",
+          "toNodeId": "bn_card_ending_2",
+          "effects": [],
+          "visibleWhen": null,
+          "enabledWhen": null
+        }
+      ]
+    },
+    {
+      "id": "bn_card_ending_1",
+      "name": "结局1",
+      "kind": "ending",
+      "body": {
+        "text": "主角修好录音机，循环在清晨停止。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_card_ending_1_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局1",
+                  "bullets": [],
+                  "moral": "主角修好录音机，循环在清晨停止。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "card_ending_1",
+        "actorIds": [],
+        "eventIds": []
+      }
+    },
+    {
+      "id": "bn_card_ending_2",
+      "name": "结局2",
+      "kind": "ending",
+      "body": {
+        "text": "主角选择保留秘密，等待下一次更好的选择。"
+      },
+      "timeline": {
+        "steps": [
+          {
+            "id": "st_bn_card_ending_2_1",
+            "actions": [
+              {
+                "type": "ui.showEndingCard",
+                "card": {
+                  "title": "结局2",
+                  "bullets": [],
+                  "moral": "主角选择保留秘密，等待下一次更好的选择。",
+                  "buttons": [
+                    {
+                      "type": "restart",
+                      "label": "重新开始"
+                    },
+                    {
+                      "type": "backToHub",
+                      "label": "返回工作台"
+                    }
+                  ]
+                }
+              }
+            ],
+            "advance": {
+              "type": "end"
+            }
+          }
+        ]
+      },
+      "visuals": {
+        "placements": []
+      },
+      "blueprint": {
+        "scriptCardId": "card_ending_2",
+        "actorIds": [],
+        "eventIds": []
+      }
+    }
+  ]
+}

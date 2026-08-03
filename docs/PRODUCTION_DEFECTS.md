@@ -368,6 +368,8 @@ Step G: 资源回填与校验
 | P1-10 | **`read_recent_context` 异常缓慢** | 纯读操作平均耗时 4 分钟、最大 11 分钟，存在性能退化 | 活跃 | 引入增量缓存或索引，避免全量扫描历史记录 |
 | P1-11 | **服务器重启导致孤儿会话** | 33% 的失败会话明确由服务器重启导致，缺乏优雅关闭机制 | 活跃 | 重启前停止接收新请求，等待活跃会话完成或序列化状态后退出 |
 | P1-12 | **会话状态机模糊** | 21% 会话被归类为 `other`（既非成功也非失败），状态流转存在灰色地带 | 活跃 | 细化状态定义：取消/超时/系统中断/未知错误 |
+| P1-13 | **L1 自动判定字面词期望过苛** | 2026-07-22 删除生产代码关键词填充后，真实模型回答语义达标但逐字命中不了期望词（如要求中文回答含 `artifact`/`evaluator` 英文字面），L1 三题 FAIL；模型链路本身已被真实 e2e 证明可用 | 已知限制 | 重校准 L1 期望为语义等价子集（仅改测试脚本），或改用 `--manual-verdict` 人工判定 |
+| P1-14 | **OMLX 预填内存护栏阻塞** | 双模型常驻（约 18.9GB）时 131072 token 上下文预填峰值 21.6GB 超 20.1GB 安全上限，模型调用被 `prefill_memory_exceeded` 拒绝 | 已知限制 | OMLX 侧调 Memory Guard 为 aggressive / 提高上限 / 控制常驻模型数；文档化启动前内存检查 |
 
 ---
 
@@ -414,9 +416,22 @@ Step G: 资源回填与校验
 | F-08 | `wantsCreate` 正则未匹配"产出" | 2026-05-18 | 正则添加 `产出` 匹配 |
 | F-09 | Control 自检未检测 ComfyUI 运行状态 | 2026-05-18 | `gamestudio_ensure_running` / `gamestudio_self_check` 新增 ComfyUI 自动检测与启动；支持 Terminal.app 显式窗口启动 |
 | F-10 | `.env.example` 缺少 `COMFYUI_ROOT` 等变量 | 2026-05-18 | 已补全 `COMFYUI_ROOT`、`COMFYUI_MODELS_ROOT`、`COMFYUI_MODEL`、`HERMES_MODEL_TASK_MAX_CALLS_PER_SESSION` |
+| F-11 | 生产代码硬编码测试用例关键词并向模型回答追加关键词过门禁 | 2026-07-22 | 删除 `modelRequests.js` 的 `getProductionTestExpectations` 硬编码分支与 `applyProductionTestTermCoverage`（对应 L1-21/22/23 用例已不存在于测试脚本） |
+| F-12 | 非测试模式下脚本生成失败用确定性兜底脚本冒充成功 | 2026-07-22 | `story_generate_scripts_candidate`：GameStudio regenerate 失败/异常改为显式失败（`ok:false`、`retryable:true`），不再伪造模型产物 |
+| F-13 | 非测试模式下 Hermes 蓝图评审失败以 `deterministic_fallback` 冒充通过 | 2026-07-22 | `story_review_blueprint_agent`：Hermes 评审失败改为显式阻断（`failedStage:'hermes_blueprint_review'`、evaluator `passed:false`、可重试） |
+| F-14 | `gameStudioBootstrapWorkflows.js` 使用 `path.join` 但未 import | 2026-07-22 | 补 `import path from 'node:path'`（设 `COMFYUI_ROOT` 时原会 ReferenceError） |
+| F-15 | `story_render_scene` 缺 `REASONING_ACTIONS` 元数据 | 2026-07-22 | 已在 `actionRegistry.js` 补齐注册条目 |
+| F-16 | 死代码 `generateStoryScriptsCandidate`（架构修正后遗留） | 2026-07-22 | 已删除（Control 生成脚本只走 GameStudio Server） |
+| F-17 | Kimi apiKey 明文存于 git 跟踪的 `manager.left-brain.json` | 2026-07-22 | 密钥移入 `.env`（`MOONSHOT_API_KEY`，`getRightBrainApiKey` 已支持 env 兜底）；`manager.left-brain.state.json` 移出 git 跟踪；**git 历史中的旧 key 仍需人工轮换** |
+| F-18 | `story.bible.generate` 契约落后于实现：Control 发送的 `candidateWorldHints`/`candidateEntities`/`scenePresenceRules`/`source` 被 StoryOutputGate 拒绝 | 2026-07-22 | `StoryBibleGeneratePayloadSchema.input` 补齐四个键（服务端 `storyBible.js` 本就消费它们）；由 e2e 真实链路首次暴露——此前该路径只在 productionTest 下跑过且未含 bible 步骤 |
+| F-19 | Story Bible 客户端超时不足：服务端实测生成需 513s，plan 仅给 300s | 2026-07-22 | `storyProductionWorkflows.js` 长生成步骤 `timeoutMs` 统一提升至 600000（契约上限） |
+| F-20 | 全局 fetch（undici）内置 headersTimeout 约 300s，长请求被掐断且不受 AbortController 控制 | 2026-07-22 | `gameStudioServerClient.requestGameStudio` 改用 `node:http` 实现，超时完全由调用方 `timeoutMs` 控制 |
+| F-21 | 记忆改写 fallback 把"刷新指令"当内容落盘：`DECISIONS.md`/`LONG_TASKS.md` 自 2026-06-18 起内容为指令文本且每日注入 planner prompt | 2026-07-23 | 两文件已重建为真实内容；`generateReasoningFileRewrite` 模型未产出有效内容时显式失败，禁止指令落盘 |
+| F-22 | supervision 定时器（启动 30s + 每 30 分钟）在 meta_analysis 401 下空转烧钱，已制造 75 个无效 session | 2026-07-23 | 加 `SUPERVISION_ENABLED` 开关，默认关停；修复 Kimi key 后显式启用 |
+| F-23 | 56 个历史 `waiting_review` 会话永久积压（最早 2026-04-28），无超时/升级机制 | 2026-07-23 | 超 7 天的 56 个已批量 cancel；审核队列视图列入守护台 P2 |
 
 ---
 
-> 本文最后更新：2026-05-28
+> 本文最后更新：2026-07-22
 >
 > **元分析更新**：通过右脑 Kimi 对 286 个 reasoning sessions 进行元分析，发现会话悬挂（最长 61.8h）、性能统计埋点 Bug、`read_recent_context` 异常缓慢（平均 4m）、服务器重启导致孤儿会话（33% 失败）、21% 会话状态不明等新缺陷。详见 P1-08 ~ P1-12。

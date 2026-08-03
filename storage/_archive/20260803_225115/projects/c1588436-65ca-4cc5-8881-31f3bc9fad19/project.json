@@ -1,0 +1,211 @@
+{
+  "schemaVersion": "2.0",
+  "id": "c1588436-65ca-4cc5-8881-31f3bc9fad19",
+  "title": "雨夜咖啡馆的时间循环",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T13:20:41.845Z",
+  "updatedAt": "2026-08-03T13:33:35.449Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Rainy night, cozy urban coffee shop, dim warm lighting, medium shot focus, Chinese-style cafe interior",
+        "characters": [
+          {
+            "id": "char_protagonist",
+            "name": "Protagonist",
+            "aliases": [
+              "Main character"
+            ],
+            "anchorPrompt": "Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression",
+            "negativePrompt": "",
+            "locked": true
+          },
+          {
+            "id": "char_companion",
+            "name": "Companion",
+            "aliases": [
+              "Friend"
+            ],
+            "anchorPrompt": "Adult human, medium build, wearing a warm scarf, standing in a dimly lit rainy night coffee shop, attentive expression",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_coffee_mug",
+            "name": "Coffee Mug",
+            "aliases": [
+              "mug"
+            ],
+            "anchorPrompt": "Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table",
+            "forbiddenSubstitutes": [
+              "plastic cup",
+              "paper cup"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_wall_clock",
+            "name": "Wall Clock",
+            "aliases": [
+              "clock"
+            ],
+            "anchorPrompt": "Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop",
+            "forbiddenSubstitutes": [
+              "digital clock",
+              "smartwatch"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_coffee_table",
+            "name": "Coffee Table",
+            "aliases": [
+              "table"
+            ],
+            "anchorPrompt": "Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes",
+            "forbiddenSubstitutes": [
+              "glass table"
+            ],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_coffee_shop",
+            "name": "Rainy Night Coffee Shop",
+            "aliases": [
+              "Cafe"
+            ],
+            "anchorPrompt": "Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Intro: Protagonist enters a rainy night coffee shop and becomes aware of a time loop",
+          "Choice: Protagonist chooses between investigating the anomaly or protecting the companion",
+          "Result 1: Protagonist investigates clues and discovers a repeatable pattern",
+          "Result 2: Protagonist protects companion, missing the first clue but gaining trust",
+          "Ending 1: Protagonist breaks the loop and walks into a new dawn",
+          "Ending 2: Protagonist keeps the secret, maintaining the status quo while preparing for the next choice"
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf",
+          "plastic cup",
+          "paper cup",
+          "digital clock",
+          "smartwatch",
+          "glass table"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "char_protagonist",
+              "char_companion"
+            ],
+            "props": [
+              "prop_coffee_mug",
+              "prop_wall_clock",
+              "prop_coffee_table"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "char_protagonist",
+              "char_companion"
+            ],
+            "props": [
+              "prop_coffee_mug",
+              "prop_wall_clock",
+              "prop_coffee_table"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_mug",
+              "prop_wall_clock",
+              "prop_coffee_table"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "char_protagonist",
+              "char_companion"
+            ],
+            "props": [
+              "prop_coffee_mug",
+              "prop_wall_clock",
+              "prop_coffee_table"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "char_protagonist"
+            ],
+            "props": [
+              "prop_coffee_mug",
+              "prop_wall_clock",
+              "prop_coffee_table"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "char_protagonist",
+              "char_companion"
+            ],
+            "props": [
+              "prop_coffee_mug",
+              "prop_wall_clock",
+              "prop_coffee_table"
+            ],
+            "locations": [
+              "loc_coffee_shop"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Rainy night, cozy urban coffee shop, dim warm lighting, medium shot focus, Chinese-style cafe interior\",\n  \"characters\": [\n    {\n      \"id\": \"char_protagonist\",\n      \"name\": \"Protagonist\",\n      \"aliases\": [\n        \"Main character\"\n      ],\n      \"anchorPrompt\": \"Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"char_companion\",\n      \"name\": \"Companion\",\n      \"aliases\": [\n        \"Friend\"\n      ],\n      \"anchorPrompt\": \"Adult human, medium build, wearing a warm scarf, standing in a dimly lit rainy night coffee shop, attentive expression\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_coffee_mug\",\n      \"name\": \"Coffee Mug\",\n      \"aliases\": [\n        \"mug\"\n      ],\n      \"anchorPrompt\": \"Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table\",\n      \"forbiddenSubstitutes\": [\n        \"plastic cup\",\n        \"paper cup\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_wall_clock\",\n      \"name\": \"Wall Clock\",\n      \"aliases\": [\n        \"clock\"\n      ],\n      \"anchorPrompt\": \"Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop\",\n      \"forbiddenSubstitutes\": [\n        \"digital clock\",\n        \"smartwatch\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_coffee_table\",\n      \"name\": \"Coffee Table\",\n      \"aliases\": [\n        \"table\"\n      ],\n      \"anchorPrompt\": \"Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes\",\n      \"forbiddenSubstitutes\": [\n        \"glass table\"\n      ],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_coffee_shop\",\n      \"name\": \"Rainy Night Coffee Shop\",\n      \"aliases\": [\n        \"Cafe\"\n      ],\n      \"anchorPrompt\": \"Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Intro: Protagonist enters a rainy night coffee shop and becomes aware of a time loop\",\n    \"Choice: Protagonist chooses between investigating the anomaly or protecting the companion\",\n    \"Result 1: Protagonist investigates clues and discovers a repeatable pattern\",\n    \"Result 2: Protagonist protects companion, missing the first clue but gaining trust\",\n    \"Ending 1: Protagonist breaks the loop and walks into a new dawn\",\n    \"Ending 2: Protagonist keeps the secret, maintaining the status quo while preparing for the next choice\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\",\n    \"plastic cup\",\n    \"paper cup\",\n    \"digital clock\",\n    \"smartwatch\",\n    \"glass table\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_companion\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\",\n        \"prop_wall_clock\",\n        \"prop_coffee_table\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_companion\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\",\n        \"prop_wall_clock\",\n        \"prop_coffee_table\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\",\n        \"prop_wall_clock\",\n        \"prop_coffee_table\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_companion\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\",\n        \"prop_wall_clock\",\n        \"prop_coffee_table\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"char_protagonist\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\",\n        \"prop_wall_clock\",\n        \"prop_coffee_table\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"char_protagonist\",\n        \"char_companion\"\n      ],\n      \"props\": [\n        \"prop_coffee_mug\",\n        \"prop_wall_clock\",\n        \"prop_coffee_table\"\n      ],\n      \"locations\": [\n        \"loc_coffee_shop\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T13:33:35.448Z"
+    }
+  }
+}

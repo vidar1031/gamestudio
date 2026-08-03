@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "1.0",
+  "cards": [
+    {
+      "id": "card_intro",
+      "name": "开场",
+      "order": 1,
+      "text": "P0 smoke。主角在雨夜咖啡馆醒来，发现时间正在循环。",
+      "updatedAt": "2026-05-11T01:50:32.795Z"
+    },
+    {
+      "id": "card_choice_1",
+      "name": "选择1",
+      "order": 2,
+      "text": "选项1：追查咖啡馆后的钟声。\n选项2：留下保护陌生人。",
+      "updatedAt": "2026-05-11T01:50:32.795Z"
+    },
+    {
+      "id": "card_choice_1_result_1",
+      "name": "1后果1",
+      "order": 3,
+      "text": "钟声指向地下室的旧录音机，里面记录了上一轮的留言。",
+      "updatedAt": "2026-05-11T01:50:32.795Z"
+    },
+    {
+      "id": "card_choice_1_result_2",
+      "name": "1后果2",
+      "order": 4,
+      "text": "陌生人说出只有下一轮才会发生的事，证明循环还未结束。",
+      "updatedAt": "2026-05-11T01:50:32.795Z"
+    },
+    {
+      "id": "card_ending_1",
+      "name": "结局1",
+      "order": 5,
+      "text": "主角修好录音机，循环在清晨停止。",
+      "updatedAt": "2026-05-11T01:50:32.795Z"
+    },
+    {
+      "id": "card_ending_2",
+      "name": "结局2",
+      "order": 6,
+      "text": "主角选择保留秘密，等待下一次更好的选择。",
+      "updatedAt": "2026-05-11T01:50:32.795Z"
+    }
+  ],
+  "updatedAt": "2026-05-11T01:50:32.858Z"
+}

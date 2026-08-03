@@ -1,0 +1,672 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-05-18T05:13:14.998Z",
+  "worldAnchor": "Neon-lit rainy alley, late-night urban cafe, reflective puddles, dim interior, moody atmosphere, consistent characters and locations across scenes",
+  "forbiddenSubstitutes": [
+    "modern city",
+    "science fiction",
+    "horror gore",
+    "photorealistic adults replacing child",
+    "dog replacing wolf"
+  ],
+  "eventChain": [
+    "Protagonist enters the rainy cafe, neon sign glows, wind chime rings.",
+    "Barista's hands tremble, a wet paper note appears on the table.",
+    "Protagonist asks barista about the time loop, barista smiles, rain stops, electric hum, walls peel.",
+    "Protagonist reads paper note warning against coffee, barista offers steaming cup.",
+    "Choosing to ask the secret triggers defense, darkness engulfs, wind chime rings, protagonist returns to entrance.",
+    "Choosing to read note, protagonist runs to back door, rain stops, dawn breaks, protagonist escapes loop."
+  ],
+  "excludedAssetIds": [],
+  "assets": [
+    {
+      "id": "barista",
+      "name": "Barista",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Barista in a neon-lit rainy cafe, wearing a simple apron, neutral expression, slightly trembling hands",
+      "negativePrompt": "",
+      "aliases": [],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_start",
+        "bn_choice_1",
+        "bn_1后果1",
+        "bn_1后果2"
+      ],
+      "sceneCount": 4,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+    },
+    {
+      "id": "bell",
+      "name": "Wind chime bell",
+      "category": "prop",
+      "lockProfile": "generic_prop",
+      "lockWorkflow": "prop_product",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Metal wind chime bell hanging, small, jingling, reflecting light",
+      "negativePrompt": "",
+      "aliases": [],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_start",
+        "bn_choice_1",
+        "bn_1后果1",
+        "bn_1后果2",
+        "bn_结局1"
+      ],
+      "sceneCount": 5,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, no person, no head, no hand, not being worn, no collage, no multi-view sheet, no environment"
+    },
+    {
+      "id": "cafe_interior",
+      "name": "Cafe interior",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "Dim interior of a rainy cafe, wooden counter, neon glow, reflective puddles on floor",
+      "negativePrompt": "",
+      "aliases": [],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_start",
+        "bn_choice_1",
+        "bn_1后果1",
+        "bn_1后果2",
+        "bn_结局1"
+      ],
+      "sceneCount": 5,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+    },
+    {
+      "id": "neon_sign",
+      "name": "Neon sign",
+      "category": "prop",
+      "lockProfile": "ambient_prop",
+      "lockWorkflow": "prop_ambient",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "Neon sign with stylized letters, glowing, flickering, reflecting on puddles",
+      "negativePrompt": "",
+      "aliases": [],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_start",
+        "bn_choice_1",
+        "bn_1后果1",
+        "bn_1后果2",
+        "bn_结局1",
+        "bn_结局2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single atmospheric motif reference, isolated simple form, clean pale background, no landscape, no horizon, no characters, no complex scene"
+    },
+    {
+      "id": "cafe_exterior",
+      "name": "Cafe exterior",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "low",
+      "renderStrategy": "prompt_only",
+      "anchorPrompt": "Neon-lit street outside the cafe, puddled street, rain falling, neon sign glowing",
+      "negativePrompt": "",
+      "aliases": [],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_结局2"
+      ],
+      "sceneCount": 1,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+    },
+    {
+      "id": "coffee_cup",
+      "name": "Coffee cup",
+      "category": "prop",
+      "lockProfile": "ambient_prop",
+      "lockWorkflow": "prop_ambient",
+      "persistence": "low",
+      "renderStrategy": "prompt_only",
+      "anchorPrompt": "Steaming ceramic coffee cup, black mug, small steam curls",
+      "negativePrompt": "",
+      "aliases": [],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_1后果1",
+        "bn_1后果2"
+      ],
+      "sceneCount": 2,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single atmospheric motif reference, isolated simple form, clean pale background, no landscape, no horizon, no characters, no complex scene"
+    },
+    {
+      "id": "paper_note",
+      "name": "Paper note",
+      "category": "prop",
+      "lockProfile": "generic_prop",
+      "lockWorkflow": "prop_product",
+      "persistence": "low",
+      "renderStrategy": "prompt_only",
+      "anchorPrompt": "Wet paper note, crumpled, water droplets, handwritten text",
+      "negativePrompt": "",
+      "aliases": [],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_1后果2"
+      ],
+      "sceneCount": 1,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, no person, no head, no hand, not being worn, no collage, no multi-view sheet, no environment"
+    }
+  ],
+  "scenes": [
+    {
+      "sceneId": "bn_start",
+      "sceneIndex": 1,
+      "sceneName": "开场",
+      "summary": "开场：霓虹灯在积水的街道上晕开，像融化的糖果。你推开“深渊”咖啡馆的门，风铃发出清脆的响声。这是你第三次来到这个雨夜。前两次，你都没能走出这里。柜台后的咖啡师抬起头，眼神空洞：“还是美式吗？”",
+      "sourceKey": "bn_start",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "barista",
+        "bell"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "barista",
+        "bell",
+        "neon_sign",
+        "cafe_interior"
+      ],
+      "promptAssets": [
+        {
+          "id": "barista",
+          "name": "Barista",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Barista in a neon-lit rainy cafe, wearing a simple apron, neutral expression, slightly trembling hands",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "bell",
+          "name": "Wind chime bell",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Metal wind chime bell hanging, small, jingling, reflecting light",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "neon_sign",
+          "name": "Neon sign",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Neon sign with stylized letters, glowing, flickering, reflecting on puddles",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "cafe_interior",
+          "name": "Cafe interior",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Dim interior of a rainy cafe, wooden counter, neon glow, reflective puddles on floor",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_choice_1",
+      "sceneIndex": 2,
+      "sceneName": "关键抉择",
+      "summary": "关键抉择：你注意到咖啡师的手在微微颤抖，桌面上有一张被水浸湿的纸条。你必须做出决定：",
+      "sourceKey": "bn_choice_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "barista",
+        "bell"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "barista",
+        "bell",
+        "neon_sign",
+        "cafe_interior"
+      ],
+      "promptAssets": [
+        {
+          "id": "barista",
+          "name": "Barista",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Barista in a neon-lit rainy cafe, wearing a simple apron, neutral expression, slightly trembling hands",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "bell",
+          "name": "Wind chime bell",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Metal wind chime bell hanging, small, jingling, reflecting light",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "neon_sign",
+          "name": "Neon sign",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Neon sign with stylized letters, glowing, flickering, reflecting on puddles",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "cafe_interior",
+          "name": "Cafe interior",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Dim interior of a rainy cafe, wooden counter, neon glow, reflective puddles on floor",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_1后果1",
+      "sceneIndex": 3,
+      "sceneName": "询问秘密",
+      "summary": "询问秘密：你直视咖啡师的眼睛，问道：“为什么我会被困在这里？”咖啡师的笑容突然凝固，周围的雨声瞬间消失，取而代之的是刺耳的电流声。墙壁开始剥落，露出黑色的虚空。你意识到，有些秘密不该被提前揭开。",
+      "sourceKey": "bn_1后果1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "barista",
+        "bell"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "barista",
+        "bell",
+        "neon_sign",
+        "coffee_cup",
+        "cafe_interior"
+      ],
+      "promptAssets": [
+        {
+          "id": "barista",
+          "name": "Barista",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Barista in a neon-lit rainy cafe, wearing a simple apron, neutral expression, slightly trembling hands",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "bell",
+          "name": "Wind chime bell",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Metal wind chime bell hanging, small, jingling, reflecting light",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "neon_sign",
+          "name": "Neon sign",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Neon sign with stylized letters, glowing, flickering, reflecting on puddles",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "coffee_cup",
+          "name": "Coffee cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Steaming ceramic coffee cup, black mug, small steam curls",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "cafe_interior",
+          "name": "Cafe interior",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Dim interior of a rainy cafe, wooden counter, neon glow, reflective puddles on floor",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_1后果2",
+      "sceneIndex": 4,
+      "sceneName": "查看纸条",
+      "summary": "查看纸条：你拿起纸条，上面用潦草的字迹写着：“别喝那杯咖啡，那是记忆清除剂。去后门，那里有出口。”你抬头看向咖啡师，他正将一杯冒着热气的咖啡推到你面前。这一次，你有了线索。",
+      "sourceKey": "bn_1后果2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "barista",
+        "bell"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "barista",
+        "bell",
+        "neon_sign",
+        "coffee_cup",
+        "paper_note",
+        "cafe_interior"
+      ],
+      "promptAssets": [
+        {
+          "id": "barista",
+          "name": "Barista",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Barista in a neon-lit rainy cafe, wearing a simple apron, neutral expression, slightly trembling hands",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "bell",
+          "name": "Wind chime bell",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Metal wind chime bell hanging, small, jingling, reflecting light",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "neon_sign",
+          "name": "Neon sign",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Neon sign with stylized letters, glowing, flickering, reflecting on puddles",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "coffee_cup",
+          "name": "Coffee cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Steaming ceramic coffee cup, black mug, small steam curls",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "paper_note",
+          "name": "Paper note",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Wet paper note, crumpled, water droplets, handwritten text",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "cafe_interior",
+          "name": "Cafe interior",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Dim interior of a rainy cafe, wooden counter, neon glow, reflective puddles on floor",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_结局1",
+      "sceneIndex": 5,
+      "sceneName": "结局：永恒的雨",
+      "summary": "结局：永恒的雨：你选择了询问秘密，却触发了防御机制。黑暗吞噬了你，风铃再次响起，你回到了咖啡馆门口。雨还在下，霓虹灯依旧闪烁。这是第四次循环，你依然一无所知。结局：永恒的雨。",
+      "sourceKey": "bn_结局1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "bell"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "bell",
+        "neon_sign",
+        "cafe_interior"
+      ],
+      "promptAssets": [
+        {
+          "id": "bell",
+          "name": "Wind chime bell",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Metal wind chime bell hanging, small, jingling, reflecting light",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "neon_sign",
+          "name": "Neon sign",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Neon sign with stylized letters, glowing, flickering, reflecting on puddles",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "cafe_interior",
+          "name": "Cafe interior",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Dim interior of a rainy cafe, wooden counter, neon glow, reflective puddles on floor",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_结局2",
+      "sceneIndex": 6,
+      "sceneName": "结局：破晓",
+      "summary": "结局：破晓：你推开了咖啡，转身冲向后门。身后传来咖啡师愤怒的吼声，但你没有回头。推开后门的瞬间，雨停了。东方的天空泛起鱼肚白，第一缕阳光洒在你的脸上。你成功了，时间循环终于结束。结局：破晓。",
+      "sourceKey": "bn_结局2",
+      "workflow": "scene_prompt_only",
+      "missingRequiredAssetIds": [],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "neon_sign",
+        "cafe_exterior"
+      ],
+      "promptAssets": [
+        {
+          "id": "neon_sign",
+          "name": "Neon sign",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Neon sign with stylized letters, glowing, flickering, reflecting on puddles",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "cafe_exterior",
+          "name": "Cafe exterior",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Neon-lit street outside the cafe, puddled street, rain falling, neon sign glowing",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "assetCount": 7,
+    "sceneCount": 6,
+    "refRequiredCount": 2,
+    "refReadyCount": 0,
+    "refMissingCount": 2,
+    "workflows": {
+      "scene_prompt_only_fallback": 5,
+      "scene_prompt_only": 1
+    }
+  }
+}

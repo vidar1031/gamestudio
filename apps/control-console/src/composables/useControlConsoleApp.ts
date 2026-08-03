@@ -1200,6 +1200,13 @@ export function useControlConsoleApp() {
   function stopChatHistoryPolling() {}
   function stopReasoningPolling() { if (reasoningPollTimer) { clearTimeout(reasoningPollTimer); reasoningPollTimer = null } }
   function closeSubmitGate() { submitGateOpen.value = false; submitGateMode.value = null }
+  function rejectSubmitGate() {
+    submitGateOpen.value = false
+    submitGateMode.value = null
+    sandboxPrompt.value = ''
+    submitPromptDraft.value = ''
+    resetSubmitGateState()
+  }
   function closeEditorModal() { editorModalOpen.value = false; editorModalKind.value = null }
   function focusActiveEditorInModal() {
     void nextTick(() => {
@@ -2753,6 +2760,7 @@ export function useControlConsoleApp() {
     modelSwitchBusy,
     modelSwitchMessage,
     confirmSubmitGate,
+    rejectSubmitGate,
     connectSelectedAgent,
     connecting,
     contextCandidatesBusy,

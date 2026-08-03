@@ -1,0 +1,1402 @@
+{
+  "schemaVersion": "2.0",
+  "id": "16b20103-3000-4e8b-ab03-f4224eb63ad1",
+  "title": "狼来了",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-05-11T11:35:46.791Z",
+  "updatedAt": "2026-05-12T07:36:26.280Z",
+  "characters": [],
+  "assets": [
+    {
+      "id": "asset_1778570279760_4c7zev",
+      "kind": "image",
+      "name": "故事资产 狼",
+      "uri": "assets/ai/story_assets/character/char.wolf/2026-05-12/reference_seed_3538942087_20260512_151759.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, gray wild wolf, lean canine body, alert eyes, picture book animal character, not a dog, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00001_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7",
+          "Anime_Furry_Style_SDXL.safetensors:0.7"
+        ],
+        "seed": 3538942087
+      }
+    },
+    {
+      "id": "asset_1778570327395_nupco6",
+      "kind": "image",
+      "name": "故事资产 狼",
+      "uri": "assets/ai/story_assets/character/char.wolf/2026-05-12/reference_seed_3538952060_20260512_151847.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, gray wild wolf, lean canine body, alert eyes, picture book animal character, not a dog, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00002_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7",
+          "Anime_Furry_Style_SDXL.safetensors:0.7"
+        ],
+        "seed": 3538952060
+      }
+    },
+    {
+      "id": "asset_1778570375052_kq6hc9",
+      "kind": "image",
+      "name": "故事资产 狼",
+      "uri": "assets/ai/story_assets/character/char.wolf/2026-05-12/reference_seed_3538962033_20260512_151935.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, gray wild wolf, lean canine body, alert eyes, picture book animal character, not a dog, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00003_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7",
+          "Anime_Furry_Style_SDXL.safetensors:0.7"
+        ],
+        "seed": 3538962033
+      }
+    },
+    {
+      "id": "asset_1778570422667_tztje3",
+      "kind": "image",
+      "name": "故事资产 狼",
+      "uri": "assets/ai/story_assets/character/char.wolf/2026-05-12/reference_seed_3538972006_20260512_152022.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, gray wild wolf, lean canine body, alert eyes, picture book animal character, not a dog, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00004_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7",
+          "Anime_Furry_Style_SDXL.safetensors:0.7"
+        ],
+        "seed": 3538972006
+      }
+    },
+    {
+      "id": "asset_1778570470225_217d27",
+      "kind": "image",
+      "name": "故事资产 狼",
+      "uri": "assets/ai/story_assets/character/char.wolf/2026-05-12/reference_seed_3538981979_20260512_152110.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, gray wild wolf, lean canine body, alert eyes, picture book animal character, not a dog, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00005_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7",
+          "Anime_Furry_Style_SDXL.safetensors:0.7"
+        ],
+        "seed": 3538981979
+      }
+    },
+    {
+      "id": "asset_1778570517792_hibjw0",
+      "kind": "image",
+      "name": "故事资产 狼",
+      "uri": "assets/ai/story_assets/character/char.wolf/2026-05-12/reference_seed_3538991952_20260512_152157.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, gray wild wolf, lean canine body, alert eyes, picture book animal character, not a dog, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00006_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7",
+          "Anime_Furry_Style_SDXL.safetensors:0.7"
+        ],
+        "seed": 3538991952
+      }
+    },
+    {
+      "id": "asset_1778570565446_itpw8g",
+      "kind": "image",
+      "name": "故事资产 狼",
+      "uri": "assets/ai/story_assets/character/char.wolf/2026-05-12/reference_seed_3539001925_20260512_152245.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, gray wild wolf, lean canine body, alert eyes, picture book animal character, not a dog, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00007_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7",
+          "Anime_Furry_Style_SDXL.safetensors:0.7"
+        ],
+        "seed": 3539001925
+      }
+    },
+    {
+      "id": "asset_1778570613038_7gu3iw",
+      "kind": "image",
+      "name": "故事资产 狼",
+      "uri": "assets/ai/story_assets/character/char.wolf/2026-05-12/reference_seed_3539011898_20260512_152333.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, gray wild wolf, lean canine body, alert eyes, picture book animal character, not a dog, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00008_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7",
+          "Anime_Furry_Style_SDXL.safetensors:0.7"
+        ],
+        "seed": 3539011898
+      }
+    },
+    {
+      "id": "asset_1778570667212_hz5el2",
+      "kind": "image",
+      "name": "故事资产 村民们",
+      "uri": "assets/ai/story_assets/character/char.villagers/2026-05-12/reference_seed_1746166993_20260512_152427.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "modern office workers, soldiers, city crowd, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00009_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 1746166993
+      }
+    },
+    {
+      "id": "asset_1778570715570_q95lhu",
+      "kind": "image",
+      "name": "故事资产 村民们",
+      "uri": "assets/ai/story_assets/character/char.villagers/2026-05-12/reference_seed_1746176966_20260512_152515.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "modern office workers, soldiers, city crowd, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00010_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 1746176966
+      }
+    },
+    {
+      "id": "asset_1778570763920_vjjjvu",
+      "kind": "image",
+      "name": "故事资产 村民们",
+      "uri": "assets/ai/story_assets/character/char.villagers/2026-05-12/reference_seed_1746186939_20260512_152603.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "modern office workers, soldiers, city crowd, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00011_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 1746186939
+      }
+    },
+    {
+      "id": "asset_1778570812271_ehgvw7",
+      "kind": "image",
+      "name": "故事资产 村民们",
+      "uri": "assets/ai/story_assets/character/char.villagers/2026-05-12/reference_seed_1746196912_20260512_152652.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "modern office workers, soldiers, city crowd, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00012_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 1746196912
+      }
+    },
+    {
+      "id": "asset_1778570860654_rscehf",
+      "kind": "image",
+      "name": "故事资产 村民们",
+      "uri": "assets/ai/story_assets/character/char.villagers/2026-05-12/reference_seed_1746206885_20260512_152740.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "modern office workers, soldiers, city crowd, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00013_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 1746206885
+      }
+    },
+    {
+      "id": "asset_1778570909000_psnlnq",
+      "kind": "image",
+      "name": "故事资产 村民们",
+      "uri": "assets/ai/story_assets/character/char.villagers/2026-05-12/reference_seed_1746216858_20260512_152828.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "modern office workers, soldiers, city crowd, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00014_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 1746216858
+      }
+    },
+    {
+      "id": "asset_1778570957330_lqa3nv",
+      "kind": "image",
+      "name": "故事资产 村民们",
+      "uri": "assets/ai/story_assets/character/char.villagers/2026-05-12/reference_seed_1746226831_20260512_152917.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "modern office workers, soldiers, city crowd, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00015_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 1746226831
+      }
+    },
+    {
+      "id": "asset_1778571005688_7o13wi",
+      "kind": "image",
+      "name": "故事资产 村民们",
+      "uri": "assets/ai/story_assets/character/char.villagers/2026-05-12/reference_seed_1746236804_20260512_153005.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, small group of rural villagers, simple countryside clothing, concerned expressions, picture book ensemble character design, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "modern office workers, soldiers, city crowd, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, weapon, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00016_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 1746236804
+      }
+    },
+    {
+      "id": "asset_1778571057581_m4r309",
+      "kind": "image",
+      "name": "故事资产 牧童孩子",
+      "uri": "assets/ai/story_assets/character/char.shepherd_boy/2026-05-12/reference_seed_2006980320_20260512_153057.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, young shepherd boy, simple rural clothes, anxious but kind expression, child proportions, picture book character design, no modern items, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "adult, modern city clothes, armor, weapon, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00017_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 2006980320
+      }
+    },
+    {
+      "id": "asset_1778571108371_hluh8a",
+      "kind": "image",
+      "name": "故事资产 牧童孩子",
+      "uri": "assets/ai/story_assets/character/char.shepherd_boy/2026-05-12/reference_seed_2006990293_20260512_153148.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, young shepherd boy, simple rural clothes, anxious but kind expression, child proportions, picture book character design, no modern items, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "adult, modern city clothes, armor, weapon, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00018_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 2006990293
+      }
+    },
+    {
+      "id": "asset_1778571159271_1p73u6",
+      "kind": "image",
+      "name": "故事资产 牧童孩子",
+      "uri": "assets/ai/story_assets/character/char.shepherd_boy/2026-05-12/reference_seed_2007000266_20260512_153239.png",
+      "source": {
+        "type": "ai",
+        "prompt": "style lock: picture_book, young shepherd boy, simple rural clothes, anxious but kind expression, child proportions, picture book character design, no modern items, single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit, children picture book character turnaround key art, front view, centered composition, pure white seamless studio background, no floor line, no cast shadow, neutral relaxed pose, non-human animal child if described as animal, visible animal ears, visible cat nose and short feline muzzle if cat, fur-covered face if animal, without hat, without fishing rod, without bucket",
+        "negativePrompt": "adult, modern city clothes, armor, weapon, modern city, science fiction, horror gore, photorealistic adults replacing child, dog replacing wolf, chain, modern plastic rope, crowd, multiple characters, complex background, busy environment, text, watermark, human child, human face, catgirl, kemonomimi, anime human ears, decorative background, ground shadow, floor shadow, scenery, background, trees, grass, plants, water, shore, bridge, hat, straw hat, bucket, fishing rod, basket, wood stick, side view, three quarter view, back view",
+        "provider": "comfyui",
+        "model": "ivisionIllustration_ivision10.safetensors",
+        "remoteUrl": "http://127.0.0.1:8188/view?filename=story_asset_character_sheet_00019_.png&type=output&subfolder=gamestudio%2F2026-05-12",
+        "loras": [
+          "Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7"
+        ],
+        "seed": 2007000266
+      }
+    }
+  ],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "故事名：《狼来了》",
+        "negativePrompt": "text, watermark, low quality, blurry, deformed"
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "globalPrompt": "故事名：《狼来了》",
+      "globalNegativePrompt": "text, watermark, low quality, blurry, deformed",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "A rustic mountain pastoral setting at early dawn, misty hills, soft golden light, wide‑angle horizon, tranquil but alert atmosphere",
+        "characters": [
+          {
+            "id": "char_child",
+            "name": "牧童",
+            "aliases": [
+              "child",
+              "shepherd boy"
+            ],
+            "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [
+          {
+            "id": "prop_rope",
+            "name": "羊圈绳索",
+            "aliases": [
+              "rope",
+              "cord",
+              "string"
+            ],
+            "anchorPrompt": "natural fiber rope, knotted at both ends, tied to fence posts, about 3 meters long",
+            "forbiddenSubstitutes": [
+              "vine",
+              "chain",
+              "bungee",
+              "string"
+            ],
+            "locked": true
+          },
+          {
+            "id": "prop_grass_mat",
+            "name": "草席",
+            "aliases": [
+              "grass mat",
+              "straw mat",
+              "burlap mat"
+            ],
+            "anchorPrompt": "woven straw mat, rectangular, about 1 meter by 0.5 meter, lying on grass",
+            "forbiddenSubstitutes": [
+              "cloth sheet",
+              "blanket",
+              "fabric mat"
+            ],
+            "locked": true
+          }
+        ],
+        "locations": [
+          {
+            "id": "loc_hill",
+            "name": "山坡",
+            "aliases": [
+              "hillside",
+              "ridge"
+            ],
+            "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+            "locked": true
+          },
+          {
+            "id": "loc_village",
+            "name": "牧场",
+            "aliases": [
+              "village",
+              "herd farm"
+            ],
+            "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Child shouts 'Wolf came!'",
+          "Child pulls rope from sheep pen",
+          "Child examines hillside, finds no wolf",
+          "Child counts sheep at pasture",
+          "Wolf howl heard in distance",
+          "Child rushes to source of howl",
+          "Child ties rope to fence posts",
+          "Child wraps grass mat over wounded wolf",
+          "Village trusts child",
+          "Village invites child to manage sheep",
+          "Village remains skeptical"
+        ],
+        "forbiddenSubstitutes": [
+          "rope",
+          "string",
+          "vine",
+          "chain",
+          "bungee",
+          "straw mat",
+          "fabric sheet",
+          "blanket",
+          "dog",
+          "wolf pack",
+          "horse",
+          "goat",
+          "cloth sheet",
+          "fabric mat"
+        ],
+        "sceneRefs": {
+          "bn_sc_1778499346783_psj7br": {
+            "characters": [],
+            "props": [],
+            "locations": [
+              "loc_hill"
+            ]
+          },
+          "bn_sc_1778499346783_dnle3h": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [
+              "prop_rope"
+            ],
+            "locations": [
+              "loc_hill"
+            ]
+          },
+          "bn_sc_1778499346783_7tqi75": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [],
+            "locations": [
+              "loc_hill"
+            ]
+          },
+          "bn_sc_1778499346783_wkp73u": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [],
+            "locations": [
+              "loc_hill"
+            ]
+          },
+          "bn_sc_1778499346783_yvxegf": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [],
+            "locations": [
+              "loc_village"
+            ]
+          },
+          "bn_sc_1778499346783_rc68yu": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [],
+            "locations": [
+              "loc_hill"
+            ]
+          },
+          "bn_sc_1778499346783_ms8hvq": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [],
+            "locations": [
+              "loc_hill"
+            ]
+          },
+          "bn_sc_1778499346783_zvop7v": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [
+              "prop_grass_mat"
+            ],
+            "locations": [
+              "loc_hill"
+            ]
+          },
+          "bn_sc_1778499346783_p5uyib": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [],
+            "locations": [
+              "loc_village"
+            ]
+          },
+          "bn_sc_1778499346783_teao2b": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [],
+            "locations": [
+              "loc_village"
+            ]
+          },
+          "bn_sc_1778499346783_yfmbb0": {
+            "characters": [
+              "char_child"
+            ],
+            "props": [],
+            "locations": [
+              "loc_village"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"A rustic mountain pastoral setting at early dawn, misty hills, soft golden light, wide‑angle horizon, tranquil but alert atmosphere\",\n  \"characters\": [\n    {\n      \"id\": \"char_child\",\n      \"name\": \"牧童\",\n      \"aliases\": [\n        \"child\",\n        \"shepherd boy\"\n      ],\n      \"anchorPrompt\": \"young shepherd boy with brown hair, wearing simple tunic, bare feet\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [\n    {\n      \"id\": \"prop_rope\",\n      \"name\": \"羊圈绳索\",\n      \"aliases\": [\n        \"rope\",\n        \"cord\",\n        \"string\"\n      ],\n      \"anchorPrompt\": \"natural fiber rope, knotted at both ends, tied to fence posts, about 3 meters long\",\n      \"forbiddenSubstitutes\": [\n        \"vine\",\n        \"chain\",\n        \"bungee\",\n        \"string\"\n      ],\n      \"locked\": true\n    },\n    {\n      \"id\": \"prop_grass_mat\",\n      \"name\": \"草席\",\n      \"aliases\": [\n        \"grass mat\",\n        \"straw mat\",\n        \"burlap mat\"\n      ],\n      \"anchorPrompt\": \"woven straw mat, rectangular, about 1 meter by 0.5 meter, lying on grass\",\n      \"forbiddenSubstitutes\": [\n        \"cloth sheet\",\n        \"blanket\",\n        \"fabric mat\"\n      ],\n      \"locked\": true\n    }\n  ],\n  \"locations\": [\n    {\n      \"id\": \"loc_hill\",\n      \"name\": \"山坡\",\n      \"aliases\": [\n        \"hillside\",\n        \"ridge\"\n      ],\n      \"anchorPrompt\": \"sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range\",\n      \"locked\": true\n    },\n    {\n      \"id\": \"loc_village\",\n      \"name\": \"牧场\",\n      \"aliases\": [\n        \"village\",\n        \"herd farm\"\n      ],\n      \"anchorPrompt\": \"cluster of stone cottages with thatched roofs, surrounded by pasture, visible background\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Child shouts 'Wolf came!'\",\n    \"Child pulls rope from sheep pen\",\n    \"Child examines hillside, finds no wolf\",\n    \"Child counts sheep at pasture\",\n    \"Wolf howl heard in distance\",\n    \"Child rushes to source of howl\",\n    \"Child ties rope to fence posts\",\n    \"Child wraps grass mat over wounded wolf\",\n    \"Village trusts child\",\n    \"Village invites child to manage sheep\",\n    \"Village remains skeptical\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"rope\",\n    \"string\",\n    \"vine\",\n    \"chain\",\n    \"bungee\",\n    \"straw mat\",\n    \"fabric sheet\",\n    \"blanket\",\n    \"dog\",\n    \"wolf pack\",\n    \"horse\",\n    \"goat\",\n    \"cloth sheet\",\n    \"fabric mat\"\n  ],\n  \"sceneRefs\": {\n    \"bn_sc_1778499346783_psj7br\": {\n      \"characters\": [],\n      \"props\": [],\n      \"locations\": [\n        \"loc_hill\"\n      ]\n    },\n    \"bn_sc_1778499346783_dnle3h\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [\n        \"prop_rope\"\n      ],\n      \"locations\": [\n        \"loc_hill\"\n      ]\n    },\n    \"bn_sc_1778499346783_7tqi75\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_hill\"\n      ]\n    },\n    \"bn_sc_1778499346783_wkp73u\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_hill\"\n      ]\n    },\n    \"bn_sc_1778499346783_yvxegf\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    },\n    \"bn_sc_1778499346783_rc68yu\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_hill\"\n      ]\n    },\n    \"bn_sc_1778499346783_ms8hvq\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_hill\"\n      ]\n    },\n    \"bn_sc_1778499346783_zvop7v\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [\n        \"prop_grass_mat\"\n      ],\n      \"locations\": [\n        \"loc_hill\"\n      ]\n    },\n    \"bn_sc_1778499346783_p5uyib\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    },\n    \"bn_sc_1778499346783_teao2b\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    },\n    \"bn_sc_1778499346783_yfmbb0\": {\n      \"characters\": [\n        \"char_child\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"loc_village\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-05-12T07:08:34.378Z",
+      "storyAssetPlan": {
+        "schemaVersion": "1.0",
+        "generatedAt": "2026-05-12T07:36:25.059Z",
+        "worldAnchor": "A rustic mountain pastoral setting at early dawn, misty hills, soft golden light, wide‑angle horizon, tranquil but alert atmosphere",
+        "forbiddenSubstitutes": [
+          "rope",
+          "string",
+          "vine",
+          "chain",
+          "bungee",
+          "straw mat",
+          "fabric sheet",
+          "blanket",
+          "dog",
+          "wolf pack",
+          "horse",
+          "goat",
+          "cloth sheet",
+          "fabric mat"
+        ],
+        "eventChain": [
+          "Child shouts 'Wolf came!'",
+          "Child pulls rope from sheep pen",
+          "Child examines hillside, finds no wolf",
+          "Child counts sheep at pasture",
+          "Wolf howl heard in distance",
+          "Child rushes to source of howl",
+          "Child ties rope to fence posts",
+          "Child wraps grass mat over wounded wolf",
+          "Village trusts child",
+          "Village invites child to manage sheep",
+          "Village remains skeptical"
+        ],
+        "excludedAssetIds": [],
+        "assets": [
+          {
+            "id": "char_child",
+            "name": "牧童",
+            "category": "character",
+            "lockProfile": "character_core",
+            "lockWorkflow": "character_sheet",
+            "persistence": "high",
+            "renderStrategy": "ref_required",
+            "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+            "negativePrompt": "",
+            "aliases": [
+              "child",
+              "shepherd boy"
+            ],
+            "forbiddenSubstitutes": [],
+            "sceneIds": [
+              "bn_sc_1778499346783_dnle3h",
+              "bn_sc_1778499346783_7tqi75",
+              "bn_sc_1778499346783_wkp73u",
+              "bn_sc_1778499346783_yvxegf",
+              "bn_sc_1778499346783_rc68yu",
+              "bn_sc_1778499346783_ms8hvq",
+              "bn_sc_1778499346783_zvop7v",
+              "bn_sc_1778499346783_p5uyib",
+              "bn_sc_1778499346783_teao2b",
+              "bn_sc_1778499346783_yfmbb0"
+            ],
+            "sceneCount": 10,
+            "projectCharacterId": "",
+            "primaryReferenceAssetId": "",
+            "primaryReferenceAssetUri": "",
+            "referenceStatus": "missing",
+            "generatedRefs": [],
+            "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+          },
+          {
+            "id": "loc_hill",
+            "name": "山坡",
+            "category": "location",
+            "lockProfile": "location_anchor",
+            "lockWorkflow": "location_anchor",
+            "persistence": "medium",
+            "renderStrategy": "optional_ref",
+            "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+            "negativePrompt": "",
+            "aliases": [
+              "hillside",
+              "ridge"
+            ],
+            "forbiddenSubstitutes": [],
+            "sceneIds": [
+              "bn_sc_1778499346783_psj7br",
+              "bn_sc_1778499346783_dnle3h",
+              "bn_sc_1778499346783_7tqi75",
+              "bn_sc_1778499346783_wkp73u",
+              "bn_sc_1778499346783_rc68yu",
+              "bn_sc_1778499346783_ms8hvq",
+              "bn_sc_1778499346783_zvop7v"
+            ],
+            "sceneCount": 7,
+            "projectCharacterId": "",
+            "primaryReferenceAssetId": "",
+            "primaryReferenceAssetUri": "",
+            "referenceStatus": "missing",
+            "generatedRefs": [],
+            "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+          },
+          {
+            "id": "loc_village",
+            "name": "牧场",
+            "category": "location",
+            "lockProfile": "location_anchor",
+            "lockWorkflow": "location_anchor",
+            "persistence": "medium",
+            "renderStrategy": "optional_ref",
+            "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+            "negativePrompt": "",
+            "aliases": [
+              "village",
+              "herd farm"
+            ],
+            "forbiddenSubstitutes": [],
+            "sceneIds": [
+              "bn_sc_1778499346783_yvxegf",
+              "bn_sc_1778499346783_p5uyib",
+              "bn_sc_1778499346783_teao2b",
+              "bn_sc_1778499346783_yfmbb0"
+            ],
+            "sceneCount": 4,
+            "projectCharacterId": "",
+            "primaryReferenceAssetId": "",
+            "primaryReferenceAssetUri": "",
+            "referenceStatus": "missing",
+            "generatedRefs": [],
+            "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+          },
+          {
+            "id": "prop_rope",
+            "name": "羊圈绳索",
+            "category": "prop",
+            "lockProfile": "generic_prop",
+            "lockWorkflow": "prop_product",
+            "persistence": "low",
+            "renderStrategy": "prompt_only",
+            "anchorPrompt": "natural fiber rope, knotted at both ends, tied to fence posts, about 3 meters long",
+            "negativePrompt": "",
+            "aliases": [
+              "rope",
+              "cord",
+              "string"
+            ],
+            "forbiddenSubstitutes": [
+              "vine",
+              "chain",
+              "bungee",
+              "string"
+            ],
+            "sceneIds": [
+              "bn_sc_1778499346783_dnle3h"
+            ],
+            "sceneCount": 1,
+            "projectCharacterId": "",
+            "primaryReferenceAssetId": "",
+            "primaryReferenceAssetUri": "",
+            "referenceStatus": "missing",
+            "generatedRefs": [],
+            "referencePromptHint": "single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, no person, no head, no hand, not being worn, no collage, no multi-view sheet, no environment"
+          },
+          {
+            "id": "prop_grass_mat",
+            "name": "草席",
+            "category": "prop",
+            "lockProfile": "soft_prop",
+            "lockWorkflow": "prop_soft",
+            "persistence": "low",
+            "renderStrategy": "prompt_only",
+            "anchorPrompt": "woven straw mat, rectangular, about 1 meter by 0.5 meter, lying on grass",
+            "negativePrompt": "",
+            "aliases": [
+              "grass mat",
+              "straw mat",
+              "burlap mat"
+            ],
+            "forbiddenSubstitutes": [
+              "cloth sheet",
+              "blanket",
+              "fabric mat"
+            ],
+            "sceneIds": [
+              "bn_sc_1778499346783_zvop7v"
+            ],
+            "sceneCount": 1,
+            "projectCharacterId": "",
+            "primaryReferenceAssetId": "",
+            "primaryReferenceAssetUri": "",
+            "referenceStatus": "missing",
+            "generatedRefs": [],
+            "referencePromptHint": "single soft-form object reference, isolated on clean light background, stable contour and readable volume, no wearer, no person, no environment clutter"
+          }
+        ],
+        "scenes": [
+          {
+            "sceneId": "bn_sc_1778499346783_psj7br",
+            "sceneIndex": 1,
+            "sceneName": "清晨山坡",
+            "summary": "清晨山坡：黎明的山坡上，雾气轻轻笼罩，羊群在缓慢的步伐中踱步，远处的山脉像青铜盔甲一样静默。",
+            "sourceKey": "bn_sc_1778499346783_psj7br",
+            "workflow": "scene_prompt_only",
+            "missingRequiredAssetIds": [],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "loc_hill"
+            ],
+            "promptAssets": [
+              {
+                "id": "loc_hill",
+                "name": "山坡",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_dnle3h",
+            "sceneIndex": 2,
+            "sceneName": "牧童的喊声",
+            "summary": "牧童的喊声：孩子忽然高喊：“狼来了！”他扯起羊圈的绳索，急切地望向山脊，想要引起村民的注意。",
+            "sourceKey": "bn_sc_1778499346783_dnle3h",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "prop_rope",
+              "loc_hill"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "prop_rope",
+                "name": "羊圈绳索",
+                "category": "prop",
+                "lockProfile": "generic_prop",
+                "lockWorkflow": "prop_product",
+                "renderStrategy": "prompt_only",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "natural fiber rope, knotted at both ends, tied to fence posts, about 3 meters long",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": [
+                  "vine",
+                  "chain",
+                  "bungee",
+                  "string"
+                ]
+              },
+              {
+                "id": "loc_hill",
+                "name": "山坡",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_7tqi75",
+            "sceneIndex": 3,
+            "sceneName": "第一选择点",
+            "summary": "第一选择点：孩子决定下一步该怎么做？",
+            "sourceKey": "bn_sc_1778499346783_7tqi75",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "loc_hill"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "loc_hill",
+                "name": "山坡",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_wkp73u",
+            "sceneIndex": 4,
+            "sceneName": "1后果1",
+            "summary": "1后果1：他来到山坡，细致检查周围，发现没有狼的踪迹，山羊安然无恙。村民听到他的报告后，对他产生了些许尊敬。",
+            "sourceKey": "bn_sc_1778499346783_wkp73u",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "loc_hill"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "loc_hill",
+                "name": "山坡",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_yvxegf",
+            "sceneIndex": 5,
+            "sceneName": "1后果2",
+            "summary": "1后果2：他回到牧场，仔细数羊，确认羊群安全。村民听他不断的话语后，开始怀疑他的真实性，低声议论。",
+            "sourceKey": "bn_sc_1778499346783_yvxegf",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "loc_village"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "loc_village",
+                "name": "牧场",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_rc68yu",
+            "sceneIndex": 6,
+            "sceneName": "山间嚎叫",
+            "summary": "山间嚎叫：正当孩子巡视时，远处传来低沉的狼嚎，寒风带着尖利的声音刺进耳膜。",
+            "sourceKey": "bn_sc_1778499346783_rc68yu",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "loc_hill"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "loc_hill",
+                "name": "山坡",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_ms8hvq",
+            "sceneIndex": 7,
+            "sceneName": "第二选择点",
+            "summary": "第二选择点：面对狼嚎，孩子该怎么应对？",
+            "sourceKey": "bn_sc_1778499346783_ms8hvq",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "loc_hill"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "loc_hill",
+                "name": "山坡",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_zvop7v",
+            "sceneIndex": 8,
+            "sceneName": "2后果1",
+            "summary": "2后果1：他冲向声音源，发现一只受伤的狼躲在草丛中，伤口流血。孩子用手中的草席轻轻包扎，狼顿时静止，感谢他的帮助。",
+            "sourceKey": "bn_sc_1778499346783_zvop7v",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "prop_grass_mat",
+              "loc_hill"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "prop_grass_mat",
+                "name": "草席",
+                "category": "prop",
+                "lockProfile": "soft_prop",
+                "lockWorkflow": "prop_soft",
+                "renderStrategy": "prompt_only",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "woven straw mat, rectangular, about 1 meter by 0.5 meter, lying on grass",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": [
+                  "cloth sheet",
+                  "blanket",
+                  "fabric mat"
+                ]
+              },
+              {
+                "id": "loc_hill",
+                "name": "山坡",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "sunlit low‑mountain slope with early dawn mist, scattered rocks, distant mountain range",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_p5uyib",
+            "sceneIndex": 9,
+            "sceneName": "2后果2",
+            "summary": "2后果2：他选择等待，等到村民赶来后才报告，随后大家在草原上检查，没有发现狼。村民们对他之前的言辞仍持怀疑态度。",
+            "sourceKey": "bn_sc_1778499346783_p5uyib",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "loc_village"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "loc_village",
+                "name": "牧场",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_teao2b",
+            "sceneIndex": 10,
+            "sceneName": "结局1",
+            "summary": "结局1：村民们终于相信了孩子的诚实，重新把信任交给他，村民甚至邀请他参与管理羊群，孩子的责任感大增。",
+            "sourceKey": "bn_sc_1778499346783_teao2b",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "loc_village"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "loc_village",
+                "name": "牧场",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          },
+          {
+            "sceneId": "bn_sc_1778499346783_yfmbb0",
+            "sceneIndex": 11,
+            "sceneName": "结局2",
+            "summary": "结局2：村民们对孩子的诚实产生了保留，暂时不再把他视为可靠的守护者，孩子只能在边缘观察，明白了诚信的重要。",
+            "sourceKey": "bn_sc_1778499346783_yfmbb0",
+            "workflow": "scene_prompt_only_fallback",
+            "missingRequiredAssetIds": [
+              "char_child"
+            ],
+            "readyReferenceAssetIds": [],
+            "assetIds": [
+              "char_child",
+              "loc_village"
+            ],
+            "promptAssets": [
+              {
+                "id": "char_child",
+                "name": "牧童",
+                "category": "character",
+                "lockProfile": "character_core",
+                "lockWorkflow": "character_sheet",
+                "renderStrategy": "ref_required",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "young shepherd boy with brown hair, wearing simple tunic, bare feet",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              },
+              {
+                "id": "loc_village",
+                "name": "牧场",
+                "category": "location",
+                "lockProfile": "location_anchor",
+                "lockWorkflow": "location_anchor",
+                "renderStrategy": "optional_ref",
+                "referenceStatus": "missing",
+                "primaryReferenceAssetId": "",
+                "primaryReferenceAssetUri": "",
+                "anchorPrompt": "cluster of stone cottages with thatched roofs, surrounded by pasture, visible background",
+                "negativePrompt": "",
+                "forbiddenSubstitutes": []
+              }
+            ]
+          }
+        ],
+        "summary": {
+          "assetCount": 5,
+          "sceneCount": 11,
+          "refRequiredCount": 1,
+          "refReadyCount": 0,
+          "refMissingCount": 1,
+          "workflows": {
+            "scene_prompt_only": 1,
+            "scene_prompt_only_fallback": 10
+          }
+        }
+      },
+      "storyboardGlobalPromptZh": "",
+      "storyboardGlobalNegativePromptZh": "",
+      "storyboardLockAssetPrompts": {
+        "char.wolf": {
+          "promptZh": "",
+          "promptEn": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit",
+          "negativePromptZh": "真人小孩，人类脸，猫娘，拟人少女，帽子，草帽，水桶，鱼竿，复杂背景，场景环境，树木，草地，水面，地面投影，文字，水印",
+          "negativePrompt": "domestic dog, cute puppy, humanoid wolf, monster, robot",
+          "promptReview": null,
+          "enhancedAt": "",
+          "enhanceMode": ""
+        },
+        "char.villagers": {
+          "promptZh": "",
+          "promptEn": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit",
+          "negativePromptZh": "真人小孩，人类脸，猫娘，拟人少女，帽子，草帽，水桶，鱼竿，复杂背景，场景环境，树木，草地，水面，地面投影，文字，水印",
+          "negativePrompt": "modern office workers, soldiers, city crowd",
+          "promptReview": null,
+          "enhancedAt": "",
+          "enhanceMode": ""
+        },
+        "char.shepherd_boy": {
+          "promptZh": "",
+          "promptEn": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit",
+          "negativePromptZh": "真人小孩，人类脸，猫娘，拟人少女，帽子，草帽，水桶，鱼竿，复杂背景，场景环境，树木，草地，水面，地面投影，文字，水印",
+          "negativePrompt": "adult, modern city clothes, armor, weapon",
+          "promptReview": null,
+          "enhancedAt": "",
+          "enhanceMode": ""
+        },
+        "char.sheep_flock": {
+          "promptZh": "",
+          "promptEn": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit",
+          "negativePromptZh": "真人小孩，人类脸，猫娘，拟人少女，帽子，草帽，水桶，鱼竿，复杂背景，场景环境，树木，草地，水面，地面投影，文字，水印",
+          "negativePrompt": "goats only, cows, horses, aggressive animals",
+          "promptReview": null,
+          "enhancedAt": "",
+          "enhanceMode": ""
+        },
+        "prop.sheep_pen_rope": {
+          "promptZh": "",
+          "promptEn": "single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, no person, no head, no hand, not being worn, no collage, no multi-view sheet, no environment",
+          "negativePromptZh": "人物，角色，儿童，女孩，男孩，头部，脸部，半身像，上半身，手持，佩戴展示，戴在头上，模特，人体穿戴关系，场景背景，树木，草地，水面，文字，水印",
+          "negativePrompt": "",
+          "promptReview": null,
+          "enhancedAt": "",
+          "enhanceMode": ""
+        },
+        "loc.misty_hillside_pasture": {
+          "promptZh": "",
+          "promptEn": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference",
+          "negativePromptZh": "角色特写，人群，文字，水印",
+          "negativePrompt": "",
+          "promptReview": null,
+          "enhancedAt": "",
+          "enhanceMode": ""
+        },
+        "prop.grass_mat_bandage": {
+          "promptZh": "",
+          "promptEn": "single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, no person, no head, no hand, not being worn, no collage, no multi-view sheet, no environment",
+          "negativePromptZh": "人物，角色，儿童，女孩，男孩，头部，脸部，半身像，上半身，手持，佩戴展示，戴在头上，模特，人体穿戴关系，场景背景，树木，草地，水面，文字，水印",
+          "negativePrompt": "",
+          "promptReview": null,
+          "enhancedAt": "",
+          "enhanceMode": ""
+        }
+      },
+      "storyboardEntitySpec": "WORLD_ANCHOR: A rustic mountain pastoral setting at early dawn, misty hills, soft golden light, wide‑angle horizon, tranquil but alert atmosphere\nCHARACTER_LOCKS: 牧童: young shepherd boy with brown hair, wearing simple tunic, bare feet\nPROP_LOCKS: 羊圈绳索: natural fiber rope, knotted at both ends, tied to fence posts, about 3 meters long (forbidden: vine, chain, bungee, string); 草席: woven straw mat, rectangular, about 1 meter by 0.5 meter, lying on grass (forbidden: cloth sheet, blanket, fabric mat)\nEVENT_CHAIN: Child shouts 'Wolf came!' | Child pulls rope from sheep pen | Child examines hillside, finds no wolf | Child counts sheep at pasture | Wolf howl heard in distance | Child rushes to source of howl | Child ties rope to fence posts | Child wraps grass mat over wounded wolf | Village trusts child | Village invites child to manage sheep | Village remains skeptical\nFORBIDDEN_SUBSTITUTES: rope, string, vine, chain, bungee, straw mat, fabric sheet, blanket, dog, wolf pack, horse, goat, cloth sheet, fabric mat",
+      "storyboardContinuity": {
+        "ipadapterEnabled": true,
+        "requireCharacterRefs": true,
+        "controlnetEnabled": false
+      }
+    }
+  },
+  "stage": {
+    "width": 720,
+    "height": 1280,
+    "orientation": "portrait",
+    "scaleMode": "contain"
+  }
+}

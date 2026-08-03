@@ -3,6 +3,8 @@ import { computed, onMounted, unref } from 'vue'
 import { Codemirror } from 'vue-codemirror'
 import { renderChatMessage } from '../lib/chatMarkdown'
 import ControlConsoleSkillProposalsPanel from './ControlConsoleSkillProposalsPanel.vue'
+import ReasoningTaskCard from './ReasoningTaskCard.vue'
+import ReasoningReviewCard from './ReasoningReviewCard.vue'
 import {
   formatDurationSeconds,
   formatReasoningEventTime,
@@ -780,7 +782,7 @@ function getWorkflowPhaseTone(status: string) {
         </div>
         <div ref="chatScrollContainer" class="chat-thread-resizable">
           <div class="chat-thread">
-            <div v-if="chatHistory.length === 0" class="chat-empty-state"><div class="chat-empty-title">等待任务输出</div><div class="chat-empty-copy">这里只显示用户任务、最终回答和错误信息；任务图、工具调用和自检过程在上方进度与下方时间线查看。</div></div>
+            <div v-if="chatHistory.length === 0 && !activeReasoningSession" class="chat-empty-state"><div class="chat-empty-title">等待任务输出</div><div class="chat-empty-copy">这里显示用户任务、任务执行链卡片、审核卡片、最终回答和错误信息；工具调用和自检过程在下方时间线查看。</div></div>
             <div v-for="(msg, i) in chatHistory" :key="i" class="chat-row" :data-role="msg.role">
               <div class="chat-bubble" :data-role="msg.role">
                 <div class="chat-role">{{ msg.role.toUpperCase() }}</div>
@@ -788,6 +790,27 @@ function getWorkflowPhaseTone(status: string) {
                 <div v-if="msg.tokens" class="chat-token-usage">Token 消耗: 提示词 {{ msg.tokens.prompt_tokens }} | 输出 {{ msg.tokens.completion_tokens }} | 总计 {{ msg.tokens.total_tokens }}</div>
               </div>
             </div>
+            <ReasoningTaskCard
+              v-if="activeReasoningSession"
+              :session="activeReasoningSession"
+              :status-label="reasoningStatusLabel"
+              :elapsed-seconds="reasoningElapsedSeconds"
+            />
+            <ReasoningReviewCard
+              v-if="reasoningPendingReview"
+              :review="reasoningPendingReview"
+              :target-label="reasoningReviewTargetLabel"
+              :busy="reasoningReviewBusy"
+              :auto-approve="reasoningAutoApproveEnabled"
+              :approve-label="reasoningApproveActionLabel"
+              :reject-label="reasoningRejectActionLabel"
+              :can-step-back="canReasoningStepBack"
+              :evidence="reasoningReviewEvidence"
+              :draft="reasoningReviewDraft"
+              :format-evidence="formatReasoningEvidence"
+              @submit="submitReasoningReview"
+              @update:draft="reasoningReviewDraft = $event"
+            />
           </div>
         </div>
         <div class="chat-composer">
@@ -874,17 +897,21 @@ function getWorkflowPhaseTone(status: string) {
               </div>
               <div v-else class="chat-memory-desc">本轮未加载任何 markdown 项目记忆（plan 可能命中 builtin/fallback intent，或 productionTest 关闭了 memory sync）。</div>
             </div>
-            <div v-if="reasoningPendingReview" class="reasoning-review-box">
-              <div class="reasoning-plan-title">{{ reasoningReviewTargetLabel }}</div>
-              <div class="reasoning-review-title">{{ reasoningPendingReview.title }}</div>
-              <div class="reasoning-review-summary">{{ reasoningPendingReview.summary }}</div>
-              <div class="chat-memory-desc" style="margin-bottom: 10px;">{{ reasoningAutoApproveEnabled ? '当前为自动直跑模式：运行任务图和步骤不会停在审核框。' : '当前为人工全审模式：运行任务图、执行步骤和最终回答都会进入审核。' }}</div>
-              <div v-if="reasoningReviewEvidence?.outboundPreview" class="reasoning-evidence-block"><div class="reasoning-evidence-title">本轮提交流程</div><pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(reasoningReviewEvidence.outboundPreview) }}</pre></div>
-              <div v-if="reasoningReviewEvidence?.rawResponsePreview" class="reasoning-evidence-block"><div class="reasoning-evidence-title">模型首先返回的结果</div><pre class="reasoning-evidence-pre">{{ reasoningReviewEvidence.rawResponsePreview }}</pre></div>
-              <div v-if="reasoningReviewEvidence?.structuredResult" class="reasoning-evidence-block"><div class="reasoning-evidence-title">结构化结果摘要</div><pre class="reasoning-evidence-pre">{{ formatReasoningEvidence(reasoningReviewEvidence.structuredResult) }}</pre></div>
-              <textarea v-model="reasoningReviewDraft" class="chat-memory-editor reasoning-review-editor" rows="4" spellcheck="false" placeholder="驳回时填写修正条件，例如：必须调用 project.listStories，不要猜数据库。" :disabled="reasoningAutoApproveEnabled" />
-              <div class="reasoning-review-actions"><button v-if="canReasoningStepBack" class="action-btn outline" @click="submitReasoningReview('back')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : '后退一步' }}</button><button class="action-btn outline" @click="submitReasoningReview('reject')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : reasoningRejectActionLabel }}</button><button class="action-btn" @click="submitReasoningReview('approve')" :disabled="reasoningReviewBusy || reasoningAutoApproveEnabled">{{ reasoningReviewBusy ? '提交中...' : reasoningApproveActionLabel }}</button></div>
-            </div>
+            <ReasoningReviewCard
+              v-if="reasoningPendingReview"
+              :review="reasoningPendingReview"
+              :target-label="reasoningReviewTargetLabel"
+              :busy="reasoningReviewBusy"
+              :auto-approve="reasoningAutoApproveEnabled"
+              :approve-label="reasoningApproveActionLabel"
+              :reject-label="reasoningRejectActionLabel"
+              :can-step-back="canReasoningStepBack"
+              :evidence="reasoningReviewEvidence"
+              :draft="reasoningReviewDraft"
+              :format-evidence="formatReasoningEvidence"
+              @submit="submitReasoningReview"
+              @update:draft="reasoningReviewDraft = $event"
+            />
             <div v-if="activeReasoningSession?.events?.length" class="reasoning-timeline" ref="reasoningTimelineRef"><div v-for="event in activeReasoningSession.events" :key="event.eventId" class="reasoning-event-row"><div class="reasoning-event-type">{{ event.type }}</div><div class="reasoning-event-body"><div class="reasoning-event-title">{{ event.title }}</div><div class="reasoning-event-summary">{{ event.summary }}</div><div v-if="getReasoningEventMetaLines(event).length" class="reasoning-event-meta-list"><span v-for="line in getReasoningEventMetaLines(event)" :key="`${event.eventId}-${line}`" class="reasoning-event-meta-chip">{{ line }}</span></div><div v-if="getReasoningEventOps(event).length" class="reasoning-event-ops"><div class="reasoning-event-ops-title">可观测调用</div><div v-for="line in getReasoningEventOps(event)" :key="`${event.eventId}-${line}`" class="reasoning-event-op-line">{{ line }}</div></div><div v-if="getReasoningEventPreviewBlocks(event).length" class="reasoning-event-ops"><div class="reasoning-event-ops-title">Hermes 返回</div><div v-for="block in getReasoningEventPreviewBlocks(event)" :key="`${event.eventId}-${block.title}`" style="margin-top: 8px;"><div class="reasoning-event-ops-title" style="margin-bottom: 4px;">{{ block.title }}</div><pre class="reasoning-evidence-pre" style="margin: 0; max-height: 240px; overflow: auto;">{{ block.content }}</pre></div></div></div><div class="reasoning-event-time">{{ formatReasoningEventTime(event.timestamp) }}</div></div></div>
             <div v-if="activeReasoningSession?.error || reasoningError" class="message-banner error" style="font-size: 12px; line-height: 1.5;">{{ activeReasoningSession?.error || reasoningError }}</div>
           </div>

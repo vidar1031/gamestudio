@@ -1,0 +1,902 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-08-03T13:33:35.478Z",
+  "worldAnchor": "Rainy night, cozy urban coffee shop, dim warm lighting, medium shot focus, Chinese-style cafe interior",
+  "forbiddenSubstitutes": [
+    "modern city",
+    "science fiction",
+    "horror gore",
+    "photorealistic adults replacing child",
+    "dog replacing wolf",
+    "plastic cup",
+    "paper cup",
+    "digital clock",
+    "smartwatch",
+    "glass table"
+  ],
+  "eventChain": [
+    "Intro: Protagonist enters a rainy night coffee shop and becomes aware of a time loop",
+    "Choice: Protagonist chooses between investigating the anomaly or protecting the companion",
+    "Result 1: Protagonist investigates clues and discovers a repeatable pattern",
+    "Result 2: Protagonist protects companion, missing the first clue but gaining trust",
+    "Ending 1: Protagonist breaks the loop and walks into a new dawn",
+    "Ending 2: Protagonist keeps the secret, maintaining the status quo while preparing for the next choice"
+  ],
+  "excludedAssetIds": [],
+  "assets": [
+    {
+      "id": "char_companion",
+      "name": "Companion",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Adult human, medium build, wearing a warm scarf, standing in a dimly lit rainy night coffee shop, attentive expression",
+      "negativePrompt": "",
+      "aliases": [
+        "Friend"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 4,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+    },
+    {
+      "id": "char_protagonist",
+      "name": "Protagonist",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression",
+      "negativePrompt": "",
+      "aliases": [
+        "Main character"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+    },
+    {
+      "id": "prop_coffee_mug",
+      "name": "Coffee Mug",
+      "category": "prop",
+      "lockProfile": "rigid_prop",
+      "lockWorkflow": "prop_product",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table",
+      "negativePrompt": "",
+      "aliases": [
+        "mug"
+      ],
+      "forbiddenSubstitutes": [
+        "plastic cup",
+        "paper cup"
+      ],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single rigid object reference, stable perspective, exactly one object only, centered composition, clear major structural parts, pure white background, no people, no environment"
+    },
+    {
+      "id": "prop_coffee_table",
+      "name": "Coffee Table",
+      "category": "prop",
+      "lockProfile": "rigid_prop",
+      "lockWorkflow": "prop_product",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes",
+      "negativePrompt": "",
+      "aliases": [
+        "table"
+      ],
+      "forbiddenSubstitutes": [
+        "glass table"
+      ],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single rigid object reference, stable perspective, exactly one object only, centered composition, clear major structural parts, pure white background, no people, no environment"
+    },
+    {
+      "id": "prop_wall_clock",
+      "name": "Wall Clock",
+      "category": "prop",
+      "lockProfile": "rigid_prop",
+      "lockWorkflow": "prop_product",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop",
+      "negativePrompt": "",
+      "aliases": [
+        "clock"
+      ],
+      "forbiddenSubstitutes": [
+        "digital clock",
+        "smartwatch"
+      ],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single rigid object reference, stable perspective, exactly one object only, centered composition, clear major structural parts, pure white background, no people, no environment"
+    },
+    {
+      "id": "loc_coffee_shop",
+      "name": "Rainy Night Coffee Shop",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups",
+      "negativePrompt": "",
+      "aliases": [
+        "Cafe"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+    }
+  ],
+  "scenes": [
+    {
+      "sceneId": "bn_card_intro",
+      "sceneIndex": 1,
+      "sceneName": "开场",
+      "summary": "开场：未命名互动故事。基于 brief 生成最小 scripts 候选并写回项目：雨夜咖啡馆、三次循环、至少一个选择点、两个结局。必须返回 scripts 卡片数和写回证据。 主角在一个关键时刻意识到，今晚的选择会改变所有人的命运。",
+      "sourceKey": "bn_card_intro",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_companion",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_companion",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_companion",
+          "name": "Companion",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a warm scarf, standing in a dimly lit rainy night coffee shop, attentive expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_mug",
+          "name": "Coffee Mug",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "plastic cup",
+            "paper cup"
+          ]
+        },
+        {
+          "id": "prop_wall_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock",
+            "smartwatch"
+          ]
+        },
+        {
+          "id": "prop_coffee_table",
+          "name": "Coffee Table",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "glass table"
+          ]
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1",
+      "sceneIndex": 2,
+      "sceneName": "选择1",
+      "summary": "选择1",
+      "sourceKey": "bn_card_choice_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_companion",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_companion",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_companion",
+          "name": "Companion",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a warm scarf, standing in a dimly lit rainy night coffee shop, attentive expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_mug",
+          "name": "Coffee Mug",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "plastic cup",
+            "paper cup"
+          ]
+        },
+        {
+          "id": "prop_wall_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock",
+            "smartwatch"
+          ]
+        },
+        {
+          "id": "prop_coffee_table",
+          "name": "Coffee Table",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "glass table"
+          ]
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_1",
+      "sceneIndex": 3,
+      "sceneName": "1后果1",
+      "summary": "1后果1：主角追查线索，发现看似偶然的事件背后藏着可重复验证的规律。",
+      "sourceKey": "bn_card_choice_1_result_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_mug",
+          "name": "Coffee Mug",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "plastic cup",
+            "paper cup"
+          ]
+        },
+        {
+          "id": "prop_wall_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock",
+            "smartwatch"
+          ]
+        },
+        {
+          "id": "prop_coffee_table",
+          "name": "Coffee Table",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "glass table"
+          ]
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_2",
+      "sceneIndex": 4,
+      "sceneName": "1后果2",
+      "summary": "1后果2：主角选择保护同伴，因此错过了第一条线索，却获得了更深的信任。",
+      "sourceKey": "bn_card_choice_1_result_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_companion",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_companion",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_companion",
+          "name": "Companion",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a warm scarf, standing in a dimly lit rainy night coffee shop, attentive expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_mug",
+          "name": "Coffee Mug",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "plastic cup",
+            "paper cup"
+          ]
+        },
+        {
+          "id": "prop_wall_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock",
+            "smartwatch"
+          ]
+        },
+        {
+          "id": "prop_coffee_table",
+          "name": "Coffee Table",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "glass table"
+          ]
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_1",
+      "sceneIndex": 5,
+      "sceneName": "结局1",
+      "summary": "结局1：主角打破循环，带着真相走向新的清晨。",
+      "sourceKey": "bn_card_ending_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_mug",
+          "name": "Coffee Mug",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "plastic cup",
+            "paper cup"
+          ]
+        },
+        {
+          "id": "prop_wall_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock",
+            "smartwatch"
+          ]
+        },
+        {
+          "id": "prop_coffee_table",
+          "name": "Coffee Table",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "glass table"
+          ]
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_2",
+      "sceneIndex": 6,
+      "sceneName": "结局2",
+      "summary": "结局2：主角保留秘密，让世界暂时维持原状，但心里已经知道下一次该如何选择。",
+      "sourceKey": "bn_card_ending_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist",
+        "char_companion",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "char_companion",
+        "prop_coffee_mug",
+        "prop_wall_clock",
+        "prop_coffee_table",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Protagonist",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a dark trench coat, standing in a dimly lit rainy night coffee shop, neutral expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "char_companion",
+          "name": "Companion",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Adult human, medium build, wearing a warm scarf, standing in a dimly lit rainy night coffee shop, attentive expression",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_mug",
+          "name": "Coffee Mug",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Ceramic coffee mug, medium size, smooth surface, white with small logo, placed on table",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "plastic cup",
+            "paper cup"
+          ]
+        },
+        {
+          "id": "prop_wall_clock",
+          "name": "Wall Clock",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Vintage wall clock, brass frame, round face with Roman numerals, hanging on wall inside coffee shop",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "digital clock",
+            "smartwatch"
+          ]
+        },
+        {
+          "id": "prop_coffee_table",
+          "name": "Coffee Table",
+          "category": "prop",
+          "lockProfile": "rigid_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Small wooden coffee table, light oak finish, rectangular, with slight scratches, supporting mug and notes",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "glass table"
+          ]
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a cozy urban coffee shop, rain patters on the windows, warm lighting from pendant lamps, indoor wooden décor, tables scattered across the room, subtle steam rising from cups",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "assetCount": 6,
+    "sceneCount": 6,
+    "refRequiredCount": 5,
+    "refReadyCount": 0,
+    "refMissingCount": 5,
+    "workflows": {
+      "scene_prompt_only_fallback": 6
+    }
+  }
+}

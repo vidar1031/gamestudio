@@ -1,0 +1,131 @@
+{
+  "schemaVersion": "2.0",
+  "id": "78200bfb-75b8-407e-acb0-95a9ea0b83e9",
+  "title": "未命名互动故事",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T13:44:33.447Z",
+  "updatedAt": "2026-08-03T13:55:31.822Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes",
+        "characters": [
+          {
+            "id": "protagonist",
+            "name": "主角",
+            "aliases": [
+              "Hero",
+              "Young villager"
+            ],
+            "anchorPrompt": "young villager in traditional attire",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [],
+        "locations": [
+          {
+            "id": "village",
+            "name": "村庄",
+            "aliases": [
+              "Village",
+              "Rural community"
+            ],
+            "anchorPrompt": "small, picturesque rural Chinese village with thatched roof houses, winding dirt roads, and warm, golden light",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Protagonist realizes that tonight's choice will change everyone's fate.",
+          "Protagonist faces a decision: investigate anomaly or protect companions.",
+          "Protagonist investigates clues and discovers a repeatable pattern behind apparent coincidences.",
+          "Protagonist protects companions, misses first clue, gains deeper trust.",
+          "Protagonist breaks the cycle, carries truth toward a new dawn.",
+          "Protagonist keeps secret, world remains unchanged, inner knowledge of next choice."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "protagonist"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"Chinese rural fable, warm picture book illustration, consistent characters and locations across scenes\",\n  \"characters\": [\n    {\n      \"id\": \"protagonist\",\n      \"name\": \"主角\",\n      \"aliases\": [\n        \"Hero\",\n        \"Young villager\"\n      ],\n      \"anchorPrompt\": \"young villager in traditional attire\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [],\n  \"locations\": [\n    {\n      \"id\": \"village\",\n      \"name\": \"村庄\",\n      \"aliases\": [\n        \"Village\",\n        \"Rural community\"\n      ],\n      \"anchorPrompt\": \"small, picturesque rural Chinese village with thatched roof houses, winding dirt roads, and warm, golden light\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Protagonist realizes that tonight's choice will change everyone's fate.\",\n    \"Protagonist faces a decision: investigate anomaly or protect companions.\",\n    \"Protagonist investigates clues and discovers a repeatable pattern behind apparent coincidences.\",\n    \"Protagonist protects companions, misses first clue, gains deeper trust.\",\n    \"Protagonist breaks the cycle, carries truth toward a new dawn.\",\n    \"Protagonist keeps secret, world remains unchanged, inner knowledge of next choice.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"protagonist\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T13:55:31.821Z"
+    }
+  }
+}

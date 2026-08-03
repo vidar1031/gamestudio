@@ -1,4 +1,105 @@
-import type { ReasoningEvent, ReasoningSession } from '../types/reasoning'
+import type { ReasoningEvent, ReasoningSession, ReasoningStoryStepResult } from '../types/reasoning'
+
+export type ReasoningStepState = 'pending' | 'running' | 'waiting_review' | 'completed' | 'failed' | 'blocked' | 'skipped'
+
+export type ReasoningStepView = {
+  stepId: string
+  title: string
+  action: string
+  tool: string
+  state: ReasoningStepState
+  summary: string
+  failedStage: string | null
+  evaluatorName: string
+  evaluatorPassed: boolean | null
+  evaluatorScore: number | null
+  reviewProvider: string
+  evidenceFiles: string[]
+  distExists: boolean
+  distUrl: string
+}
+
+function getStoryStepResult(session: ReasoningSession, stepId: string): ReasoningStoryStepResult | null {
+  const steps = session.artifacts?.storyProduction?.steps
+  if (!steps || typeof steps !== 'object') return null
+  const hit = steps[stepId]
+  return hit && typeof hit === 'object' ? hit : null
+}
+
+function getEventStepState(session: ReasoningSession, stepId: string): 'completed' | 'failed' | null {
+  const events = Array.isArray(session.events) ? session.events : []
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i]
+    if (event?.stepId !== stepId) continue
+    if (event.type === 'step_completed') return 'completed'
+    if (event.type === 'step_failed') return 'failed'
+  }
+  return null
+}
+
+/**
+ * 把 session 的 plan 步骤推导为可视化状态：优先取 story 工作流逐步结果（含 evaluator/证据），
+ * 其次取事件流（step_completed/step_failed），再结合 currentStepId 与待审核 stepId。
+ */
+export function getReasoningStepStates(session: ReasoningSession | null): ReasoningStepView[] {
+  if (!session) return []
+  const plan = session.runtimeTaskGraph || session.plan
+  const steps = Array.isArray(plan?.steps) ? plan.steps : []
+  return steps.map((step) => {
+    const result = getStoryStepResult(session, step.stepId)
+    let state: ReasoningStepState = 'pending'
+    if (result) {
+      if (result.ok === true) state = 'completed'
+      else if (typeof result.failedStage === 'string' && result.failedStage.startsWith('blocked_by')) state = 'blocked'
+      else if (result.data && (result.data as Record<string, unknown>).skipped === true) state = 'skipped'
+      else state = 'failed'
+    } else {
+      const eventState = getEventStepState(session, step.stepId)
+      if (eventState) state = eventState
+    }
+    if (session.review?.stepId === step.stepId && session.status === 'waiting_review') state = 'waiting_review'
+    else if (session.currentStepId === step.stepId && (session.status === 'running' || session.status === 'planning')) state = 'running'
+
+    const checks = result?.evaluator?.checks && typeof result.evaluator.checks === 'object' ? result.evaluator.checks : null
+    const finalScore = checks && Number.isFinite(Number(checks.finalScore)) ? Number(checks.finalScore) : null
+    const hermesReview = result?.data && typeof result.data === 'object'
+      ? (result.data as Record<string, unknown>).hermesReview as Record<string, unknown> | null
+      : null
+    return {
+      stepId: step.stepId,
+      title: step.title,
+      action: step.action,
+      tool: step.tool,
+      state,
+      summary: String(result?.summary || ''),
+      failedStage: result?.failedStage || null,
+      evaluatorName: String(result?.evaluator?.name || ''),
+      evaluatorPassed: typeof result?.evaluator?.passed === 'boolean' ? result.evaluator.passed : null,
+      evaluatorScore: finalScore,
+      reviewProvider: hermesReview && typeof hermesReview.provider === 'string' ? hermesReview.provider : '',
+      evidenceFiles: Array.isArray(result?.snapshot?.fileNames) ? result.snapshot.fileNames.map((name) => String(name)) : [],
+      distExists: Boolean(result?.snapshot?.distExists) || Boolean(result?.evidence?.distExists),
+      distUrl: String(result?.evidence?.distUrl || '')
+    }
+  })
+}
+
+export function getStoryProductionMeta(session: ReasoningSession | null) {
+  const story = session?.artifacts?.storyProduction
+  let projectId = story?.projectId || null
+  if (!projectId && story?.steps && typeof story.steps === 'object') {
+    for (const step of Object.values(story.steps)) {
+      if (step?.projectId) { projectId = step.projectId; break }
+    }
+  }
+  return {
+    projectId,
+    fallback: story?.scriptsCandidateMeta?.fallback === true,
+    fallbackReason: story?.scriptsCandidateMeta?.fallbackReason || null,
+    provider: story?.scriptsCandidateMeta?.provider || null,
+    model: story?.scriptsCandidateMeta?.model || null
+  }
+}
 
 export function formatDurationSeconds(totalSeconds: number) {
   const safeSeconds = Math.max(0, Math.round(Number(totalSeconds) || 0))

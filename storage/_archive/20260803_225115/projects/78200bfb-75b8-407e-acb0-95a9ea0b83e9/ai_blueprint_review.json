@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0",
+  "updatedAt": "2026-08-03T13:51:08.554Z",
+  "projectId": "78200bfb-75b8-407e-acb0-95a9ea0b83e9",
+  "scriptsUpdatedAt": "2026-08-03T13:44:33.504Z",
+  "formula": null,
+  "review": {
+    "verdict": "ok",
+    "summary": "结构与连线看起来合理。",
+    "rootCauses": [],
+    "userFacingExplanation": [
+      "本次分析基于本地规则（非 AI），按“选项1..N / i后果k / 结局k”约定解析脚本生成蓝图。"
+    ],
+    "suggestedEdits": []
+  },
+  "meta": {
+    "provider": "local",
+    "durationMs": 1
+  }
+}

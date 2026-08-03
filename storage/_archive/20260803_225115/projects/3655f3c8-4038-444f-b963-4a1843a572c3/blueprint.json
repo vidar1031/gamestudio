@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "1.0",
+  "startNodeId": "bn_c1",
+  "placeholders": [],
+  "nodes": [
+    {
+      "id": "bn_c1",
+      "scriptCardId": "c1",
+      "name": "开始",
+      "kind": "scene",
+      "textDraft": "小红帽踏上前往奶奶家的路途。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_c1",
+          "text": "继续",
+          "toNodeId": "bn_c2"
+        }
+      ]
+    },
+    {
+      "id": "bn_c2",
+      "scriptCardId": "c2",
+      "name": "选择",
+      "kind": "scene",
+      "textDraft": "你看到一条小路，是否走？\n选项1：走小路\n选项2：走大路",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_c2_1",
+          "text": "走小路",
+          "toNodeId": "bn_c3"
+        },
+        {
+          "id": "bc_c2_2",
+          "text": "走大路",
+          "toNodeId": "bn_c4"
+        }
+      ]
+    },
+    {
+      "id": "bn_c3",
+      "scriptCardId": "c3",
+      "name": "1后果1",
+      "kind": "scene",
+      "textDraft": "你走了小路，遇见了狼。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_c3",
+          "text": "继续",
+          "toNodeId": "bn_c5"
+        }
+      ]
+    },
+    {
+      "id": "bn_c4",
+      "scriptCardId": "c4",
+      "name": "1后果2",
+      "kind": "scene",
+      "textDraft": "你走了大路，安全到达奶奶家。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_c4",
+          "text": "继续",
+          "toNodeId": "bn_c6"
+        }
+      ]
+    },
+    {
+      "id": "bn_c5",
+      "scriptCardId": "c5",
+      "name": "结局1",
+      "kind": "ending",
+      "textDraft": "狼吃掉了小红帽，故事结束。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    },
+    {
+      "id": "bn_c6",
+      "scriptCardId": "c6",
+      "name": "结局2",
+      "kind": "ending",
+      "textDraft": "小红帽安全到达奶奶家，大家开心。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    }
+  ],
+  "updatedAt": "2026-06-06T14:34:16.077Z"
+}

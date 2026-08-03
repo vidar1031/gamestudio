@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1.0",
+  "updatedAt": "2026-05-11T12:36:17.971Z",
+  "projectId": "16b20103-3000-4e8b-ab03-f4224eb63ad1",
+  "scriptsUpdatedAt": "2026-05-11T11:35:46.783Z",
+  "formula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 2,
+    "optionsPerChoice": 2,
+    "endings": 2
+  },
+  "review": {
+    "verdict": "warn",
+    "summary": "AI 分析失败（已回退为本地提示）。",
+    "rootCauses": [
+      "empty_ai_output"
+    ],
+    "userFacingExplanation": [],
+    "suggestedEdits": []
+  },
+  "meta": {
+    "provider": "localoxml",
+    "api": "responses",
+    "model": "gpt-oss-20b-MXFP4-Q8",
+    "durationMs": 20005,
+    "error": {
+      "message": "empty_ai_output",
+      "name": "Error"
+    }
+  }
+}

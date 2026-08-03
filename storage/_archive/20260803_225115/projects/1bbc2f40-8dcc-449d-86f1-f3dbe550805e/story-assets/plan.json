@@ -1,0 +1,444 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-08-03T13:43:53.772Z",
+  "worldAnchor": "Cozy, rain-soaked café in a small town, warm lamplight, nostalgic ambience, subtle camera focus on intimate moments.",
+  "forbiddenSubstitutes": [
+    "modern city",
+    "science fiction",
+    "horror gore",
+    "photorealistic adults replacing child",
+    "dog replacing wolf",
+    "plastic mug",
+    "empty cup",
+    "storm umbrella",
+    "plastic umbrella"
+  ],
+  "eventChain": [
+    "Protagonist sits at the rain-soaked café, realizing tonight’s choice will change everyone’s fate.",
+    "Protagonist confronts a decision: investigate the anomaly or protect a companion.",
+    "If investigating, the protagonist follows clues and uncovers a repeating pattern.",
+    "If protecting, the protagonist shields a companion, missing a clue but gaining deeper trust.",
+    "The protagonist breaks the time loop and walks into a new morning holding the truth.",
+    "The protagonist keeps the secret, leaving the world unchanged while knowing the next choice."
+  ],
+  "excludedAssetIds": [],
+  "assets": [
+    {
+      "id": "protagonist",
+      "name": "Lee",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup",
+      "negativePrompt": "",
+      "aliases": [
+        "主人公",
+        "主角"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+    },
+    {
+      "id": "prop_umbrella",
+      "name": "Umbrella",
+      "category": "prop",
+      "lockProfile": "generic_prop",
+      "lockWorkflow": "prop_product",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "folded dark blue umbrella hanging on a hook beside the window, wooden handle, fabric panels",
+      "negativePrompt": "",
+      "aliases": [
+        "雨伞"
+      ],
+      "forbiddenSubstitutes": [
+        "storm umbrella",
+        "plastic umbrella"
+      ],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1"
+      ],
+      "sceneCount": 2,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, no person, no head, no hand, not being worn, no collage, no multi-view sheet, no environment"
+    },
+    {
+      "id": "loc_cafe",
+      "name": "Rainy Night Café",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "cozy indoor café with wooden tables, low lamps, faded wallpaper, a window showing rain, chalkboard menu, mid-20th century style",
+      "negativePrompt": "",
+      "aliases": [
+        "咖啡馆"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1"
+      ],
+      "sceneCount": 2,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+    },
+    {
+      "id": "prop_coffee_cup",
+      "name": "Coffee Cup",
+      "category": "prop",
+      "lockProfile": "ambient_prop",
+      "lockWorkflow": "prop_ambient",
+      "persistence": "low",
+      "renderStrategy": "prompt_only",
+      "anchorPrompt": "small white ceramic coffee cup with a blue rim, placed on a wooden table, steam gently rising",
+      "negativePrompt": "",
+      "aliases": [
+        "咖啡杯"
+      ],
+      "forbiddenSubstitutes": [
+        "plastic mug",
+        "empty cup"
+      ],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1"
+      ],
+      "sceneCount": 2,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single atmospheric motif reference, isolated simple form, clean pale background, no landscape, no horizon, no characters, no complex scene"
+    }
+  ],
+  "scenes": [
+    {
+      "sceneId": "bn_card_intro",
+      "sceneIndex": 1,
+      "sceneName": "开场",
+      "summary": "开场：未命名互动故事。基于 brief 生成最小 scripts 候选并写回项目：雨夜咖啡馆、三次循环、至少一个选择点、两个结局。必须返回 scripts 卡片数和写回证据。 主角在一个关键时刻意识到，今晚的选择会改变所有人的命运。",
+      "sourceKey": "bn_card_intro",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist",
+        "prop_umbrella"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist",
+        "prop_coffee_cup",
+        "prop_umbrella",
+        "loc_cafe"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Lee",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "small white ceramic coffee cup with a blue rim, placed on a wooden table, steam gently rising",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "plastic mug",
+            "empty cup"
+          ]
+        },
+        {
+          "id": "prop_umbrella",
+          "name": "Umbrella",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "folded dark blue umbrella hanging on a hook beside the window, wooden handle, fabric panels",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "storm umbrella",
+            "plastic umbrella"
+          ]
+        },
+        {
+          "id": "loc_cafe",
+          "name": "Rainy Night Café",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "cozy indoor café with wooden tables, low lamps, faded wallpaper, a window showing rain, chalkboard menu, mid-20th century style",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1",
+      "sceneIndex": 2,
+      "sceneName": "选择1",
+      "summary": "选择1",
+      "sourceKey": "bn_card_choice_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist",
+        "prop_umbrella"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist",
+        "prop_coffee_cup",
+        "prop_umbrella",
+        "loc_cafe"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Lee",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "small white ceramic coffee cup with a blue rim, placed on a wooden table, steam gently rising",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "plastic mug",
+            "empty cup"
+          ]
+        },
+        {
+          "id": "prop_umbrella",
+          "name": "Umbrella",
+          "category": "prop",
+          "lockProfile": "generic_prop",
+          "lockWorkflow": "prop_product",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "folded dark blue umbrella hanging on a hook beside the window, wooden handle, fabric panels",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "storm umbrella",
+            "plastic umbrella"
+          ]
+        },
+        {
+          "id": "loc_cafe",
+          "name": "Rainy Night Café",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "cozy indoor café with wooden tables, low lamps, faded wallpaper, a window showing rain, chalkboard menu, mid-20th century style",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_1",
+      "sceneIndex": 3,
+      "sceneName": "1后果1",
+      "summary": "1后果1：主角追查线索，发现看似偶然的事件背后藏着可重复验证的规律。",
+      "sourceKey": "bn_card_choice_1_result_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Lee",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_2",
+      "sceneIndex": 4,
+      "sceneName": "1后果2",
+      "summary": "1后果2：主角选择保护同伴，因此错过了第一条线索，却获得了更深的信任。",
+      "sourceKey": "bn_card_choice_1_result_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Lee",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_1",
+      "sceneIndex": 5,
+      "sceneName": "结局1",
+      "summary": "结局1：主角打破循环，带着真相走向新的清晨。",
+      "sourceKey": "bn_card_ending_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Lee",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_2",
+      "sceneIndex": 6,
+      "sceneName": "结局2",
+      "summary": "结局2：主角保留秘密，让世界暂时维持原状，但心里已经知道下一次该如何选择。",
+      "sourceKey": "bn_card_ending_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "protagonist"
+      ],
+      "promptAssets": [
+        {
+          "id": "protagonist",
+          "name": "Lee",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Lee, a young adult wearing a dark jacket and coat, standing upright with a neutral expression, holding a coffee cup",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "assetCount": 4,
+    "sceneCount": 6,
+    "refRequiredCount": 2,
+    "refReadyCount": 0,
+    "refMissingCount": 2,
+    "workflows": {
+      "scene_prompt_only_fallback": 6
+    }
+  }
+}

@@ -11,6 +11,7 @@ import {
   appendReasoningEvent,
   buildReasoningReview,
   finalizeReasoningSession,
+  markReasoningSessionFailed,
   readReasoningSession,
   readRecentReasoningQualityCalibrations,
   appendReasoningImprovementCandidateRecord,
@@ -34,6 +35,38 @@ function getQualityPhaseLabel(phase) {
 
 function isReasoningCancelledError(error) {
   return /reasoning_cancelled_by_user|model_task_cancelled|model_task_aborted/i.test(String(error instanceof Error ? error.message : error || ''))
+}
+
+function inspectStoryWorkflowFailure(session) {
+  const steps = session?.artifacts?.storyProduction?.steps && typeof session.artifacts.storyProduction.steps === 'object'
+    ? Object.values(session.artifacts.storyProduction.steps)
+    : []
+  const failedSteps = steps.filter((step) => {
+    if (!step || typeof step !== 'object') return false
+    if (step.ok === false) return true
+    const evaluator = step.evaluator
+    if (evaluator && typeof evaluator === 'object') {
+      if (evaluator.passed === false) return true
+      if (typeof evaluator.passed !== 'boolean') return true
+      return false
+    }
+    // evaluator 缺失或非对象：视为 evaluator_unavailable
+    if (step.ok === true) return true
+    return false
+  })
+  return {
+    hasFailure: failedSteps.length > 0,
+    stepCount: steps.length,
+    detail: failedSteps.length > 0
+      ? `failedSteps=${failedSteps.map((step) => {
+        if (step.ok === false) return `${step.action || 'unknown'}:${step.failedStage || 'unknown'}`
+        const evaluator = step.evaluator
+        if (!evaluator || typeof evaluator !== 'object') return `${step.action || 'unknown'}:evaluator_unavailable`
+        if (typeof evaluator.passed !== 'boolean') return `${step.action || 'unknown'}:evaluator_indeterminate`
+        return `${step.action || 'unknown'}:evaluator_failed`
+      }).join(',')}`
+      : 'failedSteps=none'
+  }
 }
 
 function assertReasoningSessionNotCancelled(sessionId) {
@@ -595,6 +628,15 @@ export async function finalizeReasoningSessionWithQualityGate(sessionId, binding
   // 关闭后，最终答案直接落盘，避免与同一 session 的下一题或其它 control 操作在 OMLX 上叠加。
   const submissionContext = session.submissionContext || {}
   if (submissionContext.disableQualityAutoRetry) {
+    const workflowFailure = inspectStoryWorkflowFailure(session)
+    if (workflowFailure.hasFailure) {
+      const reason = `story_workflow_evaluator_failed:${workflowFailure.detail}`
+      appendReasoningEvent(sessionId, 'quality_gate_blocked', 'story workflow 存在失败步骤，拒绝 finalize 为完成', reason, {
+        data: { workflowFailure }
+      })
+      markReasoningSessionFailed(sessionId, new Error(reason))
+      return readReasoningSession(sessionId)
+    }
     appendReasoningEvent(sessionId, 'quality_gate_skipped', '质检与自我审查已跳过', '提交时声明 disableQualityAutoRetry=true，按契约不再触发额外的评分与自审推理调用，最终答案直接落盘。', {
       data: {
         reason: 'disable_quality_auto_retry',
@@ -729,6 +771,15 @@ export async function finalizeReasoningSessionWithQualityGate(sessionId, binding
 
   // productionTest mode bypasses quality gate review for automated testing
   if (productionTest) {
+    const workflowFailure = inspectStoryWorkflowFailure(session)
+    if (workflowFailure.hasFailure) {
+      const reason = `story_workflow_evaluator_failed:${workflowFailure.detail}`
+      appendReasoningEvent(sessionId, 'quality_gate_blocked', '生产测试模式：story workflow 存在失败步骤，session 记为 failed', reason, {
+        data: { workflowFailure, score: assessment.score, passed: assessment.passed }
+      })
+      markReasoningSessionFailed(sessionId, new Error(reason))
+      return readReasoningSession(sessionId)
+    }
     // 质检未通过不得静默丢弃:把评估结论显式写入 artifacts,供自动判定/门禁读取(见 P0-01)。
     updateReasoningSession(sessionId, (current) => ({
       ...current,

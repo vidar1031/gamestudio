@@ -1,0 +1,421 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-08-03T14:30:31.787Z",
+  "worldAnchor": "A cozy rainy night in a small town coffee shop, soft warm lighting, gentle rain on the window, familiar vintage interior.",
+  "forbiddenSubstitutes": [
+    "modern city",
+    "science fiction",
+    "horror gore",
+    "photorealistic adults replacing child",
+    "dog replacing wolf",
+    "paper cup",
+    "plastic cup"
+  ],
+  "eventChain": [
+    "Scene 1: Liu enters the coffee shop on a rainy night and senses that tonight’s choice will change everyone’s fate.",
+    "Scene 2: Liu faces a choice: investigate the anomaly or protect a nearby companion.",
+    "Scene 3: Liu chooses to investigate and uncovers a repeatable pattern behind the events.",
+    "Scene 4: Liu chooses to protect the companion, missing the first clue but gaining deeper trust.",
+    "Scene 5: Liu breaks the loop and walks toward a new dawn holding the truth.",
+    "Scene 6: Liu keeps the secret, maintaining the status quo while knowing what to do next time."
+  ],
+  "excludedAssetIds": [],
+  "assets": [
+    {
+      "id": "char_protagonist",
+      "name": "Liu",
+      "category": "character",
+      "lockProfile": "character_core",
+      "lockWorkflow": "character_sheet",
+      "persistence": "high",
+      "renderStrategy": "ref_required",
+      "anchorPrompt": "Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.",
+      "negativePrompt": "child, baby, childlike features",
+      "aliases": [
+        "the Protagonist",
+        "主角"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit"
+    },
+    {
+      "id": "loc_coffee_shop",
+      "name": "Rainy Night Coffee Shop",
+      "category": "location",
+      "lockProfile": "location_anchor",
+      "lockWorkflow": "location_anchor",
+      "persistence": "medium",
+      "renderStrategy": "optional_ref",
+      "anchorPrompt": "Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.",
+      "negativePrompt": "",
+      "aliases": [
+        "咖啡馆",
+        "雨夜咖啡馆"
+      ],
+      "forbiddenSubstitutes": [],
+      "sceneIds": [
+        "bn_card_intro",
+        "bn_card_choice_1",
+        "bn_card_choice_1_result_1",
+        "bn_card_choice_1_result_2",
+        "bn_card_ending_1",
+        "bn_card_ending_2"
+      ],
+      "sceneCount": 6,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "environment concept art, no characters, stable layout, clear architecture language, reusable location reference"
+    },
+    {
+      "id": "prop_coffee_cup",
+      "name": "Coffee Cup",
+      "category": "prop",
+      "lockProfile": "ambient_prop",
+      "lockWorkflow": "prop_ambient",
+      "persistence": "low",
+      "renderStrategy": "prompt_only",
+      "anchorPrompt": "Small ceramic coffee cup, black glaze, round body, small handle, slight steam rising, resting on a wooden table.",
+      "negativePrompt": "",
+      "aliases": [
+        "咖啡杯"
+      ],
+      "forbiddenSubstitutes": [
+        "paper cup",
+        "plastic cup"
+      ],
+      "sceneIds": [
+        "bn_card_intro"
+      ],
+      "sceneCount": 1,
+      "projectCharacterId": "",
+      "primaryReferenceAssetId": "",
+      "primaryReferenceAssetUri": "",
+      "referenceStatus": "missing",
+      "generatedRefs": [],
+      "referencePromptHint": "single atmospheric motif reference, isolated simple form, clean pale background, no landscape, no horizon, no characters, no complex scene"
+    }
+  ],
+  "scenes": [
+    {
+      "sceneId": "bn_card_intro",
+      "sceneIndex": 1,
+      "sceneName": "开场",
+      "summary": "开场：未命名互动故事。基于 brief 生成最小 scripts 候选并写回项目：雨夜咖啡馆、三次循环、至少一个选择点、两个结局。必须返回 scripts 卡片数和写回证据。 主角在一个关键时刻意识到，今晚的选择会改变所有人的命运。",
+      "sourceKey": "bn_card_intro",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "prop_coffee_cup",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Liu",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.",
+          "negativePrompt": "child, baby, childlike features",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "prop_coffee_cup",
+          "name": "Coffee Cup",
+          "category": "prop",
+          "lockProfile": "ambient_prop",
+          "lockWorkflow": "prop_ambient",
+          "renderStrategy": "prompt_only",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Small ceramic coffee cup, black glaze, round body, small handle, slight steam rising, resting on a wooden table.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": [
+            "paper cup",
+            "plastic cup"
+          ]
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1",
+      "sceneIndex": 2,
+      "sceneName": "选择1",
+      "summary": "选择1",
+      "sourceKey": "bn_card_choice_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Liu",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.",
+          "negativePrompt": "child, baby, childlike features",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_1",
+      "sceneIndex": 3,
+      "sceneName": "1后果1",
+      "summary": "1后果1：主角追查线索，发现看似偶然的事件背后藏着可重复验证的规律。",
+      "sourceKey": "bn_card_choice_1_result_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Liu",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.",
+          "negativePrompt": "child, baby, childlike features",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_choice_1_result_2",
+      "sceneIndex": 4,
+      "sceneName": "1后果2",
+      "summary": "1后果2：主角选择保护同伴，因此错过了第一条线索，却获得了更深的信任。",
+      "sourceKey": "bn_card_choice_1_result_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Liu",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.",
+          "negativePrompt": "child, baby, childlike features",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_1",
+      "sceneIndex": 5,
+      "sceneName": "结局1",
+      "summary": "结局1：主角打破循环，带着真相走向新的清晨。",
+      "sourceKey": "bn_card_ending_1",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Liu",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.",
+          "negativePrompt": "child, baby, childlike features",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    },
+    {
+      "sceneId": "bn_card_ending_2",
+      "sceneIndex": 6,
+      "sceneName": "结局2",
+      "summary": "结局2：主角保留秘密，让世界暂时维持原状，但心里已经知道下一次该如何选择。",
+      "sourceKey": "bn_card_ending_2",
+      "workflow": "scene_prompt_only_fallback",
+      "missingRequiredAssetIds": [
+        "char_protagonist"
+      ],
+      "readyReferenceAssetIds": [],
+      "assetIds": [
+        "char_protagonist",
+        "loc_coffee_shop"
+      ],
+      "promptAssets": [
+        {
+          "id": "char_protagonist",
+          "name": "Liu",
+          "category": "character",
+          "lockProfile": "character_core",
+          "lockWorkflow": "character_sheet",
+          "renderStrategy": "ref_required",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Liu, a mid-20s adult, wearing a dark hoodie, standing in the rain-soaked coffee shop, neutral expression.",
+          "negativePrompt": "child, baby, childlike features",
+          "forbiddenSubstitutes": []
+        },
+        {
+          "id": "loc_coffee_shop",
+          "name": "Rainy Night Coffee Shop",
+          "category": "location",
+          "lockProfile": "location_anchor",
+          "lockWorkflow": "location_anchor",
+          "renderStrategy": "optional_ref",
+          "referenceStatus": "missing",
+          "primaryReferenceAssetId": "",
+          "primaryReferenceAssetUri": "",
+          "anchorPrompt": "Inside a dim, warmly lit coffee shop, wooden furnishings, rain pattering on the window, soft ambient glow.",
+          "negativePrompt": "",
+          "forbiddenSubstitutes": []
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "assetCount": 3,
+    "sceneCount": 6,
+    "refRequiredCount": 1,
+    "refReadyCount": 0,
+    "refMissingCount": 1,
+    "workflows": {
+      "scene_prompt_only_fallback": 6
+    }
+  }
+}

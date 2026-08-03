@@ -1,0 +1,182 @@
+{
+  "schemaVersion": "1.0",
+  "startNodeId": "bn_sc_1784725060569_gglf6u",
+  "placeholders": [],
+  "nodes": [
+    {
+      "id": "bn_sc_1784725060569_gglf6u",
+      "scriptCardId": "sc_1784725060569_gglf6u",
+      "name": "灯塔暮色",
+      "kind": "scene",
+      "textDraft": "傍晚的灯塔映出一抹金黄，少年阿山悄悄爬上山顶。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_gglf6u",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_gx61k7"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_gx61k7",
+      "scriptCardId": "sc_1784725060569_gx61k7",
+      "name": "隐藏门扉",
+      "kind": "scene",
+      "textDraft": "他在墙壁上发现一扇古老铁门，门口刻着奇怪的符文。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_gx61k7",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_klvny8"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_klvny8",
+      "scriptCardId": "sc_1784725060569_klvny8",
+      "name": "选择1",
+      "kind": "scene",
+      "textDraft": "他必须决定先探索什么。\n选项1：沿着墙壁的暗巷继续前进。\n选项2：走到灯塔顶端眺望远方寻找线索。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_klvny8_1",
+          "text": "沿着墙壁的暗巷继续前进。",
+          "toNodeId": "bn_sc_1784725060569_534w21"
+        },
+        {
+          "id": "bc_sc_1784725060569_klvny8_2",
+          "text": "走到灯塔顶端眺望远方寻找线索。",
+          "toNodeId": "bn_sc_1784725060569_7qvsyb"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_534w21",
+      "scriptCardId": "sc_1784725060569_534w21",
+      "name": "1后果1",
+      "kind": "scene",
+      "textDraft": "沿暗巷，他听见脚步声，脚下的石阶摇晃，门突然打开一条通往地下的通道。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_534w21",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_m01c96"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_7qvsyb",
+      "scriptCardId": "sc_1784725060569_7qvsyb",
+      "name": "1后果2",
+      "kind": "scene",
+      "textDraft": "站在顶端，他看到远处一座山洞闪着微光，雾气在洞口盘旋。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_7qvsyb",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_m01c96"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_m01c96",
+      "scriptCardId": "sc_1784725060569_m01c96",
+      "name": "合流点",
+      "kind": "scene",
+      "textDraft": "不论选择，二者都抵达灯塔底部的古旧仓库，仓库里堆满灰尘的木箱。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_m01c96",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_i80x5x"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_i80x5x",
+      "scriptCardId": "sc_1784725060569_i80x5x",
+      "name": "选择2",
+      "kind": "scene",
+      "textDraft": "他需要决定如何开启箱子。\n选项1：使用手中找到的铁匠锤敲击箱子。\n选项2：尝试打开破旧的钥匙孔。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_i80x5x_1",
+          "text": "使用手中找到的铁匠锤敲击箱子。",
+          "toNodeId": "bn_sc_1784725060569_cd1e6l"
+        },
+        {
+          "id": "bc_sc_1784725060569_i80x5x_2",
+          "text": "尝试打开破旧的钥匙孔。",
+          "toNodeId": "bn_sc_1784725060569_tqoa8m"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_cd1e6l",
+      "scriptCardId": "sc_1784725060569_cd1e6l",
+      "name": "2后果1",
+      "kind": "scene",
+      "textDraft": "敲击后，木箱发出沉闷响声，慢慢打开，露出一枚发光的符文石。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_cd1e6l",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_s7301a"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_tqoa8m",
+      "scriptCardId": "sc_1784725060569_tqoa8m",
+      "name": "2后果2",
+      "kind": "scene",
+      "textDraft": "钥匙孔滴滴作响，符文石在尘埃中闪烁，随后箱子微微晃动，露出一把古剑。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1784725060569_tqoa8m",
+          "text": "继续",
+          "toNodeId": "bn_sc_1784725060569_nfsgc9"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1784725060569_s7301a",
+      "scriptCardId": "sc_1784725060569_s7301a",
+      "name": "结局1",
+      "kind": "ending",
+      "textDraft": "符文石升起光芒，照亮古老预言，阿山获得守护灯塔的力量，成为传说中的灯塔守卫。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    },
+    {
+      "id": "bn_sc_1784725060569_nfsgc9",
+      "scriptCardId": "sc_1784725060569_nfsgc9",
+      "name": "结局2",
+      "kind": "ending",
+      "textDraft": "古剑在月光下闪耀，他继承了这把遗失已久的剑，踏上寻找更大冒险的旅程。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    }
+  ],
+  "updatedAt": "2026-07-22T13:56:08.956Z"
+}

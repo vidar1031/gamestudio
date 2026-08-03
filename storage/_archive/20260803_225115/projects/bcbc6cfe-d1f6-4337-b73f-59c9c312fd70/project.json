@@ -1,0 +1,131 @@
+{
+  "schemaVersion": "2.0",
+  "id": "bcbc6cfe-d1f6-4337-b73f-59c9c312fd70",
+  "title": "未命名互动故事",
+  "pluginId": "story-pixi",
+  "pluginVersion": "0.1.0",
+  "createdAt": "2026-08-03T14:31:10.137Z",
+  "updatedAt": "2026-08-03T14:44:24.995Z",
+  "characters": [],
+  "assets": [],
+  "events": [],
+  "state": {
+    "vars": [],
+    "aiBackground": {
+      "schemaVersion": "1.0",
+      "global": {
+        "prompt": "",
+        "negativePrompt": ""
+      },
+      "storyboardScenes": {},
+      "storyboardBatchDraft": {},
+      "storyboardPromptMeta": {},
+      "storyboardEntitySpec": "",
+      "globalPrompt": "",
+      "globalNegativePrompt": "",
+      "storyBible": {
+        "schemaVersion": "1.0",
+        "worldAnchor": "A serene Chinese rural setting in warm picture book illustration style, soft golden light, consistent characters and locations across scenes.",
+        "characters": [
+          {
+            "id": "main_char",
+            "name": "Main Character",
+            "aliases": [
+              "Hero",
+              "Protagonist"
+            ],
+            "anchorPrompt": "young protagonist, simple clothing, determined expression",
+            "negativePrompt": "",
+            "locked": true
+          }
+        ],
+        "props": [],
+        "locations": [
+          {
+            "id": "village",
+            "name": "Village",
+            "aliases": [
+              "Rural village",
+              "Chinese countryside"
+            ],
+            "anchorPrompt": "small Chinese rural village, sunlit, cozy wooden houses with thatched roofs",
+            "locked": true
+          }
+        ],
+        "eventChain": [
+          "Main character realizes that tonight's choice will alter everyone's fate.",
+          "Choice presented: investigate anomaly source or protect companions.",
+          "If investigating, main character follows clues to discover a repeatable pattern.",
+          "If protecting, main character misses first clue but gains deeper trust.",
+          "In ending 1, main character breaks the cycle and walks toward a new dawn.",
+          "In ending 2, main character keeps the secret, maintaining the status quo, yet knows how to choose next time."
+        ],
+        "forbiddenSubstitutes": [
+          "modern city",
+          "science fiction",
+          "horror gore",
+          "photorealistic adults replacing child",
+          "dog replacing wolf"
+        ],
+        "sceneRefs": {
+          "bn_card_intro": {
+            "characters": [
+              "main_char"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_choice_1": {
+            "characters": [
+              "main_char"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_choice_1_result_1": {
+            "characters": [
+              "main_char"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_choice_1_result_2": {
+            "characters": [
+              "main_char"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_ending_1": {
+            "characters": [
+              "main_char"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          },
+          "bn_card_ending_2": {
+            "characters": [
+              "main_char"
+            ],
+            "props": [],
+            "locations": [
+              "village"
+            ]
+          }
+        }
+      },
+      "storyBibleJson": "{\n  \"schemaVersion\": \"1.0\",\n  \"worldAnchor\": \"A serene Chinese rural setting in warm picture book illustration style, soft golden light, consistent characters and locations across scenes.\",\n  \"characters\": [\n    {\n      \"id\": \"main_char\",\n      \"name\": \"Main Character\",\n      \"aliases\": [\n        \"Hero\",\n        \"Protagonist\"\n      ],\n      \"anchorPrompt\": \"young protagonist, simple clothing, determined expression\",\n      \"negativePrompt\": \"\",\n      \"locked\": true\n    }\n  ],\n  \"props\": [],\n  \"locations\": [\n    {\n      \"id\": \"village\",\n      \"name\": \"Village\",\n      \"aliases\": [\n        \"Rural village\",\n        \"Chinese countryside\"\n      ],\n      \"anchorPrompt\": \"small Chinese rural village, sunlit, cozy wooden houses with thatched roofs\",\n      \"locked\": true\n    }\n  ],\n  \"eventChain\": [\n    \"Main character realizes that tonight's choice will alter everyone's fate.\",\n    \"Choice presented: investigate anomaly source or protect companions.\",\n    \"If investigating, main character follows clues to discover a repeatable pattern.\",\n    \"If protecting, main character misses first clue but gains deeper trust.\",\n    \"In ending 1, main character breaks the cycle and walks toward a new dawn.\",\n    \"In ending 2, main character keeps the secret, maintaining the status quo, yet knows how to choose next time.\"\n  ],\n  \"forbiddenSubstitutes\": [\n    \"modern city\",\n    \"science fiction\",\n    \"horror gore\",\n    \"photorealistic adults replacing child\",\n    \"dog replacing wolf\"\n  ],\n  \"sceneRefs\": {\n    \"bn_card_intro\": {\n      \"characters\": [\n        \"main_char\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_choice_1\": {\n      \"characters\": [\n        \"main_char\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_choice_1_result_1\": {\n      \"characters\": [\n        \"main_char\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_choice_1_result_2\": {\n      \"characters\": [\n        \"main_char\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_ending_1\": {\n      \"characters\": [\n        \"main_char\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    },\n    \"bn_card_ending_2\": {\n      \"characters\": [\n        \"main_char\"\n      ],\n      \"props\": [],\n      \"locations\": [\n        \"village\"\n      ]\n    }\n  }\n}",
+      "updatedAt": "2026-08-03T14:44:24.995Z"
+    }
+  }
+}

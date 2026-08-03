@@ -95,7 +95,7 @@ import {
   isLikelyReadOnlyReasoningPrompt,
   normalizeReasoningPlan,
 } from './reasoning/promptBuilders.js'
-import { buildReasoningRecentContextArtifact } from './reasoning/memory.js'
+import { assertAuthoritativeMemoryContent, buildReasoningRecentContextArtifact, isGarbageMemoryContent } from './reasoning/memory.js'
 import {
   generateReasoningFinalAnswer,
   generateReasoningPlan,
@@ -105,6 +105,20 @@ import {
   evaluateReasoningFinalAnswerQuality,
   finalizeReasoningSessionWithQualityGate,
 } from './reasoning/qualityGate.js'
+import {
+  REASONING_SESSION_STATE,
+  isTerminalSessionState,
+  isLegalSessionTransition,
+  validateSessionTransition,
+  applySessionTransition,
+  normalizeLegacySessionStatus,
+} from './reasoning/sessionStateMachine.js'
+import {
+  writeStepCheckpoint,
+  readLatestStepCheckpoint,
+  clearStepCheckpoints,
+  applyCheckpointToSession,
+} from './reasoning/stepCheckpoint.js'
 import {
   buildReasoningActionCatalog,
   isReasoningAnswerAction,
@@ -183,6 +197,44 @@ let hermesCrashRestartAttempts = 0
 let hermesLastCrashAt = 0
 const execAsync = promisify(execCallback)
 const HERMES_CRASH_RESTART_MAX_ATTEMPTS = 5
+
+// Supervision 定时器与认证阻断状态
+let supervisionPostStartupTimeout = null
+let supervisionPeriodicTimer = null
+let supervisionAuthFailure = null
+
+export function isAuthFailureError(error) {
+  const msg = String(error instanceof Error ? error.message : String(error || ''))
+  return /\b401\b|Unauthorized|unauthorized|认证失败|auth/i.test(msg)
+}
+
+export function stopSupervisionTimer(reason = 'auth_failure') {
+  if (supervisionPostStartupTimeout) {
+    clearTimeout(supervisionPostStartupTimeout)
+    supervisionPostStartupTimeout = null
+  }
+  if (supervisionPeriodicTimer) {
+    clearInterval(supervisionPeriodicTimer)
+    supervisionPeriodicTimer = null
+  }
+  supervisionAuthFailure = {
+    stoppedAt: new Date().toISOString(),
+    reason,
+    recoveryHint: '检查 MOONSHOT_API_KEY / HERMES_RIGHT_BRAIN_API_KEY 是否正确，或设置 SUPERVISION_ENABLED=false 显式关闭。'
+  }
+  const log = `[SUPERVISION][STOPPED] reason=${reason}`
+  console.error(log)
+  appendHermesLog(log)
+  writeStructuredLog('supervision', 'error', 'Supervision timer stopped', { reason, ...supervisionAuthFailure })
+}
+
+export function getSupervisionTimerState() {
+  return {
+    hasPostStartupTimeout: Boolean(supervisionPostStartupTimeout),
+    hasPeriodicTimer: Boolean(supervisionPeriodicTimer),
+    authFailure: supervisionAuthFailure
+  }
+}
 const HERMES_CRASH_RESTART_BACKOFF_MS = [0, 2000, 5000, 10000, 30000]
 const HERMES_HEALTH_CHECK_INTERVAL_MS = 30000
 const HERMES_CRASH_ATTEMPT_RESET_MS = 5 * 60 * 1000
@@ -1723,11 +1775,10 @@ function buildDefaultModelRoutingConfig({ provider, baseUrl, model }) {
   return {
     defaultRoute,
     phaseRoutes: {
-      story_scripts_candidate: normalizeModelRouteEntry({ model: 'gpt-oss-20b-MXFP4-Q8', transport: 'hermes', strict: true }, defaultRoute),
       story_blueprint_review: normalizeModelRouteEntry({ model: 'gpt-oss-20b-MXFP4-Q8', transport: 'hermes', strict: true }, defaultRoute)
     },
     actionRoutes: {},
-    strictRouteRequiredPhases: ['story_scripts_candidate', 'story_blueprint_review']
+    strictRouteRequiredPhases: ['story_blueprint_review']
   }
 }
 
@@ -2062,7 +2113,7 @@ function buildHermesBindingFromConfig(cfg) {
 
 function getRightBrainApiKey(binding) {
   if (!binding?.rightBrainEnabled || !binding?.rightBrain) return null
-  return String(binding.rightBrain.apiKey || '').trim() || null
+  return String(binding.rightBrain.apiKey || '').trim() || getProviderApiKey('moonshot') || null
 }
 
 function readMarkdownFile(filePath) {
@@ -3285,15 +3336,22 @@ function registerPrimaryControlServerRoutes(app) {
   registerReasoningRoutes(app, context)
   registerSkillProposalsRoutes(app)
 
-  // 系统启动后 30 秒触发首次监督评估
-  setTimeout(() => {
-    triggerSupervision({ trigger: 'post_startup', delay: 0 })
-  }, 30000)
+  // 系统启动后 30 秒触发首次监督评估 + 每 30 分钟周期性监督评估。
+  // 默认关闭：meta_analysis 持续 401（Kimi key 失效）时该定时器每 30 分钟空转烧钱并制造无效 session。
+  // 修复 key 后通过环境变量 SUPERVISION_ENABLED=true 重新启用；运行中遇 401 会自动关停并记录恢复条件。
+  if (getEnvValue('SUPERVISION_ENABLED') === 'true') {
+    supervisionPostStartupTimeout = setTimeout(() => {
+      triggerSupervision({ trigger: 'post_startup', delay: 0 })
+    }, 30000)
 
-  // 每 30 分钟触发周期性监督评估
-  setInterval(() => {
-    triggerSupervision({ trigger: 'periodic', delay: 0 })
-  }, 30 * 60 * 1000)
+    supervisionPeriodicTimer = setInterval(() => {
+      if (supervisionAuthFailure) {
+        console.log('[SUPERVISION] skipped due to previous auth failure')
+        return
+      }
+      triggerSupervision({ trigger: 'periodic', delay: 0 })
+    }, 30 * 60 * 1000)
+  }
 }
 
 /**
@@ -3327,23 +3385,27 @@ async function triggerSupervision({ trigger, delay = 0 } = {}) {
       ],
     }
 
-    updateReasoningSession(sessionId, (s) => ({
-      ...s,
-      plan,
-      status: 'running',
-      currentStepId: plan.steps[0].stepId,
-    }))
+    updateReasoningSession(sessionId, (s) => {
+      const transitioned = applySessionTransition(s, REASONING_SESSION_STATE.RUNNING, 'supervision started')
+      return {
+        ...transitioned,
+        plan,
+        currentStepId: plan.steps[0].stepId,
+      }
+    })
 
     // 执行步骤
     await executeSupervisionStep(sessionId, plan.steps[0], prompt, 0)
 
     // 标记完成
-    updateReasoningSession(sessionId, (s) => ({
-      ...s,
-      status: 'completed',
-      currentStepId: null,
-      completedAt: new Date().toISOString(),
-    }))
+    updateReasoningSession(sessionId, (s) => {
+      const transitioned = applySessionTransition(s, REASONING_SESSION_STATE.COMPLETED, 'supervision completed')
+      return {
+        ...transitioned,
+        currentStepId: null,
+        completedAt: new Date().toISOString(),
+      }
+    })
 
     console.log(`[SUPERVISION] ${trigger} supervision completed, sessionId=${sessionId}`)
     writeStructuredLog('supervision', 'info', `${trigger} supervision completed`, { sessionId, trigger })
@@ -3351,6 +3413,9 @@ async function triggerSupervision({ trigger, delay = 0 } = {}) {
     const errMsg = error instanceof Error ? error.message : String(error)
     console.error(`[SUPERVISION] ${trigger} supervision failed:`, errMsg)
     writeStructuredLog('supervision', 'error', `${trigger} supervision failed`, { sessionId: sessionId || null, trigger, error: errMsg })
+    if (isAuthFailureError(error)) {
+      stopSupervisionTimer(`auth_failure_${trigger}`)
+    }
   }
 }
 
@@ -3674,7 +3739,7 @@ function buildReasoningWorkflowProgress(session) {
     if (isCancelled) return 'cancelled'
     if (phase === 'planning') {
       if (currentReview?.targetType === 'runtime_task_graph' || currentReview?.targetType === 'plan') return 'waiting_review'
-      if (status === 'planning') return 'running'
+      if (status === 'queued') return 'running'
       return hasPlan ? 'completed' : 'pending'
     }
     if (phase === 'executing') {
@@ -3838,6 +3903,9 @@ function findReusableVerifiedReasoningSession(userPrompt) {
 
 function writeReasoningSession(session) {
   const normalizedSession = normalizeRuntimeSessionShape(session)
+  if (normalizedSession && typeof normalizedSession === 'object') {
+    normalizedSession.status = normalizeLegacySessionStatus(normalizedSession.status)
+  }
   ensureDirectory(HERMES_REASONING_SESSIONS_DIR)
   ensureDirectory(HERMES_AGENT_RUNTIME_SESSIONS_DIR)
   fs.writeFileSync(getLegacyReasoningSessionFilePath(normalizedSession.sessionId), JSON.stringify(normalizedSession, null, 2), 'utf8')
@@ -4346,12 +4414,14 @@ export function requestReasoningReview(sessionId, review, eventData = {}) {
   const current = readReasoningSession(sessionId)
   if (isReasoningSessionTerminalStatus(current?.status)) return current
 
-  updateReasoningSession(sessionId, (session) => ({
-    ...session,
-    status: 'waiting_review',
-    currentStepId: review.stepId || null,
-    review
-  }))
+  updateReasoningSession(sessionId, (session) => {
+    const transitioned = applySessionTransition(session, REASONING_SESSION_STATE.WAITING_REVIEW, `review requested: ${review.title || 'unknown'}`)
+    return {
+      ...transitioned,
+      currentStepId: review.stepId || null,
+      review
+    }
+  })
 
   appendReasoningEvent(sessionId, 'review_requested', review.title, review.summary, {
     stepId: review.stepId || undefined,
@@ -4364,11 +4434,13 @@ export function requestReasoningReview(sessionId, review, eventData = {}) {
 }
 
 function clearReasoningReview(sessionId) {
-  return updateReasoningSession(sessionId, (session) => ({
-    ...session,
-    status: 'running',
-    review: null
-  }))
+  return updateReasoningSession(sessionId, (session) => {
+    const transitioned = applySessionTransition(session, REASONING_SESSION_STATE.RUNNING, 'review cleared')
+    return {
+      ...transitioned,
+      review: null
+    }
+  })
 }
 
 function persistReasoningReviewDecision(sessionId, decision, review, correctionPrompt = '') {
@@ -4408,72 +4480,60 @@ export function finalizeReasoningSession(sessionId, options = {}) {
     persistHermesChatReply(sessionId, session.artifacts.finalAnswer, session.artifacts.finalAnswerUsage || null)
   }
 
-  updateReasoningSession(sessionId, (current) => ({
-    ...current,
-    status: 'completed',
-    currentStepId: null,
-    review: null,
-    artifacts: {
-      ...current.artifacts,
-      finalAnswerPersisted: shouldPersist ? true : Boolean(current.artifacts?.finalAnswerPersisted),
-      nextStepIndex: Array.isArray(current.plan?.steps) ? current.plan.steps.length : 0
+  updateReasoningSession(sessionId, (current) => {
+    const transitioned = applySessionTransition(current, REASONING_SESSION_STATE.COMPLETED, 'reasoning session finalized')
+    return {
+      ...transitioned,
+      currentStepId: null,
+      review: null,
+      artifacts: {
+        ...transitioned.artifacts,
+        finalAnswerPersisted: shouldPersist ? true : Boolean(transitioned.artifacts?.finalAnswerPersisted),
+        nextStepIndex: Array.isArray(transitioned.plan?.steps) ? transitioned.plan.steps.length : 0
+      }
     }
-  }))
+  })
   appendReasoningEvent(sessionId, 'session_completed', '推理完成', shouldPersist ? '本次可观测推理已完成，最终回答已写入聊天记录。' : '本次可观测推理已完成')
   appendHermesLog(`[REASONING][DONE] sessionId=${sessionId}`)
 
-  // 记忆回写：将本次 session 的关键状态写入 ai/memory/ 文件
+  // 记忆回写：将本次 session 的关键状态追加到每日日志，不再覆盖 ai/memory/ 权威文件。
+  // 权威记忆文件只应通过显式 write_memory_file / update_task_queue 动作并经审核后更新。
   try {
     const binding = buildHermesBinding()
     const hadMutatingWork = (session.plan?.steps || []).some((s) => {
       const action = String(s?.action || '')
       return action.startsWith('story_') || action.startsWith('gamestudio_') || action === 'write_file' || action === 'write_memory_file' || action === 'update_task_queue' || action === 'invoke_tool'
     })
-    if (hadMutatingWork && binding.memory) {
+    if (hadMutatingWork && binding.memory?.dailyLogDir) {
       const completedSteps = (session.plan?.steps || []).filter((s) => s && (s.status === 'completed' || s.status === 'ok'))
       const failedSteps = (session.plan?.steps || []).filter((s) => s && (s.status === 'failed' || s.status === 'error'))
-
-      const statusPath = binding.memory.statusFile
-      if (statusPath) {
-        const statusContent = [
-          `## 当前目标`,
-          String(session.userPrompt || '（未指定）').trim(),
-          ``,
-          `## 当前结果`,
-          session.artifacts?.finalAnswer ? '推理已完成，最终回答已生成。' : '推理进行中或未完成。',
-          ``,
-          `## 当前阻塞`,
-          failedSteps.length > 0 ? `${failedSteps.length} 个步骤失败，需人工审查。` : '无阻塞。',
-          ``,
-          `## 下一步`,
-          '继续推进剩余任务',
-          ``,
-          `sessionId: ${sessionId}`,
-          `updatedAt: ${new Date().toISOString()}`
-        ].join('\n')
-        fs.writeFileSync(statusPath, statusContent, 'utf8')
-      }
-
-      const taskQueuePath = binding.memory.taskQueueFile
-      if (taskQueuePath) {
-        const taskContent = [
-          `## Ready（待处理）`,
-          ...completedSteps.map((s) => `- [x] ${String(s.title || s.action || '未命名步骤').trim()}`),
-          ...failedSteps.map((s) => `- [ ] ${String(s.title || s.action || '未命名步骤').trim()} (失败: ${String(s.error || '未知').trim()})`),
-          ``,
-          `updatedAt: ${new Date().toISOString()}`
-        ].join('\n')
-        fs.writeFileSync(taskQueuePath, taskContent, 'utf8')
-      }
-
-      appendHermesLog(`[MEMORY][WRITEBACK] sessionId=${sessionId} status=${statusPath ? 'ok' : 'skip'} taskQueue=${taskQueuePath ? 'ok' : 'skip'}`)
+      const dailyDir = path.join(binding.memory.dailyLogDir, 'daily')
+      fs.mkdirSync(dailyDir, { recursive: true })
+      const date = new Date().toISOString().slice(0, 10)
+      const logPath = path.join(dailyDir, `${date}.md`)
+      const logEntry = [
+        `## ${sessionId}`,
+        `- userPrompt: ${String(session.userPrompt || '（未指定）').trim()}`,
+        `- finalAnswer: ${session.artifacts?.finalAnswer ? '已生成' : '未生成'}`,
+        `- completedSteps: ${completedSteps.length}`,
+        `- failedSteps: ${failedSteps.length}`,
+        `- updatedAt: ${new Date().toISOString()}`,
+        ''
+      ].join('\n')
+      fs.appendFileSync(logPath, logEntry, 'utf8')
+      appendHermesLog(`[MEMORY][DAILY_LOG] sessionId=${sessionId} path=${logPath}`)
     }
   } catch (writebackErr) {
-    appendHermesLog(`[MEMORY][WRITEBACK][ERROR] sessionId=${sessionId} detail=${writebackErr instanceof Error ? writebackErr.message : String(writebackErr)}`)
+    appendHermesLog(`[MEMORY][DAILY_LOG][ERROR] sessionId=${sessionId} detail=${writebackErr instanceof Error ? writebackErr.message : String(writebackErr)}`)
   }
 
   unmarkReasoningSessionActive(sessionId)
   scheduleMemoryLifecycleMaintenance('reasoning_session_completed')
+  try {
+    clearStepCheckpoints(sessionId)
+  } catch (cleanupError) {
+    appendHermesLog(`[REASONING][CHECKPOINT][ERROR] sessionId=${sessionId} detail=${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`)
+  }
   const finalizedSession = readReasoningSession(sessionId)
   void continueReasoningParentChain(finalizedSession).catch((error) => {
     appendHermesLog(`[REASONING][CHAIN][ERROR] sessionId=${sessionId} detail=${error instanceof Error ? error.message : String(error)}`)
@@ -4617,7 +4677,7 @@ async function approveReasoningQualityOverride(sessionId, binding, review, corre
   return finalizeReasoningSession(sessionId, { persistFinalAnswer: true })
 }
 
-function markReasoningSessionFailed(sessionId, error) {
+export function markReasoningSessionFailed(sessionId, error) {
   const currentSession = readReasoningSession(sessionId)
   if (!currentSession) return
   if (isReasoningSessionTerminalStatus(currentSession.status)) {
@@ -4626,13 +4686,15 @@ function markReasoningSessionFailed(sessionId, error) {
     return
   }
   const detail = error instanceof Error ? error.message : String(error)
-  updateReasoningSession(sessionId, (current) => ({
-    ...current,
-    status: 'failed',
-    currentStepId: null,
-    review: null,
-    error: detail
-  }))
+  updateReasoningSession(sessionId, (current) => {
+    const transitioned = applySessionTransition(current, REASONING_SESSION_STATE.FAILED, detail)
+    return {
+      ...transitioned,
+      currentStepId: null,
+      review: null,
+      error: detail
+    }
+  })
   appendReasoningEvent(sessionId, 'step_failed', '执行失败', detail, {
     stepId: readReasoningSession(sessionId)?.currentStepId || undefined
   })
@@ -4642,6 +4704,11 @@ function markReasoningSessionFailed(sessionId, error) {
   unmarkReasoningSessionActive(sessionId)
   clearActiveReasoningExecution(sessionId)
   scheduleMemoryLifecycleMaintenance('reasoning_session_failed')
+  try {
+    clearStepCheckpoints(sessionId)
+  } catch (cleanupError) {
+    appendHermesLog(`[REASONING][CHECKPOINT][ERROR] sessionId=${sessionId} detail=${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`)
+  }
 }
 
 function getReasoningErrorDetail(error) {
@@ -4719,31 +4786,33 @@ async function recoverReasoningStepFailure(sessionId, binding, history, step, st
     observableOps: buildReasoningObservableOps(step)
   }
 
-  updateReasoningSession(sessionId, (current) => ({
-    ...current,
-    status: 'running',
-    error: null,
-    artifacts: {
-      ...current.artifacts,
-      recoverableFailureCount: recoverableFailureCount + 1,
-      stepErrors: [...(current.artifacts?.stepErrors || []), stepError],
-      latestStepReviewEvidence: {
-        targetType: 'step_error',
-        stepId: step.stepId,
-        stepTitle: step.title,
-        tool: step.tool,
-        outboundPreview: {
-          action: step.action,
+  updateReasoningSession(sessionId, (current) => {
+    const transitioned = applySessionTransition(current, REASONING_SESSION_STATE.RUNNING, `recoverable step failure: ${detail}`)
+    return {
+      ...transitioned,
+      error: null,
+      artifacts: {
+        ...transitioned.artifacts,
+        recoverableFailureCount: recoverableFailureCount + 1,
+        stepErrors: [...(transitioned.artifacts?.stepErrors || []), stepError],
+        latestStepReviewEvidence: {
+          targetType: 'step_error',
+          stepId: step.stepId,
+          stepTitle: step.title,
           tool: step.tool,
-          params: step.params || {},
-          observableOps: stepError.observableOps
+          outboundPreview: {
+            action: step.action,
+            tool: step.tool,
+            params: step.params || {},
+            observableOps: stepError.observableOps
+          },
+          rawResponsePreview: detail,
+          structuredResult: stepError
         },
-        rawResponsePreview: detail,
-        structuredResult: stepError
-      },
-      nextStepIndex: stepIndex
+        nextStepIndex: stepIndex
+      }
     }
-  }))
+  })
   appendReasoningEvent(sessionId, 'step_failed_recoverable', '步骤失败，准备重规划', detail, {
     stepId: step.stepId,
     data: stepError
@@ -4824,7 +4893,7 @@ function clearActiveReasoningExecution(sessionId, phase = null) {
 }
 
 function isReasoningSessionTerminalStatus(status) {
-  return status === 'completed' || status === 'failed' || status === 'cancelled'
+  return isTerminalSessionState(status)
 }
 
 function cancelReasoningSession(sessionId, reason = 'reasoning_cancelled_by_user') {
@@ -4852,18 +4921,20 @@ function cancelReasoningSession(sessionId, reason = 'reasoning_cancelled_by_user
     activeHermesReasoningExecutions.delete(sessionId)
   }
 
-  updateReasoningSession(sessionId, (current) => ({
-    ...current,
-    status: 'cancelled',
-    currentStepId: null,
-    review: null,
-    error: detail,
-    artifacts: {
-      ...current.artifacts,
-      cancelledAt: new Date().toISOString(),
-      cancelledPhase: activePhase
+  updateReasoningSession(sessionId, (current) => {
+    const transitioned = applySessionTransition(current, REASONING_SESSION_STATE.CANCELLED, detail)
+    return {
+      ...transitioned,
+      currentStepId: null,
+      review: null,
+      error: detail,
+      artifacts: {
+        ...transitioned.artifacts,
+        cancelledAt: new Date().toISOString(),
+        cancelledPhase: activePhase
+      }
     }
-  }))
+  })
 
   appendReasoningEvent(sessionId, 'session_cancelled', '推理已停止', activePhase
     ? `已停止当前 ${activePhase} 阶段并中断 Hermes 模型请求。`
@@ -5509,9 +5580,10 @@ async function generateReasoningFileRewrite(sessionId, step, userPrompt, binding
   const desiredContent = buildReasoningWriteFallbackContent(step, currentContent)
   const messages = buildReasoningFileRewriteMessages(step, userPrompt, resolvedPath, currentContent, desiredContent)
 
-  let updatedContent = desiredContent
-  let summary = '使用 fallback 内容生成写入结果。'
+  let updatedContent = null
+  let summary = ''
   let rawResponsePreview = ''
+  let rewriteError = null
   try {
     const data = await requestHermesChatCompletion({
       sessionId,
@@ -5530,11 +5602,24 @@ async function generateReasoningFileRewrite(sessionId, step, userPrompt, binding
         summary = parsed.summary.trim()
       }
     } catch (error) {
-      summary = `模型未返回有效 JSON，已使用 fallback 内容。${error instanceof Error ? error.message : String(error)}`
+      rewriteError = `模型未返回有效 JSON：${error instanceof Error ? error.message : String(error)}`
     }
   } catch (error) {
-    rawResponsePreview = `rewrite_failed_${error instanceof Error ? error.message : String(error)}`
+    rewriteError = error instanceof Error ? error.message : String(error)
+    rawResponsePreview = `rewrite_failed_${rewriteError}`
   }
+
+  // 诚实化：模型未产出有效改写内容时显式失败。
+  // 禁止把 step.params.content（刷新指令）当作写入内容落盘——该缺陷曾把
+  // DECISIONS.md / LONG_TASKS.md 写成指令文本（2026-07-23 审查发现）。
+  if (!updatedContent) {
+    throw new Error(`${step.action}_rewrite_model_failed: ${rewriteError || '模型未返回有效 updatedContent'}`)
+  }
+  // 额外校验：模型返回的内容本身不能是指令/模板/空白文本。
+  if (isGarbageMemoryContent(updatedContent)) {
+    throw new Error(`${step.action}_rewrite_model_rejected_garbage: 模型返回的 updatedContent 是指令或模板文本`)
+  }
+  if (!summary) summary = '模型生成改写内容。'
 
   return {
     filePath: resolvedPath,
@@ -6394,86 +6479,6 @@ function buildFallbackStoryScripts({ title, brief }) {
   }
 }
 
-function normalizeStoryScriptsCandidate(parsed, fallbackInput) {
-  const source = parsed?.scripts && typeof parsed.scripts === 'object' ? parsed.scripts : parsed
-  const cardsIn = Array.isArray(source?.cards) ? source.cards : []
-  const now = new Date().toISOString()
-  const cards = cardsIn.map((card, index) => ({
-    id: String(card?.id || `card_${index + 1}`).trim(),
-    name: String(card?.name || `分镜${index + 1}`).trim(),
-    order: Number.isFinite(Number(card?.order)) ? Number(card.order) : index + 1,
-    text: String(card?.text || '').trim(),
-    updatedAt: String(card?.updatedAt || now)
-  })).filter((card) => card.id && card.name && card.text)
-  const scripts = { schemaVersion: '1.0', cards, updatedAt: now }
-  const verdict = evaluateStoryScripts(scripts)
-  if (verdict.passed) return { scripts, verdict, fallback: false, fallbackReason: null }
-  const fallbackScripts = buildFallbackStoryScripts(fallbackInput || {})
-  return {
-    scripts: fallbackScripts,
-    verdict: evaluateStoryScripts(fallbackScripts),
-    fallback: true,
-    fallbackReason: cards.length === 0 ? 'model_candidate_missing_cards' : 'model_candidate_failed_script_schema'
-  }
-}
-
-async function generateStoryScriptsCandidate(sessionId, step, userPrompt, signal, binding = buildHermesBinding(), requestRoute = null) {
-  const title = String(step.params?.title || extractStoryTitleFromPrompt(userPrompt) || '').trim() || '未命名互动故事'
-  const brief = String(step.params?.brief || userPrompt || '').trim()
-  const config = inferStoryConfigFromPrompt(userPrompt)
-  const resolvedRoute = requestRoute || resolveModelRouteForPhase(binding, 'story_scripts_candidate')
-  const messages = [
-    {
-      role: 'system',
-      content: [
-        'You generate GameStudio interactive story scripts as strict JSON only.',
-        'Return one JSON object. No markdown fences, no commentary.',
-        'The JSON must match: { "title": string, "language": string, "cards": [{ "id": string, "name": string, "order": number, "text": string }] }.',
-        'Use Chinese when the brief is Chinese.',
-        'The scripts layer must use cards only. Do not create blueprint fields or asset IDs.',
-        'Include one choice card whose text contains separate lines starting with 选项1 and 选项2.',
-        'Include consequence cards named 1后果1 and 1后果2, and at least two ending cards named 结局1 and 结局2.'
-      ].join('\n')
-    },
-    {
-      role: 'user',
-      content: JSON.stringify({ title, brief, config }, null, 2)
-    }
-  ]
-
-  const data = await requestHermesChatCompletion({
-    sessionId,
-    phase: 'story_scripts_candidate',
-    messages,
-    maxTokens: 8192,
-    temperature: 0.2,
-    route: resolvedRoute,
-    signal,
-    timeoutMs: HERMES_CHAT_REQUEST_TIMEOUT_MS
-  })
-  const content = data.choices?.[0]?.message?.content || ''
-  let parsed = null
-  let parseError = null
-  try {
-    parsed = JSON.parse(extractJsonObjectString(content))
-  } catch (error) {
-    parseError = error instanceof Error ? error.message : String(error)
-  }
-  const normalized = normalizeStoryScriptsCandidate(parsed, { title, brief })
-  return {
-    ok: true,
-    title,
-    scripts: normalized.scripts,
-    evaluator: normalized.verdict,
-    fallback: normalized.fallback || Boolean(parseError),
-    fallbackReason: parseError || normalized.fallbackReason,
-    usage: data.usage || null,
-    rawResponsePreview: truncateReasoningPreview(content, 1600),
-    provider: binding.provider,
-    model: binding.model
-  }
-}
-
 function buildStoryWorkflowStepResult({ action, projectId, ok, status = 'completed', summary, serverResult = null, evaluator = null, snapshot = null, data = null, failedStage = null, retryable = false }) {
   return {
     action,
@@ -6912,24 +6917,23 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
             fallbackReason: null
           }
         } else {
-          const scripts = buildFallbackStoryScripts({ title, brief })
+          // 诚实化：GameStudio 生成失败即显式失败，不再用确定性兜底脚本冒充模型产物
           candidate = {
-            ok: true,
+            ok: false,
             error: serverResult?.message || serverResult?.error || 'gamestudio_regenerate_failed',
-            scripts,
-            evaluator: evaluateStoryScripts(scripts),
-            fallback: true,
+            scripts: null,
+            evaluator: null,
+            fallback: false,
             fallbackReason: 'gamestudio_regenerate_failed'
           }
         }
       } catch (error) {
-        const scripts = buildFallbackStoryScripts({ title, brief })
         candidate = {
-          ok: true,
+          ok: false,
           error: error instanceof Error ? error.message : String(error),
-          scripts,
-          evaluator: evaluateStoryScripts(scripts),
-          fallback: true,
+          scripts: null,
+          evaluator: null,
+          fallback: false,
           fallbackReason: 'gamestudio_regenerate_exception'
         }
       }
@@ -7125,27 +7129,17 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
           blueprintReviewRoute
         ))
       } catch (error) {
+        // 诚实化：Hermes 评审失败即显式失败，不再以确定性评审冒充通过
         hermesError = error instanceof Error ? error.message : String(error)
-        hermesReview = {
-          score: deterministicReview.score,
-          verdict: deterministicReview.passed ? 'approve' : 'repair',
-          passed: deterministicReview.passed,
-          summary: deterministicReview.passed ? 'Hermes 评审失败，暂以确定性蓝图门禁通过。' : 'Hermes 评审失败，确定性蓝图门禁要求修复。',
-          issues: deterministicReview.issues,
-          strengths: deterministicReview.strengths,
-          repairPlan: deterministicReview.issues,
-          provider: 'deterministic_fallback',
-          model: null,
-          usage: null,
-          rawResponsePreview: ''
-        }
+        hermesReview = null
       }
     }
-    const finalScore = Math.min(Number(deterministicReview.score || 0), Number(hermesReview?.score || 0))
-    const needsRepair = Boolean(!deterministicReview.passed || hermesReview?.verdict !== 'approve' || finalScore < 80)
+    const hermesReviewFailed = Boolean(hermesError)
+    const finalScore = hermesReviewFailed ? 0 : Math.min(Number(deterministicReview.score || 0), Number(hermesReview?.score || 0))
+    const needsRepair = Boolean(!hermesReviewFailed && (!deterministicReview.passed || hermesReview?.verdict !== 'approve' || finalScore < 80))
     const evaluator = {
       name: 'evaluateBlueprintAgentReview',
-      passed: !needsRepair,
+      passed: !hermesReviewFailed && !needsRepair,
       checks: {
         deterministicPassed: deterministicReview.passed,
         deterministicScore: deterministicReview.score,
@@ -7153,6 +7147,7 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
         hermesScore: hermesReview?.score ?? null,
         finalScore,
         needsRepair,
+        hermesReviewFailed,
         hermesError
       }
     }
@@ -7160,10 +7155,12 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
     const result = buildStoryWorkflowStepResult({
       action,
       projectId,
-      ok: Boolean(validationResult.ok && projectId),
-      summary: needsRepair
-        ? `蓝图智能体评审要求修复：score=${finalScore}`
-        : `蓝图智能体评审通过：score=${finalScore}`,
+      ok: Boolean(!hermesReviewFailed && validationResult.ok && projectId),
+      summary: hermesReviewFailed
+        ? `蓝图智能体评审失败：${hermesError}（Hermes 评审不可用，已显式阻断）`
+        : needsRepair
+          ? `蓝图智能体评审要求修复：score=${finalScore}`
+          : `蓝图智能体评审通过：score=${finalScore}`,
       serverResult: validationResult,
       evaluator,
       snapshot,
@@ -7177,8 +7174,8 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
         gameStudioReviewMeta: serverReviewResult?.data?.meta || null,
         validation
       },
-      failedStage: validationResult.ok ? null : 'blueprint_review_validation_api',
-      retryable: validationResult.retryable || serverReviewResult?.retryable
+      failedStage: hermesReviewFailed ? 'hermes_blueprint_review' : (validationResult.ok ? null : 'blueprint_review_validation_api'),
+      retryable: hermesReviewFailed ? true : (validationResult.retryable || serverReviewResult?.retryable)
     })
     updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
     appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
@@ -7507,7 +7504,7 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
         projectId
       }, () => gameStudioServerClient.createStoryAssetPlan(projectId, {
         rebuild: Boolean(step.params?.rebuild),
-        source: step.params?.source || 'control_story_workflow'
+        source: step.params?.source || 'control_production_delivery'
       }))
       : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/assets/plan', error: 'missing_project_id', message: '无法定位要创建资产计划的项目', retryable: false }
     const plan = serverResult?.data?.plan || null
@@ -8760,11 +8757,13 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
     stepId: step.stepId,
     data: buildReasoningStepEventData(step, stepIndex)
   })
-  updateReasoningSession(sessionId, (session) => ({
-    ...session,
-    status: 'running',
-    currentStepId: step.stepId
-  }))
+  updateReasoningSession(sessionId, (session) => {
+    const transitioned = applySessionTransition(session, REASONING_SESSION_STATE.RUNNING, `step started: ${step.stepId}`)
+    return {
+      ...transitioned,
+      currentStepId: step.stepId
+    }
+  })
   appendReasoningEvent(sessionId, 'tool_called', step.title, `调用工具：${step.tool}`, {
     stepId: step.stepId,
     data: buildReasoningStepEventData(step, stepIndex, {
@@ -10120,28 +10119,30 @@ export async function prepareReasoningSessionPlan(sessionId, binding, history, o
   const loadedMemoryCount = planResult.recentContextArtifact.loadedMemorySources.length
   const replayedMessageCount = planResult.recentContextArtifact.replayedMessageCount
 
-  updateReasoningSession(sessionId, (current) => ({
-    ...current,
-    status: 'running',
-    runtimeTaskGraph: plan,
-    plan,
-    review: null,
-    artifacts: {
-      ...current.artifacts,
-      recentContext: planResult.recentContextArtifact,
-      latestPlanReviewEvidence: {
-        targetType: 'runtime_task_graph',
-        outboundPreview: planResult.outboundPreview,
-        rawResponsePreview: planResult.rawResponsePreview,
-        structuredResult: {
-          goal: plan.goal,
-          strategy: plan.strategy,
-          steps: plan.steps
-        }
-      },
-      nextStepIndex: 0
+  updateReasoningSession(sessionId, (current) => {
+    const transitioned = applySessionTransition(current, REASONING_SESSION_STATE.RUNNING, 'plan created, execution started')
+    return {
+      ...transitioned,
+      runtimeTaskGraph: plan,
+      plan,
+      review: null,
+      artifacts: {
+        ...transitioned.artifacts,
+        recentContext: planResult.recentContextArtifact,
+        latestPlanReviewEvidence: {
+          targetType: 'runtime_task_graph',
+          outboundPreview: planResult.outboundPreview,
+          rawResponsePreview: planResult.rawResponsePreview,
+          structuredResult: {
+            goal: plan.goal,
+            strategy: plan.strategy,
+            steps: plan.steps
+          }
+        },
+        nextStepIndex: 0
+      }
     }
-  }))
+  })
 
   appendReasoningEvent(sessionId, 'plan_created', '运行任务图已创建', `模型规划已读取 ${replayedMessageCount} 条近邻对话与 ${loadedMemoryCount} 份 markdown 记忆，本次执行共 ${Array.isArray(plan.steps) ? plan.steps.length : 0} 步`, {
     data: {
@@ -10189,6 +10190,25 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
   try {
     const session = readReasoningSession(sessionId)
     if (!session) throw new Error('reasoning_session_not_found')
+
+    // AUTO-B02：读取 checkpoint 并决定恢复起点
+    let effectiveStartIndex = startIndex
+    const checkpoint = readLatestStepCheckpoint(sessionId)
+    if (checkpoint && checkpoint.nextStepIndex > effectiveStartIndex) {
+      const checkpointStepIndex = checkpoint.stepIndex
+      const recoveredSession = applyCheckpointToSession(session, checkpoint)
+      updateReasoningSession(sessionId, () => recoveredSession)
+      appendReasoningEvent(sessionId, 'checkpoint_recovered', '从 checkpoint 恢复', `恢复自 step ${checkpointStepIndex}，nextStepIndex=${checkpoint.nextStepIndex}`, {
+        data: {
+          checkpointStepIndex,
+          nextStepIndex: checkpoint.nextStepIndex,
+          checkpointFile: checkpoint.filePath || null
+        }
+      })
+      appendHermesLog(`[REASONING][CHECKPOINT][RECOVER] sessionId=${sessionId} fromStep=${checkpointStepIndex} nextStepIndex=${checkpoint.nextStepIndex}`)
+      effectiveStartIndex = checkpoint.nextStepIndex
+    }
+
     const steps = Array.isArray(session.plan?.steps) ? session.plan.steps : []
     const correctionPrompt = String(options.correctionPrompt || '').trim()
 
@@ -10256,6 +10276,13 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
       }
 
       const postStepSession = readReasoningSession(sessionId)
+      // AUTO-B02：每个成功 step 写入 checkpoint
+      try {
+        writeStepCheckpoint(postStepSession, step, i, executionResult, { startedAt: new Date().toISOString() })
+      } catch (checkpointError) {
+        appendHermesLog(`[REASONING][CHECKPOINT][ERROR] sessionId=${sessionId} stepIndex=${i} detail=${checkpointError instanceof Error ? checkpointError.message : String(checkpointError)}`)
+      }
+
       if (postStepSession?.artifacts?.approvedStepRuns?.[step.stepId]) {
         updateReasoningSession(sessionId, (current) => {
           const approvedStepRuns = { ...(current.artifacts?.approvedStepRuns || {}) }
@@ -10414,7 +10441,7 @@ async function createReasoningSession(agentId, userPrompt, submissionContext = {
     submissionContext: normalizedSubmissionContext,
     parentSessionId,
     childSessionIds: [],
-    status: 'planning',
+    status: 'queued',
     createdAt: now,
     updatedAt: now,
     runtimeTaskGraph: null,
@@ -11390,7 +11417,7 @@ export function cleanupOrphanedReasoningSessions() {
         try {
           const raw = fs.readFileSync(filePath, 'utf8')
           const session = JSON.parse(raw)
-          if (session.status === 'planning' || session.status === 'running') {
+          if (session.status === 'queued' || session.status === 'running' || session.status === 'waiting_review') {
             session.status = 'failed'
             session.error = '服务器重启，本次 session 被中断（orphaned by server restart）'
             session.updatedAt = new Date().toISOString()
@@ -11399,7 +11426,7 @@ export function cleanupOrphanedReasoningSessions() {
               eventId: `orphan_cleanup_${Date.now()}`,
               type: 'session_failed',
               title: '服务器重启中断',
-              summary: '服务器重启时检测到本 session 仍为 running/planning 状态，已标记为失败。',
+              summary: '服务器重启时检测到本 session 仍为 queued/running/waiting_review 状态，已标记为失败。',
               timestamp: new Date().toISOString(),
               data: {}
             })

@@ -1,1 +1,17 @@
-Refresh ai/memory/LONG_TASKS.md so it reflects the current long-running end-to-end workflow closure. Keep only stable multi-session tracks, update milestones and completion standards, and remove obsolete long-horizon items.
+# LONG_TASKS.md — 长任务方向
+
+> 只记录跨 session 的长期主线与验收标准。上次重建：2026-07-23（此前内容误写为刷新指令，已清理）。
+
+## L1. 守护台成为 Hermes 的治理台（当前主线）
+- 目标：用户通过守护台与助手对话、操作项目、审核动作、查看健康与日志。
+- 里程碑：P1 聊天页+任务卡片+审核卡片（已完成）；P2 态势带+审核记录视图；P3 信息架构按助手心智重排。
+- 验收：任意 session 的执行过程在中台全程可见、可审、可审计回溯。
+
+## L2. 助手层原生能力启用
+- 目标：Hermes 常驻，cron 定时、子 agent 监察、多渠道接入；子 agent 必须挂右脑强模型。
+- 前置：meta_analysis 401 修复（新 Kimi key）；supervision 定时器治理化（可见、可控、不空转）。
+- 验收：T1 定时生产闭环 → T2 定时关停/恢复 → T3 子 agent 监察 → T4 多项目注册 → T5 治理抽查全过。
+
+## L3. 项目/工作流注册表抽象
+- 目标：工作流从代码硬编码（story/bootstrap）抽象为可配置条目，支持 GameStudio 之外的任意项目。
+- 验收：第二个项目（如图片站）注册并执行其工作流，项目间隔离。
