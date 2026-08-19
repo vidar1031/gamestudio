@@ -1,29 +1,35 @@
 {
   "provider": "omlx",
   "baseUrl": "http://127.0.0.1:18888/v1",
-  "model": "gpt-oss-20b-MXFP4-Q8",
+  "model": "Qwen3.6-27B-MLX-4bit",
   "shortTerm": {
     "minContextTokens": 65536
   },
   "workflow": {
-    "memoryOverlayMode": "references-only",
+    "memoryOverlayMode": "content-injection",
     "replayWindowMessages": 24,
     "reasoningReplayWindowMessages": 8,
     "modelRouting": {
       "defaultRoute": {
         "provider": "omlx",
         "baseUrl": "http://127.0.0.1:18888/v1",
-        "model": "gpt-oss-20b-MXFP4-Q8",
+        "model": "Qwen3.6-27B-MLX-4bit",
         "transport": "direct",
-        "strict": false
+        "requestedTransport": "direct",
+        "strict": false,
+        "unavailableReason": "",
+        "degradedFrom": ""
       },
       "phaseRoutes": {
         "story_blueprint_review": {
           "provider": "omlx",
           "baseUrl": "http://127.0.0.1:18888/v1",
-          "model": "gpt-oss-20b-MXFP4-Q8",
-          "transport": "hermes",
-          "strict": true
+          "model": "Qwen3.6-27B-MLX-4bit",
+          "transport": "direct",
+          "requestedTransport": "direct",
+          "strict": true,
+          "unavailableReason": "",
+          "degradedFrom": ""
         }
       },
       "actionRoutes": {
@@ -32,7 +38,20 @@
           "baseUrl": "https://api.kimi.com/coding/v1",
           "model": "kimi-for-coding",
           "transport": "direct",
-          "strict": false
+          "requestedTransport": "direct",
+          "strict": false,
+          "unavailableReason": "",
+          "degradedFrom": ""
+        },
+        "right_brain_supervision": {
+          "provider": "moonshot",
+          "baseUrl": "https://api.kimi.com/coding/v1",
+          "model": "kimi-for-coding",
+          "transport": "direct",
+          "requestedTransport": "direct",
+          "strict": false,
+          "unavailableReason": "",
+          "degradedFrom": ""
         }
       },
       "strictRouteRequiredPhases": [

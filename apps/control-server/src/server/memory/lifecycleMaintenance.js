@@ -8,7 +8,21 @@ import {
 } from './lifecyclePolicy.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
-const MAX_CHAT_ENTRIES_PER_FILE = 120
+// AUTO-C03：chat history 保留策略 env 可配（安全默认值不变）——
+// HERMES_CHAT_ARCHIVE_AFTER_DAYS：文件 mtime 超过该天数先归档到 state/memory-archive/chat 再移除（默认 30）
+// HERMES_CHAT_MAX_ENTRIES_PER_FILE：单文件条目上限，超出按时间截尾（默认 120）
+const DEFAULT_CHAT_ARCHIVE_AFTER_DAYS = 30
+const DEFAULT_CHAT_MAX_ENTRIES_PER_FILE = 120
+
+function resolveChatArchiveAfterDays(value) {
+  const num = Number(value ?? process.env.HERMES_CHAT_ARCHIVE_AFTER_DAYS)
+  return Number.isFinite(num) && num > 0 ? num : DEFAULT_CHAT_ARCHIVE_AFTER_DAYS
+}
+
+function resolveChatMaxEntriesPerFile(value) {
+  const num = Number(value ?? process.env.HERMES_CHAT_MAX_ENTRIES_PER_FILE)
+  return Number.isFinite(num) && num > 0 ? Math.floor(num) : DEFAULT_CHAT_MAX_ENTRIES_PER_FILE
+}
 
 export function normalizeMemoryLifecycleRecord(record, defaults = {}) {
   const now = new Date().toISOString()
@@ -94,13 +108,15 @@ function maintainChatHistory({ fs, chatDir, rootDir, now }) {
   const result = { scanned: 0, prunedEntries: 0, archivedFiles: 0, keptFiles: 0, errors: [] }
   if (!chatDir || !fs.existsSync(chatDir)) return result
 
+  const archiveAfterDays = resolveChatArchiveAfterDays()
+  const maxEntriesPerFile = resolveChatMaxEntriesPerFile()
   const archiveDir = path.join(rootDir, 'state', 'memory-archive', 'chat')
   for (const name of fs.readdirSync(chatDir).filter((item) => item.endsWith('.json'))) {
     const filePath = path.join(chatDir, name)
     result.scanned += 1
     try {
       const ageDays = getFileAgeDays(fs, filePath, now)
-      if (ageDays >= 30) {
+      if (ageDays >= archiveAfterDays) {
         fs.mkdirSync(archiveDir, { recursive: true })
         const targetPath = path.join(archiveDir, name)
         if (!fs.existsSync(targetPath)) fs.copyFileSync(filePath, targetPath)
@@ -112,8 +128,8 @@ function maintainChatHistory({ fs, chatDir, rootDir, now }) {
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
       const entries = Array.isArray(parsed) ? parsed : []
       const compacted = compactChatEntries(entries)
-      const limited = compacted.length > MAX_CHAT_ENTRIES_PER_FILE
-        ? compacted.slice(-MAX_CHAT_ENTRIES_PER_FILE)
+      const limited = compacted.length > maxEntriesPerFile
+        ? compacted.slice(-maxEntriesPerFile)
         : compacted
       result.prunedEntries += Math.max(0, entries.length - limited.length)
       result.keptFiles += 1

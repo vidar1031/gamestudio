@@ -50,7 +50,7 @@
 **坏处（实打实成本）**：
 - Python venv + gateway 进程的 spawn/监控/恢复全套负担；一次未定位原因的 SIGTERM 事故；33% 重启孤儿会话（P1-11）；61.8h 悬挂会话（P1-08）
 - agent loop 失控风险：走 hermes 的请求进入最多 90 轮迭代，gateway 日志实证本地 9B 模型连败工具调用循环 5-6 次
-- supervision 30 分钟定时器空转：已产生 75 个自动 session，meta_analysis 持续 401 退避重试（Kimi key 失效，待用户提供新 key）
+- supervision 30 分钟定时器空转：已产生 75 个自动 session，meta_analysis 持续 401 退避重试（Kimi key 当时失效；2026-08-15 已轮换并验证可用）
 - 对 `HERMES_HOME/.env`、`config.yaml` 的写入污染；长期"经 Hermes"认知误导
 
 **结论：当前集成状态下，Hermes 边际价值 ≈ 0，边际成本 > 0。**（这是对当前集成的评估，非对 Hermes 框架本身的评估——其工具生态约 95% 未启用。）

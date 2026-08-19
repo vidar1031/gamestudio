@@ -13,7 +13,9 @@ const navItems = [
   { name: 'Generators', path: '/generators', icon: '⚙', label: '生成工具' },
   { name: 'Agents', path: '/agents', icon: '◆', label: '本地 Agent' },
   { name: 'Projects', path: '/projects', icon: '▣', label: '项目' },
+  { name: 'Events', path: '/events', icon: '✦', label: '项目事件' },
   { name: 'Sessions', path: '/sessions', icon: '▶', label: '任务与会话' },
+  { name: 'Governance', path: '/governance', icon: '◈', label: '治理' },
   { name: 'Logs', path: '/logs', icon: '≡', label: '日志与诊断' },
   { name: 'Settings', path: '/settings', icon: '⚙', label: '设置' },
   { name: 'Workbench', path: '/workbench', icon: '⌘', label: '工作台' },
@@ -45,6 +47,17 @@ const studioStatus = computed(() => {
   return {
     reachable,
     label: reachable ? 'Studio 在线' : 'Studio 离线',
+    tone: reachable ? 'success' : 'error'
+  }
+})
+
+const omlxStatus = computed(() => {
+  const omlx = app.overview.value?.omlx
+  const reachable = omlx?.reachable ?? false
+  const modelCount = Number(omlx?.modelCount) || 0
+  return {
+    reachable,
+    label: reachable ? `OMLX 在线 · ${modelCount} 模型` : 'OMLX 离线',
     tone: reachable ? 'success' : 'error'
   }
 })
@@ -92,6 +105,10 @@ function navigate(item: typeof navItems[number]) {
         <div class="status-row">
           <span class="status-dot" :data-tone="studioStatus.tone"></span>
           <span class="status-text">{{ studioStatus.label }}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-dot" :data-tone="omlxStatus.tone"></span>
+          <span class="status-text">{{ omlxStatus.label }}</span>
         </div>
       </div>
     </aside>

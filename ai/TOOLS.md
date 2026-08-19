@@ -16,6 +16,14 @@
 - 可观测执行查询：`GET /api/control/agents/hermes-manager/reasoning-sessions/:sessionId`
 - 可观测执行审核：`POST /api/control/agents/hermes-manager/reasoning-sessions/:sessionId/review`
 - 工作流诊断：`GET /api/control/agents/hermes-manager/workflow-diagnostics`
+- 历史会话检索（只读，直查 Hermes state.db FTS5）：`GET /api/control/hermes/session-search?q=`
+- 技能候选扫描（含 hub 新装技能，待人审）：`GET /api/control/skills/candidates`
+
+## GameStudio Server 常用接口
+
+- 故事完整度核实（真实浏览器逐节点走查导出 H5 + Kimi 视觉评审，异步任务）：`POST /api/projects/:id/ai/story/completeness-check`
+- 最近完整度报告：`GET /api/projects/:id/ai/story/completeness-check/latest`
+- 任务进度轮询：`GET /api/projects/:id/ai/tasks`
 
 ## 权威目录
 

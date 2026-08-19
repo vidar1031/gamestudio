@@ -157,6 +157,16 @@ export function triggerSupervision(body: unknown = {}) {
   })
 }
 
+// HERMES-H01：治理页健康视图——监督状态（含 gateway 进程监督）
+export function getSupervisionState() {
+  return fetch('/api/control/supervision/state')
+}
+
+// AUTO-R01：本地重负载资源互斥调度状态（槽位/模型在线/内存水位/最近交换）
+export function getResourcesState() {
+  return fetch('/api/control/resources/state')
+}
+
 export function recoverReasoningSession(agentId: string, sessionId: string) {
   return fetch(`/api/control/agents/${agentId}/reasoning-sessions/${sessionId}/recover`, {
     method: 'POST',

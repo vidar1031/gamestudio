@@ -11,7 +11,7 @@ import { genId, generateScriptDraft, guessTitleFromPrompt, repairScriptDraft } f
 import { getAiStatusSnapshot, runAiDiagnostics } from './ai/diagnostics.js'
 import { analyzeScriptsForBlueprint } from './ai/analyze.js'
 import { readGlobalRules, writeGlobalRules } from './ai/globalRules.js'
-import { generateBackgroundImage, generateComfyuiLineartFromReference, generateComfyuiWhiteBackgroundFromReference, mapComfySampler, mapComfyScheduler, normalizeComfyCheckpointName, parseComfyTimeoutMs, runComfyuiPromptWorkflow } from './ai/background.js'
+import { generateBackgroundImage, generateComfyuiLineartFromReference, generateComfyuiCutoutFromReference, mapComfySampler, mapComfyScheduler, normalizeComfyCheckpointName, parseComfyTimeoutMs, runComfyuiPromptWorkflow } from './ai/background.js'
 import { generateBackgroundPrompt } from './ai/imagePrompt.js'
 import { reviewStoryPromptLocally, reviewStoryPromptWithAi } from './ai/promptReview.js'
 import { normalizeStoryboardPromptReviewInput, reviewStoryboardPromptLocally, reviewStoryboardPromptWithAi } from './ai/storyboardPromptReview.js'
@@ -22,6 +22,12 @@ import { generateStoryBible } from './ai/storyBible.js'
 import { translatePromptText } from './ai/translate.js'
 import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, buildStorySceneRenderSpec, getStoryAssetRenderProfile, summarizeStoryAssetPlan } from './ai/storyAssets.js'
 import { buildStoryboardLockTestNegativePrompt, buildStoryboardLockTestPrompt, buildStoryboardLockTestWorkflow, pickStoryboardLockTestAsset, reviewStoryboardLockImageWithAi } from './ai/storyLock.js'
+import { evaluateStoryAssetReferenceReview, sniffImageMetaFromBytes, verifyStoryAssetReferenceFile } from './ai/storyAssetReferenceGate.js'
+import { createAiTask, getAiTask, listAiTasks, loadAiTasksFromDisk, updateAiTask } from './ai/taskProgress.js'
+import { checkSceneSuccess, createSceneBatch, findInterruptedSceneBatches, loadSceneBatch, resumeSceneBatch, runSceneBatch } from './ai/sceneBatchQueue.js'
+import { COMPLETENESS_TASK_KIND, createNodeVisualReviewer, createPuppeteerBrowserLauncher, loadLatestCompletenessReport, resolveChromeExecutablePath, resolveReviewConfig, runStoryCompletenessCheck } from './ai/storyCompleteness.js'
+import { checkComfyuiCapability } from './ai/comfyuiCapability.js'
+import { attachImageReviewResult, createImageReview, decideImageReview, findPendingReview, getImageReview, listImageReviews } from './review/imageReviewStore.js'
 import { getDoubaoImagesConfigSnapshot } from './ai/doubao.js'
 import { diagnoseOllamaText } from './ai/ollama.js'
 import { classifyAiError, createTraceId, logStage } from './ai/runtime.js'
@@ -76,8 +82,123 @@ app.use('*', async (c, next) => {
 // P0：允许本地 editor（8868）跨域调用 server（1999）
 app.use('*', cors({ origin: '*', allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }))
 
+// AUTO-F01：项目根边界校验——:id 解析结果必须落在 PROJECTS_DIR 内，
+// 拒绝路径穿越（../、编码后的 %2e%2e、绝对路径）造成的跨 project / 跨 workspace 读写。
+// 与 E01 reference gate 的分工：本中间件守「项目 id 本身」，E01 守「项目内的相对路径参数」。
+function isProjectIdWithinRoot(id) {
+  const raw = String(id || '').trim()
+  if (!raw) return false
+  let decoded = raw
+  try {
+    decoded = decodeURIComponent(raw)
+  } catch (_) {
+    return false // 非法编码一律拒绝，不猜测
+  }
+  const resolved = path.resolve(PROJECTS_DIR, decoded)
+  return resolved.startsWith(PROJECTS_DIR + path.sep)
+}
+const projectIdBoundaryGuard = async (c, next) => {
+  if (!isProjectIdWithinRoot(c.req.param('id'))) {
+    return c.json({ success: false, error: 'invalid_project_id', message: '非法项目 id：越过项目根目录，已拒绝。' }, 400)
+  }
+  await next()
+}
+app.use('/api/projects/:id', projectIdBoundaryGuard)
+app.use('/api/projects/:id/*', projectIdBoundaryGuard)
+
 app.get('/api/health', (c) => c.json({ ok: true, service: 'gamestudio_server' }))
 app.get('/favicon.ico', (c) => c.body(null, 204))
+
+// 事件层：暴露 GameStudio 事件注册表（apps/server/events/registry.v1.json）
+app.get('/api/events/registry', async (c) => {
+  try {
+    const registryPath = path.join(__dirname, '..', 'events', 'registry.v1.json')
+    const registry = await readJson(registryPath)
+    return c.json({ success: true, registry })
+  } catch (e) {
+    return c.json({ success: false, error: 'registry_not_available', message: e && e.message ? e.message : String(e) }, 500)
+  }
+})
+
+// 事件层：运行状态检查（server 是否运行中 + editor 是否可达）
+app.get('/api/runtime/status', async (c) => {
+  const editorUrl = String(process.env.STUDIO_EDITOR_URL || 'http://localhost:8868').trim()
+  const editorOk = await probeHttpOk(editorUrl, 3000)
+  return c.json({
+    success: true,
+    runtime: {
+      server: { ok: true, url: 'http://127.0.0.1:1999', service: 'gamestudio_server' },
+      editor: { ok: editorOk, url: editorUrl },
+      allRunning: editorOk,
+      checkedAt: new Date().toISOString()
+    }
+  })
+})
+
+// 事件层：自检配置项（返回各项配置状态清单，不修改任何状态）
+app.get('/api/studio/selfcheck', async (c) => {
+  const editorUrl = String(process.env.STUDIO_EDITOR_URL || 'http://localhost:8868').trim()
+  const checks = []
+
+  checks.push({ key: 'server-health', label: 'Server 健康检查', status: 'ok', detail: 'gamestudio_server 响应正常' })
+
+  const editorOk = await probeHttpOk(editorUrl, 3000)
+  checks.push({
+    key: 'editor-reachable',
+    label: 'Editor 可访问',
+    status: editorOk ? 'ok' : 'fail',
+    detail: editorOk ? `${editorUrl} 可访问` : `${editorUrl} 不可达`
+  })
+
+  const projectsRoot = path.join(ROOT, 'projects')
+  let storageOk = false
+  let storageDetail = `${projectsRoot} 不存在`
+  try {
+    await mkdir(projectsRoot, { recursive: true })
+    const probeFile = path.join(projectsRoot, `.selfcheck_${Date.now()}.tmp`)
+    await writeFile(probeFile, 'ok')
+    await rm(probeFile)
+    storageOk = true
+    storageDetail = `${projectsRoot} 可读写`
+  } catch (e) {
+    storageDetail = `${projectsRoot} 不可写: ${e && e.message ? e.message : String(e)}`
+  }
+  checks.push({ key: 'storage-projects', label: '项目存储目录', status: storageOk ? 'ok' : 'fail', detail: storageDetail })
+
+  let effective = null
+  try {
+    const cfg = await getEffectiveStudioConfig(ROOT)
+    effective = cfg?.effective || null
+  } catch (_) {}
+  checks.push({
+    key: 'settings-loaded',
+    label: '设置加载',
+    status: effective ? 'ok' : 'fail',
+    detail: effective ? 'studio settings 已加载' : 'studio settings 加载失败'
+  })
+
+  const scriptsProvider = String(effective?.scripts?.provider || '').trim()
+  const scriptsOk = Boolean(effective?.enabled?.scripts) && scriptsProvider && scriptsProvider !== 'none'
+  checks.push({
+    key: 'scripts-provider',
+    label: '脚本生成 Provider',
+    status: scriptsOk ? 'ok' : 'fail',
+    detail: scriptsOk ? `${scriptsProvider} / ${effective?.scripts?.model || '-'}` : '未配置或已禁用'
+  })
+
+  const imageProvider = String(effective?.image?.provider || '').trim()
+  const imageEnabled = Boolean(effective?.enabled?.image)
+  const imageOk = imageEnabled && imageProvider && imageProvider !== 'none'
+  checks.push({
+    key: 'image-provider',
+    label: '图片生成 Provider',
+    status: imageOk ? 'ok' : (imageEnabled ? 'warn' : 'fail'),
+    detail: imageOk ? `${imageProvider} ${effective?.image?.comfyuiBaseUrl || ''}`.trim() : (imageEnabled ? '已启用但未配置 provider' : '未启用')
+  })
+
+  const ok = checks.every((item) => item.status !== 'fail')
+  return c.json({ success: true, ok, checks, checkedAt: new Date().toISOString() })
+})
 app.get('/api/ai/status', async (c) => {
   // Non-sensitive snapshot for debugging effective config + last diagnostics.
   const snap = getAiStatusSnapshot()
@@ -1667,6 +1788,18 @@ async function readJson(p) {
   return JSON.parse(await readFile(p, 'utf-8'))
 }
 
+async function probeHttpOk(url, timeoutMs = 3000) {
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), Math.max(500, Number(timeoutMs || 3000)))
+    const res = await fetch(url, { signal: controller.signal })
+    clearTimeout(timeout)
+    return res.ok
+  } catch (_) {
+    return false
+  }
+}
+
 async function writeJson(p, obj) {
   await mkdir(path.dirname(p), { recursive: true })
   await writeFile(p, JSON.stringify(obj, null, 2), 'utf-8')
@@ -2130,7 +2263,7 @@ function isManagedStoryAssetPathForAsset(asset, rawPath) {
 
 function labelForStoryAssetGalleryKind(kind) {
   if (kind === 'reference') return '参考图'
-  if (kind === 'selected_white_bg') return '白底主参考'
+  if (kind === 'selected_white_bg') return '主参考立绘'
   if (kind === 'lineart_hint') return '线稿 Hint'
   if (kind === 'lineart_final') return '线稿成品'
   return '图片'
@@ -2141,9 +2274,11 @@ function inferStoryAssetGalleryKind({ uri, ref, asset }) {
   if (!normalized) return 'unknown'
   if (normalized === normalizeStoryAssetUri(asset && asset.lineartHintAssetUri)) return 'lineart_hint'
   if (normalized === normalizeStoryAssetUri(asset && asset.lineartFinalAssetUri)) return 'lineart_final'
-  if (storyAssetStr(ref && ref.postprocess).trim() === 'rmbg_white_bg') return 'selected_white_bg'
+  // 选定主参考（抠图立绘）：历史白底 rmbg_white_bg 与现行透明 rmbg_alpha 共用同一 gallery 类别
+  const refPostprocess = storyAssetStr(ref && ref.postprocess).trim()
+  if (refPostprocess === 'rmbg_white_bg' || refPostprocess === 'rmbg_alpha') return 'selected_white_bg'
   const base = path.basename(normalized).toLowerCase()
-  if (base.includes('selected_white')) return 'selected_white_bg'
+  if (base.includes('selected_white') || base.includes('selected_cutout')) return 'selected_white_bg'
   if (base.includes('lineart_hint') || base.includes('_hint_')) return 'lineart_hint'
   if (base.includes('lineart_final') || base.includes('_lineart_') || base.includes('_final_')) return 'lineart_final'
   return 'reference'
@@ -2982,42 +3117,6 @@ async function scanModelFiles(rootDir, { exts, maxDepth = 4 }) {
   return out
 }
 
-function sniffImageMetaFromBytes(buf) {
-  try {
-    if (!buf || typeof buf.length !== 'number') return null
-    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return { ext: 'jpg', contentType: 'image/jpeg' }
-    // PNG signature: 89 50 4E 47 0D 0A 1A 0A
-    if (
-      buf.length >= 8 &&
-      buf[0] === 0x89 &&
-      buf[1] === 0x50 &&
-      buf[2] === 0x4e &&
-      buf[3] === 0x47 &&
-      buf[4] === 0x0d &&
-      buf[5] === 0x0a &&
-      buf[6] === 0x1a &&
-      buf[7] === 0x0a
-    )
-      return { ext: 'png', contentType: 'image/png' }
-    // GIF: GIF87a / GIF89a
-    if (buf.length >= 6 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return { ext: 'gif', contentType: 'image/gif' }
-    // WEBP: RIFF....WEBP
-    if (
-      buf.length >= 12 &&
-      buf[0] === 0x52 &&
-      buf[1] === 0x49 &&
-      buf[2] === 0x46 &&
-      buf[3] === 0x46 &&
-      buf[8] === 0x57 &&
-      buf[9] === 0x45 &&
-      buf[10] === 0x42 &&
-      buf[11] === 0x50
-    )
-      return { ext: 'webp', contentType: 'image/webp' }
-  } catch (_) {}
-  return null
-}
-
 function defaultStory() {
   return {
     schemaVersion: '2.0',
@@ -3491,6 +3590,23 @@ app.get('/api/projects/summary', async (c) => {
       const cards = Array.isArray(scripts?.cards) ? scripts.cards.length : 0
       const blueprintNodes = Array.isArray(blueprint?.nodes) ? blueprint.nodes.length : 0
       const storyNodes = story?.nodes && typeof story.nodes === 'object' ? Object.keys(story.nodes).length : 0
+      // 图像完整度：story 场景中带 visuals.backgroundAssetId 真实图像引用的比例
+      const storySceneNodes = Array.isArray(story?.nodes) ? story.nodes : Object.values(story?.nodes || {})
+      const totalScenes = storySceneNodes.length
+      const withImages = storySceneNodes.filter((n) => {
+        const bgId = n?.visuals?.backgroundAssetId
+        if (typeof bgId === 'string' && bgId.trim()) return true
+        const bg = n?.visuals?.background ?? n?.background
+        if (!bg) return false
+        if (typeof bg === 'string') return bg.trim().length > 0
+        if (typeof bg === 'object') return Boolean(bg.uri || bg.src || bg.url || bg.path)
+        return false
+      }).length
+      const imageStats = {
+        totalScenes,
+        withImages,
+        missingImages: Math.max(0, totalScenes - withImages)
+      }
       const distPath = path.join(dir, 'builds', 'latest', 'dist', 'index.html')
       const distExists = await existsFile(distPath)
       const stages = {
@@ -3512,6 +3628,7 @@ app.get('/api/projects/summary', async (c) => {
         cards,
         blueprintNodes,
         storyNodes,
+        imageStats,
         stages,
         stage,
         distUrl: distExists ? `/demos/${p.id || id}/latest/dist/index.html` : null
@@ -5457,8 +5574,20 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
         projectDoc.state.aiBackground = {}
       }
       projectDoc.state.aiBackground.storyBible = result
+      projectDoc.state.aiBackground.storyBibleJson = JSON.stringify(result)
+      // 新故事必须干净开始：清空可能携带旧故事提示词的草稿/镜像字段
+      for (const staleKey of [
+        'storyboardGlobalPromptZh', 'storyboardGlobalNegativePromptZh',
+        'storyboardLockAssetPrompts', 'storyboardScenes', 'storyboardBatchDraft',
+        'storyboardPromptMeta', 'storyAssetPlan', 'storyAssetPlanConfirmedAt',
+        'globalPrompt', 'globalNegativePrompt'
+      ]) {
+        delete projectDoc.state.aiBackground[staleKey]
+      }
       projectDoc.updatedAt = nowIso()
       await writeJson(projectPath, projectDoc)
+      // 新 bible 生成后旧资产计划作废（避免按 id 合并旧故事的锁定状态与提示词）
+      await rm(projectStoryAssetsPlanPath(id), { force: true }).catch(() => {})
       // Update meta.json timestamp
       const metaPath = path.join(dir, 'meta.json')
       const metaDoc = await readJson(metaPath).catch(() => ({}))
@@ -5739,7 +5868,9 @@ async function generateAndPersistStoryAssetReference({
   }
 }
 
-async function applyWhiteBackgroundToStoryAssetReference({
+// 锁定主参考的抠图后处理：character/prop 走 RMBG 透明立绘（分层合成方向），
+// 失败时兜底回退为原图引用（catch 语义保留，不阻断 select 主流程）
+async function applyCutoutToStoryAssetReference({
   id,
   dir,
   plan,
@@ -5770,20 +5901,23 @@ async function applyWhiteBackgroundToStoryAssetReference({
   try {
     const abs = path.join(dir, sourceUri)
     const bytes = await readFile(abs)
-    const post = await generateComfyuiWhiteBackgroundFromReference({
+    // character/prop 一律输出透明立绘（RMBG Alpha），供运行时分层合成
+    const post = await generateComfyuiCutoutFromReference({
       referenceBytes: bytes,
       referenceFilename: `${String(asset?.id || 'asset').trim() || 'asset'}_selected.png`,
       comfyuiBaseUrl,
       processRes: Math.max(Number(sourceRef?.width) || 0, Number(sourceRef?.height) || 0, 1024),
       timeoutMs,
-      prefix: buildStoryAssetComfyPrefix(asset, 'selected_white_bg')
+      prefix: buildStoryAssetComfyPrefix(asset, 'selected_cutout'),
+      transparent: true
     })
+    const postprocess = String(post?.meta?.postprocess || '').trim() || 'rmbg_alpha'
 
     const ext = String(post.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
     const target = buildStoryAssetFileTarget({
       dir,
       asset,
-      prefix: 'selected_white_bg',
+      prefix: 'selected_cutout',
       ext,
       seed: sourceRef && sourceRef.seed
     })
@@ -5795,7 +5929,7 @@ async function applyWhiteBackgroundToStoryAssetReference({
     const projectAsset = {
       id: projectAssetId,
       kind: 'image',
-      name: `故事资产白底 ${String(asset?.name || asset?.id || projectAssetId).trim()}`,
+      name: `故事资产立绘 ${String(asset?.name || asset?.id || projectAssetId).trim()}`,
       uri: relPath,
       source: {
         type: 'ai',
@@ -5805,7 +5939,7 @@ async function applyWhiteBackgroundToStoryAssetReference({
         remoteUrl: String(post?.meta?.url || '').trim() || undefined,
         loras: Array.isArray(sourceRef?.loras) ? sourceRef.loras : undefined,
         seed: Number.isFinite(Number(sourceRef?.seed)) ? Number(sourceRef.seed) : undefined,
-        postprocess: 'rmbg_white_bg'
+        postprocess
       }
     }
 
@@ -5839,7 +5973,7 @@ async function applyWhiteBackgroundToStoryAssetReference({
               width: Number(sourceRef?.width) || undefined,
               height: Number(sourceRef?.height) || undefined,
               seed: Number.isFinite(Number(sourceRef?.seed)) ? Number(sourceRef.seed) : undefined,
-              postprocess: 'rmbg_white_bg'
+              postprocess
             }
           ]
         }
@@ -6043,10 +6177,12 @@ async function reviewAndPersistStoryAssetReference({
     throw e
   }
   const analysis = await reviewStoryboardLockImageWithAi({
-    provider: studio.effective.prompt.provider,
-    model: studio.effective.prompt.model,
+    provider: process.env.MOONSHOT_API_KEY ? 'moonshot' : studio.effective.prompt.provider,
+    model: process.env.MOONSHOT_API_KEY ? 'kimi-for-coding' : studio.effective.prompt.model,
     apiUrl: studio.effective.prompt.apiUrl,
     proxyUrl: studio.effective.network.proxyUrl,
+    moonshotApiKey: process.env.MOONSHOT_API_KEY || '',
+    moonshotBaseUrl: process.env.MOONSHOT_BASE_URL || 'https://api.kimi.com/coding/v1',
     asset,
     prompt,
     negativePrompt,
@@ -6863,8 +6999,28 @@ app.post('/api/projects/:id/ai/story/assets/reference/select', storyInputGate('s
     return c.json({ success: false, error: 'candidate_not_found', message: '所选候选图不在当前资产的候选列表中。' }, 404)
   }
 
+  // S4-01 写入门禁：仅「视觉评审真实通过」且「文件真实存在」的候选可写入 primaryReferenceAssetUri
+  const candidateReview = pickedCandidate && pickedCandidate.analysis && typeof pickedCandidate.analysis === 'object'
+    ? pickedCandidate.analysis
+    : (
+        asset.latestReferenceReview && typeof asset.latestReferenceReview === 'object' &&
+        String(asset.latestReferenceReview.targetAssetUri || '').trim().replace(/^\/+/, '') === targetAssetPath
+          ? asset.latestReferenceReview
+          : null
+      )
+  const reviewGate = evaluateStoryAssetReferenceReview(candidateReview)
+  if (!reviewGate.passed) {
+    logStage({ stage: 'asset.reference.select', event: 'blocked', traceId, project: id, item: assetId, ok: false, err: reviewGate.code })
+    return c.json({ success: false, error: reviewGate.code, message: reviewGate.message, review: candidateReview }, 409)
+  }
+  const fileGate = await verifyStoryAssetReferenceFile({ dir, assetPath: targetAssetPath })
+  if (!fileGate.ok) {
+    logStage({ stage: 'asset.reference.select', event: 'fail', traceId, project: id, item: assetId, ok: false, err: fileGate.code })
+    return c.json({ success: false, error: fileGate.code, message: fileGate.message }, 400)
+  }
+
   try {
-    logStage({ stage: 'asset.reference.select', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'white_background_only' })
+    logStage({ stage: 'asset.reference.select', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'transparent_cutout' })
     const studio = await getEffectiveStudioConfig(ROOT)
     const sourceRef = generatedRef || {
       projectAssetId: '',
@@ -6876,7 +7032,7 @@ app.post('/api/projects/:id/ai/story/assets/reference/select', storyInputGate('s
       seed: undefined,
       loras: undefined
     }
-    const processed = await applyWhiteBackgroundToStoryAssetReference({
+    const processed = await applyCutoutToStoryAssetReference({
       id,
       dir,
       plan,
@@ -6901,7 +7057,7 @@ app.post('/api/projects/:id/ai/story/assets/reference/select', storyInputGate('s
     })
     const nextAsset = (Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || asset
     await writeStoryAssetPrimaryToProject({ id, dir, asset: nextAsset, primaryReferenceAssetId })
-    logStage({ stage: 'asset.reference.select', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'white_background_only' })
+    logStage({ stage: 'asset.reference.select', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'transparent_cutout' })
     return c.json({ success: true, asset: nextAsset, plan })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
@@ -6938,17 +7094,37 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
     return c.json({ success: false, error: 'missing_comfyui_base_url', message: '未配置 ComfyUI 地址，无法生成线稿。' }, 400)
   }
 
+  const lineartPrompt = String(body?.prompt || '').trim() || (
+    String(asset.category || '').trim() === 'character'
+      ? `redraw the uploaded ${String(asset.name || asset.id || 'character').trim()} reference as clean black ink lineart, preserve exact species, face shape, fur markings, outfit silhouette, body proportions and pose, full body, one subject only, white background, monochrome, no color fill, no shading, no gray wash, no painterly rendering`
+      : `redraw the uploaded ${String(asset.name || asset.id || 'prop').trim()} reference as clean black ink object lineart, preserve exact silhouette, handle, rim, strap, edge shape and proportions, single object only, centered, white background, monochrome, no color fill, no shading, no extra objects, no person`
+  )
+  const lineartNegative = String(body?.negativePrompt || '').trim() || 'color, watercolor, gouache, shading, shadow, grayscale wash, background scene, extra character, extra limbs, multiple views, text, logo, realistic photo'
+
+  // 出图前审核（manual 模式）：挂起并返回 202，批准后自动执行
+  const reviewMode = resolveImageReviewMode(c, body)
+  if (reviewMode === 'manual' && !(await hasApprovedPreGenerate(dir, c))) {
+    const targetKey = `lineart:${assetId}`
+    let review = await findPendingReview(dir, { phase: 'pre_generate', targetKey })
+    if (!review) {
+      review = await createImageReview(dir, {
+        phase: 'pre_generate',
+        targetKey,
+        assetId,
+        prompt: lineartPrompt,
+        negativePrompt: lineartNegative,
+        params: { kind: 'asset.lineart', targetName: String(asset.name || assetId).trim(), primaryReferenceAssetUri },
+        execute: { endpoint: `/api/projects/${encodeURIComponent(id)}/ai/story/assets/lineart`, payload: body && typeof body === 'object' ? body : {} }
+      })
+    }
+    return c.json({ success: true, pendingReview: review }, 202)
+  }
+
   try {
     logStage({ stage: 'asset.lineart', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'controlnet_lineart_only' })
     const abs = path.join(dir, primaryReferenceAssetUri.replace(/^\/+/, ''))
     const refBytes = await readFile(abs)
     const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
-    const lineartPrompt = String(body?.prompt || '').trim() || (
-      String(asset.category || '').trim() === 'character'
-        ? `redraw the uploaded ${String(asset.name || asset.id || 'character').trim()} reference as clean black ink lineart, preserve exact species, face shape, fur markings, outfit silhouette, body proportions and pose, full body, one subject only, white background, monochrome, no color fill, no shading, no gray wash, no painterly rendering`
-        : `redraw the uploaded ${String(asset.name || asset.id || 'prop').trim()} reference as clean black ink object lineart, preserve exact silhouette, handle, rim, strap, edge shape and proportions, single object only, centered, white background, monochrome, no color fill, no shading, no extra objects, no person`
-    )
-    const lineartNegative = String(body?.negativePrompt || '').trim() || 'color, watercolor, gouache, shading, shadow, grayscale wash, background scene, extra character, extra limbs, multiple views, text, logo, realistic photo'
     const result = await generateComfyuiLineartFromReference({
       referenceBytes: refBytes,
       referenceFilename: `${String(asset.id || 'asset').trim() || 'asset'}.png`,
@@ -6983,6 +7159,16 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
       negativePrompt: lineartNegative
     })
     logStage({ stage: 'asset.lineart', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'controlnet_lineart_only' })
+    // 同步到 project.json 的 aiBackground.storyAssetPlan，保证工作区线稿门卡立即可见
+    try {
+      const projectPath = path.join(dir, 'project.json')
+      const projectDoc = await readJson(projectPath).catch(() => ({}))
+      if (!projectDoc.state || typeof projectDoc.state !== 'object') projectDoc.state = {}
+      if (!projectDoc.state.aiBackground || typeof projectDoc.state.aiBackground !== 'object') projectDoc.state.aiBackground = {}
+      projectDoc.state.aiBackground.storyAssetPlan = persisted.plan
+      projectDoc.updatedAt = nowIso()
+      await writeJson(projectPath, projectDoc)
+    } catch (_) { /* 同步失败不阻断线稿结果 */ }
     return c.json({ success: true, asset: persisted.asset, plan: persisted.plan, hintAssetPath: persisted.hintAssetPath, finalAssetPath: persisted.finalAssetPath, hintUrl: persisted.hintUrl, finalUrl: persisted.finalUrl, meta: result.meta, prompt: lineartPrompt, negativePrompt: lineartNegative })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
@@ -6990,6 +7176,260 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
     logStage({ stage: 'asset.lineart', event: 'fail', traceId, project: id, item: assetId, status: mapped.httpStatus, ok: false, err: msg })
     return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
+})
+
+// ComfyUI 能力检查：对比工作流所需节点/模型与实装情况，缺失项可自动修复
+app.get('/api/ai/comfyui/capability-check', async (c) => {
+  const studio = await getEffectiveStudioConfig(ROOT)
+  const baseUrl = String(studio.effective.image.comfyuiBaseUrl || process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188').trim()
+  const result = await checkComfyuiCapability({ baseUrl, comfyRoot: process.env.COMFYUI_ROOT })
+  return c.json({ success: true, ...result })
+})
+
+// ComfyUI 自动修复：安装缺失 Python 依赖，可选重启 ComfyUI 使节点生效
+app.post('/api/ai/comfyui/auto-fix', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const restart = Boolean(body?.restart)
+  const scriptPath = path.resolve(__dirname, '../../../scripts/maintenance/comfyui_auto_fix.sh')
+  try {
+    const args = restart ? ['--restart'] : []
+    const result = await runCommand('bash', [scriptPath, ...args], {
+      env: { ...process.env },
+      maxBuffer: 8 * 1024 * 1024
+    })
+    return c.json({ success: true, restart, stdout: String(result.stdout || '').slice(-4000), stderr: String(result.stderr || '').slice(-2000) })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    return c.json({ success: false, error: 'auto_fix_failed', message: msg.slice(-2000) }, 500)
+  }
+})
+
+// ---- 图片生成审核门禁 ----
+// 模式：manual（人工审核，默认）/ ai_only（AI 评审即终审）/ off（全自动）
+// 优先级：请求头 x-image-review-mode > body.reviewMode > 环境变量 STUDIO_IMAGE_REVIEW_MODE > manual
+function resolveImageReviewMode(c, body) {
+  const header = String(c.req.header('x-image-review-mode') || '').trim()
+  if (header === 'off' || header === 'ai_only' || header === 'manual') return header
+  const fromBody = String(body && body.reviewMode || '').trim()
+  if (fromBody === 'off' || fromBody === 'ai_only' || fromBody === 'manual') return fromBody
+  const fromEnv = String(process.env.STUDIO_IMAGE_REVIEW_MODE || '').trim()
+  if (fromEnv === 'off' || fromEnv === 'ai_only' || fromEnv === 'manual') return fromEnv
+  return 'manual'
+}
+
+// 出图前审核旁路检查：携带已批准的 pre_generate 审核 id 时放行
+async function hasApprovedPreGenerate(dir, c) {
+  const token = String(c.req.header('x-pre-generate-approved') || '').trim()
+  if (!token) return false
+  const review = await getImageReview(dir, token)
+  return Boolean(review && review.phase === 'pre_generate' && review.status === 'approved')
+}
+
+// 锁定写入（lock test Step D 与 lock_confirm approve 共用）
+// S4-01：写入前验证文件真实存在且为有效图片；缺失/损坏时抛出带 code 的错误，禁止写假引用
+async function persistPrimaryReferenceLock(id, dir, assetId, assetPath) {
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return null
+  const target = (Array.isArray(plan.assets) ? plan.assets : []).find((a) => String(a && a.id || '').trim() === String(assetId || '').trim())
+  if (!target || !assetPath) return null
+  const fileGate = await verifyStoryAssetReferenceFile({ dir, assetPath })
+  if (!fileGate.ok) {
+    const e = new Error(fileGate.message)
+    e.code = fileGate.code
+    e.status = 400
+    throw e
+  }
+  target.primaryReferenceAssetUri = assetPath
+  target.primaryReferenceSelectedAt = new Date().toISOString()
+  await saveStoryAssetPlan(id, plan)
+  // 同步到 project.json 的 aiBackground.storyAssetPlan，保证编辑器锁定工作区立即可见
+  try {
+    const projectPath = path.join(dir, 'project.json')
+    const projectDoc = await readJson(projectPath).catch(() => ({}))
+    if (!projectDoc.state || typeof projectDoc.state !== 'object') projectDoc.state = {}
+    if (!projectDoc.state.aiBackground || typeof projectDoc.state.aiBackground !== 'object') projectDoc.state.aiBackground = {}
+    projectDoc.state.aiBackground.storyAssetPlan = plan
+    projectDoc.updatedAt = nowIso()
+    await writeJson(projectPath, projectDoc)
+  } catch (_) { /* 同步失败不阻断锁定写入 */ }
+  return plan
+}
+
+// 场景背景绑定（场景渲染与 scene_bind approve 共用）
+// references：本次渲染实际使用的锁定参考图证据（S4-02），随资产 source 持久化，供审核与导出追溯
+async function persistSceneBackgroundBinding({ dir, rawProject, story, sceneId, sceneName, assetPath, prompt, provider, remoteUrl, references }) {
+  const projectAssetId = genId('asset')
+  const projectAsset = {
+    id: projectAssetId,
+    kind: 'image',
+    name: `故事场景 ${String(sceneName || sceneId || projectAssetId).trim()}`,
+    uri: assetPath,
+    source: {
+      type: 'ai',
+      prompt: String(prompt || ''),
+      provider: String(provider || ''),
+      remoteUrl: String(remoteUrl || '').trim() || undefined,
+      references: Array.isArray(references) ? references : []
+    }
+  }
+  const nextStory = {
+    ...story,
+    nodes: Array.isArray(story.nodes) ? story.nodes.map((node) => {
+      if (String(node && node.id || '').trim() !== String(sceneId || '').trim()) return node
+      const visuals = node && node.visuals && typeof node.visuals === 'object' ? node.visuals : {}
+      return { ...node, visuals: { ...visuals, backgroundAssetId: projectAssetId } }
+    }) : story.nodes
+  }
+  const nextProject = {
+    ...rawProject,
+    assets: [...(Array.isArray(rawProject.assets) ? rawProject.assets : []), projectAsset],
+    updatedAt: new Date().toISOString()
+  }
+  await writeJson(path.join(dir, 'project.json'), nextProject)
+  await writeJson(path.join(dir, 'story.json'), nextStory)
+  return projectAsset
+}
+
+// 审核记录查询与决策
+app.get('/api/projects/:id/ai/reviews', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const status = String(c.req.query('status') || '').trim()
+  const reviews = await listImageReviews(dir, { status })
+  return c.json({ success: true, reviews, mode: resolveImageReviewMode(c, {}) })
+})
+
+app.post('/api/projects/:id/ai/reviews/:reviewId/approve', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const review = await getImageReview(dir, c.req.param('reviewId'))
+  if (!review) return c.json({ success: false, error: 'review_not_found' }, 404)
+  if (review.status !== 'pending') return c.json({ success: false, error: 'review_already_decided', message: `审核已处理（${review.status}）` }, 409)
+
+  if (review.phase === 'pre_generate') {
+    const decided = await decideImageReview(dir, review.reviewId, { approved: true })
+    // 批准后立即在后台执行原操作（携带旁路令牌，任务进度经 /ai/tasks 可见）
+    const exec = review.execute && typeof review.execute === 'object' ? review.execute : null
+    if (exec && exec.endpoint) {
+      const port = Number(process.env.PORT || 1999)
+      ;(async () => {
+        try {
+          await fetch(`http://127.0.0.1:${port}${exec.endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-pre-generate-approved': review.reviewId },
+            body: JSON.stringify(exec.payload || {})
+          })
+        } catch (_) { /* 执行失败由任务进度/日志体现 */ }
+      })()
+    }
+    return c.json({ success: true, review: decided, executed: Boolean(exec && exec.endpoint) })
+  }
+
+  if (review.phase === 'lock_confirm') {
+    let plan = null
+    try {
+      plan = await persistPrimaryReferenceLock(id, dir, review.assetId, review.resultImagePath)
+    } catch (e) {
+      // 文件缺失/损坏：显式失败，审核保持 pending，不写假引用
+      const code = String(e && e.code || 'lock_persist_failed')
+      const msg = String(e && e.message || e)
+      return c.json({ success: false, error: code, message: msg }, Number(e && e.status) || 400)
+    }
+    if (!plan) return c.json({ success: false, error: 'lock_target_missing', message: '未找到待锁定的资产或计划' }, 400)
+    const decided = await decideImageReview(dir, review.reviewId, { approved: true })
+    // 锁定确认后自动跟进线稿生成（manual 模式下会先挂线稿的出图前审核）
+    const port = Number(process.env.PORT || 1999)
+    ;(async () => {
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/projects/${encodeURIComponent(id)}/ai/story/assets/lineart`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId: review.assetId })
+        })
+      } catch (_) { /* 线稿跟进失败不阻断锁定结果 */ }
+    })()
+    return c.json({ success: true, review: decided, plan, lineartTriggered: true })
+  }
+
+  if (review.phase === 'scene_bind') {
+    // S4-02：人工确认绑定行为不变，仅补文件真实性校验；文件缺失/损坏时显式失败，审核保持 pending 不被消费
+    const fileGate = await verifyStoryAssetReferenceFile({ dir, assetPath: String(review.resultImagePath || '') })
+    if (!fileGate.ok) {
+      return c.json({ success: false, error: fileGate.code, message: `场景图绑定被阻断：${fileGate.message}` }, 400)
+    }
+    const bundle = await readProjectBundle(id)
+    const sceneName = String(review.params && review.params.sceneName || review.sceneId || '').trim()
+    const projectAsset = await persistSceneBackgroundBinding({
+      dir,
+      rawProject: bundle.rawProject,
+      story: bundle.story,
+      sceneId: review.sceneId,
+      sceneName,
+      assetPath: review.resultImagePath,
+      prompt: review.prompt,
+      provider: review.params && review.params.provider,
+      remoteUrl: review.params && review.params.remoteUrl,
+      references: review.params && review.params.references
+    })
+    const decided = await decideImageReview(dir, review.reviewId, { approved: true })
+    return c.json({ success: true, review: decided, projectAsset })
+  }
+
+  return c.json({ success: false, error: 'unknown_review_phase' }, 400)
+})
+
+app.post('/api/projects/:id/ai/reviews/:reviewId/reject', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const body = await c.req.json().catch(() => ({}))
+  const review = await getImageReview(dir, c.req.param('reviewId'))
+  if (!review) return c.json({ success: false, error: 'review_not_found' }, 404)
+  if (review.status !== 'pending') return c.json({ success: false, error: 'review_already_decided' }, 409)
+  const decided = await decideImageReview(dir, review.reviewId, { approved: false, rejectReason: String(body?.reason || '') })
+  return c.json({ success: true, review: decided })
+})
+
+// 批量批准某一阶段的全部待审核（典型：批量渲染后的 11 张场景图一次过审）
+app.post('/api/projects/:id/ai/reviews/approve-all', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const body = await c.req.json().catch(() => ({}))
+  const phase = String(body?.phase || 'scene_bind').trim()
+  const pending = await listImageReviews(dir, { status: 'pending' })
+  const targets = pending.filter((item) => item.phase === phase)
+  const results = []
+  const port = Number(process.env.PORT || 1999)
+  for (const review of targets) {
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/api/projects/${encodeURIComponent(id)}/ai/reviews/${encodeURIComponent(review.reviewId)}/approve`, { method: 'POST' })
+      const json = await resp.json().catch(() => ({}))
+      results.push({ reviewId: review.reviewId, ok: resp.ok && json.success })
+    } catch (e) {
+      results.push({ reviewId: review.reviewId, ok: false, error: e && e.message ? String(e.message) : String(e) })
+    }
+  }
+  const okCount = results.filter((r) => r.ok).length
+  return c.json({ success: true, total: targets.length, okCount, results })
+})
+
+// AI 任务进度查询：编辑器轮询用，让长任务（锁定测试/场景渲染）的阶段在 UI 可见
+app.get('/api/projects/:id/ai/tasks', async (c) => {
+  const id = c.req.param('id')
+  await loadAiTasksFromDisk(id)
+  const includeDone = String(c.req.query('includeDone') || '1') !== '0'
+  return c.json({ success: true, tasks: listAiTasks(id, { includeDone }) })
+})
+
+app.get('/api/projects/:id/ai/tasks/:taskId', async (c) => {
+  const id = c.req.param('id')
+  await loadAiTasksFromDisk(id)
+  const task = getAiTask(c.req.param('taskId'))
+  if (!task || task.projectId !== id) return c.json({ success: false, error: 'not_found' }, 404)
+  return c.json({ success: true, task })
 })
 
 app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
@@ -7059,8 +7499,36 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
     item: `${String(testTarget.name || testTarget.id || 'asset').trim()} / attempts:${maxAttempts}`
   })
 
+  const lockTask = createAiTask(id, 'story.lock_test', {
+    total: maxAttempts,
+    message: `锁定测试：${String(testTarget.name || testTarget.id || 'asset').trim()}`
+  })
+  updateAiTask(lockTask.taskId, { stage: 'preparing', message: '准备工作流…' })
+
+  // 出图前审核（manual 模式）：无已批准审核时创建 pending 并挂起，批准后自动执行
+  const reviewMode = resolveImageReviewMode(c, body)
+  if (reviewMode === 'manual' && !(await hasApprovedPreGenerate(dir, c))) {
+    const targetKey = `lock_test:${String(testTarget.id || '').trim()}`
+    let review = await findPendingReview(dir, { phase: 'pre_generate', targetKey })
+    if (!review) {
+      review = await createImageReview(dir, {
+        phase: 'pre_generate',
+        targetKey,
+        assetId: String(testTarget.id || '').trim(),
+        prompt: positivePrompt,
+        negativePrompt,
+        params: { kind: 'story.lock_test', targetName: String(testTarget.name || '').trim(), model: requestedModel, width, height, steps, maxAttempts },
+        execute: { endpoint: `/api/projects/${encodeURIComponent(id)}/ai/story/lock/test`, payload: body && typeof body === 'object' ? body : {} }
+      })
+    }
+    updateAiTask(lockTask.taskId, { stage: 'waiting_review', done: true, message: `出图前审核待批准：${String(testTarget.name || testTarget.id || '').trim()}` })
+    return c.json({ success: true, pendingReview: review, taskId: lockTask.taskId }, 202)
+  }
+  let pendingLockReview = null
+
   try {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      updateAiTask(lockTask.taskId, { stage: 'generating', current: attempt, message: `第 ${attempt}/${maxAttempts} 次生成中…` })
       const workflow = await buildStoryboardLockTestWorkflow({
         model: requestedModel,
         loras: requestedLoras.length ? requestedLoras : studio.effective.image.loras,
@@ -7072,7 +7540,8 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
         cfgScale,
         samplerName: sampler,
         scheduler,
-        seed: Math.floor(Math.random() * 9_999_999_999),
+        // ComfyUI seed 有效范围 [0, 4294967295]；之前用 9_999_999_999 导致 57% 被 clamp 成固定值 4294967295，命中同一份空缓存
+        seed: Math.floor(Math.random() * 4_294_967_296),
         filenamePrefix: buildStoryAssetComfyPrefix(testTarget, 'lock_test')
       })
       const gen = await runComfyuiPromptWorkflow({
@@ -7094,11 +7563,14 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
       const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
       const dataUrl = `data:${sniff?.contentType || (ext === 'jpg' ? 'image/jpeg' : 'image/png')};base64,${buf.toString('base64')}`
 
+      updateAiTask(lockTask.taskId, { stage: 'reviewing', current: attempt, message: `第 ${attempt}/${maxAttempts} 次 AI 评审中…` })
       const analysis = await reviewStoryboardLockImageWithAi({
-        provider: studio.effective.prompt.provider,
-        model: studio.effective.prompt.model,
+        provider: process.env.MOONSHOT_API_KEY ? 'moonshot' : studio.effective.prompt.provider,
+        model: process.env.MOONSHOT_API_KEY ? 'kimi-for-coding' : studio.effective.prompt.model,
         apiUrl: studio.effective.prompt.apiUrl,
         proxyUrl: studio.effective.network.proxyUrl,
+        moonshotApiKey: process.env.MOONSHOT_API_KEY || '',
+        moonshotBaseUrl: process.env.MOONSHOT_BASE_URL || 'https://api.kimi.com/coding/v1',
         asset: testTarget,
         prompt: positivePrompt,
         negativePrompt,
@@ -7115,13 +7587,31 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
         negativePrompt,
         assetPath,
         url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
-        remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
+        remoteUrl: String(gen?.meta?.url || '').trim() || undefined,
         analysis
       })
 
       if (analysis && analysis.passed) {
         passed = true
         finalSummary = String(analysis.summary || '锁定测试已通过').trim() || '锁定测试已通过'
+        if (reviewMode === 'manual') {
+          // Step D（manual）：AI 评审通过后先挂人工确认，approve 后才真正落锁
+          pendingLockReview = await createImageReview(dir, {
+            phase: 'lock_confirm',
+            targetKey: `lock_confirm:${String(testTarget.id || '').trim()}:${assetPath}`,
+            assetId: String(testTarget.id || '').trim(),
+            prompt: positivePrompt,
+            negativePrompt,
+            resultImagePath: assetPath,
+            aiReview: analysis
+          })
+          finalSummary = `AI 评审通过（${Number(analysis.score) || '-'} 分），待人工确认锁定：${String(testTarget.name || testTarget.id || '').trim()}`
+        } else {
+          // Step D：测试图通过评审后，写入 asset.primaryReferenceAssetUri 并持久化
+          try {
+            await persistPrimaryReferenceLock(id, dir, String(testTarget.id || '').trim(), assetPath)
+          } catch (_) { /* 持久化失败不阻断测试结果 */ }
+        }
         break
       }
 
@@ -7146,10 +7636,18 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
       item: `${String(testTarget.name || testTarget.id || 'asset').trim()} / attempts:${attempts.length}`
     })
 
+    updateAiTask(lockTask.taskId, {
+      stage: pendingLockReview ? 'waiting_review' : (passed ? 'passed' : 'failed'),
+      done: true,
+      message: finalSummary,
+      result: { passed, pendingReviewId: pendingLockReview ? pendingLockReview.reviewId : undefined }
+    })
     return c.json({
       success: true,
       passed,
       summary: finalSummary,
+      taskId: lockTask.taskId,
+      pendingReview: pendingLockReview || undefined,
       testTarget: {
         id: String(testTarget.id || '').trim(),
         name: String(testTarget.name || '').trim(),
@@ -7171,7 +7669,8 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
       model: requestedModel || '-',
       item: msg
     })
-    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+    updateAiTask(lockTask.taskId, { stage: 'error', done: true, error: msg, message: msg })
+    return c.json({ success: false, error: mapped.code, message: msg, taskId: lockTask.taskId }, mapped.httpStatus)
   }
 })
 
@@ -7194,8 +7693,42 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
     await saveStoryAssetPlan(id, plan)
   }
 
-  const renderSpec = buildStorySceneRenderSpec({ plan, sceneId })
+  // 背景-only 模式（背景+立绘分层合成）：mode='background' 或 backgroundOnly=true 时，
+  // 场景只出背景（人物/事物由立绘 placements 合成），不再要求角色锁定引用
+  const backgroundOnly = String(body?.mode || '').trim() === 'background' || body?.backgroundOnly === true
+  const renderSpec = buildStorySceneRenderSpec({ plan, sceneId, mode: backgroundOnly ? 'background' : '' })
   if (!renderSpec) return c.json({ success: false, error: 'scene_not_found', message: `未找到场景：${sceneId}` }, 404)
+
+  // 任务进度：render-all 传入 taskId 时共享批量任务，否则为本场景建独立任务
+  const sharedTaskId = String(body?.taskId || '').trim()
+  const sharedTask = sharedTaskId ? getAiTask(sharedTaskId) : null
+  const sceneTaskId = sharedTask
+    ? sharedTask.taskId
+    : createAiTask(id, 'story.scene.render', { total: 1, message: `渲染场景：${String(renderSpec.sceneName || sceneId).trim()}` }).taskId
+  const ownSceneTask = !sharedTask
+  updateAiTask(sceneTaskId, { stage: 'loading_refs', message: `加载参考图（${String(renderSpec.sceneName || sceneId).trim()}）…` })
+
+  const traceId = createTraceId()
+
+  // S4-02 reference required 门禁：场景含「必须参考图」资产但引用未锁定时显式 BLOCKED。
+  // 禁止降级为无参考生成；阻断原因经 logStage 与任务进度留痕。
+  if (Array.isArray(renderSpec.missingRequiredAssets) && renderSpec.missingRequiredAssets.length) {
+    const missing = renderSpec.missingRequiredAssets
+    const names = missing.map((asset) => `${asset.name || asset.id}(${asset.id})`).join('、')
+    const message = `场景「${String(renderSpec.sceneName || sceneId).trim()}」存在必须参考图但未锁定的资产：${names}。请先完成角色/资产锁定，已阻断渲染。`
+    logStage({ stage: 'story.scene.render', event: 'blocked', traceId, project: id, item: `${sceneId} / missing:${missing.map((a) => a.id).join(',')}` })
+    // 共享批量任务（render-all/batch）只更新消息，不把整个批次标记 done；独立场景任务才收敛 blocked
+    if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'blocked', done: true, error: 'scene_reference_missing', message })
+    else updateAiTask(sceneTaskId, { message })
+    return c.json({
+      success: false,
+      error: 'scene_reference_missing',
+      message,
+      sceneId: String(renderSpec.sceneId || sceneId).trim(),
+      missingRequiredAssets: missing,
+      taskId: sceneTaskId
+    }, 409)
+  }
 
   const studio = await getEffectiveStudioConfig(ROOT)
   if (!studio.effective.enabled.image) {
@@ -7218,28 +7751,61 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
   const requestedModel = String(body?.model || '').trim()
   const requestedLoras = Array.isArray(body?.loras) ? body.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
 
+  // S4-02 渲染输入绑定：已锁定的参考图必须逐一通过文件真实性校验（复用 S4-01 门禁原语），
+  // 校验失败显式 BLOCKED，禁止静默丢弃后降级为无参考生成；通过者记录为渲染输入证据。
   const referenceImages = []
+  const referencesUsed = []
   for (const ref of Array.isArray(renderSpec.referenceAssets) ? renderSpec.referenceAssets : []) {
     const assetAbs = resolveAssetPathFromUri(id, ref.assetUri || '')
-    if (!assetAbs || !(await existsFile(assetAbs))) continue
+    const relPath = assetAbs ? path.relative(dir, assetAbs) : String(ref.assetUri || '')
+    const fileGate = await verifyStoryAssetReferenceFile({ dir, assetPath: relPath })
+    if (!assetAbs || !fileGate.ok) {
+      const code = !assetAbs ? 'reference_path_outside_project' : fileGate.code
+      const baseMessage = !assetAbs ? `参考图路径无法解析或越出项目目录：${String(ref.assetUri || '')}` : fileGate.message
+      const message = `场景「${String(renderSpec.sceneName || sceneId).trim()}」的锁定参考图不可用（资产 ${String(ref.name || ref.id || '').trim()}）：${baseMessage}`
+      logStage({ stage: 'story.scene.render', event: 'blocked', traceId, project: id, item: `${sceneId} / asset:${String(ref.id || '').trim()} / ${code}` })
+      if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'blocked', done: true, error: code, message })
+      else updateAiTask(sceneTaskId, { message })
+      return c.json({
+        success: false,
+        error: code,
+        message,
+        sceneId: String(renderSpec.sceneId || sceneId).trim(),
+        reference: { assetId: String(ref.id || '').trim(), assetName: String(ref.name || '').trim(), assetUri: String(ref.assetUri || '') },
+        taskId: sceneTaskId
+      }, 409)
+    }
     try {
-      const bytes = await readFile(assetAbs)
+      const bytes = await readFile(fileGate.absPath)
       referenceImages.push({
         role: String(ref.category || 'asset').trim() || 'asset',
         assetId: String(ref.assetId || ref.id || '').trim() || undefined,
         assetName: String(ref.name || ref.id || 'reference').trim(),
-        filename: path.basename(assetAbs),
+        filename: path.basename(fileGate.absPath),
         bytes,
         weight: Number.isFinite(Number(ref.weight)) ? Number(ref.weight) : undefined
       })
-    } catch (_) {}
+      referencesUsed.push({
+        assetId: String(ref.id || '').trim(),
+        assetName: String(ref.name || ref.id || '').trim(),
+        category: String(ref.category || '').trim(),
+        assetPath: fileGate.relPath
+      })
+    } catch (_) {
+      const message = `场景「${String(renderSpec.sceneName || sceneId).trim()}」的锁定参考图读取失败（资产 ${String(ref.name || ref.id || '').trim()}）：${fileGate.relPath}`
+      logStage({ stage: 'story.scene.render', event: 'blocked', traceId, project: id, item: `${sceneId} / asset:${String(ref.id || '').trim()} / reference_file_missing` })
+      if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'blocked', done: true, error: 'reference_file_missing', message })
+      else updateAiTask(sceneTaskId, { message })
+      return c.json({ success: false, error: 'reference_file_missing', message, taskId: sceneTaskId }, 409)
+    }
   }
 
   const bodyPrompt = String(body?.scenePrompt || body?.prompt || '').trim()
   const prompt = [
     String(plan.worldAnchor || '').trim(),
     ...((Array.isArray(renderSpec.promptLocks) ? renderSpec.promptLocks : []).slice(0, 20)),
-    bodyPrompt || String(renderSpec.summary || '').trim()
+    // 背景-only：使用剥离人物/事物名称后的场景描述；显式 body prompt 优先且原样尊重
+    bodyPrompt || (backgroundOnly ? String(renderSpec.backgroundPrompt || '').trim() : String(renderSpec.summary || '').trim())
   ]
     .map((x) => String(x || '').trim())
     .filter(Boolean)
@@ -7252,7 +7818,29 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
     String(body?.negativePrompt || '').trim()
   ].filter(Boolean).join(', ')
 
+  // 出图前审核（manual 模式）：挂起并返回 202，批准后自动执行
+  const reviewMode = resolveImageReviewMode(c, body)
+  if (reviewMode === 'manual' && !(await hasApprovedPreGenerate(dir, c))) {
+    const targetKey = `scene_render:${String(renderSpec.sceneId || sceneId).trim()}`
+    let review = await findPendingReview(dir, { phase: 'pre_generate', targetKey })
+    if (!review) {
+      review = await createImageReview(dir, {
+        phase: 'pre_generate',
+        targetKey,
+        sceneId: String(renderSpec.sceneId || sceneId).trim(),
+        prompt,
+        negativePrompt,
+        referenceImages: referenceImages.map((ref) => ({ role: ref.role, assetId: ref.assetId, assetName: ref.assetName, filename: ref.filename })),
+        params: { kind: 'story.scene.render', sceneName: String(renderSpec.sceneName || '').trim(), width, height, style, mode: String(renderSpec.mode || 'full') },
+        execute: { endpoint: `/api/projects/${encodeURIComponent(id)}/ai/story/scenes/${encodeURIComponent(String(renderSpec.sceneId || sceneId).trim())}/render`, payload: body && typeof body === 'object' ? body : {} }
+      })
+    }
+    if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'waiting_review', done: true, message: `出图前审核待批准：${String(renderSpec.sceneName || sceneId).trim()}` })
+    return c.json({ success: true, pendingReview: review, taskId: sceneTaskId }, 202)
+  }
+
   try {
+    updateAiTask(sceneTaskId, { stage: 'generating', message: 'ComfyUI 生成中…' })
     const gen = await generateBackgroundImage({
       prompt,
       negativePrompt,
@@ -7294,59 +7882,734 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
     await writeFile(abs, buf)
     const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
 
-    const projectAssetId = genId('asset')
-    const projectAsset = {
-      id: projectAssetId,
-      kind: 'image',
-      name: `故事场景 ${String(renderSpec.sceneName || renderSpec.sceneId || projectAssetId).trim()}`,
-      uri: assetPath,
-      source: {
-        type: 'ai',
+    // manual 模式：生成图先挂 scene_bind 审核，人工 approve 后才绑定到故事节点
+    if (reviewMode === 'manual') {
+      const review = await createImageReview(dir, {
+        phase: 'scene_bind',
+        targetKey: `scene_bind:${String(renderSpec.sceneId || sceneId).trim()}:${assetPath}`,
+        sceneId: String(renderSpec.sceneId || sceneId).trim(),
         prompt,
-        provider: String(finalGen?.meta?.provider || imgProvider || ''),
-        remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined
-      }
-    }
-
-    const nextStory = {
-      ...bundle.story,
-      nodes: Array.isArray(bundle.story.nodes) ? bundle.story.nodes.map((node) => {
-        if (String(node && node.id || '').trim() !== String(renderSpec.sceneId || '').trim()) return node
-        const visuals = node && node.visuals && typeof node.visuals === 'object' ? node.visuals : {}
-        return {
-          ...node,
-          visuals: {
-            ...visuals,
-            backgroundAssetId: projectAssetId
-          }
+        negativePrompt,
+        resultImagePath: assetPath,
+        params: {
+          sceneName: String(renderSpec.sceneName || '').trim(),
+          provider: String(gen?.meta?.provider || imgProvider || ''),
+          remoteUrl: String(gen?.meta?.url || '').trim() || undefined,
+          references: referencesUsed,
+          mode: String(renderSpec.mode || 'full')
         }
-      }) : bundle.story.nodes
+      })
+      if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'waiting_review', done: true, current: 1, message: `场景图待审核绑定：${String(renderSpec.sceneName || sceneId).trim()}` })
+      logStage({ stage: 'story.scene.render', event: 'ok', traceId, project: id, provider: imgProvider, item: `${sceneId} / pending scene_bind / refs:${referencesUsed.map((r) => r.assetId).join(',') || '-'} / ${assetPath}` })
+      return c.json({
+        success: true,
+        pendingReview: review,
+        renderSpec,
+        assetPath,
+        referencesUsed,
+        taskId: sceneTaskId,
+        url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
+        provider: String(gen?.meta?.provider || imgProvider || ''),
+        prompt,
+        negativePrompt
+      })
     }
-    const nextProject = {
-      ...bundle.rawProject,
-      assets: [...(Array.isArray(bundle.rawProject.assets) ? bundle.rawProject.assets : []), projectAsset],
-      updatedAt: new Date().toISOString()
-    }
-    await writeJson(path.join(dir, 'project.json'), nextProject)
-    await writeJson(path.join(dir, 'story.json'), nextStory)
 
+    updateAiTask(sceneTaskId, { stage: 'writing', message: '写回项目与故事文档…' })
+    const projectAsset = await persistSceneBackgroundBinding({
+      dir,
+      rawProject: bundle.rawProject,
+      story: bundle.story,
+      sceneId: String(renderSpec.sceneId || sceneId).trim(),
+      sceneName: String(renderSpec.sceneName || '').trim(),
+      assetPath,
+      prompt,
+      provider: String(gen?.meta?.provider || imgProvider || ''),
+      remoteUrl: String(gen?.meta?.url || '').trim() || undefined,
+      references: referencesUsed
+    })
+
+    logStage({ stage: 'story.scene.render', event: 'ok', traceId, project: id, provider: imgProvider, item: `${sceneId} / refs:${referencesUsed.map((r) => r.assetId).join(',') || '-'} / ${assetPath}` })
+    if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'done', done: true, current: 1, message: `场景已出图：${String(renderSpec.sceneName || sceneId).trim()}` })
     return c.json({
       success: true,
       projectAsset,
       renderSpec,
       assetPath,
+      referencesUsed,
+      taskId: sceneTaskId,
       url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
-      provider: String(finalGen?.meta?.provider || imgProvider || ''),
-      remoteUrl: String(finalGen?.meta?.url || '').trim() || undefined,
+      provider: String(gen?.meta?.provider || imgProvider || ''),
+      remoteUrl: String(gen?.meta?.url || '').trim() || undefined,
       prompt,
       negativePrompt
     })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
+    logStage({ stage: 'story.scene.render', event: 'fail', traceId, project: id, provider: imgProvider, item: `${sceneId} / ${msg}` })
+    if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'error', done: true, error: msg, message: msg })
+    return c.json({ success: false, error: mapped.code, message: msg, taskId: sceneTaskId }, mapped.httpStatus)
+  }
+})
+
+// 批量渲染：异步串行渲染缺失场景，立即返回 taskId，进度经 /ai/tasks 轮询可见
+app.post('/api/projects/:id/ai/story/scenes/render-all', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const bundle = await readProjectBundle(id)
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+
+  const storyNodes = Array.isArray(bundle.story?.nodes) ? bundle.story.nodes : []
+  const onlyMissing = body?.onlyMissing !== false
+  const targets = storyNodes
+    .filter((n) => !onlyMissing || !String(n?.visuals?.backgroundAssetId || '').trim())
+    .map((n) => String(n && n.id || '').trim())
+    .filter(Boolean)
+  if (!targets.length) {
+    return c.json({ success: true, taskId: null, total: 0, message: '所有场景均已有图，无需渲染' })
+  }
+
+  const active = listAiTasks(id, { includeDone: false }).find((t) => t.kind === 'story.scenes.render_all')
+  if (active) {
+    return c.json({ success: false, error: 'render_all_running', message: '批量渲染正在进行中', taskId: active.taskId }, 409)
+  }
+
+  // 出图前审核（manual 模式）：整个批次挂一次审核，批准后自动执行；场景绑定仍逐张审核
+  const reviewMode = resolveImageReviewMode(c, body)
+  if (reviewMode === 'manual' && !(await hasApprovedPreGenerate(dir, c))) {
+    const targetKey = 'render_all'
+    let review = await findPendingReview(dir, { phase: 'pre_generate', targetKey })
+    if (!review) {
+      review = await createImageReview(dir, {
+        phase: 'pre_generate',
+        targetKey,
+        prompt: String(plan.worldAnchor || '').trim(),
+        params: {
+          kind: 'story.scenes.render_all',
+          sceneCount: targets.length,
+          scenes: targets.slice(0, 20)
+        },
+        execute: { endpoint: `/api/projects/${encodeURIComponent(id)}/ai/story/scenes/render-all`, payload: body && typeof body === 'object' ? body : {} }
+      })
+    }
+    return c.json({ success: true, pendingReview: review, message: `批量渲染 ${targets.length} 个场景待出图前审核` }, 202)
+  }
+
+  const task = createAiTask(id, 'story.scenes.render_all', { total: targets.length, message: `批量渲染 ${targets.length} 个场景` })
+  const port = Number(process.env.PORT || 1999)
+  const approvedToken = String(c.req.header('x-pre-generate-approved') || '').trim()
+  ;(async () => {
+    const results = []
+    let okCount = 0
+    for (let i = 0; i < targets.length; i += 1) {
+      const sceneId = targets[i]
+      updateAiTask(task.taskId, { stage: 'rendering', current: i + 1, message: `渲染场景 ${i + 1}/${targets.length}：${sceneId}` })
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/api/projects/${encodeURIComponent(id)}/ai/story/scenes/${encodeURIComponent(sceneId)}/render`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(approvedToken ? { 'x-pre-generate-approved': approvedToken } : {})
+          },
+          body: JSON.stringify({
+            width: body?.width,
+            height: body?.height,
+            timeoutMs: body?.timeoutMs,
+            taskId: task.taskId
+          })
+        })
+        const json = await resp.json().catch(() => ({}))
+        if (resp.ok && json.success) {
+          okCount += 1
+          results.push({ sceneId, ok: true, assetPath: json.assetPath })
+        } else {
+          results.push({ sceneId, ok: false, error: String(json.message || json.error || `http_${resp.status}`) })
+        }
+      } catch (e) {
+        results.push({ sceneId, ok: false, error: e && e.message ? String(e.message) : String(e) })
+      }
+    }
+    updateAiTask(task.taskId, {
+      stage: okCount === targets.length ? 'done' : 'partial',
+      done: true,
+      current: targets.length,
+      message: `批量渲染完成 ${okCount}/${targets.length}`,
+      result: { okCount, results }
+    })
+  })().catch((e) => {
+    updateAiTask(task.taskId, { stage: 'error', done: true, error: e && e.message ? String(e.message) : String(e) })
+  })
+
+  return c.json({ success: true, taskId: task.taskId, total: targets.length }, 202)
+})
+
+// ---------------------------------------------------------------------------
+// AUTO-E05：故事完整度核实——真实浏览器逐节点走查导出的可玩 H5，
+// 确定性检查（console 错误/背景/立绘/文本/选项/可达性）+ Kimi 视觉评审 + 截图留证。
+// 只读 QA（不生成任何资产），故不挂出图审核门禁；长任务经 /ai/tasks 暴露进度（仓库硬规则）。
+// ---------------------------------------------------------------------------
+app.post('/api/projects/:id/ai/story/completeness-check', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  // 前置确定性校验：无导出产物 / 无 Chrome / 空故事都直接失败，不进异步任务
+  const distIndex = path.join(projectBuildDir(id, 'latest'), 'dist', 'index.html')
+  if (!(await existsFile(distIndex))) {
+    return c.json({ success: false, error: 'missing_dist', message: '未找到导出产物 builds/latest/dist/index.html，请先导出。' }, 400)
+  }
+  if (!resolveChromeExecutablePath()) {
+    return c.json({ success: false, error: 'chrome_not_found', message: '未找到本机 Chrome（可设 STUDIO_CHROME_PATH 指定）。' }, 400)
+  }
+  const bundle = await readProjectBundle(id)
+  const storyNodes = Array.isArray(bundle.story?.nodes) ? bundle.story.nodes : []
+  if (!storyNodes.length) {
+    return c.json({ success: false, error: 'empty_story', message: 'story.json 无节点，无法走查。' }, 400)
+  }
+
+  const active = listAiTasks(id, { includeDone: false }).find((t) => t.kind === COMPLETENESS_TASK_KIND)
+  if (active) {
+    return c.json({ success: false, error: 'completeness_check_running', message: '完整度核实正在进行中', taskId: active.taskId }, 409)
+  }
+
+  // 评审模型：body 覆盖 > studio settings review 段 > 环境默认（moonshot/kimi-for-coding）
+  const body = await c.req.json().catch(() => ({}))
+  const studio = await getEffectiveStudioConfig(ROOT)
+  const reviewConfig = resolveReviewConfig({ studioEffective: studio.effective, body })
+
+  const port = Number(process.env.PORT || 1999)
+  const distUrl = `http://127.0.0.1:${port}/demos/${encodeURIComponent(id)}/latest/dist/index.html`
+  const task = createAiTask(id, COMPLETENESS_TASK_KIND, { total: storyNodes.length, message: `完整度核实：${storyNodes.length} 个节点` })
+  ;(async () => {
+    // 评审器任何配置问题都如实记 review_unavailable（unsupported/missing key），不伪造评审
+    const reviewer = createNodeVisualReviewer({
+      provider: reviewConfig.provider,
+      model: reviewConfig.model,
+      apiUrl: reviewConfig.apiUrl,
+      timeoutMs: Number(body?.reviewTimeoutMs) || undefined
+    })
+    const { report, reportPath } = await runStoryCompletenessCheck({
+      projectId: id,
+      dir,
+      story: bundle.story,
+      project: bundle.project,
+      distUrl,
+      launchBrowser: createPuppeteerBrowserLauncher(),
+      reviewer,
+      reviewMeta: reviewConfig,
+      onProgress: ({ index, total, nodeId }) => {
+        updateAiTask(task.taskId, { stage: 'walking', current: index, total, message: `走查节点 ${index}/${total}：${nodeId}` })
+      }
+    })
+    updateAiTask(task.taskId, {
+      stage: report.verdict === 'pass' ? 'done' : 'failed',
+      done: true,
+      current: report.summary.total,
+      message: `完整度核实完成：${report.verdict}（${report.summary.passed}/${report.summary.total} 通过，AI 评审 ${report.aiReviewStatus}）`,
+      result: {
+        verdict: report.verdict,
+        aiReviewStatus: report.aiReviewStatus,
+        summary: report.summary,
+        failedNodes: report.failedNodes,
+        reportFile: path.relative(dir, reportPath)
+      }
+    })
+  })().catch((e) => {
+    updateAiTask(task.taskId, { stage: 'error', done: true, error: e && e.message ? String(e.message) : String(e) })
+  })
+
+  return c.json({ success: true, taskId: task.taskId, total: storyNodes.length }, 202)
+})
+
+app.get('/api/projects/:id/ai/story/completeness-check/latest', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const latest = await loadLatestCompletenessReport(dir)
+  if (!latest) return c.json({ success: false, error: 'no_report', message: '暂无完整度报告，请先执行核实。' }, 404)
+  return c.json({ success: true, file: latest.file, report: latest.report })
+})
+
+// ---------------------------------------------------------------------------
+// AUTO-E03 / S4-03：批量场景生产队列（scene item 队列）
+// 与 render-all 的区别：per-scene checkpoint 落盘（story-assets/scene-batch-queue.json）、
+// C02 同源失败分类退避重试、成功保护不重复生成、重启后从断点继续。
+// 批量入口与 render-all 一致不挂 storyInputGate（契约枚举未覆盖批量类型）。
+// ---------------------------------------------------------------------------
+
+// 进程内执行守卫：防止 resume/重启扫描与正在执行的批次并发双跑
+const activeSceneBatchProjects = new Set()
+
+// 装配批次执行器：renderScene 经 app.request 走单 scene render 路由完整门禁（reference gate/审核/回填）
+function makeSceneBatchRunner(id, task, { reviewMode, approvedToken, renderPayload } = {}) {
+  const renderScene = async (sceneId) => {
+    try {
+      const resp = await app.request(`/api/projects/${encodeURIComponent(id)}/ai/story/scenes/${encodeURIComponent(sceneId)}/render`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(reviewMode ? { 'x-image-review-mode': reviewMode } : {}),
+          ...(approvedToken ? { 'x-pre-generate-approved': approvedToken } : {})
+        },
+        body: JSON.stringify({ ...(renderPayload && typeof renderPayload === 'object' ? renderPayload : {}), taskId: task.taskId })
+      })
+      const json = await resp.json().catch(() => ({}))
+      if (resp.status === 202 && json && json.pendingReview) {
+        return { pendingReview: true, message: json.pendingReview.phase === 'scene_bind' ? '场景图待人工审核绑定' : '出图前审核待批准' }
+      }
+      if (resp.ok && json && json.success) {
+        return { ok: true, assetPath: json.assetPath, projectAssetId: json.projectAsset && json.projectAsset.id }
+      }
+      return { ok: false, httpStatus: resp.status, error: String(json.error || ''), message: String(json.message || json.error || `http_${resp.status}`) }
+    } catch (e) {
+      return { ok: false, httpStatus: 0, error: '', message: e && e.message ? String(e.message) : String(e) }
+    }
+  }
+  const onProgress = async (batch, item) => {
+    const settled = batch.items.filter((it) => ['completed', 'skipped', 'waiting_review', 'failed', 'blocked'].includes(it.status)).length
+    updateAiTask(task.taskId, { stage: 'rendering', current: settled, message: `批量渲染 ${settled}/${batch.items.length}：${item.sceneId} → ${item.status}` })
+  }
+  return { renderScene, onProgress }
+}
+
+function finalizeSceneBatchTask(task, done) {
+  const okCount = done.items.filter((it) => it.status === 'completed').length
+  const skipCount = done.items.filter((it) => it.status === 'skipped').length
+  const waitCount = done.items.filter((it) => it.status === 'waiting_review').length
+  updateAiTask(task.taskId, {
+    stage: done.status === 'completed' ? 'done' : done.status,
+    done: true,
+    current: done.items.length,
+    message: `批量渲染结束：完成 ${okCount}、跳过 ${skipCount}、待审核 ${waitCount}、失败/阻断 ${done.items.length - okCount - skipCount - waitCount}（${done.status}）`,
+    result: {
+      batchId: done.batchId,
+      status: done.status,
+      items: done.items.map((it) => ({
+        sceneId: it.sceneId,
+        status: it.status,
+        attempts: it.attempts,
+        error: it.error || undefined,
+        errorCategory: it.errorCategory || undefined,
+        assetPath: it.assetPath || undefined
+      }))
+    }
+  })
+}
+
+// 后台启动批次执行（带进程内守卫）；run 返回最终 batch，返回 null 表示无需收尾（如无待恢复场景）
+function launchSceneBatch(id, task, run) {
+  activeSceneBatchProjects.add(id)
+  ;(async () => {
+    try {
+      const done = await run()
+      if (done) finalizeSceneBatchTask(task, done)
+      else updateAiTask(task.taskId, { stage: 'done', done: true, message: '无待恢复场景，队列保持原状。' })
+    } catch (e) {
+      updateAiTask(task.taskId, { stage: 'error', done: true, error: e && e.message ? String(e.message) : String(e) })
+    } finally {
+      activeSceneBatchProjects.delete(id)
+    }
+  })()
+}
+
+function hasOpenSceneBatch(batch) {
+  if (!batch) return false
+  if (batch.status === 'running' || batch.status === 'queued') return true
+  return batch.items.some((it) => it.status === 'queued' || it.status === 'running')
+}
+
+// 提交批量场景队列：sceneIds 缺省 = 计划全部场景（按 sceneIndex 排序），执行顺序 = 提交顺序，串行执行
+app.post('/api/projects/:id/ai/story/scenes/batch', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+
+  const planScenes = Array.isArray(plan.scenes) ? plan.scenes : []
+  const byId = new Map(planScenes.map((s) => [String(s && s.sceneId || '').trim(), s]))
+  let sceneIds
+  if (Array.isArray(body?.sceneIds) && body.sceneIds.length) {
+    sceneIds = [...new Set(body.sceneIds.map((x) => String(x || '').trim()).filter(Boolean))]
+    const unknown = sceneIds.filter((sid) => !byId.has(sid))
+    if (unknown.length) return c.json({ success: false, error: 'scene_not_found', message: `计划中不存在场景：${unknown.join('、')}` }, 404)
+  } else {
+    sceneIds = planScenes
+      .slice()
+      .sort((a, b) => (Number(a && a.sceneIndex) || 0) - (Number(b && b.sceneIndex) || 0))
+      .map((s) => String(s && s.sceneId || '').trim())
+      .filter(Boolean)
+  }
+  if (!sceneIds.length) return c.json({ success: false, error: 'empty_batch', message: '批次为空：没有可渲染的场景。' }, 400)
+
+  // 单项目同时刻只允许一个未完成批次（文件 checkpoint + 进程内守卫双重判定）
+  const existing = await loadSceneBatch(dir)
+  if (activeSceneBatchProjects.has(id) || hasOpenSceneBatch(existing)) {
+    return c.json({ success: false, error: 'scene_batch_running', message: '已有批量队列在执行中，可查询状态或等待完成后再提交。', batchId: existing ? existing.batchId : undefined }, 409)
+  }
+
+  // 出图前审核（manual 模式）：整个批次挂一次审核，批准后自动执行；场景绑定仍逐张审核（E02 语义保留）
+  const reviewMode = resolveImageReviewMode(c, body)
+  if (reviewMode === 'manual' && !(await hasApprovedPreGenerate(dir, c))) {
+    const targetKey = 'scene_batch'
+    let review = await findPendingReview(dir, { phase: 'pre_generate', targetKey })
+    if (!review) {
+      review = await createImageReview(dir, {
+        phase: 'pre_generate',
+        targetKey,
+        prompt: String(plan.worldAnchor || '').trim(),
+        params: { kind: 'story.scenes.batch', sceneCount: sceneIds.length, scenes: sceneIds.slice(0, 20) },
+        execute: { endpoint: `/api/projects/${encodeURIComponent(id)}/ai/story/scenes/batch`, payload: body && typeof body === 'object' ? body : {} }
+      })
+    }
+    return c.json({ success: true, pendingReview: review, message: `批量渲染 ${sceneIds.length} 个场景待出图前审核` }, 202)
+  }
+
+  // 提交时预判成功保护：已成功绑定/待人工审核的场景直接标 skipped，不进入执行、不重复生成
+  const regen = body?.regenerate
+  const regenSet = Array.isArray(regen) ? new Set(regen.map((x) => String(x || '').trim())) : null
+  const items = []
+  for (const sid of sceneIds) {
+    const entry = byId.get(sid)
+    const sceneName = String(entry && entry.sceneName || '').trim()
+    const requested = regen === true || (regenSet ? regenSet.has(sid) : false)
+    if (!requested) {
+      const guard = await checkSceneSuccess({ dir, sceneId: sid })
+      if (guard.success) {
+        items.push({ sceneId: sid, sceneName, status: 'skipped', skipReason: 'already_succeeded', assetPath: guard.assetPath, projectAssetId: guard.assetId, history: [{ at: new Date().toISOString(), event: 'skipped', detail: '已成功绑定资产，按成功保护跳过' }] })
+        continue
+      }
+      if (guard.pendingReview) {
+        items.push({ sceneId: sid, sceneName, status: 'skipped', skipReason: 'pending_review', history: [{ at: new Date().toISOString(), event: 'skipped', detail: `存在待人工审核（${String(guard.reviewId || '')}），按成功保护跳过` }] })
+        continue
+      }
+    }
+    items.push({ sceneId: sid, sceneName })
+  }
+
+  const batch = await createSceneBatch({
+    dir,
+    projectId: id,
+    items,
+    options: {
+      regenerate: regen === true ? true : (regenSet ? [...regenSet] : undefined),
+      reviewMode,
+      width: body?.width,
+      height: body?.height,
+      timeoutMs: body?.timeoutMs,
+      // 背景-only 模式透传（分层合成方向）：随 checkpoint 持久化，resume/重启恢复后仍生效
+      mode: String(body?.mode || '').trim() || undefined,
+      backgroundOnly: body?.backgroundOnly === true ? true : undefined
+    }
+  })
+
+  const task = createAiTask(id, 'story.scenes.batch', { total: batch.items.length, message: `批量渲染 ${batch.items.length} 个场景（队列 ${batch.batchId}）` })
+  const approvedToken = String(c.req.header('x-pre-generate-approved') || '').trim()
+  const { renderScene, onProgress } = makeSceneBatchRunner(id, task, {
+    reviewMode,
+    approvedToken,
+    renderPayload: { width: body?.width, height: body?.height, timeoutMs: body?.timeoutMs, mode: body?.mode, backgroundOnly: body?.backgroundOnly }
+  })
+  launchSceneBatch(id, task, () => runSceneBatch({ dir, batch, renderScene, onProgress }))
+
+  logStage({ stage: 'story.scenes.batch', event: 'queued', project: id, item: `${batch.batchId} / scenes:${sceneIds.join(',')}` })
+  return c.json({
+    success: true,
+    batchId: batch.batchId,
+    taskId: task.taskId,
+    total: batch.items.length,
+    items: batch.items.map((it) => ({ sceneId: it.sceneId, status: it.status, skipReason: it.skipReason || undefined }))
+  }, 202)
+})
+
+// 查询批量队列状态（per-scene checkpoint 原样返回）
+app.get('/api/projects/:id/ai/story/scenes/batch', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const batch = await loadSceneBatch(dir)
+  return c.json({ success: true, batch })
+})
+
+// 恢复批量队列：中断的 running/queued 继续；retryFailed=true 时失败场景按显式恢复意图重置预算重跑
+app.post('/api/projects/:id/ai/story/scenes/batch/resume', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const existing = await loadSceneBatch(dir)
+  if (!existing) return c.json({ success: false, error: 'scene_batch_not_found', message: '没有可恢复的批量队列。' }, 404)
+  if (activeSceneBatchProjects.has(id)) {
+    return c.json({ success: false, error: 'scene_batch_running', message: '批量队列正在执行中，无需恢复。', batchId: existing.batchId }, 409)
+  }
+
+  const retryFailed = body?.retryFailed === true
+  const reviewMode = String(existing.options && existing.options.reviewMode || '').trim() || resolveImageReviewMode(c, body)
+  const task = createAiTask(id, 'story.scenes.batch', { total: existing.items.length, message: `恢复批量渲染（队列 ${existing.batchId}）` })
+  const { renderScene, onProgress } = makeSceneBatchRunner(id, task, {
+    reviewMode,
+    approvedToken: '',
+    renderPayload: { width: existing.options?.width, height: existing.options?.height, timeoutMs: existing.options?.timeoutMs, mode: existing.options?.mode, backgroundOnly: existing.options?.backgroundOnly }
+  })
+  launchSceneBatch(id, task, async () => {
+    const { resumed, batch } = await resumeSceneBatch({ dir, renderScene, onProgress, retryFailed })
+    return resumed ? batch : null
+  })
+
+  logStage({ stage: 'story.scenes.batch', event: 'resume', project: id, item: `${existing.batchId} / retryFailed:${retryFailed}` })
+  return c.json({ success: true, batchId: existing.batchId, taskId: task.taskId, retryFailed }, 202)
+})
+
+// ---------------------------------------------------------------------------
+// AUTO-E04：立绘 placements 生成（背景+立绘分层合成方向）
+// 按资产计划 sceneIds 判定各场景出场角色（仅 character；prop 暂不合成，属已知限制，如实报告），
+// 生成默认站位的 placements 写入 story.json 节点 visuals.placements，并把立绘 project asset id
+// 同步到 project.json characters[].imageAssetId（运行时解析 p.imageAssetId || ch.imageAssetId）。
+// 幂等：同角色已存在 placement 时保留其既有站位（编辑器可能已人工调整），仅刷新 imageAssetId；
+// 未锁定（无立绘引用）的角色跳过并报告，不伪造。
+// 与批量入口一致不挂 storyInputGate（契约枚举未覆盖该类型）。
+// ---------------------------------------------------------------------------
+
+// 默认站位：1 人 0.5；2 人 0.3/0.7；3 人 0.25/0.5/0.75；>3 人兜底横向均分
+function defaultPlacementX(index, count) {
+  if (count <= 1) return 0.5
+  if (count === 2) return [0.3, 0.7][index]
+  if (count === 3) return [0.25, 0.5, 0.75][index]
+  return Number(((index + 1) / (count + 1)).toFixed(4))
+}
+
+// 立绘默认缩放：运行时按「原始像素 × scale」渲染，1024px 立绘在千像素级舞台上 scale=1 会铺满舞台。
+// 按立绘实际像素高度收敛到约 62% 舞台高（参考舞台高 1024px），无尺寸信息时回退 0.62。
+function defaultPlacementScale(asset) {
+  const refs = Array.isArray(asset?.generatedRefs) ? asset.generatedRefs : []
+  const withSize = refs.find((r) => Number(r && r.height) > 0)
+  const heightPx = Number(withSize && withSize.height) || 0
+  if (!heightPx) return 0.62
+  return Math.min(1, Math.max(0.25, Number((640 / heightPx).toFixed(3))))
+}
+
+// 为计划中的角色资产匹配 project.json 角色：优先 projectCharacterId，其次名字/别名（不区分大小写）
+function findProjectCharacterForStoryAsset(characters, asset) {
+  const list = Array.isArray(characters) ? characters : []
+  const wantedId = String(asset?.projectCharacterId || '').trim()
+  if (wantedId) {
+    const hit = list.find((ch) => String(ch && ch.id || '').trim() === wantedId)
+    if (hit) return hit
+  }
+  const keys = new Set(
+    [asset?.name, ...(Array.isArray(asset?.aliases) ? asset.aliases : [])]
+      .map((x) => String(x || '').trim().toLowerCase())
+      .filter(Boolean)
+  )
+  if (!keys.size) return null
+  return list.find((ch) => keys.has(String(ch && ch.id || '').trim().toLowerCase()) || keys.has(String(ch && ch.name || '').trim().toLowerCase())) || null
+}
+
+app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const traceId = createTraceId()
+
+  const body = await c.req.json().catch(() => ({}))
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+  const bundle = await readProjectBundle(id)
+  const story = bundle.story && typeof bundle.story === 'object' ? bundle.story : null
+  const storyNodes = Array.isArray(story?.nodes) ? story.nodes : []
+  if (!story || !storyNodes.length) return c.json({ success: false, error: 'missing_story', message: '未找到故事文档，无法写入立绘站位。' }, 400)
+
+  // 目标场景：默认计划内全部场景（按 sceneIndex 排序），body.sceneIds 可指定子集
+  const planScenes = Array.isArray(plan.scenes) ? plan.scenes : []
+  const planSceneIds = new Set(planScenes.map((s) => String(s && s.sceneId || '').trim()).filter(Boolean))
+  let targetSceneIds
+  if (Array.isArray(body?.sceneIds) && body.sceneIds.length) {
+    targetSceneIds = [...new Set(body.sceneIds.map((x) => String(x || '').trim()).filter(Boolean))]
+    const unknown = targetSceneIds.filter((sid) => !planSceneIds.has(sid))
+    if (unknown.length) return c.json({ success: false, error: 'scene_not_found', message: `计划中不存在场景：${unknown.join('、')}` }, 404)
+  } else {
+    targetSceneIds = planScenes
+      .slice()
+      .sort((a, b) => (Number(a && a.sceneIndex) || 0) - (Number(b && b.sceneIndex) || 0))
+      .map((s) => String(s && s.sceneId || '').trim())
+      .filter(Boolean)
+  }
+
+  const planAssets = Array.isArray(plan.assets) ? plan.assets : []
+  const characterAssets = planAssets.filter((a) => String(a && a.category || '').trim() === 'character')
+  const propAssets = planAssets.filter((a) => String(a && a.category || '').trim() === 'prop')
+  const assetSceneIds = (asset) => (Array.isArray(asset?.sceneIds) ? asset.sceneIds : []).map((x) => String(x || '').trim())
+  // sceneId→story.json 节点映射：sceneId 即故事节点 id（编译产物约定，与场景渲染回填同源）
+  const nodeById = new Map(storyNodes.map((n) => [String(n && n.id || '').trim(), n]))
+
+  logStage({ stage: 'story.scenes.placements', event: 'start', traceId, project: id, item: `scenes:${targetSceneIds.length}` })
+
+  try {
+    const characters = (Array.isArray(bundle.rawProject?.characters) ? bundle.rawProject.characters : []).map((ch) => ({ ...ch }))
+    let charactersChanged = false
+    const characterIdPatches = new Map() // planAssetId → projectCharacterId（新建/补链时写回计划）
+    const storyPatches = new Map() // nodeId → placements 数组
+    const sceneReports = []
+    const skippedCharacters = []
+    const skippedProps = []
+    let placementsCreated = 0
+    let placementsUpdated = 0
+    let charactersCreated = 0
+    let charactersUpdated = 0
+
+    for (const sceneId of targetSceneIds) {
+      const node = nodeById.get(sceneId)
+      if (!node) {
+        sceneReports.push({ sceneId, ok: false, reason: 'story_node_not_found' })
+        continue
+      }
+      // prop 暂不合成：仅如实报告（已知限制）
+      for (const prop of propAssets.filter((a) => assetSceneIds(a).includes(sceneId))) {
+        skippedProps.push({ sceneId, assetId: String(prop.id || '').trim(), name: String(prop.name || '').trim(), reason: 'prop_not_composited' })
+      }
+
+      const present = characterAssets.filter((a) => assetSceneIds(a).includes(sceneId))
+      const placeable = []
+      for (const asset of present) {
+        const assetId = String(asset.id || '').trim()
+        const assetName = String(asset.name || assetId).trim()
+        let character = findProjectCharacterForStoryAsset(characters, asset)
+        // 立绘 asset id 来源：select 后计划资产的 primaryReferenceAssetId → 角色 ai.referenceAssetId → 角色 imageAssetId
+        const imageAssetId =
+          String(asset.primaryReferenceAssetId || '').trim() ||
+          String(character?.ai?.referenceAssetId || '').trim() ||
+          String(character?.imageAssetId || '').trim()
+        if (!imageAssetId) {
+          skippedCharacters.push({ sceneId, assetId, name: assetName, reason: 'reference_not_locked' })
+          continue
+        }
+        if (!character) {
+          // 项目缺少该角色条目：按真实计划数据补建最小角色记录，并回写计划链接
+          character = { id: genId('char'), name: assetName, imageAssetId }
+          characters.push(character)
+          charactersChanged = true
+          charactersCreated += 1
+        } else if (String(character.imageAssetId || '').trim() !== imageAssetId) {
+          const idx = characters.findIndex((ch) => String(ch && ch.id || '').trim() === String(character.id || '').trim())
+          if (idx >= 0) {
+            characters[idx] = { ...characters[idx], imageAssetId }
+            character = characters[idx]
+            charactersChanged = true
+            charactersUpdated += 1
+          }
+        }
+        if (!String(asset.projectCharacterId || '').trim()) characterIdPatches.set(assetId, String(character.id || '').trim())
+        placeable.push({ assetId, name: assetName, characterId: String(character.id || '').trim(), imageAssetId })
+      }
+
+      if (placeable.length) {
+        const existing = Array.isArray(node.visuals?.placements) ? node.visuals.placements : []
+        const nextPlacements = existing.map((p) => ({ ...p }))
+        placeable.forEach((entry, index) => {
+          const existingIdx = nextPlacements.findIndex((p) => String(p && p.characterId || '').trim() === entry.characterId)
+          if (existingIdx >= 0) {
+            // 幂等/人工站位保护：保留既有 transform/zIndex/visible，仅刷新立绘引用
+            nextPlacements[existingIdx] = { ...nextPlacements[existingIdx], characterId: entry.characterId, imageAssetId: entry.imageAssetId }
+            placementsUpdated += 1
+          } else {
+            const planAsset = planAssets.find((a) => String(a && a.id || '').trim() === entry.assetId)
+            nextPlacements.push({
+              characterId: entry.characterId,
+              imageAssetId: entry.imageAssetId,
+              transform: { x: defaultPlacementX(index, placeable.length), y: 1, scale: defaultPlacementScale(planAsset), rotationDeg: 0 },
+              zIndex: index + 1,
+              visible: true
+            })
+            placementsCreated += 1
+          }
+        })
+        storyPatches.set(sceneId, nextPlacements)
+      }
+      sceneReports.push({ sceneId, ok: true, characters: placeable, placementsTotal: (storyPatches.get(sceneId) || (Array.isArray(node.visuals?.placements) ? node.visuals.placements : [])).length })
+    }
+
+    const nextStory = {
+      ...story,
+      nodes: storyNodes.map((node) => {
+        const patch = storyPatches.get(String(node && node.id || '').trim())
+        if (!patch) return node
+        const visuals = node.visuals && typeof node.visuals === 'object' ? node.visuals : {}
+        return { ...node, visuals: { ...visuals, placements: patch } }
+      })
+    }
+    await writeJson(path.join(dir, 'story.json'), nextStory)
+
+    if (charactersChanged) {
+      const nextProject = { ...bundle.rawProject, characters, updatedAt: new Date().toISOString() }
+      await writeJson(path.join(dir, 'project.json'), nextProject)
+    }
+
+    if (characterIdPatches.size) {
+      const nextPlan = {
+        ...plan,
+        generatedAt: new Date().toISOString(),
+        assets: planAssets.map((a) => {
+          const patched = characterIdPatches.get(String(a && a.id || '').trim())
+          return patched ? { ...a, projectCharacterId: patched } : a
+        })
+      }
+      nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+      await saveStoryAssetPlan(id, nextPlan)
+    }
+
+    const summary = {
+      scenes: targetSceneIds.length,
+      placementsCreated,
+      placementsUpdated,
+      charactersCreated,
+      charactersUpdated,
+      skippedCharacters: skippedCharacters.length,
+      skippedProps: skippedProps.length
+    }
+    logStage({ stage: 'story.scenes.placements', event: 'ok', traceId, project: id, item: `scenes:${targetSceneIds.length} / created:${placementsCreated} / updated:${placementsUpdated} / skipped:${skippedCharacters.length}` })
+    return c.json({ success: true, summary, scenes: sceneReports, skippedCharacters, skippedProps })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    logStage({ stage: 'story.scenes.placements', event: 'fail', traceId, project: id, item: msg })
     return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
 })
+
+// 重启恢复：扫描所有项目的 per-scene checkpoint，未完成批次从断点继续（已成功场景由成功保护跳过）
+async function resumeInterruptedSceneBatchesAfterRestart() {
+  const interrupted = await findInterruptedSceneBatches(PROJECTS_DIR)
+  for (const { projectId, dir, batch } of interrupted) {
+    if (activeSceneBatchProjects.has(projectId)) continue
+    const reviewMode = String(batch.options && batch.options.reviewMode || '').trim() || 'manual'
+    const task = createAiTask(projectId, 'story.scenes.batch', { total: batch.items.length, message: `重启恢复批量渲染（队列 ${batch.batchId}）` })
+    const { renderScene, onProgress } = makeSceneBatchRunner(projectId, task, {
+      reviewMode,
+      approvedToken: '',
+      renderPayload: { width: batch.options?.width, height: batch.options?.height, timeoutMs: batch.options?.timeoutMs, mode: batch.options?.mode, backgroundOnly: batch.options?.backgroundOnly }
+    })
+    logStage({ stage: 'story.scenes.batch', event: 'restart_resume', project: projectId, item: batch.batchId })
+    launchSceneBatch(projectId, task, async () => {
+      const { batch: done } = await resumeSceneBatch({ dir, renderScene, onProgress })
+      return done || batch
+    })
+  }
+  return interrupted.length
+}
 
 function normalizeStyleEnum(v) {
   const s = String(v || '').trim()
@@ -7671,4 +8934,8 @@ if (isMainModule()) {
   serve({ fetch: app.fetch, port })
   // eslint-disable-next-line no-console
   console.log(`[gamestudio] server on :${port}`)
+  // AUTO-E03：重启后扫描项目内批量队列 checkpoint，从断点继续（不重复已成功场景）
+  resumeInterruptedSceneBatchesAfterRestart()
+    .then((count) => { if (count > 0) console.log(`[gamestudio] scene batch restart-resume: ${count} 个未完成批次已恢复`) })
+    .catch((e) => { console.warn(`[gamestudio] scene batch restart-resume failed: ${e && e.message ? e.message : e}`) })
 }

@@ -621,7 +621,10 @@ function autoVerdict(caseId, session) {
     return { result: 'FAIL', notes: `自动判定：${baseVerdict.reason}` }
   }
 
-  if (/api call failed|http 5\d\d|cannot free enough memory|connection error|request timeout|timeout_error|timed out waiting|failed after \d+ retries/i.test(finalAnswer)) {
+  // 错误关键词只在前 300 字或短回答内判定：真正的模型/API 失败会把错误文本当最终回答（通常很短或开头即是），
+  // 长分析回答中讨论 timeout/retry 等话题词（如 L1-03 题目本身）不应误判为模型错误。
+  const errorProbe = finalAnswer.length > 600 ? finalAnswer.slice(0, 300) : finalAnswer
+  if (/api call failed|http 5\d\d|cannot free enough memory|connection error|request timeout|timeout_error|timed out waiting|failed after \d+ retries/i.test(errorProbe)) {
     console.log(`${caseId} 自动判定: FAIL`)
     return { result: 'FAIL', notes: '自动判定：最终回答包含模型/API 错误，不计为有效答案。' }
   }

@@ -17,6 +17,10 @@ state/
 *.pid
 *.log
 monitor/
+.tmp/
+
+# Agent runtime daily journals (runtime journal, not source)
+ai/memory/daily/
 
 # OpenClaw runtime state (all role folders)
 */.openclaw/workspace-state.json

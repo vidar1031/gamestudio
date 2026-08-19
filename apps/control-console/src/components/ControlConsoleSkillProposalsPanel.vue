@@ -5,14 +5,18 @@ import { useControlConsoleAppContext } from '../composables/useControlConsoleApp
 const {
   skillProposalsList,
   skillIntentsActive,
+  skillProposalGovernance,
   skillProposalsBusy,
   skillProposalsError,
   skillProposalsScanMessage,
   skillProposalsActionBusy,
   loadSkillProposals,
   scanSkillProposals,
+  testSkillProposal,
+  reviewSkillProposal,
   promoteSkillProposal,
   rejectSkillProposal,
+  rollbackSkillIntent,
   deactivateSkillIntent,
 } = useControlConsoleAppContext<any>()
 
@@ -22,6 +26,28 @@ onMounted(() => {
 
 function isBusyForAction(prefix: string, id: string): boolean {
   return skillProposalsActionBusy.value === `${prefix}:${id}`
+}
+
+// AUTO-F02：proposal 治理状态（candidate/tested/approved/active/rejected/rolled_back）
+const GOVERNANCE_STATUS_LABELS: Record<string, string> = {
+  candidate: '候选·未测试',
+  tested: '已测试·待审核',
+  approved: '已审核·待激活',
+  active: '已激活',
+  rejected: '已驳回',
+  rolled_back: '已回滚',
+}
+
+function governanceOf(id: string): any {
+  return skillProposalGovernance.value.find((entry: any) => entry.id === id) || null
+}
+
+function governanceStatusOf(id: string): string {
+  return governanceOf(id)?.status || 'candidate'
+}
+
+function governanceLabelOf(id: string): string {
+  return GOVERNANCE_STATUS_LABELS[governanceStatusOf(id)] || governanceStatusOf(id)
 }
 
 function summarizeMatch(def: any): string {
@@ -51,7 +77,8 @@ function summarizeEvaluation(def: any): string {
         <div class="chat-memory-title">智能体技能提案 (Skill Intent Proposals)</div>
         <div class="chat-memory-desc">
           基于 <code>state/agent-runtime-review-records.jsonl</code> 中重复出现的人工纠偏，自动生成纯数据型 intent 提案。
-          提案落在 <code>config/hermes/intents/_inbox/</code>，必须人工审阅后晋级才会生效；不会执行任何代码。
+          提案落在 <code>config/hermes/intents/_inbox/</code>，默认不可执行；必须依次通过 测试门禁 → 人工审核 → 人工激活 才会生效，
+          每次激活保留版本快照，可回滚到上一版本，全程留审计。
         </div>
       </div>
       <div class="chat-memory-actions">
@@ -77,7 +104,13 @@ function summarizeEvaluation(def: any): string {
         <div v-for="proposal in skillProposalsList" :key="proposal.id" class="submit-source-item skill-proposal-card">
           <div class="submit-source-item-header" style="align-items: flex-start; gap: 12px;">
             <div style="display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0;">
-              <strong>{{ proposal.id }}</strong>
+              <span style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <strong>{{ proposal.id }}</strong>
+                <span class="reasoning-plan-step-chip">{{ governanceLabelOf(proposal.id) }}</span>
+                <span v-if="governanceOf(proposal.id)?.lastTest" class="chat-memory-meta">
+                  测试：{{ governanceOf(proposal.id).lastTest.passed ? '通过' : '未通过' }}
+                </span>
+              </span>
               <span class="chat-memory-desc">{{ proposal.def?.description || '（无描述）' }}</span>
               <span class="chat-memory-meta">匹配规则：{{ summarizeMatch(proposal.def) }}</span>
               <span class="chat-memory-meta">评估配置：{{ summarizeEvaluation(proposal.def) }}</span>
@@ -99,8 +132,22 @@ function summarizeEvaluation(def: any): string {
             </div>
             <div style="display: flex; flex-direction: column; gap: 6px;">
               <button
-                class="action-btn"
+                class="action-btn outline"
                 :disabled="!!skillProposalsActionBusy || !!proposal.error"
+                @click="testSkillProposal(proposal.id)"
+              >
+                {{ isBusyForAction('test', proposal.id) ? '测试中...' : '🧪 测试门禁' }}
+              </button>
+              <button
+                class="action-btn outline"
+                :disabled="!!skillProposalsActionBusy || !!proposal.error || governanceStatusOf(proposal.id) !== 'tested'"
+                @click="reviewSkillProposal(proposal.id, 'approve')"
+              >
+                {{ isBusyForAction('review', proposal.id) ? '审核中...' : '✔️ 审核通过' }}
+              </button>
+              <button
+                class="action-btn"
+                :disabled="!!skillProposalsActionBusy || !!proposal.error || governanceStatusOf(proposal.id) !== 'approved'"
                 @click="promoteSkillProposal(proposal.id)"
               >
                 {{ isBusyForAction('promote', proposal.id) ? '激活中...' : '✅ 晋级激活' }}
@@ -134,10 +181,20 @@ function summarizeEvaluation(def: any): string {
                 <span v-if="intent.hasMatchPlan" class="reasoning-plan-step-chip">plan</span>
                 <span v-if="intent.hasMatchAnswer" class="reasoning-plan-step-chip">answer</span>
                 <span v-if="intent.hasMatchEvaluation" class="reasoning-plan-step-chip">evaluation</span>
+                <span v-if="governanceOf(intent.id)" class="reasoning-plan-step-chip">
+                  v{{ governanceOf(intent.id).currentVersion }} · 版本 {{ governanceOf(intent.id).versionCount }} 条
+                </span>
               </span>
               <span v-if="intent.description" class="chat-memory-desc">{{ intent.description }}</span>
             </div>
             <div v-if="intent.source !== 'builtin'" style="display: flex; flex-direction: column; gap: 6px;">
+              <button
+                class="action-btn outline"
+                :disabled="!!skillProposalsActionBusy || !governanceOf(intent.id) || governanceOf(intent.id).status !== 'active'"
+                @click="rollbackSkillIntent(intent.id)"
+              >
+                {{ isBusyForAction('rollback', intent.id) ? '回滚中...' : '↩️ 回滚' }}
+              </button>
               <button
                 class="action-btn outline"
                 :disabled="!!skillProposalsActionBusy"

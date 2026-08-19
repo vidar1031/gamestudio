@@ -1,4 +1,4 @@
-import { extractResponseOutputText, openaiResponsesJsonForTools } from './openai.js'
+import { extractResponseOutputText, openaiResponsesJsonForTools, parseModelJsonLenient } from './openai.js'
 import { generateStrictJsonViaDoubaoChat } from './doubao.js'
 import { generateStrictJsonViaOllamaChat } from './ollama.js'
 
@@ -684,6 +684,11 @@ function parseStoryBibleJsonText(rawText) {
       return JSON.parse(objText)
     } catch (_) {}
   }
+
+  // 模型在字符串字面量内输出裸控制字符（Qwen 实测）时，做转义修复再试
+  try {
+    return parseModelJsonLenient(raw)
+  } catch (_) {}
 
   const preview = raw.slice(0, 120).replace(/\s+/g, ' ').trim()
   const e = new Error(`invalid_json_response:${preview}`)

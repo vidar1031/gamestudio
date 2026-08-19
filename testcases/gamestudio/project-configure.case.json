@@ -1,0 +1,64 @@
+{
+  "caseVersion": "1.0.0",
+  "caseId": "gamestudio.project-configure",
+  "title": "设置项目生成配置（狼来了）",
+  "description": "通过事件层创建项目后写入生成配置（题材=寓言故事、风格=教育警示、目标受众=儿童、输出语言=zh-CN），并读回验证配置一致。覆盖 registry 事件：project.create、project.configure、project.inspect。",
+  "provider": "gamestudio",
+  "tags": ["p0", "story", "project", "config"],
+  "preconditions": [
+    { "type": "service.reachable", "target": "gamestudio.server", "ref": "http://127.0.0.1:1999/api/health" }
+  ],
+  "vars": {
+    "storyTitle": "狼来了",
+    "config": {
+      "genre": "寓言故事",
+      "style": "教育警示",
+      "targetAudience": "儿童",
+      "outputLanguage": "zh-CN"
+    }
+  },
+  "steps": [
+    {
+      "stepId": "create",
+      "title": "创建项目（前置）",
+      "event": "project.create",
+      "payload": { "title": "${vars.storyTitle}" },
+      "capture": { "projectId": "$.project.id" },
+      "assert": [
+        { "type": "http.ok" },
+        { "type": "json.path.exists", "path": "$.project.id" }
+      ]
+    },
+    {
+      "stepId": "configure",
+      "title": "写入生成配置",
+      "event": "project.configure",
+      "payload": {
+        "projectId": "${capture.projectId}",
+        "config": "${vars.config}"
+      },
+      "assert": [
+        { "type": "http.ok" },
+        { "type": "json.path.equals", "path": "$.success", "value": true }
+      ]
+    },
+    {
+      "stepId": "readback",
+      "title": "读回验证配置一致",
+      "event": "project.inspect",
+      "payload": { "projectId": "${capture.projectId}" },
+      "assert": [
+        { "type": "http.ok" },
+        { "type": "json.path.equals", "path": "$.project.generationConfig.genre", "value": "寓言故事" },
+        { "type": "json.path.equals", "path": "$.project.generationConfig.style", "value": "教育警示" },
+        { "type": "json.path.equals", "path": "$.project.generationConfig.targetAudience", "value": "儿童" },
+        { "type": "json.path.equals", "path": "$.project.generationConfig.outputLanguage", "value": "zh-CN" }
+      ]
+    }
+  ],
+  "expectedVerdict": "PASS",
+  "artifacts": {
+    "keepProject": true,
+    "reason": "配置读回证据保留在项目目录，供后续脚本生成用例复用"
+  }
+}

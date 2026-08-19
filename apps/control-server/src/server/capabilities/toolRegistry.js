@@ -350,6 +350,33 @@ export const REASONING_TOOLS = {
     description: '调用 GameStudio Server 对指定 scene 执行场景图渲染，使用已锁定的 reference assets 保证角色/道具/地点一致性。',
     routes: ['internal:gamestudio/projects.story.scenes.render']
   },
+  'gamestudio.story.renderSceneBackgrounds': {
+    tool: 'gamestudio.story.renderSceneBackgrounds',
+    title: '批量渲染场景背景（分层合成）',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '调用 GameStudio Server E03 批量队列以 background-only 模式渲染全部场景背景（人物/事物不进背景图），轮询批次直至终结并汇总 per-scene 成败。',
+    routes: ['internal:gamestudio/projects.story.scenes.batch']
+  },
+  'gamestudio.story.generateScenePlacements': {
+    tool: 'gamestudio.story.generateScenePlacements',
+    title: '生成场景立绘分层站位',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '调用 GameStudio Server 按资产计划为各场景写回立绘 placements 并同步 characters[].imageAssetId，供运行时（PixiJS）分层合成。',
+    routes: ['internal:gamestudio/projects.story.scenes.placements']
+  },
+  'gamestudio.story.generateLineart': {
+    tool: 'gamestudio.story.generateLineart',
+    title: '生成资产线稿',
+    category: 'story-workflow',
+    executionMode: 'deterministic',
+    reviewPolicy: 'required',
+    description: '对已锁定主参考的资产逐个生成 ControlNet 线稿（hint+final），写回资产计划的 lineart 字段。',
+    routes: ['internal:gamestudio/projects.story.assets.lineart']
+  },
   'gamestudio.story.validateProject': {
     tool: 'gamestudio.story.validateProject',
     title: '校验互动故事项目',

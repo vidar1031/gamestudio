@@ -317,11 +317,18 @@ Step G: 资源回填与校验
 
 | 编号 | 阻塞项 | 状态 | 说明 |
 |------|--------|------|------|
-| P1-B01 | Character asset pipeline 未实现 | 活跃 | `assetKind === 'character'` 时直接返回失败。当前只能生成 background，角色 sprite/立绘无法生成 |
-| P1-B02 | `generateBackground` 仅支持 ComfyUI background | 活跃 | 场景渲染 API 已存在，但完整 workflow（含 IP-Adapter referenceImages）未在生产环境中验证 |
-| P1-B03 | 批量场景渲染未实现 | 活跃 | 当前只能单场景渲染，无批量/连续分镜队列 |
-| P1-B04 | 锁定评审视觉模型可用性 | 活跃 | `reviewStoryboardLockImageWithAi` 需要视觉模型（OpenAI/OMLX with vision），本地 OMLX 可能不支持 |
-| P1-B05 | 场景资源回填校验闭环 | 活跃 | 场景图生成后，project.json 引用更新 + validate + re-export 的完整闭环未经验证 |
+| P1-B01 | Character asset pipeline 未实现 | 已修复（2026-08-05） | 3 角色锁定 + 线稿已在《狼来了》项目实测通过（Kimi 视觉评审 + 人工确认） |
+| P1-B02 | `generateBackground` 仅支持 ComfyUI background | 已修复（2026-08-05） | 含 IP-Adapter referenceImages 的完整 workflow 已在生产实测（11/11 场景图） |
+| P1-B03 | 批量场景渲染未实现 | 已修复（2026-08-05） | `POST /ai/story/scenes/render-all` 异步批量渲染，进度经 `/ai/tasks` 可见 |
+| P1-B04 | 锁定评审视觉模型可用性 | 已修复（2026-08-05） | 锁定评审走 Moonshot/Kimi 视觉（`MOONSHOT_API_KEY` 配置后自动启用） |
+| P1-B05 | 场景资源回填校验闭环 | 已修复（2026-08-05） | 回填 + validate + re-export 闭环实测通过；manual 模式下回填需 `scene_bind` 人工确认 |
+
+**2026-08-05 新增规则（审核门禁与 UI 感知）：**
+- 图片生成三级审核：`pre_generate`（出图前）→ `lock_confirm`（锁定确认）→ `scene_bind`（场景绑定）；`STUDIO_IMAGE_REVIEW_MODE=manual` 时默认启用，审核记录存 `<project>/reviews/image_reviews.jsonl`。
+- 长任务进度必须经 `GET /api/projects/:id/ai/tasks` 可见；编辑器锁定工作区实时轮询展示。
+- ComfyUI 能力检查 `GET /api/ai/comfyui/capability-check` 与自动修复 `POST /api/ai/comfyui/auto-fix`（Python 依赖安装 + 重启）已具备；生成工具页有对应能力卡片。
+- 新 Story Bible 生成后旧资产计划与提示词草稿全部作废；正向 prompt 禁止携带否定词与跨故事硬编码词。
+- `comfyui_controlnet_aux` 的 `config.yaml` annotator 路径必须指向本机真实安装目录（历史遗留 Windows 路径已修复）。
 
 #### 4.7 第四阶段测试题目（10 题）
 
@@ -422,12 +429,12 @@ Step G: 资源回填与校验
 | F-14 | `gameStudioBootstrapWorkflows.js` 使用 `path.join` 但未 import | 2026-07-22 | 补 `import path from 'node:path'`（设 `COMFYUI_ROOT` 时原会 ReferenceError） |
 | F-15 | `story_render_scene` 缺 `REASONING_ACTIONS` 元数据 | 2026-07-22 | 已在 `actionRegistry.js` 补齐注册条目 |
 | F-16 | 死代码 `generateStoryScriptsCandidate`（架构修正后遗留） | 2026-07-22 | 已删除（Control 生成脚本只走 GameStudio Server） |
-| F-17 | Kimi apiKey 明文存于 git 跟踪的 `manager.left-brain.json` | 2026-07-22 | 密钥移入 `.env`（`MOONSHOT_API_KEY`，`getRightBrainApiKey` 已支持 env 兜底）；`manager.left-brain.state.json` 移出 git 跟踪；**git 历史中的旧 key 仍需人工轮换** |
+| F-17 | Kimi apiKey 明文存于 git 跟踪的 `manager.left-brain.json` | 2026-07-22 | 密钥移入 `.env`（`MOONSHOT_API_KEY`，`getRightBrainApiKey` 已支持 env 兜底）；`manager.left-brain.state.json` 移出 git 跟踪；git 历史旧 key 已由人工轮换（2026-08-15 验证新 key 可用） |
 | F-18 | `story.bible.generate` 契约落后于实现：Control 发送的 `candidateWorldHints`/`candidateEntities`/`scenePresenceRules`/`source` 被 StoryOutputGate 拒绝 | 2026-07-22 | `StoryBibleGeneratePayloadSchema.input` 补齐四个键（服务端 `storyBible.js` 本就消费它们）；由 e2e 真实链路首次暴露——此前该路径只在 productionTest 下跑过且未含 bible 步骤 |
 | F-19 | Story Bible 客户端超时不足：服务端实测生成需 513s，plan 仅给 300s | 2026-07-22 | `storyProductionWorkflows.js` 长生成步骤 `timeoutMs` 统一提升至 600000（契约上限） |
 | F-20 | 全局 fetch（undici）内置 headersTimeout 约 300s，长请求被掐断且不受 AbortController 控制 | 2026-07-22 | `gameStudioServerClient.requestGameStudio` 改用 `node:http` 实现，超时完全由调用方 `timeoutMs` 控制 |
 | F-21 | 记忆改写 fallback 把"刷新指令"当内容落盘：`DECISIONS.md`/`LONG_TASKS.md` 自 2026-06-18 起内容为指令文本且每日注入 planner prompt | 2026-07-23 | 两文件已重建为真实内容；`generateReasoningFileRewrite` 模型未产出有效内容时显式失败，禁止指令落盘 |
-| F-22 | supervision 定时器（启动 30s + 每 30 分钟）在 meta_analysis 401 下空转烧钱，已制造 75 个无效 session | 2026-07-23 | 加 `SUPERVISION_ENABLED` 开关，默认关停；修复 Kimi key 后显式启用 |
+| F-22 | supervision 定时器（启动 30s + 每 30 分钟）在 meta_analysis 401 下空转烧钱，已制造 75 个无效 session | 2026-07-23 | 加 `SUPERVISION_ENABLED` 开关，默认关停；Kimi key 已轮换并验证可用（2026-08-15），需要时显式启用 |
 | F-23 | 56 个历史 `waiting_review` 会话永久积压（最早 2026-04-28），无超时/升级机制 | 2026-07-23 | 超 7 天的 56 个已批量 cancel；审核队列视图列入守护台 P2 |
 
 ---

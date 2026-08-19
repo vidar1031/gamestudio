@@ -14,4 +14,8 @@
 
 ## 模型路由（当前生效）
 - 左脑绑定模型：gpt-oss-20b-MXFP4-Q8（2026-07-23 由 Qwen3.5-9B 切换，9B 对话能力不足）。
-- 路由配置声明的 hermes+strict 会被运行时静默降级为 direct——strict 语义待修正或删除。
+- strict 路由语义（2026-08-18 修正）：hermes+strict 路由与左脑绑定不一致时**显式失败**（`route_unavailable:strict_route_model_mismatch:*`，经 C02 收敛 blocked 等人工修配置），不再静默降级 direct；strict 可满足时正常走 hermes；非 strict 不一致保持 best-effort 直连但以 `degradedFrom` 留痕；不可满足状态在 buildConfigValidation 自检项与 workflow-diagnostics `modelRouting.strictRoutes` 可见。原"静默降级"登记作废。
+
+## 记忆注入（2026-08-18 修正）
+- `workflow.memoryOverlayMode` 默认 `content-injection`：回答阶段把核心记忆文件正文**有界**注入系统消息（每文件 `HERMES_MEMORY_OVERLAY_FILE_CHAR_LIMIT` 默认 3000、总量 `HERMES_MEMORY_OVERLAY_TOTAL_CHAR_LIMIT` 默认 12000，超限截尾标注；AGENTS.md 默认不注入正文仅列引用，`HERMES_MEMORY_OVERLAY_AGENT_DEFINITION_CHAR_LIMIT` 可开极低上限；空/缺失文件跳过）。
+- `references-only` 保留为可选项；其文案已修正为"正文未注入、不要读文件、不要编造"，不再宣称路径是 authoritative 内容（原 references-only 让 gpt-oss 误以为要先读文件而读不到，输出停在思考通道正文为空，且回答缺记忆事实而编造——该模式名存实亡的问题由此了结）。

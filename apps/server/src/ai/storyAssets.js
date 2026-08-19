@@ -83,6 +83,8 @@ function buildSceneCandidates(node, index) {
   const name = asStr(node && node.name).trim()
   const title = asStr(node && node.body && node.body.title).trim()
   if (id) out.push(id)
+  // 蓝图编译会给脚本层节点 id 加 bn_ 前缀，bible.sceneRefs 仍用脚本层 id，需同时匹配去前缀形式
+  if (id.startsWith('bn_')) out.push(id.slice(3))
   if (name) out.push(name)
   if (title) out.push(title)
   out.push(`scene${index + 1}`)
@@ -195,13 +197,8 @@ function lookupProjectAsset(project, assetId) {
 }
 
 function cleanupReferenceAnchorText(text) {
-  let out = asStr(text).trim()
-  if (!out) return ''
-  out = out
-    .replace(/wearing\s+a\s+small\s+round\s+flat-brim\s+straw\s+hat\s+with\s+green\s+chin\s+cord,?\s*/gi, '')
-    .replace(/small\s+wooden\s+fish\s+bucket,?\s*/gi, '')
-    .replace(/slender\s+bamboo\s+fishing\s+rod,?\s*/gi, '')
-    .replace(/\bwith\s+green\s+chin\s+cord\b,?\s*/gi, '')
+  // 通用清洗：只做空白与标点规整，不再内置任何特定故事（如钓鱼故事）的词替换
+  const out = asStr(text)
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+,/g, ',')
     .replace(/,,+/g, ',')
@@ -210,60 +207,13 @@ function cleanupReferenceAnchorText(text) {
 }
 
 function cleanupPropReferenceAnchorText(text) {
-  let out = asStr(text).trim()
-  if (!out) return ''
-  out = out
-    .replace(/tied\s+under\s+chin/gi, 'attached to the brim with the chin cord hanging loose')
-    .replace(/under\s+chin/gi, 'below the brim')
-    .replace(/\bchild\s+size\b/gi, 'small product size')
-    .replace(/\bchild-sized\b/gi, 'small product-sized')
-    .replace(/\bon\s+head\b/gi, 'as an unworn object')
-    .replace(/\bwear(?:ing|er)\b/gi, 'object')
-    .replace(/\bon\s+the\s+fishing\s+line\b/gi, 'as a standalone detached object')
-    .replace(/\bsits?\s+upright\s+on\s+calm\s+water\b/gi, 'upright float shape shown as a standalone object')
-    .replace(/\bheld\s+in\s+two\s+paws\b/gi, 'shown alone without paws or hands')
-    .replace(/\bplanted\s+upright\s+in\s+soil\b/gi, 'shown alone without ground contact')
-    .replace(/\bheld\s+in\s+two\s+paws\s+or\s+planted\s+upright\s+in\s+soil\b/gi, 'shown alone without holder, ground, or scene')
+  // 通用清洗：道具锚点同样只做空白规整，穿戴/语境纠偏交给负向词与审核
+  const out = asStr(text)
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+,/g, ',')
     .replace(/,,+/g, ',')
     .trim()
   return out.replace(/^[,;\s]+|[,;\s]+$/g, '')
-}
-
-function assetSignalHay(asset) {
-  return [
-    asStr(asset && asset.name),
-    asStr(asset && asset.anchorPrompt),
-    ...asList(asset && asset.aliases)
-  ].join(' ').toLowerCase()
-}
-
-function isBobberLikeAsset(asset) {
-  return /\b(bobber|float|fishing float)\b|浮漂|漂子/.test(assetSignalHay(asset))
-}
-
-function isRodLikeAsset(asset) {
-  return /\b(bamboo fishing rod|bamboo rod|fishing rod|fishing pole|pole)\b|竹鱼竿|鱼竿|竹竿/.test(assetSignalHay(asset))
-}
-
-function isBucketLikeAsset(asset) {
-  return /\b(bucket|pail|bucket)\b|鱼桶|木桶|水桶|桶/.test(assetSignalHay(asset))
-}
-
-function isWeakProtectedPropPrompt(asset, promptText) {
-  const text = asStr(promptText).trim().toLowerCase()
-  if (!text) return true
-  if (isBobberLikeAsset(asset)) {
-    return !/\b(bobber|float|gourd|cork|red-and-white|red and white|center pin|eyelet)\b/.test(text)
-  }
-  if (isRodLikeAsset(asset)) {
-    return !/\b(bamboo|rod|pole|nodes?|no reel|without reel|line tied|hook|tip)\b/.test(text)
-  }
-  if (isBucketLikeAsset(asset)) {
-    return !/\b(bucket|pail|wood|wooden|staves|handle|strap|rim|opening)\b/.test(text)
-  }
-  return /\b(single|isolated|reference|design reference|object)\b/.test(text) && !/\b(hat|cap|bag|shoe|basket|lantern|chair|boat|box)\b/.test(text)
 }
 
 function isWearableProp(asset) {
@@ -485,10 +435,10 @@ function mergePrevAssetState(asset, prevAsset) {
 
 function referenceHintForCategory(category) {
   if (category === 'character') {
-    return 'single subject character reference sheet, pure white background, full body, centered front view, empty hands, no props, no hat, no scene environment, stable face and outfit'
+    return 'single full-body front view of one adult character only, pure white background, centered single view, stable face and outfit, one single pose'
   }
   if (category === 'prop') {
-    return 'single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, no person, no head, no hand, not being worn, no collage, no multi-view sheet, no environment'
+    return 'single prop product reference, exactly one object only, pure white background, centered single view, full silhouette visible, clear material and structure, isolated object shown alone'
   }
   if (category === 'location') {
     return 'environment concept art, no characters, stable layout, clear architecture language, reusable location reference'
@@ -502,7 +452,7 @@ function referenceHintForAsset(asset) {
   if (profile === 'location_anchor') return referenceHintForCategory('location')
   if (profile === 'wearable_prop') {
     if (isHatLikeProp(asset)) {
-      return 'single hat reference, exactly one detached straw hat only, pure white background, centered single view, full silhouette visible, opening under the hat visible, brim contour fully unobstructed, no wearer, no mannequin, no head, no shoulders, no portrait'
+      return 'single hat reference, exactly one detached hat only, pure white background, centered single view, full silhouette visible, opening under the hat visible, brim contour fully unobstructed, no wearer, no mannequin, no head, no shoulders, no portrait'
     }
     return 'single wearable prop reference, exactly one detached object only, pure white background, centered single view, full silhouette visible, opening/interior visible if applicable, no wearer, no mannequin, no head, no body'
   }
@@ -764,8 +714,7 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
   const hintText = asStr(safeAsset.referencePromptHint).trim()
   const assetPromptText = asStr(assetPrompt).trim()
   const useAssetPrompt = normalizePromptFingerprint(assetPromptText) &&
-    normalizePromptFingerprint(assetPromptText) !== normalizePromptFingerprint(hintText) &&
-    !(protectedPropProfiles.has(lockProfile) && isWeakProtectedPropPrompt(safeAsset, assetPromptText))
+    normalizePromptFingerprint(assetPromptText) !== normalizePromptFingerprint(hintText)
     ? assetPromptText
     : ''
   const protectedPropPromptOnly = category === 'prop' && protectedPropProfiles.has(lockProfile)
@@ -798,23 +747,17 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
   }
   if (lockProfile === 'character_core') {
     baseParts.push(
-      'children picture book character turnaround key art',
-      'full body',
-      'front view',
+      'picture book single adult character key art',
+      'one adult character only',
+      'single full-body front view',
+      'one single pose',
       'centered composition',
       'pure white seamless studio background',
-      'no floor line',
-      'no cast shadow',
       'neutral relaxed pose',
-      'non-human animal child if described as animal',
+      'non-human animal character if described as animal',
       'visible animal ears',
-      'visible cat nose and short feline muzzle if cat',
       'fur-covered face if animal',
       'empty hands',
-      'no props',
-      'without hat',
-      'without fishing rod',
-      'without bucket',
       'pure white background'
     )
   } else if (lockProfile === 'wearable_prop') {
@@ -905,27 +848,6 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
       'no person',
       'no environment'
     )
-    if (isBobberLikeAsset(safeAsset)) {
-      baseParts.push(
-        'classic small red-and-white gourd-shaped cork fishing bobber',
-        'matte cork body',
-        'thin straight dark center pin',
-        'tiny eyelet at the top and tiny eyelet at the bottom',
-        'standalone detached object, not floating on water',
-        'not attached to a fishing line scene'
-      )
-    }
-    if (isRodLikeAsset(safeAsset)) {
-      baseParts.push(
-        'single-piece green bamboo fishing pole',
-        'visible bamboo nodes',
-        'slender taper from butt to tip',
-        'no reel',
-        'plain cotton line tied directly to the tip',
-        'tiny simple hook at the end',
-        'standalone detached object, not being held'
-      )
-    }
   } else if (lockProfile === 'rigid_prop') {
     baseParts.push(
       'single rigid object design reference',
@@ -1007,10 +929,12 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
   const category = asStr(safeAsset.category).trim()
   if (lockProfile === 'character_core') {
     base.push(
-      'crowd', 'multiple characters', 'complex background', 'busy environment', 'text', 'watermark',
-      'human child', 'human face', 'catgirl', 'kemonomimi', 'anime human ears', 'decorative background',
+      'crowd', 'multiple characters', 'multiple views', 'turnaround sheet', 'reference sheet', 'multi-view sheet', 'collage',
+      'front and back views', 'three views', 'complex background', 'busy environment', 'text', 'watermark',
+      'child', 'kid', 'baby', 'toddler', 'young child', 'little boy', 'little girl',
+      'catgirl', 'kemonomimi', 'anime human ears', 'decorative background',
       'ground shadow', 'floor shadow', 'scenery', 'background', 'trees', 'grass', 'plants', 'water', 'shore', 'bridge',
-      'hat', 'straw hat', 'bucket', 'fishing rod', 'basket', 'wood stick', 'side view', 'three quarter view', 'back view'
+      'side view', 'three quarter view', 'back view'
     )
   } else if (lockProfile === 'wearable_prop') {
     base.push(
@@ -1042,18 +966,6 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
       'water surface', 'shore', 'grass', 'soil', 'ground contact',
       'text', 'watermark', 'broken parts'
     )
-    if (isBobberLikeAsset(safeAsset)) {
-      base.push(
-        'glass float', 'clip-on bobber', 'ball bobber', 'plastic ball bobber', 'transparent float',
-        'float on water scene', 'attached to rod in use', 'hand holding line'
-      )
-    }
-    if (isRodLikeAsset(safeAsset)) {
-      base.push(
-        'person holding rod', 'casting pose', 'rod in use', 'fishing reel', 'telescopic rod stand',
-        'two rods', 'crossed rods', 'rod leaning on scenery'
-      )
-    }
   } else if (lockProfile === 'rigid_prop') {
     base.push(
       'deformed structure', 'warped perspective', 'melted object', 'collapsed shape', 'extra attachments',
@@ -1085,46 +997,109 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
   return uniqStrings(base, 120).join(', ')
 }
 
-export function buildStorySceneRenderSpec({ plan, sceneId }) {
+// 背景-only 模式（背景+立绘分层合成方向）：人物/事物由独立透明立绘经运行时 placements 合成，
+// 场景图只出背景。以下为背景图负提示词的通用人物/事物排除词（不含具体故事专有词）。
+const BACKGROUND_ONLY_SUBJECT_EXCLUSIONS = [
+  'person', 'people', 'human', 'character', 'portrait', 'face',
+  'man', 'woman', 'boy', 'girl', 'child', 'kid', 'crowd', 'figure'
+]
+
+function isSceneSubjectAsset(asset) {
+  const category = asStr(asset && asset.category).trim()
+  return category === 'character' || category === 'prop'
+}
+
+// 从场景描述文本中剥离出场角色/道具的名字与别名（立绘层承担人物事物，背景图不再描述）。
+// 长名优先替换，避免短名先删造成的残留碎片；只做确定性字符串剔除，不做语义改写。
+function stripSubjectMentionsFromSceneText(text, subjects) {
+  let out = asStr(text)
+  const names = []
+  for (const subject of asList(subjects)) {
+    names.push(asStr(subject && subject.name))
+    for (const alias of asList(subject && subject.aliases)) names.push(asStr(alias))
+  }
+  const uniq = uniqStrings(names, 60).filter(Boolean).sort((a, b) => b.length - a.length)
+  for (const name of uniq) out = out.split(name).join('')
+  return cleanupReferenceAnchorText(out)
+}
+
+export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
   const safePlan = asObj(plan)
   const scenes = asList(safePlan.scenes)
   const scene = scenes.find((item) => asStr(item && item.sceneId).trim() === asStr(sceneId).trim()) || null
   if (!scene) return null
+  const backgroundOnly = asStr(mode).trim() === 'background'
   const assetsById = new Map(asList(safePlan.assets).map((item) => [asStr(item && item.id).trim(), asObj(item)]))
-  const promptAssets = asList(scene.promptAssets)
+  const allPromptAssets = asList(scene.promptAssets)
     .map((item) => {
       const live = assetsById.get(asStr(item && item.id).trim())
       return live || asObj(item)
     })
     .filter(Boolean)
+  // 背景-only：人物/事物资产不进背景图（提示词、参考图、ref_required 门禁均剔除）
+  const excludedSubjects = backgroundOnly ? allPromptAssets.filter(isSceneSubjectAsset) : []
+  const promptAssets = backgroundOnly ? allPromptAssets.filter((asset) => !isSceneSubjectAsset(asset)) : allPromptAssets
   const referenceAssets = promptAssets.filter((asset) => asStr(asset.primaryReferenceAssetUri).trim())
+  // S4-02：必须参考图的资产（ref_required）按当前计划状态实时判定。
+  // 场景条目里存量的 missingRequiredAssetIds 是建计划时的快照，锁定写回后不会更新，
+  // 因此这里以 live 资产记录为准，避免「已锁定仍误判缺失」或「引用被清空仍误判就绪」。
+  // 背景-only 模式下 promptAssets 已剔除人物/事物，门禁只剩真正属于背景的 ref_required 项（通常无）。
+  const requiredAssets = promptAssets.filter((asset) => asStr(asset.renderStrategy).trim() === 'ref_required')
+  const missingRequiredAssets = requiredAssets
+    .filter((asset) => asStr(asset.referenceStatus).trim() !== 'ready' || !asStr(asset.primaryReferenceAssetUri).trim())
+    .map((asset) => ({
+      id: asStr(asset.id).trim(),
+      name: asStr(asset.name).trim(),
+      category: asStr(asset.category).trim(),
+      referenceStatus: asStr(asset.referenceStatus).trim() || 'missing',
+      reason: 'reference_not_locked'
+    }))
   const promptLocks = promptAssets
     .map((asset) => `${asStr(asset.name).trim()}: ${asStr(asset.anchorPrompt).trim()}`)
     .filter((line) => !/: $/.test(line))
     .slice(0, 30)
   const negativeParts = uniqStrings([
     ...uniqStrings(safePlan.forbiddenSubstitutes, 40),
-    ...promptAssets.flatMap((asset) => uniqStrings(asset.forbiddenSubstitutes, 12))
+    ...promptAssets.flatMap((asset) => uniqStrings(asset.forbiddenSubstitutes, 12)),
+    ...(backgroundOnly ? BACKGROUND_ONLY_SUBJECT_EXCLUSIONS : [])
   ], 120)
+  const summary = asStr(scene.summary).trim()
   return {
     sceneId: asStr(scene.sceneId).trim(),
     sceneIndex: Number(scene.sceneIndex || 0),
     sceneName: asStr(scene.sceneName).trim(),
     workflow: asStr(scene.workflow).trim() || 'scene_prompt_only',
-    summary: asStr(scene.summary).trim(),
-    promptLocks,
-    negativePrompt: negativeParts.join(', '),
-    referenceAssets: referenceAssets.map((asset) => ({
+    mode: backgroundOnly ? 'background' : 'full',
+    summary,
+    // 背景-only：剔除人物/事物名称后的场景描述，路由直接作为出图 prompt 使用
+    backgroundPrompt: backgroundOnly ? stripSubjectMentionsFromSceneText(summary, excludedSubjects) : '',
+    // 背景-only 被剔除的人物/事物资产（证据留痕，便于审核与排查）
+    excludedSubjects: excludedSubjects.map((asset) => ({
       id: asStr(asset.id).trim(),
       name: asStr(asset.name).trim(),
-      category: asStr(asset.category).trim(),
-      lockProfile: asStr(asset.lockProfile).trim() || inferAssetLockProfile(asset),
-      lockWorkflow: asStr(asset.lockWorkflow).trim() || lockWorkflowForAsset(asset),
-      assetId: asStr(asset.primaryReferenceAssetId).trim(),
-      assetUri: asStr(asset.primaryReferenceAssetUri).trim(),
-      weight: asStr(asset.category).trim() === 'character' ? 0.9 : 0.8
+      category: asStr(asset.category).trim()
     })),
-    missingRequiredAssetIds: uniqStrings(scene.missingRequiredAssetIds, 60)
+    promptLocks,
+    negativePrompt: negativeParts.join(', '),
+    referenceAssets: referenceAssets.flatMap((asset) => {
+      const primary = {
+        id: asStr(asset.id).trim(),
+        name: asStr(asset.name).trim(),
+        category: asStr(asset.category).trim(),
+        lockProfile: asStr(asset.lockProfile).trim() || inferAssetLockProfile(asset),
+        lockWorkflow: asStr(asset.lockWorkflow).trim() || lockWorkflowForAsset(asset),
+        assetId: asStr(asset.primaryReferenceAssetId).trim(),
+        assetUri: asStr(asset.primaryReferenceAssetUri).trim(),
+        weight: asStr(asset.category).trim() === 'character' ? 0.9 : 0.8
+      }
+      // 线稿成品作为附加参考（低权重）：让锁定线稿真实参与场景出图
+      const lineartUri = asStr(asset.lineartFinalAssetUri).trim()
+      if (!lineartUri) return [primary]
+      return [primary, { ...primary, assetId: asStr(asset.lineartFinalAssetId).trim() || primary.assetId, assetUri: lineartUri, weight: 0.5 }]
+    }),
+    missingRequiredAssetIds: missingRequiredAssets.map((asset) => asset.id),
+    missingRequiredAssets,
+    requiredAssetIds: requiredAssets.map((asset) => asStr(asset.id).trim()).filter(Boolean)
   }
 }
 

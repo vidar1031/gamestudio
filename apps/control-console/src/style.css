@@ -477,3 +477,28 @@ body {
   color: #a3b68a;
   box-shadow: inset 0 2px 8px rgba(0,0,0,0.4);
 }
+
+/* ComfyUI 能力检查卡片 */
+.capability-card {
+  border: 1px solid var(--c-border, #1f2937);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  background: rgba(255, 255, 255, 0.02);
+}
+.capability-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text-inv, #e5e7eb);
+  margin-bottom: 6px;
+}
+.capability-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+.capability-row span[data-tone='success'] { color: #22c55e; }
+.capability-row span[data-tone='warn'] { color: #eab308; }
+.capability-row span[data-tone='error'] { color: #ef4444; }

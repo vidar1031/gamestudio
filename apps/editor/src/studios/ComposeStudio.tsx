@@ -38,10 +38,14 @@ import {
   resolveUrl,
   renderStorySceneAi,
   reviewStoryboardPromptAi,
+  runStoryCompletenessCheckAi,
+  getLatestStoryCompletenessReport,
+  listProjectAiTasks,
   saveProject,
   preflightStudioImage,
 	  uploadProjectImage,
   type AiBackgroundRequest,
+  type AiTaskProgress,
   type AssetV1,
   type CharacterPlacementV1,
   type CharacterV1,
@@ -63,6 +67,7 @@ import {
   type TimelineAdvanceV1,
   type ScriptDocV1,
   type StoryV1,
+  type StoryCompletenessReport,
   type StoryboardPromptQualityReview,
   type StoryAssetGalleryEntry,
   type StoryAssetPlan
@@ -1071,6 +1076,16 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   })
   const latestExportActionResolverRef = useRef<((action: LatestExportAction) => void) | null>(null)
 
+  // AUTO-E05：完整度核实（真实浏览器逐节点走查导出 H5 + AI 视觉评审）
+  // 弹窗打开期间经 /ai/tasks 轮询进度，任务完成后拉取最近报告；全程无黑盒等待。
+  const [ccOpen, setCcOpen] = useState(false)
+  const [ccBusy, setCcBusy] = useState(false)
+  const [ccError, setCcError] = useState('')
+  const [ccTask, setCcTask] = useState<AiTaskProgress | null>(null)
+  const [ccReport, setCcReport] = useState<StoryCompletenessReport | null>(null)
+  const [ccReportFile, setCcReportFile] = useState('')
+  const ccReportLoadedTaskRef = useRef<string>('')
+
 	  const [rightFold, setRightFold] = useState<{
 	    nodeProps: boolean
 	    nodeContent: boolean
@@ -2005,6 +2020,69 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setBusy(false)
     }
   }
+
+  // AUTO-E05：打开完整度核实弹窗（不触发新核实；弹窗内「重新核实」才触发）。
+  // 轮询在无活动任务时自动载入最近报告，因此历史报告可直接查看。
+  function openCompletenessModal() {
+    if (doc.mode !== 'project') return
+    setCcError('')
+    setCcOpen(true)
+  }
+
+  // 触发完整度核实。服务端异步执行（202 + taskId），此处只开弹窗并交给轮询。
+  async function runCompletenessCheck() {
+    if (doc.mode !== 'project' || ccBusy) return
+    setCcOpen(true)
+    setCcError('')
+    setCcBusy(true)
+    try {
+      await runStoryCompletenessCheckAi(doc.id, {})
+    } catch (e) {
+      setCcError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCcBusy(false)
+    }
+  }
+
+  function ccAiReviewStatusText(s: string) {
+    if (s === 'completed') return '完成'
+    if (s === 'partial') return '部分完成'
+    if (s === 'unavailable') return '不可用'
+    return '未执行'
+  }
+
+  function ccScreenshotUrl(screenshotDir: string, file: string) {
+    return resolveUrl(`/project-assets/${encodeURIComponent(doc.id)}/${String(screenshotDir || '').replace(/^\/+/, '')}/${encodeURIComponent(file)}`)
+  }
+
+  // 弹窗打开期间轮询任务进度；无活动任务时拉取最近报告（同一 taskId 只拉一次），
+  // 覆盖两种场景：任务刚完成出报告、打开弹窗直接查看上次报告。
+  useEffect(() => {
+    if (!ccOpen || doc.mode !== 'project' || !doc.id) return undefined
+    let stopped = false
+    const pull = async () => {
+      try {
+        const tasks = await listProjectAiTasks(doc.id)
+        if (stopped) return
+        const task = tasks.find((t) => t.kind === 'story.completeness_check') || null
+        setCcTask(task)
+        const active = Boolean(task && !task.done)
+        const loadedKey = task ? task.taskId : 'none'
+        if (!active && ccReportLoadedTaskRef.current !== loadedKey) {
+          ccReportLoadedTaskRef.current = loadedKey
+          const latest = await getLatestStoryCompletenessReport(doc.id).catch(() => null)
+          if (stopped) return
+          if (latest) {
+            setCcReport(latest.report)
+            setCcReportFile(latest.file)
+          }
+        }
+      } catch (_) { /* 轮询失败忽略，下轮重试 */ }
+    }
+    void pull()
+    const timer = window.setInterval(pull, 2000)
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [ccOpen, doc.mode, doc.id])
 
   function backToStart() {
     if (!doc.story) return
@@ -8081,6 +8159,7 @@ function ensureNode(n: NodeV1): NodeV1 {
 	          <button className="btn" onClick={() => saveCurrent()} disabled={busy || doc.mode !== 'project' || !dirty}>保存</button>
 	          <button className="btn secondary" onClick={() => exportCurrent()} disabled={busy || doc.mode !== 'project'}>导出预览</button>
 	          <button className="btn secondary" onClick={() => exportPublishCurrent()} disabled={busy || doc.mode !== 'project'}>导出发布包(H5)</button>
+          <button className="btn secondary" onClick={() => openCompletenessModal()} disabled={busy || doc.mode !== 'project'} title="查看完整度核实报告；用真实浏览器逐节点走查导出的可玩 H5 并做视觉评审">完整度核实</button>
 	        </div>
 	      </div>
 
@@ -8538,7 +8617,121 @@ function ensureNode(n: NodeV1): NodeV1 {
         </div>
       ) : null}
 
-	      <AiBackgroundModal
+	      {ccOpen ? (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 80,
+            display: 'grid',
+            placeItems: 'center',
+            background: 'rgba(2,6,23,0.82)'
+          }}
+        >
+          <div
+            style={{
+              width: 'min(980px, calc(100vw - 32px))',
+              maxHeight: 'calc(100vh - 64px)',
+              overflow: 'auto',
+              background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
+              border: '1px solid rgba(96,165,250,0.35)',
+              borderRadius: 16,
+              boxShadow: '0 24px 60px rgba(0,0,0,0.45)',
+              padding: 18
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#e5e7eb' }}>完整度核实</div>
+              <button className="btn secondary" onClick={() => setCcOpen(false)}>关闭</button>
+            </div>
+
+            {ccError ? <div className="hint" style={{ color: '#fca5a5', marginBottom: 10 }}>{ccError}</div> : null}
+
+            {ccTask && !ccTask.done ? (
+              <div style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.75)', color: '#bfdbfe', fontSize: 13, marginBottom: 10 }}>
+                正在核实：{ccTask.message || '准备中'}（{ccTask.current}/{ccTask.total}）
+              </div>
+            ) : null}
+
+            {ccReport ? (
+              <>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: ccReport.verdict === 'pass' ? '#86efac' : '#fca5a5' }}>
+                    总判定：{ccReport.verdict === 'pass' ? '通过' : '未通过'}
+                  </div>
+                  <div className="hint">
+                    节点 {ccReport.summary.passed}/{ccReport.summary.total} 通过 · 视觉评审{ccAiReviewStatusText(ccReport.aiReviewStatus)}
+                    {ccReport.review && ccReport.review.provider ? `（${ccReport.review.provider}${ccReport.review.model ? ` / ${ccReport.review.model}` : ''}）` : ''}
+                  </div>
+                </div>
+                <div className="hint" style={{ marginBottom: 10 }}>
+                  核实时间：{ccReport.checkedAt}{ccReportFile ? ` · 报告文件：${ccReportFile}` : ''}
+                </div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {(ccReport.nodes || []).map((node) => (
+                    <div
+                      key={node.nodeId}
+                      style={{ display: 'flex', gap: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.75)' }}
+                    >
+                      {node.screenshot && ccReport.screenshotDir ? (
+                        <img
+                          src={ccScreenshotUrl(ccReport.screenshotDir, node.screenshot)}
+                          alt={node.name || node.nodeId}
+                          title="点击在新窗口查看大图"
+                          style={{ width: 96, height: 128, objectFit: 'cover', borderRadius: 8, cursor: 'pointer', flexShrink: 0, border: '1px solid rgba(148,163,184,0.2)' }}
+                          onClick={() => window.open(ccScreenshotUrl(ccReport.screenshotDir, node.screenshot), '_blank', 'noopener,noreferrer')}
+                        />
+                      ) : null}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700, color: '#e5e7eb' }}>{node.name || node.nodeId}</span>
+                          <span className="hint">{node.kind === 'ending' ? '结局' : '场景'}</span>
+                          <span className="hint">{node.reachable ? '已到达' : '不可达'}</span>
+                          {node.aiReview && node.aiReview.status === 'completed' ? (
+                            <span style={{ color: node.aiReview.passed ? '#86efac' : '#fca5a5', fontWeight: 700 }}>
+                              视觉评审{node.aiReview.passed ? '通过' : '未通过'}{Number.isFinite(Number(node.aiReview.score)) ? ` ${node.aiReview.score} 分` : ''}
+                            </span>
+                          ) : (
+                            <span className="hint">视觉评审未执行{node.aiReview && node.aiReview.reason ? `：${node.aiReview.reason}` : ''}</span>
+                          )}
+                        </div>
+                        {Array.isArray(node.issues) && node.issues.length ? (
+                          <div style={{ marginTop: 6, fontSize: 12, color: '#fca5a5', lineHeight: 1.6 }}>
+                            {node.issues.map((issue, idx) => (
+                              <div key={idx}>· {issue.message}</div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {node.aiReview && node.aiReview.status === 'completed' && Array.isArray(node.aiReview.issues) && node.aiReview.issues.length ? (
+                          <div style={{ marginTop: 4, fontSize: 12, color: '#cbd5e1', lineHeight: 1.6 }}>
+                            {node.aiReview.issues.map((issue, idx) => (
+                              <div key={idx}>· {issue}</div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {node.aiReview && node.aiReview.status === 'completed' && node.aiReview.summary ? (
+                          <div className="hint" style={{ marginTop: 4 }}>{node.aiReview.summary}</div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            {!ccReport && !(ccTask && !ccTask.done) && !ccError ? (
+              <div className="hint">暂无报告。点击「重新核实」开始一次走查。</div>
+            ) : null}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 14 }}>
+              <button className="btn secondary" onClick={() => runCompletenessCheck()} disabled={ccBusy || Boolean(ccTask && !ccTask.done)}>
+                {ccTask && !ccTask.done ? '核实中…' : '重新核实'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <AiBackgroundModal
 	        open={aiOpen}
 	        value={aiReq}
           imageProvider={aiImageProvider}
@@ -9013,6 +9206,7 @@ function ensureNode(n: NodeV1): NodeV1 {
             setSbOpen(false)
             setSbError('')
           }}
+          onReloadProject={() => { if (doc.mode === 'project') void openProject(doc.id) }}
           onRunOpenChecks={() => void runStoryboardOpenChecks()}
           onGenerateEntity={runStoryboardGenerateEntitySpec}
           onBuildAssetPlan={runStoryboardBuildAssetPlan}

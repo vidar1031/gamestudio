@@ -65,6 +65,7 @@ export function registerRuntimeRoutes(app, context) {
     listActiveReasoningExecutions,
     loadProviderModel,
     mergeHermesControlConfig,
+    reconcileResources,
     setHermesControlConfig,
     spawn,
     startHermesRuntime,
@@ -184,11 +185,26 @@ export function registerRuntimeRoutes(app, context) {
       if (preflight.ready) {
         appendHermesLog(`[START] Loading provider model before runtime start: ${preflight.selectedModel}`)
         const loadStart = Date.now()
-        const loadResult = await loadProviderModel({
+        let loadResult = await loadProviderModel({
           provider: existing.provider,
           baseUrl: existing.baseUrl,
           model: preflight.selectedModel
         })
+        if (!loadResult.ok && typeof reconcileResources === 'function') {
+          // 内存竞态自愈：OMLX 启动/杂散请求会自动拉起其默认模型占位，导致配置模型加载撞内存上限；
+          // 先做资源守卫收敛（卸载外来模型）再重试一次，仍失败才显式 409
+          appendHermesLog(`[START][WARN] 模型首次加载失败（${String(loadResult.detail || '').slice(0, 120)}），触发资源守卫收敛后重试`)
+          try {
+            await reconcileResources()
+          } catch (reconcileError) {
+            appendHermesLog(`[START][RESOURCE][WARN] 守卫收敛失败: ${reconcileError instanceof Error ? reconcileError.message : String(reconcileError)}`)
+          }
+          loadResult = await loadProviderModel({
+            provider: existing.provider,
+            baseUrl: existing.baseUrl,
+            model: preflight.selectedModel
+          })
+        }
         const loadDuration = Date.now() - loadStart
         if (!loadResult.ok) {
           appendHermesLog(`[START][ERROR] Provider load failed: ${loadResult.detail} time_ms=${loadDuration}`)

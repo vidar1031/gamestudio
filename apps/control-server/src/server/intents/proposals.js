@@ -17,8 +17,7 @@ import {
   HERMES_REASONING_REVIEW_RECORDS_FILE,
 } from '../../config/paths.js'
 import { compileJsonIntent } from './jsonIntent.js'
-import { registerIntent, unregisterIntent } from './registry.js'
-import { INTENTS_DIR, INTENTS_INBOX_DIR, ensureIntentDirs } from './loadJsonIntents.js'
+import { getIntentsDir, getIntentsInboxDir, ensureIntentDirs } from './loadJsonIntents.js'
 
 const MAX_RECORDS_SCAN = 1000
 const MAX_KEYWORDS_PER_PROPOSAL = 8
@@ -123,7 +122,7 @@ function safeProposalId(rawId) {
 
 function proposalAlreadyExists(id) {
   const safeId = safeProposalId(id)
-  return fs.existsSync(path.join(INTENTS_DIR, `${safeId}.json`)) || fs.existsSync(path.join(INTENTS_INBOX_DIR, `${safeId}.json`))
+  return fs.existsSync(path.join(getIntentsDir(), `${safeId}.json`)) || fs.existsSync(path.join(getIntentsInboxDir(), `${safeId}.json`))
 }
 
 export function enqueueSelfReviewOperatorProposals(record) {
@@ -135,7 +134,7 @@ export function enqueueSelfReviewOperatorProposals(record) {
     if (!rule.matches(record)) continue
     const proposal = rule.build(record)
     const safeId = safeProposalId(proposal.id || rule.ruleId)
-    const target = path.join(INTENTS_INBOX_DIR, `${safeId}.json`)
+    const target = path.join(getIntentsInboxDir(), `${safeId}.json`)
 
     if (proposalAlreadyExists(safeId)) {
       skipped.push(`${safeId}:exists`)
@@ -205,7 +204,7 @@ export function enqueueHumanCorrectionProposal(record) {
     }
   }
 
-  const target = path.join(INTENTS_INBOX_DIR, `${id}.json`)
+  const target = path.join(getIntentsInboxDir(), `${id}.json`)
   try {
     compileJsonIntent(proposal)
   } catch (error) {
@@ -285,7 +284,7 @@ export function scanProposals({ minOccurrence = 2 } = {}) {
   const written = []
   const skipped = []
   for (const proposal of proposals) {
-    const target = path.join(INTENTS_INBOX_DIR, `${proposal.id}.json`)
+    const target = path.join(getIntentsInboxDir(), `${proposal.id}.json`)
     if (fs.existsSync(target)) {
       skipped.push(target)
       continue
@@ -315,10 +314,10 @@ export function scanProposals({ minOccurrence = 2 } = {}) {
 
 export function listProposals() {
   ensureIntentDirs()
-  if (!fs.existsSync(INTENTS_INBOX_DIR)) return []
-  const files = fs.readdirSync(INTENTS_INBOX_DIR).filter((name) => name.endsWith('.json'))
+  if (!fs.existsSync(getIntentsInboxDir())) return []
+  const files = fs.readdirSync(getIntentsInboxDir()).filter((name) => name.endsWith('.json'))
   return files.map((file) => {
-    const filePath = path.join(INTENTS_INBOX_DIR, file)
+    const filePath = path.join(getIntentsInboxDir(), file)
     try {
       const def = JSON.parse(fs.readFileSync(filePath, 'utf8'))
       return {
@@ -338,49 +337,14 @@ export function listProposals() {
 
 export function listActiveIntentFiles() {
   ensureIntentDirs()
-  if (!fs.existsSync(INTENTS_DIR)) return []
+  if (!fs.existsSync(getIntentsDir())) return []
   return fs
-    .readdirSync(INTENTS_DIR, { withFileTypes: true })
+    .readdirSync(getIntentsDir(), { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-    .map((entry) => path.join(INTENTS_DIR, entry.name))
+    .map((entry) => path.join(getIntentsDir(), entry.name))
 }
 
-function resolveProposalPath(id) {
-  const safeId = safeProposalId(id)
-  const sourcePath = path.join(INTENTS_INBOX_DIR, `${safeId}.json`)
-  if (!sourcePath.startsWith(INTENTS_INBOX_DIR + path.sep) && sourcePath !== INTENTS_INBOX_DIR) {
-    throw new Error('proposal_path_invalid')
-  }
-  return { safeId, sourcePath }
-}
-
-export function promoteProposal(id) {
-  ensureIntentDirs()
-  const { safeId, sourcePath } = resolveProposalPath(id)
-  if (!fs.existsSync(sourcePath)) throw new Error('proposal_not_found')
-  const raw = fs.readFileSync(sourcePath, 'utf8')
-  const def = JSON.parse(raw)
-  const intent = compileJsonIntent(def)
-  const targetPath = path.join(INTENTS_DIR, `${safeId}.json`)
-  fs.writeFileSync(targetPath, raw, 'utf8')
-  fs.unlinkSync(sourcePath)
-  registerIntent(intent)
-  return { id: safeId, activatedPath: targetPath }
-}
-
-export function rejectProposal(id) {
-  ensureIntentDirs()
-  const { safeId, sourcePath } = resolveProposalPath(id)
-  if (!fs.existsSync(sourcePath)) throw new Error('proposal_not_found')
-  fs.unlinkSync(sourcePath)
-  return { id: safeId, removed: true }
-}
-
-export function deactivateActiveIntent(id) {
-  const safeId = safeProposalId(id)
-  const activePath = path.join(INTENTS_DIR, `${safeId}.json`)
-  if (!fs.existsSync(activePath)) throw new Error('intent_not_found')
-  fs.unlinkSync(activePath)
-  unregisterIntent(safeId)
-  return { id: safeId, removed: true }
-}
+// AUTO-F02：原 promoteProposal / rejectProposal / deactivateActiveIntent 已移除。
+// 晋级、驳回、下线全部改由 proposalGovernance.js 的受控函数承担
+// （测试门禁 → 人工审核 → 人工激活 → 版本记录/回滚，自动路径身份一律拒绝）。
+// 提案不再存在绕过治理的直接晋级路径。

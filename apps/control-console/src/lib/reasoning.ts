@@ -115,7 +115,8 @@ export function getReasoningSessionElapsedSeconds(session: ReasoningSession | nu
   if (!session) return 0
   const startedAt = new Date(session.createdAt).getTime()
   if (Number.isNaN(startedAt)) return 0
-  const isFinished = session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled'
+  // 与状态机终态对齐：completed/blocked/cancelled/timeout；failed 在展示语义上同样视为已结束（重试预算耗尽后的最终态）
+  const isFinished = session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled' || session.status === 'blocked' || session.status === 'timeout'
   const endAt = isFinished ? new Date(session.updatedAt).getTime() : nowMs
   if (Number.isNaN(endAt)) return 0
   return Math.max(0, Math.round((endAt - startedAt) / 1000))

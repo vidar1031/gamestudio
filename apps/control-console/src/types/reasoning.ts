@@ -134,7 +134,7 @@ export type ReasoningSession = {
   userPrompt: string
   parentSessionId?: string | null
   childSessionIds?: string[]
-  status: 'planning' | 'running' | 'waiting_review' | 'completed' | 'failed' | 'cancelled'
+  status: 'planning' | 'running' | 'waiting_review' | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'timeout'
   createdAt: string
   updatedAt: string
   plan: ReasoningPlan | null

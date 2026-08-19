@@ -116,9 +116,69 @@ import {
 import {
   writeStepCheckpoint,
   readLatestStepCheckpoint,
+  listStepCheckpoints,
   clearStepCheckpoints,
   applyCheckpointToSession,
 } from './reasoning/stepCheckpoint.js'
+import {
+  scanAndConvergeOrphanedSessions,
+} from './reasoning/orphanRecovery.js'
+import {
+  createReasoningQueueWorker,
+  recoverPersistentQueueOnStartup,
+  enqueueQueueItem,
+  listQueueItems,
+  readQueueItem,
+  resetQueueItemForManualRetry,
+  isTerminalQueueItemState,
+  resolveQueueMaxConcurrency,
+  resolveQueueTickMs,
+  resolveQueueHeartbeatScanIntervalMs,
+  backfillQueueItemProjectId,
+  evaluateProjectQuota,
+} from './reasoning/persistentQueue.js'
+import {
+  resolveRetryMaxAttempts,
+  resolveRetryBaseMs,
+  resolveRetryMaxDelayMs,
+} from './reasoning/retryPolicy.js'
+import {
+  RESOURCE_KIND,
+  createResourceScheduler,
+  createOmlxClient,
+  isResourceSchedulerEnabled,
+  resolveActionResourceKind,
+} from './reasoning/resourceScheduler.js'
+import {
+  createGatewaySupervisor,
+  isGatewaySupervisionEnabled,
+  isGatewayExitAffectedSession,
+} from './reasoning/gatewaySupervision.js'
+import {
+  runReasoningRetentionCleanup,
+  resolveRetentionPolicies,
+  pruneTtlCache,
+} from './reasoning/retentionCleanup.js'
+import {
+  runDueCronJobs,
+} from './reasoning/cronGovernance.js'
+import {
+  appendGovernanceAudit,
+} from './reasoning/governanceAudit.js'
+import {
+  resolveTaskTimeoutMs,
+  resolveStepTimeoutMs,
+  registerSessionCancelSignal,
+  requestSessionCancel,
+  isSessionCancelRequested,
+  getSessionCancelReason,
+  getSessionCancelSignal,
+  clearSessionCancelSignal,
+  raceStepExecution,
+  resolveStepDeadline,
+  evaluateExecutionGate,
+  convergeSessionTermination,
+} from './reasoning/taskDeadline.js'
 import {
   buildReasoningActionCatalog,
   isReasoningAnswerAction,
@@ -135,10 +195,20 @@ import { buildReasoningToolCatalog } from './capabilities/toolRegistry.js'
 import { registerChatRoutes } from './routes/chatRoutes.js'
 import { registerConfigRoutes } from './routes/configRoutes.js'
 import { registerContextRoutes } from './routes/contextRoutes.js'
+import { registerEventsRoutes } from './routes/eventsRoutes.js'
+import { registerMaintenanceRoutes } from './routes/maintenanceRoutes.js'
 import { registerOverviewRoutes } from './routes/overviewRoutes.js'
+import { registerProjectBindingRoutes } from './routes/projectBindingRoutes.js'
 import { registerReasoningRoutes } from './routes/reasoningRoutes.js'
+import { registerResourceRoutes } from './routes/resourceRoutes.js'
+import { registerCronRoutes } from './routes/cronRoutes.js'
+import { registerSupervisionRoutes } from './routes/supervisionRoutes.js'
 import { registerRuntimeRoutes } from './routes/runtimeRoutes.js'
 import { registerSkillProposalsRoutes } from './routes/skillProposalsRoutes.js'
+import { registerSkillGovernanceRoutes } from './routes/skillGovernanceRoutes.js'
+import { registerHermesSessionSearchRoutes } from './routes/hermesSessionSearchRoutes.js'
+import { registerRegistryRoutes } from './routes/registryRoutes.js'
+import { runRetentionCleanup } from './maintenance/retention.js'
 import {
   bootstrapIntents,
   findIntentForAnswer,
@@ -174,6 +244,8 @@ import { createChatService } from './services/chatService.js'
 import { createConfigService } from './services/configService.js'
 import { createContextService } from './services/contextService.js'
 import { gameStudioServerClient } from './services/gameStudioServerClient.js'
+import { waitForSceneBatchTerminal, evaluateSceneBackgroundsOutcome, evaluateScenePlacementsOutcome } from './services/storySceneLayeringSupport.js'
+import { dispatchGameStudioEventLegacy } from './events/eventDispatcher.js'
 import { createReasoningService } from './services/reasoningService.js'
 import { createRuntimeService } from './services/runtimeService.js'
 import {
@@ -459,6 +531,13 @@ function ensureHermesHealthCheck() {
     if (state.state === 'running') {
       const pid = readHermesPid()
       if (!pid || !isPidRunning(pid)) {
+        // AUTO-C04：gateway 监督器启用时，异常退出的有限恢复由监督器全权负责，
+        // health-check 不再直接拉起，避免双通道竞争与无上限重启
+        if (isGatewaySupervisionEnabled()) {
+          appendHermesLog(`[HEALTH-CHECK] PID ${pid} not running but state is running. Gateway supervision enabled, deferring recovery to supervisor.`)
+          clearHermesPid()
+          return
+        }
         appendHermesLog(`[HEALTH-CHECK] PID ${pid} not running but state is running. Triggering recovery.`)
         clearHermesPid()
         recoverHermesChatRuntime('health_check_pid_missing').catch((err) => {
@@ -615,6 +694,19 @@ function normalizeUsage(usage) {
 // Inference still goes through Hermes; this path must never call /chat/completions.
 const inspectModelAccessCache = new Map() // key=`${provider}|${baseUrl}|${model}` → 上次探测结果
 
+// AUTO-C03：探测缓存 TTL + 上限淘汰（HERMES_INSPECT_MODEL_CACHE_TTL_MS 默认 24h /
+// HERMES_INSPECT_MODEL_CACHE_MAX_ENTRIES 默认 200），避免长期运行无限增长；
+// 淘汰只触发下次重探测，无副作用
+function cacheInspectModelAccessResult(cacheKey, value) {
+  const policies = resolveRetentionPolicies()
+  pruneTtlCache(inspectModelAccessCache, {
+    ttlMs: policies.inspectModelCacheTtlMs,
+    maxEntries: policies.inspectModelCacheMaxEntries,
+    getTimestamp: (entry) => entry?.checkedAt
+  })
+  inspectModelAccessCache.set(cacheKey, value)
+}
+
 function buildInspectModelCacheKey({ provider, baseUrl, model }) {
   return `${provider || ''}|${baseUrl || ''}|${model || ''}`
 }
@@ -652,7 +744,7 @@ async function inspectModelAccess({ provider, baseUrl, model, apiKeyOverride = n
         probedProvider: true,
         ...metadata
       }
-      inspectModelAccessCache.set(cacheKey, failure)
+      cacheInspectModelAccessResult(cacheKey, failure)
       return failure
     }
 
@@ -671,7 +763,7 @@ async function inspectModelAccess({ provider, baseUrl, model, apiKeyOverride = n
       probedProvider: true,
       ...metadata
     }
-    inspectModelAccessCache.set(cacheKey, result)
+    cacheInspectModelAccessResult(cacheKey, result)
     return result
   } catch (err) {
     const failure = {
@@ -686,7 +778,7 @@ async function inspectModelAccess({ provider, baseUrl, model, apiKeyOverride = n
       probedProvider: true,
       ...metadata
     }
-    inspectModelAccessCache.set(cacheKey, failure)
+    cacheInspectModelAccessResult(cacheKey, failure)
     return failure
   }
 }
@@ -943,10 +1035,12 @@ async function loadProviderModel({ provider, baseUrl, model }) {
     }
   }
 
-  // 单模型约束：加载新模型前，先卸载当前已加载的其他模型
+  // 单模型约束：加载新模型前，先卸载当前已加载的其他模型。
+  // 注意包含 is_loading 中的模型：OMLX 启动时会自动拉起其默认模型，
+  // 加载中的外来模型同样占内存，不清会撞内存上限（实测：OMLX 自启 5 秒内默认模型 is_loading，过滤掉后加载失败）。
   const statusBefore = await fetchProviderModelStatus({ provider: access.provider, baseUrl: access.baseUrl })
   if (statusBefore.ok && Array.isArray(statusBefore.models)) {
-    const loadedOthers = statusBefore.models.filter((m) => m?.loaded === true && m?.is_loading === false && String(m?.id || '').trim() !== normalizedModel)
+    const loadedOthers = statusBefore.models.filter((m) => (m?.loaded === true || m?.is_loading === true) && String(m?.id || '').trim() !== normalizedModel)
     for (const other of loadedOthers) {
       const otherId = String(other.id || '').trim()
       appendHermesLog(`[MODEL][SINGLE] Unloading previously loaded model before loading ${normalizedModel}: ${otherId}`)
@@ -1270,6 +1364,55 @@ function buildHermesEphemeralSystemPrompt(binding) {
   return sections.join('\n\n').trim()
 }
 
+/**
+ * 以 Terminal 窗口可见形态启动 Hermes gateway。
+ * 用户在 Dock 可看到 Terminal 图标，窗口内实时输出日志（tee 同步写入日志文件），
+ * 关闭窗口即终止进程——避免静默后台进程用户无法观测、无法关测。
+ * 返回 true 表示窗口已打开且 launcher 已写入 pid 文件；失败返回 false 由调用方回退静默启动。
+ */
+async function launchHermesInTerminal({ explicitEnv, pythonPath }) {
+  try {
+    const runDir = path.join(GAMESTUDIO_ROOT, '.run')
+    fs.mkdirSync(runDir, { recursive: true })
+    const launcherPath = path.join(runDir, 'start-hermes-visible.sh')
+    const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`
+    const envLines = Object.entries(explicitEnv)
+      .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
+      .join('\n')
+    // python 以后台运行并用 $! 取真实 pid（process substitution 避免取到管道末位 pid），
+    // tee 让窗口可见与日志文件兼得；wait 让窗口生命周期与 gateway 进程绑定。
+    const script = `#!/bin/bash
+cd ${shellQuote(HERMES_ROOT)} || exit 1
+${envLines}
+${shellQuote(pythonPath)} ${shellQuote(HERMES_GATEWAY_SCRIPT)} run > >(tee -a ${shellQuote(HERMES_RUNTIME_LOG_FILE)}) 2>&1 &
+HERMES_CHILD=$!
+echo "$HERMES_CHILD" > ${shellQuote(HERMES_RUNTIME_PID_FILE)}
+wait "$HERMES_CHILD"
+`
+    fs.writeFileSync(launcherPath, script, { mode: 0o700 })
+    clearHermesPid()
+    const result = spawnSync('osascript', ['-e', `tell application "Terminal" to do script ${JSON.stringify(launcherPath)}`], {
+      timeout: 15000,
+      encoding: 'utf8'
+    })
+    if (result.error || result.status !== 0) {
+      const detail = result.error ? result.error.message : String(result.stderr || '').trim()
+      appendHermesLog(`[START][WARN] Terminal 可见启动 osascript 失败: ${detail}`)
+      return false
+    }
+    // Terminal 打开窗口与 shell 启动有短暂延迟，等待 launcher 写入 pid
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      if (readHermesPid()) return true
+    }
+    appendHermesLog('[START][WARN] Terminal 窗口已打开，但 pid 文件未在 10 秒内出现')
+    return false
+  } catch (error) {
+    appendHermesLog(`[START][WARN] Terminal 可见启动异常: ${error instanceof Error ? error.message : String(error)}`)
+    return false
+  }
+}
+
 async function startHermesRuntime() {
   const startAt = Date.now()
   const current = getHermesRuntimeState()
@@ -1302,8 +1445,7 @@ async function startHermesRuntime() {
   appendHermesLog(`[START][DETAIL] model=${binding.model} provider=${binding.provider} baseUrl=${binding.baseUrl}`)
   appendHermesLog(`[START][DETAIL] memory_injection=${injectedMemoryFiles.length} files skills=${binding.skills.availableSkillFiles?.length || 0}`)
   
-  const customEnv = {
-    ...process.env,
+  const hermesExplicitEnv = {
     HERMES_HOME,
     HERMES_MODEL: binding.model,
     HERMES_PROVIDER: binding.provider,
@@ -1341,6 +1483,7 @@ async function startHermesRuntime() {
       STUDIO_AI_API_KEY: providerAccess.apiKey
     } : {})
   }
+  const customEnv = { ...process.env, ...hermesExplicitEnv }
 
   fs.mkdirSync(path.dirname(HERMES_RUNTIME_LOG_FILE), { recursive: true })
 
@@ -1360,20 +1503,37 @@ async function startHermesRuntime() {
     appendHermesLog(`[START][WARN] Could not write API_SERVER_KEY to Hermes .env: ${envError instanceof Error ? envError.message : String(envError)}`)
   }
 
-  const logFd = fs.openSync(HERMES_RUNTIME_LOG_FILE, 'a')
   const pythonPath = getHermesPython()
-  appendHermesLog(`[START][DETAIL] python=${pythonPath} script=${HERMES_GATEWAY_SCRIPT} cwd=${HERMES_ROOT}`)
-  
-  const child = spawn(pythonPath, [HERMES_GATEWAY_SCRIPT, 'run'], {
-    cwd: HERMES_ROOT,
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-    env: customEnv
-  })
+  const hermesLaunchMode = String(process.env.HERMES_LAUNCH_MODE || 'visible').trim().toLowerCase()
+  appendHermesLog(`[START][DETAIL] python=${pythonPath} script=${HERMES_GATEWAY_SCRIPT} cwd=${HERMES_ROOT} launch_mode=${hermesLaunchMode}`)
 
-  child.unref()
-  writeHermesPid(child.pid)
-  appendHermesLog(`[START][DETAIL] hermes_pid=${child.pid}`)
+  // 默认以 Terminal 窗口可见形态启动（Dock 图标 + 窗口实时日志，用户可观测可关闭）；
+  // HERMES_LAUNCH_MODE=silent、非 macOS 或可见启动失败时，回退静默后台启动。
+  let launchedVisibly = false
+  if (hermesLaunchMode !== 'silent' && process.platform === 'darwin') {
+    launchedVisibly = await launchHermesInTerminal({ explicitEnv: hermesExplicitEnv, pythonPath })
+    if (!launchedVisibly) {
+      appendHermesLog('[START][WARN] Terminal 可见启动失败，回退静默后台启动')
+    }
+  }
+
+  if (!launchedVisibly) {
+    const logFd = fs.openSync(HERMES_RUNTIME_LOG_FILE, 'a')
+    const child = spawn(pythonPath, [HERMES_GATEWAY_SCRIPT, 'run'], {
+      cwd: HERMES_ROOT,
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: customEnv
+    })
+    child.unref()
+    writeHermesPid(child.pid)
+    appendHermesLog(`[START][DETAIL] hermes_pid=${child.pid} mode=silent`)
+  } else {
+    appendHermesLog('[START][DETAIL] hermes launched in Terminal window mode=visible')
+  }
+  // AUTO-C04：新的受控启动完成后，清除「人工关停」标记——
+  // gateway 监督器以此区分生命周期关停（绝不自动拉起）与异常退出（有限退避恢复）
+  hermesStoppingIntentionally = false
   ensureHermesGatewayLogWatcher()
 
   const apiReadyStart = Date.now()
@@ -1433,7 +1593,45 @@ async function startOmlxApp() {
     console.log('[OMLX] probe error (service not running):', err instanceof Error ? err.message : String(err))
   }
 
-  // Step 2: 优先直接启动 omlx serve（不依赖 GUI）
+  const launchMode = String(process.env.OMLX_LAUNCH_MODE || 'app').trim().toLowerCase()
+
+  // Step 2: 优先以 GUI App 形态启动（菜单栏图标可见，自带 Server 开关与监测面板，用户可观测可控制）。
+  // 仅当 App 缺失或显式 OMLX_LAUNCH_MODE=cli 时才退回静默 CLI 方式。
+  let omlxAppExists = false
+  try { omlxAppExists = fs.existsSync(omlxAppPath) } catch { omlxAppExists = false }
+  if (launchMode !== 'cli' && omlxAppExists) {
+    try {
+      console.log('[OMLX] launching GUI app:', omlxAppPath)
+      const child = spawn('open', [omlxAppPath], { detached: true, stdio: 'ignore' })
+      child.unref()
+
+      // 等待服务就绪（最多 60 秒，App 启动后会自动拉起 Server；大模型加载较慢）
+      const maxAttempts = 60
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        try {
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 2000)
+          const res = await fetch(omlxApiUrl, {
+            signal: controller.signal,
+            headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+          })
+          clearTimeout(timeout)
+          if (res.ok || res.status === 200) {
+            console.log('[OMLX] GUI app server ready')
+            return { ok: true, alreadyRunning: false, message: 'OMLX App 已启动，服务就绪' }
+          }
+        } catch {
+          // 继续等待
+        }
+      }
+      return { ok: false, message: 'OMLX App 已打开（菜单栏可见图标），但服务未在 60 秒内就绪，请在 App 菜单中点击 Start Server' }
+    } catch (error) {
+      return { ok: false, message: `OMLX App 启动失败: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  }
+
+  // Step 3: 静默 CLI 兜底（App 缺失或显式 OMLX_LAUNCH_MODE=cli）
   if (omlxCliPath) {
     try {
       const args = ['serve', '--port', '18888']
@@ -1474,43 +1672,11 @@ async function startOmlxApp() {
       return { ok: false, message: 'OMLX 服务启动超时，请检查 omlx-cli serve 日志' }
     } catch (error) {
       console.log('[OMLX] omlx-cli serve failed:', error instanceof Error ? error.message : String(error))
-      // fallback 到启动 GUI App
+      // CLI 是最后手段，失败即返回，不再回退其他方式
     }
   }
 
-  // Step 3: Fallback — 启动 GUI App
-  try {
-    if (!fs.existsSync(omlxAppPath)) {
-      return { ok: false, message: `未找到 OMLX App: ${omlxAppPath}，也未找到 omlx CLI` }
-    }
-  } catch {
-    return { ok: false, message: `无法访问 OMLX App 路径: ${omlxAppPath}` }
-  }
-
-  try {
-    console.log('[OMLX] spawning open', omlxAppPath)
-    const child = spawn('open', [omlxAppPath], { detached: true, stdio: 'ignore' })
-    child.unref()
-
-    // 等待服务就绪（最多 30 秒）
-    const maxAttempts = 30
-    for (let i = 0; i < maxAttempts; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      try {
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 2000)
-        await fetch(omlxApiUrl, { signal: controller.signal })
-        clearTimeout(timeout)
-        console.log('[OMLX] App started successfully')
-        return { ok: true, alreadyRunning: false, message: 'OMLX App 已启动，请在 App 中点击「Start Server」启动服务' }
-      } catch {
-        // 继续等待
-      }
-    }
-    return { ok: false, message: 'OMLX App 已打开，但服务未在预期时间内就绪，请在 App 中手动启动服务' }
-  } catch (error) {
-    return { ok: false, message: `启动失败: ${error instanceof Error ? error.message : String(error)}` }
-  }
+  return { ok: false, message: `OMLX 启动失败：GUI App ${omlxAppExists ? '存在但启动未成功' : `未找到（${omlxAppPath}）`}，omlx CLI ${omlxCliPath ? '启动失败或超时' : '未找到'}` }
 }
 
 async function stopHermesRuntime() {
@@ -1696,7 +1862,9 @@ function getDefaultHermesControlConfig() {
       minContextTokens: 65536
     },
     workflow: {
-      memoryOverlayMode: 'references-only',
+      // 默认 content-injection：references-only 只给路径不给正文，模型拿不到记忆事实
+      // （gpt-oss 曾因此输出停在思考通道、正文为空）；有界注入见 buildBoundedProjectMemoryInjection。
+      memoryOverlayMode: 'content-injection',
       replayWindowMessages: 24,
       reasoningReplayWindowMessages: 8,
       modelRouting: buildDefaultModelRoutingConfig({
@@ -1751,16 +1919,33 @@ function normalizeModelRouteEntry(route, fallbackRoute) {
   const baseUrl = normalizeModelBaseUrl(raw.baseUrl || fallback.baseUrl, provider)
   const model = String(raw.model || fallback.model || '').trim()
   const requestedTransport = String(raw.transport || fallback.transport || 'hermes').trim().toLowerCase()
+  const strict = raw.strict === undefined ? Boolean(fallback.strict) : Boolean(raw.strict)
   let transport = requestedTransport === 'direct' ? 'direct' : 'hermes'
-  if (transport !== 'direct' && (provider !== fallback.provider || baseUrl !== fallback.baseUrl || model !== fallback.model)) {
-    transport = 'direct'
+  // hermes 通道只能送达与当前左脑绑定一致的 provider/model；路由声明与绑定不一致时，
+  // hermes 会忽略路由声明的模型（2026-07-22 蓝图评审被静默直连的事故根因）。
+  // 处置：strict 路由不再静默降级 direct——标记 unavailableReason，运行期显式失败
+  // （route_unavailable:...，经 C02 retryPolicy 收敛 blocked 等人工修配置）；
+  // 非 strict 路由保持既有 best-effort 直连语义，但以 degradedFrom 留痕，自检/诊断面可见。
+  const hermesRouteMismatch = transport === 'hermes' && (provider !== fallback.provider || baseUrl !== fallback.baseUrl || model !== fallback.model)
+  let unavailableReason = ''
+  let degradedFrom = ''
+  if (hermesRouteMismatch) {
+    if (strict) {
+      unavailableReason = `route_unavailable:strict_route_model_mismatch:${model || 'unknown'}`
+    } else {
+      degradedFrom = 'hermes'
+      transport = 'direct'
+    }
   }
   return {
     provider,
     baseUrl,
     model,
     transport,
-    strict: raw.strict === undefined ? Boolean(fallback.strict) : Boolean(raw.strict)
+    requestedTransport,
+    strict,
+    unavailableReason,
+    degradedFrom
   }
 }
 
@@ -1866,6 +2051,13 @@ export function resolveModelRouteForPhase(binding, phase, options = {}) {
   const phaseKey = normalizeModelRoutingKey(phase)
   const route = normalizeModelRouteEntry(resolvedRoute, fallbackRoute)
   route.strict = route.strict || strictRouteRequiredPhases.has(phaseKey)
+  // strictRouteRequiredPhases 运行期补上的 strict 同样要过可满足性检查：
+  // 配置 strict=false 但按阶段被强制 strict 的 hermes 路由，若刚才被 best-effort 降级 direct，
+  // 必须转为显式不可用，不得继续静默直连。
+  if (route.strict && !route.unavailableReason && route.degradedFrom === 'hermes') {
+    route.transport = 'hermes'
+    route.unavailableReason = `route_unavailable:strict_route_model_mismatch:${route.model || 'unknown'}`
+  }
   const rightBrainApiKey = getRightBrainApiKey(fallbackBinding)
   const isRightBrainRoute = fallbackBinding.rightBrainEnabled && fallbackBinding.rightBrain && route.provider === fallbackBinding.rightBrain.provider && rightBrainApiKey
   const access = getProviderAccess(route.provider, route.baseUrl, isRightBrainRoute ? rightBrainApiKey : null)
@@ -1875,6 +2067,9 @@ export function resolveModelRouteForPhase(binding, phase, options = {}) {
     matchedBy: match?.matchedBy || 'default',
     explicit: Boolean(match),
     transport: route.transport,
+    requestedTransport: route.requestedTransport,
+    degradedFrom: route.degradedFrom,
+    unavailableReason: route.unavailableReason,
     strict: route.strict,
     provider: access.provider,
     baseUrl: access.baseUrl,
@@ -1893,7 +2088,8 @@ export function getModelRouteOverrideForPhase(binding, phase, options = {}) {
     provider: resolved.provider,
     model: resolved.model,
     apiUrl: resolved.baseUrl,
-    strict: resolved.strict
+    strict: resolved.strict,
+    unavailableReason: resolved.unavailableReason || ''
   }
 }
 
@@ -2482,12 +2678,20 @@ function quoteYamlString(value) {
 }
 
 function buildHermesRuntimeModelBlock(binding) {
-  return [
+  const lines = [
     'model:',
     `  base_url: ${quoteYamlString(binding.baseUrl)}`,
     `  provider: ${quoteYamlString(binding.provider)}`,
     `  default: ${quoteYamlString(binding.model)}`
   ]
+  // Hermes Agent 要求模型上下文 ≥64K，否则按模型元数据（如 gpt-oss 报告 32K）拒绝运行并返回 500。
+  // 左脑配置 shortTerm.minContextTokens 声明期望的上下文窗口（当前 65536），
+  // 同步为 model.context_length 覆盖网关的元数据误判。
+  const contextLength = Number(binding?.shortTerm?.minContextTokens || 0)
+  if (Number.isFinite(contextLength) && contextLength > 0) {
+    lines.push(`  context_length: ${Math.floor(contextLength)}`)
+  }
+  return lines
 }
 
 function syncHermesRuntimeConfig(binding) {
@@ -2533,7 +2737,7 @@ function syncHermesRuntimeConfig(binding) {
   }
 }
 
-function buildConfigValidation(config, binding, inspection = null) {
+export function buildConfigValidation(config, binding, inspection = null) {
   const items = []
   const safeExists = (filePath, type) => {
     if (!filePath || !fs.existsSync(filePath)) return false
@@ -2598,6 +2802,23 @@ function buildConfigValidation(config, binding, inspection = null) {
       ? `${availableSkillFiles.length}/${configuredSkillFiles.length} 个技能文件可用`
       : '未检测到可用的 SKILL.md'
   })
+
+  // strict 路由可满足性前置暴露：声明 hermes+strict 但路由模型与左脑绑定不一致时，
+  // 运行期会显式失败（route_unavailable）；此处把它作为自检可见状态，而不是藏在运行时。
+  const modelRouting = config.workflow?.modelRouting || {}
+  const strictRouteEntries = [
+    ...Object.entries(modelRouting.phaseRoutes || {}).map(([key, route]) => [`phase:${key}`, route]),
+    ...Object.entries(modelRouting.actionRoutes || {}).map(([key, route]) => [`action:${key}`, route])
+  ].filter(([, route]) => route && route.strict === true)
+  for (const [routeId, route] of strictRouteEntries) {
+    const unavailableReason = String(route?.unavailableReason || '').trim()
+    items.push({
+      key: `strict-route-${routeId}`,
+      label: `严格路由 ${routeId}`,
+      status: unavailableReason ? 'error' : 'ok',
+      detail: unavailableReason || `${route.transport} / ${route.model || 'unknown'} 可满足`
+    })
+  }
 
   if (inspection) {
     items.push({
@@ -3240,6 +3461,7 @@ function createControlServerRouteContext() {
     buildReasoningToolCatalog,
     buildReasoningCapabilityGuide,
     buildReasoningPlannerMessages,
+    buildReasoningStartBlocker,
     buildRuntimeStateSnapshot,
     buildStructuredOutboundPreview,
     cancelReasoningSession,
@@ -3248,6 +3470,7 @@ function createControlServerRouteContext() {
     createOpaqueId,
     createReasoningSession,
     deleteReasoningSessionRecord,
+    dispatchReasoningSession,
     fetch,
     fetchLocalModelCatalog,
     fetchProviderModelStatus,
@@ -3265,6 +3488,12 @@ function createControlServerRouteContext() {
     getProviderAccess,
     listActiveReasoningExecutions,
     listReasoningSessions,
+    // AUTO-D01：队列/task 只读运维视图与人工重试（reasoningRoutes 经 context 消费）
+    listQueueItems,
+    readQueueItem,
+    resetQueueItemForManualRetry,
+    listStepCheckpoints,
+    readLatestStepCheckpoint,
     getSelectableContextSourceById,
     hermesAgentDefinition,
     inspectModelAccess,
@@ -3292,6 +3521,7 @@ function createControlServerRouteContext() {
     refreshHermesControlStateFromConfig,
     requestJsonWithoutHeadersTimeout,
     requestHermesChatCompletion,
+    resolveModelRouteForPhase,
     unloadProviderModel,
     runMemoryLifecycleMaintenance: () => runMemoryLifecycleMaintenance({
       fs,
@@ -3309,6 +3539,14 @@ function createControlServerRouteContext() {
     startOmlxApp,
     stopHermesRuntime,
     recoverHermesChatRuntime,
+    triggerSupervision,
+    getSupervisionTimerState,
+    getGatewaySupervisionState,
+    getCronSchedulerState,
+    getResourceSchedulerState,
+    // 启动前资源守卫收敛入口：卸载外来模型 + 缺失时回载配置模型（runtime 路由模型加载失败重试用）
+    reconcileResources: () => getResourceScheduler().reconcile({ trigger: 'prestart_load' }),
+    isSupervisionEnabled: () => getEnvValue('SUPERVISION_ENABLED') === 'true',
     updateHermesControlState,
     updateReasoningSession,
     writeContextPoolEntry,
@@ -3334,7 +3572,26 @@ function registerPrimaryControlServerRoutes(app) {
   registerContextRoutes(app, context)
   registerChatRoutes(app, context)
   registerReasoningRoutes(app, context)
+  registerCronRoutes(app, context)
+  registerSupervisionRoutes(app, context)
+  registerResourceRoutes(app, context)
   registerSkillProposalsRoutes(app)
+  registerSkillGovernanceRoutes(app)
+  registerHermesSessionSearchRoutes(app)
+  registerRegistryRoutes(app)
+  registerEventsRoutes(app)
+  registerProjectBindingRoutes(app)
+  registerMaintenanceRoutes(app)
+
+  // 启动时执行一次保留清理（先归档后清理，活跃数据受保护）
+  try {
+    const retentionReport = runRetentionCleanup({ trigger: 'startup' })
+    if (retentionReport.archived > 0) {
+      appendHermesLog(`[MAINTENANCE] startup retention: archived=${retentionReport.archived} protected=${retentionReport.protected} dir=${retentionReport.archiveDir || '-'}`)
+    }
+  } catch (error) {
+    appendHermesLog(`[MAINTENANCE][ERROR] startup retention failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
 
   // 系统启动后 30 秒触发首次监督评估 + 每 30 分钟周期性监督评估。
   // 默认关闭：meta_analysis 持续 401（Kimi key 失效）时该定时器每 30 分钟空转烧钱并制造无效 session。
@@ -3357,43 +3614,58 @@ function registerPrimaryControlServerRoutes(app) {
 /**
  * 触发监督评估（内部调用）
  */
+/**
+ * 触发监督评估（内部调用）。
+ * 创建 supervision session 后立即返回 sessionId（供 UI 跟踪），评估在后台执行；
+ * 评分卡 >= 90 且全部通过时不调用右脑（可控评估，不是所有都依赖右脑）。
+ */
 async function triggerSupervision({ trigger, delay = 0 } = {}) {
-  let sessionId = null
-  try {
-    const agentId = 'hermes-manager'
-    const prompt = trigger === 'post_startup'
-      ? '系统刚启动，请对左脑执行质量进行全面监督评估'
-      : '执行周期性健康检查，评估左脑最近任务执行情况'
+  const agentId = 'hermes-manager'
+  const prompt = trigger === 'post_startup'
+    ? '系统刚启动，请对左脑执行质量进行全面监督评估'
+    : '执行周期性健康检查，评估左脑最近任务执行情况'
 
-    // 创建 supervision 类型 session（createReasoningSession 内部生成 sessionId）
-    const session = await createReasoningSession(agentId, prompt, { productionTest: false, trigger, type: 'supervision' })
-    sessionId = session.sessionId
+  // 创建 supervision 类型 session（createReasoningSession 内部生成 sessionId）
+  const session = await createReasoningSession(agentId, prompt, { productionTest: false, trigger, type: 'supervision' })
+  const sessionId = session.sessionId
 
-    console.log(`[SUPERVISION] triggering ${trigger} supervision, sessionId=${sessionId}`)
-    writeStructuredLog('supervision', 'info', `Triggering ${trigger} supervision`, { sessionId, trigger, delay })
+  console.log(`[SUPERVISION] triggering ${trigger} supervision, sessionId=${sessionId}`)
+  writeStructuredLog('supervision', 'info', `Triggering ${trigger} supervision`, { sessionId, trigger, delay })
 
-    // 构建仅包含 supervision_evaluate 步骤的 plan
-    const plan = {
-      steps: [
-        {
-          stepId: createOpaqueId('step'),
-          action: 'supervision_evaluate',
-          title: '监督评估',
-          tool: 'model.supervisionEvaluate',
-          params: { trigger },
-        },
-      ],
+  // 构建仅包含 supervision_evaluate 步骤的 plan
+  const plan = {
+    steps: [
+      {
+        stepId: createOpaqueId('step'),
+        action: 'supervision_evaluate',
+        title: '监督评估',
+        tool: 'model.supervisionEvaluate',
+        params: { trigger },
+      },
+    ],
+  }
+
+  updateReasoningSession(sessionId, (s) => {
+    const transitioned = applySessionTransition(s, REASONING_SESSION_STATE.RUNNING, 'supervision started')
+    return {
+      ...transitioned,
+      plan,
+      currentStepId: plan.steps[0].stepId,
     }
+  })
 
-    updateReasoningSession(sessionId, (s) => {
-      const transitioned = applySessionTransition(s, REASONING_SESSION_STATE.RUNNING, 'supervision started')
-      return {
-        ...transitioned,
-        plan,
-        currentStepId: plan.steps[0].stepId,
-      }
-    })
+  // 后台执行评估，立即返回 sessionId 供 UI 轮询跟踪
+  runSupervisionExecution(sessionId, plan, prompt, trigger).catch((error) => {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    console.error(`[SUPERVISION] ${trigger} supervision execution crashed:`, errMsg)
+    writeStructuredLog('supervision', 'error', `${trigger} supervision execution crashed`, { sessionId, trigger, error: errMsg })
+  })
 
+  return { sessionId, trigger }
+}
+
+async function runSupervisionExecution(sessionId, plan, prompt, trigger) {
+  try {
     // 执行步骤
     await executeSupervisionStep(sessionId, plan.steps[0], prompt, 0)
 
@@ -3412,10 +3684,11 @@ async function triggerSupervision({ trigger, delay = 0 } = {}) {
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)
     console.error(`[SUPERVISION] ${trigger} supervision failed:`, errMsg)
-    writeStructuredLog('supervision', 'error', `${trigger} supervision failed`, { sessionId: sessionId || null, trigger, error: errMsg })
+    writeStructuredLog('supervision', 'error', `${trigger} supervision failed`, { sessionId, trigger, error: errMsg })
     if (isAuthFailureError(error)) {
       stopSupervisionTimer(`auth_failure_${trigger}`)
     }
+    throw error
   }
 }
 
@@ -3582,10 +3855,13 @@ export function buildStructuredOutboundPreview({
       transport: resolvedRoute.transport,
       explicit: Boolean(resolvedRoute.explicit),
       strict: Boolean(resolvedRoute.strict),
+      unavailableReason: resolvedRoute.unavailableReason || '',
       provider: resolvedRoute.provider,
       model: resolvedRoute.model,
       baseUrl: resolvedRoute.baseUrl,
-      note: resolvedRoute.transport === 'direct'
+      note: resolvedRoute.unavailableReason
+        ? `strict 路由当前不可满足（${resolvedRoute.unavailableReason}），运行期将显式失败并收敛 blocked，不会静默降级直连。`
+        : resolvedRoute.transport === 'direct'
         ? 'Control 已按阶段路由直接调用目标 provider/model；该请求不经过 Hermes runtime 的固定别名。'
         : 'Control 先把请求发给 Hermes；Hermes 再按当前左脑绑定把本次任务路由到对应 provider/model。未命中显式阶段路由时仍保持这一行为。'
     },
@@ -3926,6 +4202,36 @@ function unmarkReasoningSessionActive(sessionId) {
 let memoryLifecycleMaintenanceTimer = null
 let memoryLifecycleMaintenanceRunning = false
 let memoryLifecycleMaintenancePending = false
+// AUTO-C03：保留清理的低频门禁（默认 6h 一次，HERMES_RETENTION_CLEANUP_INTERVAL_MS 可配）
+let lastRetentionCleanupAtMs = 0
+
+// AUTO-C03：保留清理挂到既有记忆维护调度点，统一入口不另起平行调度。
+// 进程内活跃 session（活跃标记 + 活跃执行句柄）经 protectedSessionIds 硬保护；
+// 清理失败只记日志，不阻断主维护流程。
+function runScheduledRetentionCleanup(reason) {
+  try {
+    const policies = resolveRetentionPolicies()
+    if (!policies.enabled) return null
+    const nowMs = Date.now()
+    if (lastRetentionCleanupAtMs > 0 && nowMs - lastRetentionCleanupAtMs < policies.intervalMs) return null
+    lastRetentionCleanupAtMs = nowMs
+    const report = runReasoningRetentionCleanup({
+      sessionDirs: [HERMES_AGENT_RUNTIME_SESSIONS_DIR, HERMES_REASONING_SESSIONS_DIR],
+      protectedSessionIds: new Set([
+        ...Array.from(activeHermesReasoningSessionIds, String),
+        ...Array.from(activeHermesReasoningExecutions.keys(), String)
+      ]),
+      logger: (line) => appendHermesLog(line)
+    })
+    if (report && (report.summary.deleted > 0 || report.summary.errors > 0)) {
+      appendHermesLog(`[RETENTION] reason=${reason} deleted=${report.summary.deleted} kept=${report.summary.kept} archived=${report.summary.archived} errors=${report.summary.errors}`)
+    }
+    return report
+  } catch (error) {
+    appendHermesLog(`[RETENTION][ERROR] reason=${reason} detail=${error instanceof Error ? error.message : String(error)}`)
+    return null
+  }
+}
 
 function runMemoryLifecycleMaintenanceNow(reason = 'manual') {
   if (memoryLifecycleMaintenanceRunning) {
@@ -3935,13 +4241,15 @@ function runMemoryLifecycleMaintenanceNow(reason = 'manual') {
 
   memoryLifecycleMaintenanceRunning = true
   try {
-    return runMemoryLifecycleMaintenance({
+    const report = runMemoryLifecycleMaintenance({
       fs,
       rootDir: GAMESTUDIO_ROOT,
       contextPoolDir: HERMES_CONTEXT_POOL_DIR,
       chatDir: path.join(GAMESTUDIO_ROOT, 'ai', 'chat'),
       sessionDirs: [HERMES_AGENT_RUNTIME_SESSIONS_DIR, HERMES_REASONING_SESSIONS_DIR],
     })
+    runScheduledRetentionCleanup(reason)
+    return report
   } catch (error) {
     appendHermesLog(`[MEMORY][LIFECYCLE][ERROR] reason=${reason} detail=${error instanceof Error ? error.message : String(error)}`)
     return null
@@ -4007,10 +4315,13 @@ export function listReasoningSessions({ limit = 50, includeTerminal = true } = {
       try {
         const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
         const session = normalizeRuntimeSessionShape(raw)
-        if (!includeTerminal && (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled')) continue
+        // 与状态机终态对齐（completed/blocked/cancelled/timeout）+ failed（重试耗尽后的最终态），
+        // 缺漏 blocked/timeout 会让已死任务混入活跃列表被聊天页恢复附着（实测 timeout session 被恢复且计时不停）
+        if (!includeTerminal && (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled' || session.status === 'blocked' || session.status === 'timeout')) continue
         sessions.push({
           sessionId: session.sessionId,
           status: session.status,
+          verdict: computeSessionListVerdict(session),
           userPrompt: session.userPrompt,
           title: session.title,
           createdAt: session.createdAt,
@@ -4027,6 +4338,33 @@ export function listReasoningSessions({ limit = 50, includeTerminal = true } = {
     // directory may not exist
   }
   return sessions
+}
+
+// 与 scripts/test/lib/storyWorkflowVerdict.mjs 的 resolveSessionVerdict 语义一致：
+// cancelled→CANCELLED；waiting_review→BLOCKED；workflow 步骤失败→FAIL；
+// failed→FAIL；completed 且有最终回答→PASS；completed 无最终回答→FAIL；其他→BLOCKED。
+function computeSessionListVerdict(session) {
+  const status = String(session?.status || '').trim()
+  if (status === 'cancelled') return 'CANCELLED'
+  if (status === 'waiting_review') return 'BLOCKED'
+  const steps = session?.artifacts?.storyProduction?.steps && typeof session.artifacts.storyProduction.steps === 'object'
+    ? Object.values(session.artifacts.storyProduction.steps)
+    : []
+  const hasWorkflowFailure = steps.some((step) => {
+    if (!step || typeof step !== 'object') return false
+    if (step.ok === false) return true
+    const evaluator = step.evaluator
+    if (evaluator && typeof evaluator === 'object') {
+      return evaluator.passed === false || typeof evaluator.passed !== 'boolean'
+    }
+    return step.ok === true
+  })
+  if (hasWorkflowFailure) return 'FAIL'
+  if (status === 'failed') return 'FAIL'
+  if (status === 'completed') {
+    return String(session?.artifacts?.finalAnswer || '').trim().length > 0 ? 'PASS' : 'FAIL'
+  }
+  return 'BLOCKED'
 }
 
 function createReasoningSessionClearArchive(sessionId) {
@@ -4233,11 +4571,13 @@ async function continueReasoningParentChain(completedSession) {
     confirmedContextSummary: parentSession.submissionContext?.confirmedContextSummary || undefined
   }
 
-  const binding = buildHermesBinding()
-  const history = readHermesChatHistory({ includeAllSessions: true })
   const childSession = await createReasoningSession(parentSession.agentId, nextPrompt, childSubmissionContext)
   persistHermesChatPrompt(childSession.sessionId, nextPrompt)
-  void runReasoningSession(childSession.sessionId, binding, history)
+  // AUTO-C01：子任务同样走持久化队列（goal 携带 projectId 时与同 project 任务串行）；
+  // 命中复用的已完成 session 不入队（与原 void runReasoningSession 的等效 no-op 一致）
+  if (childSession.status !== 'completed') {
+    dispatchReasoningSession(childSession.sessionId)
+  }
   appendReasoningEvent(parentSessionId, 'child_session_created', '自动续跑下一目标', `已从父 session 自动派生子任务：${nextPrompt.slice(0, 120)}`, {
     data: {
       parentSessionId,
@@ -4902,11 +5242,16 @@ function cancelReasoningSession(sessionId, reason = 'reasoning_cancelled_by_user
     throw new Error('reasoning_session_not_found')
   }
 
-  if (isReasoningSessionTerminalStatus(session.status)) {
+  // AUTO-B04 幂等：终态 session 直接返回当前状态，不重复转移、不重复写事件；
+  // failed 已携带失败证据且有 retry 路径（failed -> retry_wait），cancel 不再改写其状态。
+  if (isReasoningSessionTerminalStatus(session.status) || session.status === REASONING_SESSION_STATE.FAILED) {
     return session
   }
 
   const detail = String(reason || 'reasoning_cancelled_by_user')
+  // AUTO-B04：先广播取消信号，运行中的执行循环在下一个协作点（step 竞速 / 门禁）立即退出；
+  // 信号 abort 为同步触发，循环侧收到时本函数已完成状态收敛。
+  requestSessionCancel(sessionId, detail)
   const activeExecution = getActiveReasoningExecution(sessionId)
   const activePhase = activeExecution?.sessionId === sessionId
     ? activeExecution.phase
@@ -4921,32 +5266,63 @@ function cancelReasoningSession(sessionId, reason = 'reasoning_cancelled_by_user
     activeHermesReasoningExecutions.delete(sessionId)
   }
 
-  updateReasoningSession(sessionId, (current) => {
-    const transitioned = applySessionTransition(current, REASONING_SESSION_STATE.CANCELLED, detail)
-    return {
-      ...transitioned,
-      currentStepId: null,
-      review: null,
-      error: detail,
-      artifacts: {
-        ...transitioned.artifacts,
-        cancelledAt: new Date().toISOString(),
-        cancelledPhase: activePhase
-      }
-    }
+  // AUTO-B04：经状态机收敛为 cancelled（updater 内对最新状态幂等），事件可追溯
+  convergeSessionTermination({
+    sessionId,
+    outcome: 'cancelled',
+    reason: detail,
+    phase: activePhase,
+    eventSummary: activePhase
+      ? `已停止当前 ${activePhase} 阶段并中断 Hermes 模型请求。`
+      : '已停止当前推理流程。',
+    readSession: readReasoningSession,
+    updateSession: updateReasoningSession,
+    appendEvent: appendReasoningEvent
   })
 
-  appendReasoningEvent(sessionId, 'session_cancelled', '推理已停止', activePhase
-    ? `已停止当前 ${activePhase} 阶段并中断 Hermes 模型请求。`
-    : '已停止当前推理流程。', {
-    data: {
-      reason: detail,
-      phase: activePhase
-    }
-  })
   appendHermesLog(`[REASONING][CANCEL] sessionId=${sessionId} phase=${activePhase || 'idle'} reason=${detail}`)
   unmarkReasoningSessionActive(sessionId)
+  // 取消信号已同步广播且状态已终态，注册项不再有用，立即清理不遗留
+  clearSessionCancelSignal(sessionId)
   return readReasoningSession(sessionId)
+}
+
+// AUTO-B04：超时收敛为终态 timeout（幂等）。
+// 先 abort 运行中的模型调用：协作式执行器立即中断并清理其内部 timer；
+// 完全不响应 abort 的调用由既有 HERMES_REASONING_TASK_HARD_TIMEOUT_MS 兜底自清。
+function markReasoningSessionTimeout(sessionId, detail, timeoutContext = {}) {
+  const current = readReasoningSession(sessionId)
+  if (!current) return
+  const activeExecution = getActiveReasoningExecution(sessionId)
+  if (activeExecution?.sessionId === sessionId) {
+    try {
+      activeExecution.controller?.abort(detail)
+    } catch {
+      // Ignore abort propagation failures.
+    }
+  }
+
+  const outcome = convergeSessionTermination({
+    sessionId,
+    outcome: 'timeout',
+    reason: detail,
+    scope: timeoutContext.scope || 'step',
+    stepId: timeoutContext.stepId || null,
+    stepIndex: Number.isInteger(timeoutContext.stepIndex) ? timeoutContext.stepIndex : null,
+    timeoutMs: Number.isFinite(timeoutContext.timeoutMs) ? timeoutContext.timeoutMs : null,
+    readSession: readReasoningSession,
+    updateSession: updateReasoningSession,
+    appendEvent: appendReasoningEvent
+  })
+
+  appendHermesLog(`[REASONING][TIMEOUT] sessionId=${sessionId} scope=${timeoutContext.scope || 'step'} stepId=${timeoutContext.stepId || 'none'} detail=${detail}`)
+  if (outcome.converged) {
+    // 与 failed 路径一致，chat 侧可见超时错误
+    persistHermesChatError(sessionId, detail)
+  }
+  unmarkReasoningSessionActive(sessionId)
+  clearActiveReasoningExecution(sessionId)
+  clearSessionCancelSignal(sessionId)
 }
 
 function getReasoningTask(session, phase) {
@@ -5585,12 +5961,19 @@ async function generateReasoningFileRewrite(sessionId, step, userPrompt, binding
   let rawResponsePreview = ''
   let rewriteError = null
   try {
+    // 机械式 JSON 改写走 direct 直连（默认路由），不经 Hermes agent——
+    // agent 自带的 ~19K 系统提示会把 payload 撑过 OMLX 实际 32K 上下文上限（实测 400/500）
+    const rewriteRoute = resolveModelRouteForPhase(binding, 'reasoning_write')
+    // 改写要求模型返回完整文件内容，gpt-oss 推理模型还会先消耗思考 token——
+    // maxTokens 必须随文件大小伸缩，否则输出被截断成非法 JSON（实测 finish_reason=length）
+    const rewriteMaxTokens = Math.min(16384, Math.max(4096, Math.ceil(String(currentContent || '').length * 1.5) + 1024))
     const data = await requestHermesChatCompletion({
       sessionId,
       phase: `reasoning_write_${String(step.stepId || step.action || 'unknown')}`,
       messages,
-      maxTokens: 1400,
-      temperature: 0
+      maxTokens: rewriteMaxTokens,
+      temperature: 0,
+      route: rewriteRoute
     })
     rawResponsePreview = truncateReasoningPreview(data.choices?.[0]?.message?.content || '{}', 2400)
     try {
@@ -5877,13 +6260,21 @@ function resolveStoryProjectId(session, step, userPrompt) {
   return getLatestStoryProjectId()
 }
 
+// AUTO-F01：项目根边界——projectId 解析必须落在 STORAGE_PROJECTS_ROOT 内，
+// 越界（../、绝对路径等）返回空串，调用方按「项目目录不可用」处理，不猜测不越权读写。
 function getStoryProjectDir(projectId) {
-  return path.join(STORAGE_PROJECTS_ROOT, String(projectId || ''))
+  const raw = String(projectId || '').trim()
+  if (!raw) return ''
+  const root = path.resolve(STORAGE_PROJECTS_ROOT)
+  const resolved = path.resolve(root, raw)
+  if (!resolved.startsWith(root + path.sep)) return ''
+  return resolved
 }
 
 function readStoryProjectFile(projectId, fileName) {
-  if (!projectId) return null
-  return readJsonFileIfExists(path.join(getStoryProjectDir(projectId), fileName))
+  const dir = getStoryProjectDir(projectId)
+  if (!dir) return null
+  return readJsonFileIfExists(path.join(dir, fileName))
 }
 
 function parseJsonObjectText(rawText) {
@@ -5905,8 +6296,9 @@ function readStoryBibleFromProjectDoc(project) {
 }
 
 function readStoryAssetPlanFile(projectId) {
-  if (!projectId) return null
-  return readJsonFileIfExists(path.join(getStoryProjectDir(projectId), 'story-assets', 'plan.json'))
+  const dir = getStoryProjectDir(projectId)
+  if (!dir) return null
+  return readJsonFileIfExists(path.join(dir, 'story-assets', 'plan.json'))
 }
 
 function textHasAny(text, needles) {
@@ -6128,8 +6520,8 @@ function buildStoryProjectSnapshot(projectId) {
   const scripts = readStoryProjectFile(projectId, 'scripts.json')
   const blueprint = readStoryProjectFile(projectId, 'blueprint.json')
   const meta = readStoryProjectFile(projectId, 'meta.json')
-  const exportsDir = projectId ? path.join(projectDir, 'builds') : ''
-  const latestDist = projectId ? path.join(exportsDir, 'latest', 'dist', 'index.html') : ''
+  const exportsDir = projectDir ? path.join(projectDir, 'builds') : ''
+  const latestDist = exportsDir ? path.join(exportsDir, 'latest', 'dist', 'index.html') : ''
   const latestDistStat = latestDist && fs.existsSync(latestDist) && fs.statSync(latestDist).isFile()
     ? fs.statSync(latestDist)
     : null
@@ -6584,6 +6976,27 @@ function updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result) {
       }
     }
   })
+
+  // AUTO-F01：projectId 回写（补 C01 窗口）——story session 创建时项目尚未生成，
+  // 队列 item 以 projectId=null 入队；步骤成功定位/创建项目后回写 session 与 item，
+  // 此后同 project 串行与每项目配额对该任务生效。仅成功结果回写（失败结果的项目
+  // 归属未被证实，不绑定）；session 已有 projectId 时不覆盖（先入证据不可篡改）。
+  const backfillProjectId = result?.ok === true ? String(result.projectId || '').trim() : ''
+  if (backfillProjectId) {
+    const sessionNow = readReasoningSession(sessionId)
+    if (sessionNow && !String(sessionNow.submissionContext?.projectId || '').trim()) {
+      updateReasoningSession(sessionId, (current) => ({
+        ...current,
+        submissionContext: { ...(current.submissionContext || {}), projectId: backfillProjectId }
+      }))
+      const backfill = backfillQueueItemProjectId(sessionId, backfillProjectId)
+      if (backfill.updated) {
+        appendReasoningEvent(sessionId, 'queue_project_id_backfilled', '任务已绑定项目', `projectId=${backfillProjectId} 已回写到队列任务，此后按同 project 串行与每项目配额调度。`, {
+          data: { projectId: backfillProjectId, taskId: backfill.item?.taskId || null }
+        })
+      }
+    }
+  }
 }
 
 function appendStoryWorkflowEvents(sessionId, step, stepIndex, result) {
@@ -6647,26 +7060,106 @@ function appendGameStudioObserverEvent(sessionId, step, stepIndex, phase, operat
     ? `GameStudio 开始执行 ${operation}${observer.endpoint ? `：${observer.endpoint}` : ''}`
     : `GameStudio ${operation} ${observer.ok ? '完成' : '失败'}${observer.elapsedMs == null ? '' : `，耗时 ${observer.elapsedMs}ms`}`
 
+  if (phase === 'started') {
+    updateReasoningSession(sessionId, (session) => {
+      const currentObserver = session.artifacts?.gameStudioObserver && typeof session.artifacts.gameStudioObserver === 'object'
+        ? session.artifacts.gameStudioObserver
+        : {}
+      const timeline = Array.isArray(currentObserver.timeline) ? currentObserver.timeline : []
+      return {
+        ...session,
+        artifacts: {
+          ...session.artifacts,
+          gameStudioObserver: {
+            ...currentObserver,
+            lastEvent: observer,
+            timeline: [...timeline, observer].slice(-240)
+          }
+        }
+      }
+    })
+    appendReasoningEvent(sessionId, 'gamestudio_observer', step.title, summary, {
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, { gameStudioObserver: observer })
+    })
+    return
+  }
+
+  // 完成/失败：就地更新最近的同操作 started 条目，避免成对事件把事件流翻倍
   updateReasoningSession(sessionId, (session) => {
     const currentObserver = session.artifacts?.gameStudioObserver && typeof session.artifacts.gameStudioObserver === 'object'
       ? session.artifacts.gameStudioObserver
       : {}
-    const timeline = Array.isArray(currentObserver.timeline) ? currentObserver.timeline : []
+    const timeline = Array.isArray(currentObserver.timeline) ? [...currentObserver.timeline] : []
+    let timelineIdx = -1
+    for (let i = timeline.length - 1; i >= 0; i -= 1) {
+      const item = timeline[i]
+      if (item && item.phase === 'started' && item.operation === operation && item.stepId === step.stepId) {
+        timelineIdx = i
+        break
+      }
+    }
+    if (timelineIdx >= 0) {
+      timeline[timelineIdx] = { ...observer, observedAt: timeline[timelineIdx].observedAt || observer.observedAt }
+    } else {
+      timeline.push(observer)
+    }
+    const events = Array.isArray(session.events) ? [...session.events] : []
+    let eventIdx = -1
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const ev = events[i]
+      const ob = ev && ev.data && ev.data.gameStudioObserver
+      if (ev && ev.type === 'gamestudio_observer' && ev.stepId === step.stepId && ob && ob.phase === 'started' && ob.operation === operation) {
+        eventIdx = i
+        break
+      }
+    }
+    if (eventIdx >= 0) {
+      const prev = events[eventIdx]
+      events[eventIdx] = {
+        ...prev,
+        timestamp: new Date().toISOString(),
+        summary,
+        data: buildReasoningStepEventData(step, stepIndex, { gameStudioObserver: observer })
+      }
+    } else {
+      events.push({
+        eventId: createOpaqueId('evt'),
+        sessionId,
+        runtimeSessionId: sessionId,
+        type: 'gamestudio_observer',
+        timestamp: new Date().toISOString(),
+        title: step.title,
+        summary,
+        stepId: step.stepId,
+        data: buildReasoningStepEventData(step, stepIndex, { gameStudioObserver: observer })
+      })
+    }
+    // 审计日志（agent runtime event journal）保留完整完成记录，UI 事件流保持精简
+    appendAgentRuntimeEventJournal({
+      eventId: createOpaqueId('evt'),
+      sessionId,
+      runtimeSessionId: sessionId,
+      type: 'gamestudio_observer',
+      timestamp: new Date().toISOString(),
+      title: step.title,
+      summary,
+      stepId: step.stepId,
+      data: buildReasoningStepEventData(step, stepIndex, { gameStudioObserver: observer }),
+      sessionKind: 'agent-runtime'
+    })
     return {
       ...session,
+      events,
       artifacts: {
         ...session.artifacts,
         gameStudioObserver: {
           ...currentObserver,
           lastEvent: observer,
-          timeline: [...timeline, observer].slice(-240)
+          timeline: timeline.slice(-240)
         }
       }
     }
-  })
-  appendReasoningEvent(sessionId, 'gamestudio_observer', step.title, summary, {
-    stepId: step.stepId,
-    data: buildReasoningStepEventData(step, stepIndex, { gameStudioObserver: observer })
   })
 }
 
@@ -6759,9 +7252,11 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
 
   if (action === 'story_create_project') {
     const title = String(step.params?.title || extractStoryTitleFromPrompt(userPrompt) || '').trim() || '未命名互动故事'
+    // 事件机制：经 Layer 2 适配器 dispatch project.create（过渡期仍走 REST，行为与 gameStudioServerClient.createProject 等价）
     const serverResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'createProject', {
-      endpoint: 'POST /api/projects'
-    }, () => gameStudioServerClient.createProject({ title }))
+      endpoint: 'POST /api/projects',
+      event: 'project.create'
+    }, () => dispatchGameStudioEventLegacy('project.create', { title }, { caller: 'workflow', sessionId, caseId: session?.submissionContext?.caseId || null }))
     const projectId = serverResult?.evidence?.projectId || serverResult?.data?.project?.id || ''
     const evaluator = evaluateStoryProjectCreated(projectId)
     const snapshot = buildStoryProjectSnapshot(projectId)
@@ -7591,7 +8086,7 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
         assetId
       }, () => gameStudioServerClient.generateStoryAssetReference(projectId, {
         assetId,
-        batchSize: Math.max(1, Math.min(2, Number(step.params?.batchSize || 1))),
+        batchSize: Math.max(1, Math.min(6, Number(step.params?.batchSize || 1))),
         style: step.params?.style || 'picture_book',
         timeoutMs: Math.max(120000, Number(step.params?.timeoutMs || 300000))
       }))
@@ -7685,8 +8180,9 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
     const prompt = String(step.params?.prompt || userPrompt || '').trim()
     const aiStatus = await observeGameStudioOperation(sessionId, step, stepIndex, 'getAiStatus', {
       endpoint: 'GET /api/ai/status',
-      projectId
-    }, () => gameStudioServerClient.getAiStatus())
+      projectId,
+      event: 'studio.ai.status'
+    }, () => dispatchGameStudioEventLegacy('studio.ai.status', {}, { caller: 'workflow', sessionId, caseId: session?.submissionContext?.caseId || null }))
     const imageEnabled = Boolean(aiStatus?.data?.ai?.effective?.enabled?.image || aiStatus?.data?.ai?.enabled?.image)
     let serverResult = null
     if (projectId && imageEnabled && assetKind === 'background') {
@@ -7733,9 +8229,29 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
 
   if (action === 'story_lock_test') {
     const projectId = resolveStoryProjectId(session, step, userPrompt)
+    // 预检：全部 ref_required 资产已锁定时跳过（链式多次调用锁定测试的收口）
+    if (projectId) {
+      const planDoc = readStoryProjectFile(projectId, path.join('story-assets', 'plan.json'))
+      const planAssets = Array.isArray(planDoc?.assets) ? planDoc.assets : []
+      const refRequired = planAssets.filter((a) => String(a?.renderStrategy || '') === 'ref_required')
+      const unlocked = refRequired.filter((a) => !String(a?.primaryReferenceAssetUri || '').trim())
+      if (refRequired.length > 0 && unlocked.length === 0) {
+        const skipResult = buildStoryWorkflowStepResult({
+          action,
+          projectId,
+          ok: true,
+          summary: `全部 ${refRequired.length} 个必需资产均已锁定，跳过锁定测试`,
+          data: { skipped: true, reason: 'all_assets_locked', refRequiredCount: refRequired.length }
+        })
+        updateStoryWorkflowArtifacts(sessionId, step, stepIndex, skipResult)
+        appendStoryWorkflowEvents(sessionId, step, stepIndex, skipResult)
+        return skipResult
+      }
+    }
     const settingsResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'getStudioSettingsForLockTest', {
-      endpoint: 'GET /api/studio/settings'
-    }, () => gameStudioServerClient.getStudioSettings())
+      endpoint: 'GET /api/studio/settings',
+      event: 'studio.settings.read'
+    }, () => dispatchGameStudioEventLegacy('studio.settings.read', {}, { caller: 'workflow', sessionId, caseId: session?.submissionContext?.caseId || null }))
     const effective = settingsResult?.data?.effective || {}
     const model = String(
       step.params?.model ||
@@ -7831,6 +8347,233 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
     return result
   }
 
+  if (action === 'story_generate_lineart') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    if (!projectId) {
+      const missingResult = buildStoryWorkflowStepResult({
+        action,
+        projectId: '',
+        ok: false,
+        summary: '线稿生成未完成：无法定位项目',
+        data: { error: 'missing_project_id' },
+        failedStage: 'lineart_project_resolution',
+        retryable: false
+      })
+      updateStoryWorkflowArtifacts(sessionId, step, stepIndex, missingResult)
+      appendStoryWorkflowEvents(sessionId, step, stepIndex, missingResult)
+      return missingResult
+    }
+    // 目标：已锁定主参考但还没有线稿成品的 ref_required 资产
+    const planDoc = readStoryProjectFile(projectId, path.join('story-assets', 'plan.json'))
+    const planAssets = Array.isArray(planDoc?.assets) ? planDoc.assets : []
+    const targets = planAssets
+      .filter((a) => String(a?.renderStrategy || '') === 'ref_required')
+      .filter((a) => String(a?.primaryReferenceAssetUri || '').trim())
+      .filter((a) => !String(a?.lineartFinalAssetUri || '').trim())
+    if (!targets.length) {
+      const skipResult = buildStoryWorkflowStepResult({
+        action,
+        projectId,
+        ok: true,
+        summary: '所有已锁定资产均已有线稿，跳过线稿生成',
+        data: { skipped: true, reason: 'all_lineart_ready' }
+      })
+      updateStoryWorkflowArtifacts(sessionId, step, stepIndex, skipResult)
+      appendStoryWorkflowEvents(sessionId, step, stepIndex, skipResult)
+      return skipResult
+    }
+    const results = []
+    let okCount = 0
+    for (const asset of targets) {
+      const assetId = String(asset.id || '').trim()
+      const res = await observeGameStudioOperation(sessionId, step, stepIndex, 'generateAssetLineart', {
+        endpoint: 'POST /api/projects/:id/ai/story/assets/lineart',
+        projectId,
+        assetId
+      }, () => gameStudioServerClient.generateAssetLineart(projectId, assetId, {
+        timeoutMs: Math.max(120000, Number(step.params?.timeoutMs || 300000))
+      }))
+      const ok = Boolean(res?.ok && res?.data?.success)
+      if (ok) okCount += 1
+      results.push({
+        assetId,
+        assetName: String(asset.name || assetId),
+        ok,
+        finalAssetPath: String(res?.data?.finalAssetPath || ''),
+        finalUrl: String(res?.data?.finalUrl || ''),
+        error: ok ? null : String(res?.data?.message || res?.error || 'lineart_failed')
+      })
+    }
+    const evaluator = {
+      name: 'evaluateStoryLineart',
+      passed: okCount === targets.length,
+      checks: { projectId, targetCount: targets.length, okCount, failedAssets: results.filter((r) => !r.ok).map((r) => r.assetId) }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: evaluator.passed,
+      summary: evaluator.passed
+        ? `线稿生成完成：${okCount}/${targets.length} 个资产`
+        : `线稿生成部分失败：${okCount}/${targets.length}，失败 ${results.filter((r) => !r.ok).map((r) => r.assetName || r.assetId).join('、')}`,
+      evaluator,
+      snapshot,
+      data: { results, okCount, targetCount: targets.length },
+      failedStage: evaluator.passed ? null : 'lineart_generation',
+      retryable: true
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_render_scene_backgrounds') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    // 背景-only 批量渲染（分层合成）：E03 队列异步执行，提交后轮询批次直至终结（含 per-scene 失败汇总）
+    const mode = String(step.params?.mode || 'background').trim() || 'background'
+    const submitResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'submitStorySceneBackgroundsBatch', {
+        endpoint: 'POST /api/projects/:id/ai/story/scenes/batch',
+        projectId,
+        mode
+      }, () => gameStudioServerClient.renderStorySceneBackgroundsBatch(projectId, {
+        mode,
+        width: Number(step.params?.width || 768),
+        height: Number(step.params?.height || 1024),
+        timeoutMs: Math.max(120000, Number(step.params?.timeoutMs || 600000))
+      }))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/scenes/batch', error: 'missing_project_id', message: '无法定位要渲染场景背景的项目', retryable: false }
+    const batchId = String(submitResult?.data?.batchId || '').trim()
+    let waitOutcome = null
+    if (submitResult?.ok && batchId) {
+      const stepBudgetMs = Math.max(60000, Number(step.params?.stepTimeoutMs || 3600000))
+      waitOutcome = await waitForSceneBatchTerminal({
+        // 轮询预算略小于步级 deadline（B04 按 params.stepTimeoutMs 放宽），保证超时显式收敛为失败结果而非被 race 掐断
+        timeoutMs: Math.max(30000, stepBudgetMs - 30000),
+        intervalMs: Math.max(2000, Number(step.params?.pollIntervalMs || 10000)),
+        fetchBatch: () => observeGameStudioOperation(sessionId, step, stepIndex, 'pollStorySceneBatch', {
+          endpoint: 'GET /api/projects/:id/ai/story/scenes/batch',
+          projectId,
+          batchId
+        }, () => gameStudioServerClient.getStorySceneBatch(projectId))
+      })
+    }
+    const outcome = evaluateSceneBackgroundsOutcome({ submitResult, waitOutcome })
+    const evaluator = {
+      name: 'evaluateStorySceneBackgroundsBatch',
+      passed: outcome.passed,
+      checks: {
+        projectId,
+        batchId,
+        mode,
+        finished: Boolean(waitOutcome?.finished),
+        batchStatus: waitOutcome?.summary?.status || '',
+        total: waitOutcome?.summary?.total || 0,
+        doneCount: waitOutcome?.summary?.doneCount || 0,
+        failedCount: waitOutcome?.summary?.failedCount || 0,
+        waitingCount: waitOutcome?.summary?.waitingCount || 0,
+        failedScenes: waitOutcome?.summary?.failedScenes || [],
+        waitingScenes: waitOutcome?.summary?.waitingScenes || [],
+        polls: Number(waitOutcome?.polls || 0),
+        error: submitResult?.ok ? (waitOutcome?.error || null) : (submitResult?.error || null),
+        message: submitResult?.ok ? (waitOutcome?.message || null) : (submitResult?.message || null)
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: outcome.passed,
+      summary: outcome.summaryText,
+      serverResult: submitResult,
+      evaluator,
+      snapshot,
+      data: { batchId, mode, batch: waitOutcome?.summary || null, polls: Number(waitOutcome?.polls || 0) },
+      failedStage: outcome.failedStage,
+      retryable: outcome.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    if (waitOutcome?.summary) {
+      updateReasoningSession(sessionId, (current) => ({
+        ...current,
+        artifacts: {
+          ...current.artifacts,
+          storyProduction: {
+            ...(current.artifacts?.storyProduction || {}),
+            sceneBackgroundsBatch: waitOutcome.summary
+          }
+        }
+      }))
+    }
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
+  if (action === 'story_generate_scene_placements') {
+    const projectId = resolveStoryProjectId(session, step, userPrompt)
+    const sceneIds = Array.isArray(step.params?.sceneIds)
+      ? step.params.sceneIds.map((x) => String(x || '').trim()).filter(Boolean)
+      : []
+    const serverResult = projectId
+      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'generateStoryScenePlacements', {
+        endpoint: 'POST /api/projects/:id/ai/story/scenes/placements',
+        projectId
+      }, () => gameStudioServerClient.generateStoryScenePlacements(projectId, {
+        sceneIds: sceneIds.length ? sceneIds : undefined,
+        timeoutMs: Math.max(60000, Number(step.params?.timeoutMs || 120000))
+      }))
+      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/scenes/placements', error: 'missing_project_id', message: '无法定位要生成立绘站位的项目', retryable: false }
+    const outcome = evaluateScenePlacementsOutcome(serverResult)
+    const evaluator = {
+      name: 'evaluateStoryScenePlacements',
+      passed: outcome.passed,
+      checks: {
+        projectId,
+        summary: outcome.stats.summary,
+        sceneErrorCount: outcome.stats.sceneErrors.length,
+        skippedCharacterCount: outcome.stats.skippedCharacters.length,
+        skippedPropCount: outcome.stats.skippedProps.length,
+        written: outcome.stats.written,
+        error: serverResult?.error || null,
+        message: serverResult?.message || null
+      }
+    }
+    const snapshot = buildStoryProjectSnapshot(projectId)
+    const result = buildStoryWorkflowStepResult({
+      action,
+      projectId,
+      ok: outcome.passed,
+      summary: outcome.summaryText,
+      serverResult,
+      evaluator,
+      snapshot,
+      data: {
+        summary: outcome.stats.summary,
+        scenes: outcome.stats.scenes,
+        skippedCharacters: outcome.stats.skippedCharacters,
+        skippedProps: outcome.stats.skippedProps
+      },
+      failedStage: outcome.failedStage,
+      retryable: outcome.retryable
+    })
+    updateStoryWorkflowArtifacts(sessionId, step, stepIndex, result)
+    if (outcome.stats.summary) {
+      updateReasoningSession(sessionId, (current) => ({
+        ...current,
+        artifacts: {
+          ...current.artifacts,
+          storyProduction: {
+            ...(current.artifacts?.storyProduction || {}),
+            scenePlacements: outcome.stats.summary
+          }
+        }
+      }))
+    }
+    appendStoryWorkflowEvents(sessionId, step, stepIndex, result)
+    return result
+  }
+
   if (action === 'story_render_scene') {
     const projectId = resolveStoryProjectId(session, step, userPrompt)
     let sceneId = String(step.params?.sceneId || '').trim()
@@ -7841,8 +8584,22 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
       }, () => gameStudioServerClient.getProject(projectId))
       const story = projectResult?.data?.project?.story || projectResult?.data?.story || null
       const nodes = Array.isArray(story?.nodes) ? story.nodes : []
-      const firstScene = nodes.find((n) => n && String(n.kind || '') === 'scene')
+      // 逐场景推进：优先选第一个还缺背景图的场景（场景图链式生产中，每步渲染一个缺图场景）
+      const missingScene = nodes.find((n) => n && !String(n?.visuals?.backgroundAssetId || '').trim())
+      const firstScene = missingScene || nodes.find((n) => n && String(n.kind || '') === 'scene')
       sceneId = firstScene ? String(firstScene.id || '').trim() : ''
+      if (projectId && !missingScene && nodes.length > 0) {
+        const skipResult = buildStoryWorkflowStepResult({
+          action,
+          projectId,
+          ok: true,
+          summary: `全部 ${nodes.length} 个场景均已有背景图，跳过渲染`,
+          data: { skipped: true, reason: 'all_scenes_have_images', sceneCount: nodes.length }
+        })
+        updateStoryWorkflowArtifacts(sessionId, step, stepIndex, skipResult)
+        appendStoryWorkflowEvents(sessionId, step, stepIndex, skipResult)
+        return skipResult
+      }
     }
     const serverResult = projectId && sceneId
       ? await observeGameStudioOperation(sessionId, step, stepIndex, 'renderStoryScene', {
@@ -8695,10 +9452,11 @@ async function executeSupervisionStep(sessionId, step, userPrompt, stepIndex) {
       sessionId,
       phase: 'meta_analysis',
       messages,
-      maxTokens: 6000,
+      // kimi-for-coding 会大量消耗 reasoning_tokens；6000 在大评分卡 prompt 下会被 reasoning 烧满导致可见内容为空
+      maxTokens: 12000,
       temperature: 0.2,
       route,
-      timeoutMs: 120000,
+      timeoutMs: 180000,
     })
 
     const analysis = response?.choices?.[0]?.message?.content || ''
@@ -10185,8 +10943,16 @@ export async function prepareReasoningSessionPlan(sessionId, binding, history, o
 // runAllReasoningStepsFrom: 自动顺序执行所有步骤，无中间审核打断。
 // 全部步骤完成后进入 quality gate；如 quality gate 需要重规划，
 // 重规划完成后也会再次调用本函数从头执行新计划。
+// AUTO-B04：每次调用构成一个执行预算窗口（task deadline），
+// 每个 step 前过取消/超时门禁，step 执行以 deadline + 取消信号竞速；
+// 超时收敛为 timeout、取消收敛为 cancelled，两者都不再执行后续 step，
+// finally 清理取消信号注册项，不遗留 active timer / heartbeat / 恢复锁。
 async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex = 0, options = {}) {
   markReasoningSessionActive(sessionId)
+  // AUTO-B04：注册取消信号并计算 task 执行预算（人工审核等待不计入，等待时本函数已返回）
+  registerSessionCancelSignal(sessionId)
+  const taskTimeoutMs = resolveTaskTimeoutMs()
+  const taskDeadlineAt = Date.now() + taskTimeoutMs
   try {
     const session = readReasoningSession(sessionId)
     if (!session) throw new Error('reasoning_session_not_found')
@@ -10214,7 +10980,32 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
 
     for (let i = startIndex; i < steps.length; i++) {
       const currentSession = readReasoningSession(sessionId)
-      if (!currentSession || currentSession.status === 'cancelled') return
+      // AUTO-B04：取消/超时门禁（替代原仅 cancelled 检查）——
+      // 终态幂等退出；取消信号收敛为 cancelled；task 预算耗尽收敛为 timeout
+      const gate = evaluateExecutionGate({
+        session: currentSession,
+        cancelRequested: isSessionCancelRequested(sessionId),
+        cancelReason: getSessionCancelReason(sessionId),
+        taskDeadlineAt,
+        nowMs: Date.now()
+      })
+      if (gate.action === 'stop') return
+      if (gate.action === 'converge' && gate.outcome === 'cancelled') {
+        convergeSessionTermination({
+          sessionId,
+          outcome: 'cancelled',
+          reason: gate.reason,
+          readSession: readReasoningSession,
+          updateSession: updateReasoningSession,
+          appendEvent: appendReasoningEvent
+        })
+        appendHermesLog(`[REASONING][CANCEL][GATE] sessionId=${sessionId} reason=${gate.reason}`)
+        return
+      }
+      if (gate.action === 'converge' && gate.outcome === 'task_timeout') {
+        markReasoningSessionTimeout(sessionId, gate.reason, { scope: 'task', timeoutMs: taskTimeoutMs })
+        return
+      }
 
       const step = currentSession.plan?.steps?.[i]
       if (!step) break
@@ -10265,14 +11056,78 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
       }
 
       let executionResult = null
-      try {
-        executionResult = await executeReasoningStep(sessionId, step, currentSession.userPrompt, {
-          correctionPrompt: isReasoningAnswerAction(step.action) || i === startIndex ? correctionPrompt : ''
+      // AUTO-R01：资源互斥 step 边界准入——出图类 step 触发模型卸载交换（先腾内存再出图）；
+      // 文本类 step 在出图占用期挂起等待（不动 retry 预算）；等待期间取消/超时与 B04 门禁同语义收敛；
+      // 交换失败（unload/reload 显式错误）抛出后由 markReasoningSessionFailed -> C02 分类收敛。
+      const resourceAdmission = await admitReasoningStepResource({ sessionId, step, taskDeadlineAt })
+      if (resourceAdmission.outcome === 'cancelled') {
+        convergeSessionTermination({
+          sessionId,
+          outcome: 'cancelled',
+          reason: getSessionCancelReason(sessionId) || 'reasoning_cancelled_by_user',
+          readSession: readReasoningSession,
+          updateSession: updateReasoningSession,
+          appendEvent: appendReasoningEvent
         })
-      } catch (error) {
-        const recovered = await recoverReasoningStepFailure(sessionId, binding, history, step, i, error)
+        appendHermesLog(`[REASONING][CANCEL][RESOURCE_WAIT] sessionId=${sessionId} stepId=${step.stepId}`)
+        return
+      }
+      if (resourceAdmission.outcome === 'task_timeout') {
+        markReasoningSessionTimeout(sessionId, resourceAdmission.reason || 'resource_wait_task_deadline_exceeded', { scope: 'task', stepId: step.stepId, stepIndex: i, timeoutMs: taskTimeoutMs })
+        return
+      }
+      try {
+      // AUTO-B04：step 执行以 deadline + 取消信号竞速——
+      // 卡住的调用在显式上限内结束为 timeout，取消信号到达立即结束为 cancelled；
+      // 被遗弃的执行 promise 由 race 挂空 catch，不会触发 unhandledRejection。
+      const stepDeadline = resolveStepDeadline({
+        taskDeadlineAt,
+        // 工作流 step 可用 params.stepTimeoutMs 声明自身预算（如图片批量生成合法需要 90 分钟），
+        // 未声明时回落全局默认（HERMES_REASONING_STEP_TIMEOUT_MS）
+        stepTimeoutMs: Math.max(1, Number(step?.params?.stepTimeoutMs || 0) || resolveStepTimeoutMs()),
+        nowMs: Date.now()
+      })
+      const stepOutcome = await raceStepExecution(
+        executeReasoningStep(sessionId, step, currentSession.userPrompt, {
+          correctionPrompt: isReasoningAnswerAction(step.action) || i === startIndex ? correctionPrompt : ''
+        }),
+        {
+          timeoutMs: stepDeadline.timeoutMs,
+          scope: stepDeadline.scope,
+          signal: getSessionCancelSignal(sessionId)
+        }
+      )
+      if (stepOutcome.kind === 'timeout') {
+        const scopeLabel = stepOutcome.scope === 'task' ? 'task' : 'step'
+        markReasoningSessionTimeout(
+          sessionId,
+          `${scopeLabel}_deadline_exceeded: step ${step.stepId} 超过 ${scopeLabel} 上限 ${stepOutcome.timeoutMs}ms`,
+          { scope: stepOutcome.scope, stepId: step.stepId, stepIndex: i, timeoutMs: stepOutcome.timeoutMs }
+        )
+        return
+      }
+      if (stepOutcome.kind === 'cancelled') {
+        // 取消信号通常已由 cancelReasoningSession 完成状态收敛，此处幂等兜底
+        convergeSessionTermination({
+          sessionId,
+          outcome: 'cancelled',
+          reason: getSessionCancelReason(sessionId) || 'reasoning_cancelled_by_user',
+          readSession: readReasoningSession,
+          updateSession: updateReasoningSession,
+          appendEvent: appendReasoningEvent
+        })
+        appendHermesLog(`[REASONING][CANCEL][RACE] sessionId=${sessionId} stepId=${step.stepId}`)
+        return
+      }
+      if (stepOutcome.kind === 'rejected') {
+        const recovered = await recoverReasoningStepFailure(sessionId, binding, history, step, i, stepOutcome.error)
         if (recovered) return readReasoningSession(sessionId)
-        throw error
+        throw stepOutcome.error
+      }
+      executionResult = stepOutcome.value
+      } finally {
+        // AUTO-R01：step 终结即释放资源槽位（gpu 批次最后一个 release 触发模型回载）
+        releaseReasoningStepResource(resourceAdmission)
       }
 
       const postStepSession = readReasoningSession(sessionId)
@@ -10334,6 +11189,8 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
   } catch (error) {
     markReasoningSessionFailed(sessionId, error)
   } finally {
+    // AUTO-B04：清理取消信号注册项；终态时解除 active 标记（恢复锁），不遗留引用
+    clearSessionCancelSignal(sessionId)
     if (isReasoningSessionTerminalStatus(readReasoningSession(sessionId)?.status)) {
       unmarkReasoningSessionActive(sessionId)
     }
@@ -10810,6 +11667,68 @@ const PROJECT_MEMORY_SOURCE_CHAR_LIMITS = {
   'Skill gamestudio-workspace': 2200
 }
 
+// 记忆正文注入（content-injection）有界上限：每文件与总量均可 env 覆盖，防止提示词尺寸失控。
+// 0 = 该来源不注入正文（仅以路径引用列出）。
+const DEFAULT_MEMORY_OVERLAY_FILE_CHAR_LIMIT = 3000
+const DEFAULT_MEMORY_OVERLAY_TOTAL_CHAR_LIMIT = 12000
+
+function resolveMemoryOverlayCharLimit(rawValue, fallback) {
+  if (rawValue === undefined || rawValue === null || rawValue === '') return fallback
+  const num = Number(rawValue)
+  if (!Number.isFinite(num) || num < 0) return fallback
+  return Math.floor(num)
+}
+
+function getMemoryOverlayFileCharLimit(label) {
+  // AGENTS.md（Agent Definition）是工作契约大文件，默认不注入正文、仅列路径引用；
+  // 需要时可用 HERMES_MEMORY_OVERLAY_AGENT_DEFINITION_CHAR_LIMIT 显式给一个极低上限。
+  if (label === 'Agent Definition') {
+    return resolveMemoryOverlayCharLimit(process.env.HERMES_MEMORY_OVERLAY_AGENT_DEFINITION_CHAR_LIMIT, 0)
+  }
+  return resolveMemoryOverlayCharLimit(process.env.HERMES_MEMORY_OVERLAY_FILE_CHAR_LIMIT, DEFAULT_MEMORY_OVERLAY_FILE_CHAR_LIMIT)
+}
+
+// 有界注入：逐来源读取正文，按「每文件上限 + 总量上限」截尾并标注；
+// 空文件/读取失败跳过不注入，未注入来源以引用形式列出（references 与 injection 文案分离）。
+function buildBoundedProjectMemoryInjection(loadedSources) {
+  const totalCharLimit = resolveMemoryOverlayCharLimit(process.env.HERMES_MEMORY_OVERLAY_TOTAL_CHAR_LIMIT, DEFAULT_MEMORY_OVERLAY_TOTAL_CHAR_LIMIT)
+  const sections = []
+  const referenceOnly = []
+  let usedChars = 0
+  for (const source of Array.isArray(loadedSources) ? loadedSources : []) {
+    const fileCharLimit = getMemoryOverlayFileCharLimit(source.label)
+    if (fileCharLimit <= 0) {
+      referenceOnly.push(source)
+      continue
+    }
+    let raw = ''
+    try {
+      raw = fs.readFileSync(source.filePath, 'utf8')
+    } catch {
+      raw = ''
+    }
+    if (!raw.trim()) continue // 空文件/读不到：跳过不注入
+    const remaining = Math.max(0, totalCharLimit - usedChars)
+    const budget = Math.min(fileCharLimit, remaining)
+    if (budget <= 0) {
+      // 总量上限已耗尽：剩余来源降级为路径引用
+      referenceOnly.push(source)
+      continue
+    }
+    const truncated = raw.length > budget
+    const content = truncated ? raw.slice(0, budget) : raw
+    usedChars += content.length
+    sections.push({
+      label: source.label,
+      filePath: source.filePath,
+      content,
+      truncated,
+      totalChars: raw.length
+    })
+  }
+  return { sections, referenceOnly, usedChars, totalCharLimit }
+}
+
 function getCurrentProjectDailyLogFile(memoryConfig) {
   const dailyLogDir = String(memoryConfig?.dailyLogDir || '').trim()
   if (!dailyLogDir || !fs.existsSync(dailyLogDir)) return ''
@@ -11053,10 +11972,18 @@ export function buildProjectMemorySystemMessage(binding, userPrompt, options = {
     .filter((entry) => shouldWakeMemoryRecord(entry, options.requestDecision || null, userPrompt))
     .slice(0, 4)
   const contextPoolEntries = [...selectedContextPoolEntries, ...autoWokenContextPoolEntries]
-  const message = [
-    'GameStudio project memory below is injected by the control plane and should be treated as authoritative project context for this chat.',
-    'Prefer these project records over stale conversational guesses when answering questions about project state, identity, memory, tasks, or decisions.'
-  ]
+  // references-only 与 content-injection 文案分离：
+  // 注入模式说「正文已给、当作权威上下文」；引用模式必须明说「正文不在提示词里、不要假装读过」，
+  // 避免模型误以为要先去读文件而读不到（gpt-oss 曾因此正文为空）。
+  const message = overlayMode === 'content-injection'
+    ? [
+        'GameStudio project memory below is injected by the control plane as bounded file excerpts; treat the injected content as authoritative project context for this chat.',
+        'Prefer these injected project records over stale conversational guesses when answering questions about project state, identity, memory, tasks, or decisions.'
+      ]
+    : [
+        'GameStudio project memory sources are declared by the control plane as path references only; their file contents are NOT part of this prompt.',
+        'Do not claim you have read these files. Answer from confirmed conversation context, and explicitly mark memory-dependent claims as unverified instead of fabricating.'
+      ]
 
   if (confirmedContextSummary) {
     message.push('\n[Current Confirmed Context Summary]')
@@ -11067,14 +11994,24 @@ export function buildProjectMemorySystemMessage(binding, userPrompt, options = {
     message.push(`\n${buildContextPoolSystemMessage(contextPoolEntries)}`)
   }
 
+  let overlayInjection = null
   if (overlayMode === 'content-injection') {
-    for (const source of loadedSources) {
-      message.push(`\n[${source.label}] ${source.filePath}`)
-      message.push(source.content)
+    overlayInjection = buildBoundedProjectMemoryInjection(loadedSources)
+    message.push('\n[Controller Memory Overlay Mode] content-injection')
+    message.push(`以下记忆文件正文由 control 直接注入（每文件与总量均有字符上限，总量上限 ${overlayInjection.totalCharLimit}，超限已截尾标注），可作为项目事实直接引用作答；不要再尝试读取这些文件。`)
+    for (const section of overlayInjection.sections) {
+      message.push(`\n[${section.label}] ${section.filePath}${section.truncated ? `（原文 ${section.totalChars} 字符，超出上限已截尾）` : ''}`)
+      message.push(section.content)
+    }
+    if (overlayInjection.referenceOnly.length > 0) {
+      message.push('\n以下来源本次仅提供路径参考（正文未注入，不要尝试读取）：')
+      for (const source of overlayInjection.referenceOnly) {
+        message.push(`- ${source.label}: ${source.filePath}`)
+      }
     }
   } else {
     message.push('\n[Controller Memory Overlay Mode] references-only')
-    message.push('Controller only passes source references so Hermes runtime can apply its own internal memory workflow without prompt-level content override.')
+    message.push('以下来源仅提供文件路径参考，正文未包含在本提示词中；不要尝试读取这些文件。若问题依赖这些记忆文件中的事实且对话上下文无法确认，请明确说明“记忆正文未注入，无法确认”，不要编造。')
     for (const source of selectedSources) {
       message.push(`- ${source.label}: ${source.filePath} (${source.exists ? 'available' : 'missing'})`)
     }
@@ -11088,7 +12025,8 @@ export function buildProjectMemorySystemMessage(binding, userPrompt, options = {
     contextPoolEntries,
     autoWokenContextPoolEntries,
     confirmedContextSummary,
-    overlayMode
+    overlayMode,
+    overlayInjection
   }
 }
 
@@ -11404,43 +12342,528 @@ async function recoverHermesChatRuntime(reason) {
   return activeHermesChatRecovery
 }
 
-// 启动时清理孤儿 session（上次服务器崩溃或重启遗留的 planning/running 状态）
-export function cleanupOrphanedReasoningSessions() {
+// ---------------------------------------------------------------------------
+// AUTO-C01：reasoning 持久化任务队列（发起入队 + worker 调度 + 启动恢复）
+// ---------------------------------------------------------------------------
+
+// 唯一 workerId（pid + 启动时间 + 随机串）：重启后旧 claim 一律 stale，
+// 必须先经启动恢复收敛，再由新 worker 重新领取，绝不直接接着跑。
+const reasoningQueueWorkerId = `control_${process.pid}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+let reasoningQueueWorker = null
+
+// 发起门禁（单一事实源）：与 reasoningRoutes 提交门禁同一实现——
+// 左脑配置未保存/模型未加载/配置校验未过/自检未就绪时阻断。
+// worker 领取前复用本门禁：未就绪时任务保持 queued 等待，不把可恢复任务打成 failed。
+function buildReasoningStartBlocker() {
+  const config = getPersistedHermesControlConfig()
+  const binding = buildHermesBinding()
+  const controlState = getHermesControlState()
+  const configFingerprint = getHermesControlConfigFingerprint(config)
+  const configSaved = controlState.config?.saved === true && controlState.config?.savedFingerprint === configFingerprint
+  const modelLoaded = controlState.model?.status === 'loaded'
+    && String(controlState.model?.provider || '') === String(config.provider || '')
+    && String(controlState.model?.baseUrl || '') === String(config.baseUrl || '')
+    && String(controlState.model?.model || '') === String(config.model || '')
+  const validation = buildConfigValidation(config, binding, controlState.model?.inspection || null)
+  const preflightReady = controlState.preflight?.ready === true && controlState.preflight?.configFingerprint === configFingerprint
+
+  if (!configSaved) {
+    return { error: 'left_brain_config_not_saved', details: '未保存左脑配置，请先保存后再提交任务。' }
+  }
+  if (!modelLoaded) {
+    return { error: 'left_brain_model_not_loaded', details: controlState.model?.detail || '模型未启动，请先加载模型。' }
+  }
+  if (!validation.ready) {
+    return { error: 'left_brain_config_invalid', details: '左脑配置校验未通过，请先修复配置项。', readiness: validation }
+  }
+  if (!preflightReady) {
+    return { error: 'left_brain_preflight_not_ready', details: controlState.preflight?.detail || '尚未完成左脑自检。' }
+  }
+  return null
+}
+
+// 队列管理的 session 集合（未终结 item）：心跳过期扫描跳过它们，
+// 其收敛归队列启动恢复 + B04 deadline 管。
+function collectReasoningQueueManagedSessionIds() {
+  const managed = new Set()
   try {
-    const sessionDirs = [HERMES_REASONING_SESSIONS_DIR, HERMES_AGENT_RUNTIME_SESSIONS_DIR]
-    let count = 0
-    for (const sessionDir of sessionDirs) {
-      if (!fs.existsSync(sessionDir)) continue
-      const files = fs.readdirSync(sessionDir).filter((f) => f.endsWith('.json'))
-      for (const file of files) {
-        const filePath = path.join(sessionDir, file)
-        try {
-          const raw = fs.readFileSync(filePath, 'utf8')
-          const session = JSON.parse(raw)
-          if (session.status === 'queued' || session.status === 'running' || session.status === 'waiting_review') {
-            session.status = 'failed'
-            session.error = '服务器重启，本次 session 被中断（orphaned by server restart）'
-            session.updatedAt = new Date().toISOString()
-            if (!Array.isArray(session.events)) session.events = []
-            session.events.push({
-              eventId: `orphan_cleanup_${Date.now()}`,
-              type: 'session_failed',
-              title: '服务器重启中断',
-              summary: '服务器重启时检测到本 session 仍为 queued/running/waiting_review 状态，已标记为失败。',
-              timestamp: new Date().toISOString(),
-              data: {}
-            })
-            fs.writeFileSync(filePath, JSON.stringify(session, null, 2), 'utf8')
-            count++
-            console.log(`[control-server] [startup] orphaned session marked failed: ${session.sessionId}`)
-          }
-        } catch (e) {
-          // ignore corrupt session files
+    const { items } = listQueueItems()
+    for (const item of items) {
+      if (!isTerminalQueueItemState(item.status)) managed.add(item.sessionId)
+    }
+  } catch {
+    // 队列目录不可读时不阻断心跳扫描
+  }
+  return managed
+}
+
+// ---------------------------------------------------------------------------
+// AUTO-R01：本地重负载资源互斥调度（OMLX 模型 <-> ComfyUI 出图 共享 32G 内存）
+// ---------------------------------------------------------------------------
+// 设计：reasoning/resourceScheduler.js 持有槽位状态机（idle/llm/gpu/blocked），
+// 本段负责把它接入既有执行链的两个边界——
+// 1) 队列领取门禁（claimGate）：llm 类任务在出图占用期跳过领取保持 queued，
+//    不动用 retry 预算；gpu 类领取不阻断（交换发生在 step 边界）。
+// 2) step 边界准入（admit/release）：gpu step 前触发交换编排（卸载配置模型腾内存、
+//    health 确认释放后放行）；step 终结 release；llm step 在出图占用期挂起等待，
+//    等待期间取消/超时与 B04 门禁同语义收敛。
+// 交换失败必须显式：unload/reload 失败抛 resource_swap_*，由 step 失败语义收敛。
+
+let resourceScheduler = null
+
+function getResourceScheduler() {
+  if (!resourceScheduler) {
+    resourceScheduler = createResourceScheduler({
+      omlxClient: createOmlxClient({
+        resolveAccess: () => {
+          const binding = buildHermesBinding()
+          return getProviderAccess(binding.provider, binding.baseUrl)
         }
+      }),
+      resolveConfiguredModel: () => {
+        const binding = buildHermesBinding()
+        return { model: binding.model, provider: binding.provider, baseUrl: binding.baseUrl }
+      },
+      logger: appendHermesLog
+    })
+  }
+  return resourceScheduler
+}
+
+export function startResourceScheduler() {
+  if (!isResourceSchedulerEnabled()) {
+    appendHermesLog('[RESOURCE] scheduler disabled by HERMES_RESOURCE_SCHEDULER_ENABLED')
+    return
+  }
+  getResourceScheduler().start()
+}
+
+export function stopResourceScheduler() {
+  if (resourceScheduler) resourceScheduler.stop()
+}
+
+// 资源状态只读视图（/api/control/resources/state）：含实时 probe，失败回落 reconcile 缓存
+async function getResourceSchedulerState() {
+  if (!isResourceSchedulerEnabled()) return { enabled: false }
+  return getResourceScheduler().getState({ probe: true })
+}
+
+// 判定 queue item 的下一资源需求：plan 未生成 -> llm（plan 阶段本身需要模型）；
+// 有 checkpoint 取 nextStepIndex 对应 step 的 action 分类；全部 step 已完成 -> llm（quality gate/最终回答）。
+function resolveQueueItemResourceKind(item) {
+  const session = readReasoningSession(item.sessionId)
+  if (!session) return null // 无法判定：放行，由既有镜像逻辑收敛
+  const steps = Array.isArray(session.plan?.steps) ? session.plan.steps : []
+  if (!steps.length) return RESOURCE_KIND.LLM
+  const checkpoint = readLatestStepCheckpoint(item.sessionId)
+  const nextStepIndex = Number.isInteger(checkpoint?.nextStepIndex) ? checkpoint.nextStepIndex : 0
+  if (nextStepIndex >= steps.length) return RESOURCE_KIND.LLM
+  return resolveActionResourceKind(steps[nextStepIndex]?.action)
+}
+
+// llm 类任务在出图占用期的跳过事件节流（worker tick 每秒扫，事件最多每 30s 一条）
+const resourceClaimGateEventAt = new Map()
+
+function evaluateResourceClaimGate(item) {
+  if (!isResourceSchedulerEnabled()) return { ok: true }
+  const snapshot = getResourceScheduler().getSnapshot()
+  // 出图占用 = gpu 持有中 / gpu 申请排队中 / 槽位仍在 gpu（含 settle 与回载窗口，模型尚未在线）
+  const gpuBusy = Boolean(snapshot.gpuHolder) || snapshot.gpuQueueLength > 0 || snapshot.state === 'gpu'
+  if (!gpuBusy) return { ok: true }
+  const kind = resolveQueueItemResourceKind(item)
+  if (kind !== RESOURCE_KIND.LLM) return { ok: true } // gpu 类领取不阻断：交换在 step 边界发生
+  const nowMs = Date.now()
+  const lastAt = Number(resourceClaimGateEventAt.get(item.sessionId) || 0)
+  if (nowMs - lastAt > 30000) {
+    resourceClaimGateEventAt.set(item.sessionId, nowMs)
+    appendReasoningEvent(item.sessionId, 'resource_wait', '等待出图释放算力', '出图任务占用本地算力，本任务保持排队；出图批次结束并回载模型后自动继续。', {
+      data: { taskId: item.taskId, projectId: item.projectId || null, reason: 'resource_gpu_occupied', gpuHolder: snapshot.gpuHolder || null }
+    })
+  }
+  return { ok: false, reason: 'resource_gpu_occupied' }
+}
+
+// step 边界准入：返回 { outcome: 'entered', kind, holder } 或 { outcome: 'cancelled' | 'task_timeout', reason }。
+// 交换失败抛 resource_swap_*（显式），由调用方按 step 失败语义收敛。
+async function admitReasoningStepResource({ sessionId, step, taskDeadlineAt }) {
+  if (!isResourceSchedulerEnabled()) return { outcome: 'entered' }
+  const kind = resolveActionResourceKind(step?.action)
+  const holder = `${sessionId}:${step?.stepId || 'step'}`
+  let waitEventSent = false
+  const admission = await getResourceScheduler().acquire(kind, holder, {
+    shouldAbort: () => {
+      if (isSessionCancelRequested(sessionId)) return { aborted: true, reason: 'cancelled' }
+      if (Number.isFinite(taskDeadlineAt) && Date.now() > taskDeadlineAt) return { aborted: true, reason: 'task_timeout' }
+      return { aborted: false }
+    },
+    onWaitChange: (waiting, reason) => {
+      if (waiting && !waitEventSent) {
+        waitEventSent = true
+        appendReasoningEvent(sessionId, 'resource_wait', '等待出图释放算力', `步骤「${step?.title || step?.stepId || '-'}」需要本地模型在线，出图批次结束并回载模型后自动继续。`, {
+          data: { stepId: step?.stepId || null, action: step?.action || null, resourceKind: kind, reason: reason || 'gpu_occupied' }
+        })
       }
     }
-    if (count > 0) {
-      console.log(`[control-server] [startup] cleaned up ${count} orphaned reasoning session(s)`)
+  })
+  if (!admission?.admitted) {
+    return {
+      outcome: admission?.reason === 'cancelled' ? 'cancelled' : 'task_timeout',
+      reason: `resource_wait_${admission?.reason || 'aborted'}`
+    }
+  }
+  return { outcome: 'entered', kind, holder }
+}
+
+function releaseReasoningStepResource(admission) {
+  if (!admission?.holder || !admission?.kind) return
+  try {
+    getResourceScheduler().release(admission.kind, admission.holder)
+  } catch (error) {
+    appendHermesLog(`[RESOURCE][RELEASE][ERROR] detail=${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+
+// 队列执行入口：fresh item 走完整 plan + 执行链；恢复 item 从 checkpoint 的
+// nextStepIndex 继续（已成功 step 不重跑）。两条路径都复用既有执行原语
+// （含 B04 deadline/cancel），内部自捕获异常并收敛 session。
+// AUTO-C02：retry_wait 的 session 被重新领取后走 runReasoningSession 全量重跑
+// （失败时 checkpoint 已清理，plan 幂等无副作用）；再失败由 worker 按 retryPolicy
+// 重新分类调度，直到恢复成功或达上限收敛 failed。
+async function executeReasoningQueueItem(item) {
+  const sessionId = item.sessionId
+  const session = readReasoningSession(sessionId)
+  if (!session) return // worker tick 会以 queue_session_missing 收敛 blocked
+  const binding = buildHermesBinding()
+  const history = readHermesChatHistory({ includeAllSessions: true })
+  const status = normalizeLegacySessionStatus(session.status)
+  if (status === REASONING_SESSION_STATE.ORPHANED && Number.isInteger(item.resumeFromStep)) {
+    // 重启恢复：与 B03 recover 路由同语义——先清审核残留，再从 checkpoint 继续
+    clearReasoningReview(sessionId)
+    await runAllReasoningStepsFrom(sessionId, binding, history, item.resumeFromStep, {})
+    return
+  }
+  await runReasoningSession(sessionId, binding, history)
+}
+
+function getReasoningQueueWorker() {
+  if (!reasoningQueueWorker) {
+    reasoningQueueWorker = createReasoningQueueWorker({
+      workerId: reasoningQueueWorkerId,
+      maxConcurrency: resolveQueueMaxConcurrency(),
+      tickMs: resolveQueueTickMs(),
+      heartbeatScanIntervalMs: resolveQueueHeartbeatScanIntervalMs(),
+      readSession: readReasoningSession,
+      executeItem: executeReasoningQueueItem,
+      appendEvent: appendReasoningEvent,
+      canExecute: () => getHermesRuntimeState().state === 'running' && !buildReasoningStartBlocker(),
+      // AUTO-R01：资源互斥单 item 门禁——llm 类任务在出图占用期跳过领取保持 queued（不动 retry 预算）
+      claimGate: (item) => evaluateResourceClaimGate(item),
+      // AUTO-C02：task 级失败的错误分类与有限重试（retry_wait 退避调度/上限收敛/审核类阻断）
+      updateSession: updateReasoningSession,
+      retryMaxAttempts: resolveRetryMaxAttempts(),
+      retryBaseMs: resolveRetryBaseMs(),
+      retryMaxDelayMs: resolveRetryMaxDelayMs(),
+      onHeartbeatScan: () => {
+        // AUTO-C01 顺带覆盖 B03 遗留：心跳过期扫描此前只在启动时跑，现挂 worker 周期执行
+        scanAndConvergeOrphanedSessions({
+          sessionDirs: [HERMES_REASONING_SESSIONS_DIR, HERMES_AGENT_RUNTIME_SESSIONS_DIR],
+          updateSession: updateReasoningSession,
+          appendEvent: appendReasoningEvent,
+          assumeRestart: false,
+          skipSessionIds: collectReasoningQueueManagedSessionIds()
+        })
+      },
+      logger: appendHermesLog
+    })
+  }
+  return reasoningQueueWorker
+}
+
+export function startReasoningQueueWorker() {
+  getReasoningQueueWorker().start()
+}
+
+export function stopReasoningQueueWorker() {
+  if (reasoningQueueWorker) reasoningQueueWorker.stop()
+}
+
+// ---------------------------------------------------------------------------
+// AUTO-C04：Hermes gateway 监督恢复（exit 监测 + 有限退避重启 + 任务传播）
+// ---------------------------------------------------------------------------
+
+// 监督事件真相源：JSONL 逐条落盘（HERMES_GATEWAY_SUPERVISION_DIR 可覆盖），
+// 供 D01 console 展示与事故复盘（含 U-09 类退出的原因/信号/受影响 task）
+const HERMES_GATEWAY_SUPERVISION_DIR = process.env.HERMES_GATEWAY_SUPERVISION_DIR
+  || path.join(GAMESTUDIO_ROOT, 'state', 'hermes-gateway-supervision')
+
+function appendGatewaySupervisionEvent(event) {
+  try {
+    fs.mkdirSync(HERMES_GATEWAY_SUPERVISION_DIR, { recursive: true })
+    fs.appendFileSync(path.join(HERMES_GATEWAY_SUPERVISION_DIR, 'events.jsonl'), `${JSON.stringify(event)}\n`, 'utf8')
+  } catch {
+    // 落盘失败不阻断监督流程（内存态仍可通过 getGatewaySupervisionState 读取）
+  }
+  try {
+    writeStructuredLog('gateway-supervision', 'info', `[GATEWAY-SUPERVISION] ${event.type}`, event)
+  } catch {
+    // 日志失败不阻断
+  }
+}
+
+// 受 gateway 退出影响的 session：扫两个 session 目录去重后，
+// 由模块统一判定（running/pausing/resuming/retry_wait）
+function listGatewayAffectedSessions() {
+  const sessions = []
+  const seen = new Set()
+  for (const dir of [HERMES_AGENT_RUNTIME_SESSIONS_DIR, HERMES_REASONING_SESSIONS_DIR]) {
+    if (!dir || !fs.existsSync(dir)) continue
+    let files = []
+    try {
+      files = fs.readdirSync(dir).filter((name) => name.endsWith('.json'))
+    } catch {
+      continue
+    }
+    for (const file of files) {
+      try {
+        const session = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'))
+        if (!session?.sessionId || seen.has(session.sessionId)) continue
+        seen.add(session.sessionId)
+        if (isGatewayExitAffectedSession(session)) sessions.push(session)
+      } catch {
+        // 损坏文件跳过，不猜测
+      }
+    }
+  }
+  return sessions
+}
+
+// 达上限/不可恢复时的任务收敛：running/retry_wait/failed 直接转 blocked；
+// pausing/resuming 先 failed 再 blocked（状态机无直达边）；其余状态（终态/
+// 已取消/人工审核/queued/paused）绝不触碰。queue item 由 worker tick 镜像终结。
+function blockReasoningSessionByGateway(sessionId, reason) {
+  const blockable = new Set([
+    REASONING_SESSION_STATE.RUNNING,
+    REASONING_SESSION_STATE.PAUSING,
+    REASONING_SESSION_STATE.RESUMING,
+    REASONING_SESSION_STATE.RETRY_WAIT,
+    REASONING_SESSION_STATE.FAILED
+  ])
+  const current = readReasoningSession(sessionId)
+  if (!current) return false
+  if (!blockable.has(normalizeLegacySessionStatus(current.status))) return false
+  updateReasoningSession(sessionId, (latest) => {
+    const latestStatus = normalizeLegacySessionStatus(latest.status)
+    if (!blockable.has(latestStatus)) return latest // 并发推进（如取消）则不抢状态
+    let working = latest
+    if (latestStatus === REASONING_SESSION_STATE.PAUSING || latestStatus === REASONING_SESSION_STATE.RESUMING) {
+      working = applySessionTransition(working, REASONING_SESSION_STATE.FAILED, reason)
+    }
+    const transitioned = applySessionTransition(working, REASONING_SESSION_STATE.BLOCKED, reason)
+    return {
+      ...transitioned,
+      currentStepId: null,
+      error: reason,
+      artifacts: {
+        ...transitioned.artifacts,
+        gatewayBlockedReason: reason,
+        gatewayBlockedAt: new Date().toISOString()
+      }
+    }
+  })
+  unmarkReasoningSessionActive(sessionId)
+  clearActiveReasoningExecution(sessionId)
+  appendHermesLog(`[GATEWAY-SUPERVISION][BLOCK] sessionId=${sessionId} reason=${reason}`)
+  return true
+}
+
+let gatewaySupervisor = null
+
+function getGatewaySupervisor() {
+  if (!gatewaySupervisor) {
+    gatewaySupervisor = createGatewaySupervisor({
+      // 探测真实进程状态（pid 文件 + kill(0)），不碰 getHermesRuntimeState 的清 pid 副作用
+      probe: () => {
+        const installState = detectHermesInstallState()
+        if (!installState.installed) return { installed: false, running: false, pid: null }
+        const pid = readHermesPid()
+        return { installed: true, running: Boolean(pid && isPidRunning(pid)), pid: pid || null }
+      },
+      // 生命周期硬边界：stop/pause/exit/all-restart 发起的关停绝不自动拉起
+      wasStoppingIntentionally: () => hermesStoppingIntentionally,
+      restart: async () => {
+        const started = await startHermesRuntime()
+        return { ok: started.state === 'running', state: started.state, detail: started.detail }
+      },
+      getFaultDetail: () => {
+        const fault = getHermesGatewayFaultSnapshot()
+        return fault ? `${fault.kind}:${fault.line}` : null
+      },
+      // 认证失败判定复用 G02 同一实现（单一事实源）
+      isAuthFailure: isAuthFailureError,
+      listAffectedSessions: listGatewayAffectedSessions,
+      failSession: (sessionId, error) => markReasoningSessionFailed(sessionId, error),
+      blockSession: (sessionId, reason) => blockReasoningSessionByGateway(sessionId, reason),
+      appendSessionEvent: appendReasoningEvent,
+      kickQueue: () => {
+        if (reasoningQueueWorker) reasoningQueueWorker.kick()
+      },
+      onEvent: appendGatewaySupervisionEvent,
+      logger: appendHermesLog
+    })
+  }
+  return gatewaySupervisor
+}
+
+// 默认关闭（HERMES_GATEWAY_SUPERVISION_ENABLED=true 启用）：与 G02 一致的安全默认，
+// 关闭时既有 health-check / 生命周期行为完全不变
+export function startGatewaySupervision() {
+  if (!isGatewaySupervisionEnabled()) return
+  getGatewaySupervisor().start()
+}
+
+export function stopGatewaySupervision() {
+  if (gatewaySupervisor) gatewaySupervisor.stop()
+}
+
+// 可观测状态：重启次数/退避参数/最近事件/阻断原因（供 D01 console 展示）
+export function getGatewaySupervisionState() {
+  return getGatewaySupervisor().getState()
+}
+
+// ---------------------------------------------------------------------------
+// HERMES-H02：cron 受控生产触发的调度 tick。
+// tick 只做一件事：把到点的 active job 交给 cronGovernance 受控适配器；
+// 白名单/启动门禁/幂等/session 创建/入队全部在适配器与既有队列链路内完成。
+// ---------------------------------------------------------------------------
+let cronSchedulerTimer = null
+const HERMES_CRON_TICK_MS = Math.max(1000, Number(process.env.HERMES_CRON_TICK_MS || 15000))
+
+function buildCronTriggerDeps() {
+  return {
+    createSession: (prompt, submissionContext) => createReasoningSession(hermesAgentDefinition.id, prompt, submissionContext),
+    dispatch: (sessionId) => dispatchReasoningSession(sessionId),
+    readSession: (sessionId) => readReasoningSession(sessionId),
+    // 与 HTTP session 入口一致的启动门禁：模型未就绪不得发起生产
+    checkStartAllowed: () => {
+      const runtimeStatus = getHermesRuntimeState()
+      if (runtimeStatus.state !== 'running') return { ok: false, reason: 'runtime_not_running' }
+      const blocker = buildReasoningStartBlocker()
+      if (blocker) return { ok: false, reason: blocker.error || 'start_blocked' }
+      return { ok: true }
+    }
+  }
+}
+
+export function startCronScheduler() {
+  if (cronSchedulerTimer) return
+  cronSchedulerTimer = setInterval(() => {
+    runDueCronJobs(buildCronTriggerDeps())
+      .then((summary) => {
+        if (summary.submitted > 0 || summary.blocked > 0 || summary.errors.length > 0) {
+          appendHermesLog(`[CRON][TICK] scanned=${summary.scanned} submitted=${summary.submitted} skipped=${summary.skipped} blocked=${summary.blocked} errors=${summary.errors.length}`)
+        }
+      })
+      .catch((error) => {
+        console.error('[control-server] [cron] tick error:', error)
+      })
+  }, HERMES_CRON_TICK_MS)
+  cronSchedulerTimer.unref?.()
+}
+
+export function stopCronScheduler() {
+  if (cronSchedulerTimer) {
+    clearInterval(cronSchedulerTimer)
+    cronSchedulerTimer = null
+  }
+}
+
+// 可观测状态：调度器运行标志与 tick 间隔（供治理页展示）
+export function getCronSchedulerState() {
+  return { running: Boolean(cronSchedulerTimer), tickMs: HERMES_CRON_TICK_MS }
+}
+
+// 发起路径：session 创建后先入队（queued），由 worker 领取执行。
+// 入队幂等（同一 session 不重复入队）；API 形状不变，调用方不感知。
+// AUTO-F01：每项目在制配额门禁——仅对「新建 item 的根任务」（有 projectId、无父 session、
+// 尚无既有 item）判定；幂等入队、人工重试、重试调度与子目标 session 不受配额阻断。
+// 超限时不入队：session queued -> blocked（原因 project_quota_exceeded，含用量证据），
+// 事件流与治理审计留证；配额释放后可经治理动作恢复（blocked -> queued 为合法转移）。
+export function dispatchReasoningSession(sessionId) {
+  const session = readReasoningSession(sessionId)
+  if (!session) {
+    throw new Error('reasoning_session_not_found')
+  }
+  const projectId = String(session.submissionContext?.projectId || '').trim() || null
+  const isChildSession = Boolean(session.submissionContext?.parentSessionId)
+  if (projectId && !isChildSession && !readQueueItem(sessionId)) {
+    const quota = evaluateProjectQuota({ projectId, excludeSessionId: sessionId })
+    if (!quota.ok) {
+      const detail = `project_quota_exceeded: projectId=${projectId} 在制 ${quota.activeCount}/${quota.limit}（${quota.activeSessionIds.join(', ') || '-'}）`
+      updateReasoningSession(sessionId, (current) => {
+        if (normalizeLegacySessionStatus(current?.status) !== REASONING_SESSION_STATE.QUEUED) return current
+        return applySessionTransition(current, REASONING_SESSION_STATE.BLOCKED, detail)
+      })
+      appendReasoningEvent(sessionId, 'queue_quota_rejected', '项目在制配额超限，任务已阻断', detail, {
+        data: {
+          projectId,
+          error: quota.error,
+          limit: quota.limit,
+          activeCount: quota.activeCount,
+          activeSessionIds: quota.activeSessionIds
+        }
+      })
+      appendGovernanceAudit({ action: 'session_dispatch', sessionId, projectId, result: 'blocked', detail })
+      appendHermesLog(`[REASONING][QUEUE][QUOTA] sessionId=${sessionId} ${detail}`)
+      return { taskId: null, sessionId, projectId, status: 'blocked', quotaRejected: true, quota }
+    }
+  }
+  const result = enqueueQueueItem({
+    sessionId,
+    projectId
+  })
+  if (result.created) {
+    appendReasoningEvent(sessionId, 'queue_enqueued', '任务已入队', `taskId=${result.item.taskId} projectId=${result.item.projectId || '-'} 已加入持久化队列，等待 worker 领取。`, {
+      data: { taskId: result.item.taskId, projectId: result.item.projectId || null }
+    })
+    appendHermesLog(`[REASONING][QUEUE][ENQUEUE] sessionId=${sessionId} taskId=${result.item.taskId} projectId=${result.item.projectId || '-'}`)
+  }
+  getReasoningQueueWorker().kick()
+  return result.item
+}
+
+// AUTO-B03：启动时收敛孤儿 session（上次服务器崩溃或重启遗留的非终结状态）。
+// 非终结 active session 经状态机转 orphaned 并记录判定原因；
+// 恢复资格不足（checkpoint 缺失/损坏/恢复次数超限）的 orphan 再转 blocked，不猜测继续；
+// 终态与 failed session 不触碰（failed 已有失败证据与 retry 路径）。
+// AUTO-C01：先跑队列启动恢复（其内部按同一组 B03 orphan 原语收敛队列管理的 session：
+// 可恢复的重新入队、证据不足的转 blocked、人工审核等待的不自动重排队），
+// 再跑 orphan 扫描并跳过队列管理的 session（queued 等待中的 session 不是孤儿）。
+export function cleanupOrphanedReasoningSessions() {
+  try {
+    const queueSummary = recoverPersistentQueueOnStartup({
+      readSession: readReasoningSession,
+      updateSession: updateReasoningSession,
+      appendEvent: appendReasoningEvent
+    })
+    if (queueSummary.scanned > 0 || queueSummary.errors.length > 0) {
+      console.log(`[control-server] [startup] queue recovery: scanned=${queueSummary.scanned} keptQueued=${queueSummary.keptQueued} requeued=${queueSummary.requeued} mirroredTerminal=${queueSummary.mirroredTerminal} waitingReview=${queueSummary.releasedWaitingReview} blocked=${queueSummary.blocked}`)
+    }
+    for (const item of queueSummary.errors) {
+      console.error(`[control-server] [startup] queue recovery error: ${item.sessionId || item.file || '-'} detail=${item.error}`)
+    }
+    const summary = scanAndConvergeOrphanedSessions({
+      sessionDirs: [HERMES_REASONING_SESSIONS_DIR, HERMES_AGENT_RUNTIME_SESSIONS_DIR],
+      updateSession: updateReasoningSession,
+      appendEvent: appendReasoningEvent,
+      assumeRestart: true,
+      skipSessionIds: queueSummary.managedSessionIds
+    })
+    if (summary.orphaned > 0 || summary.blocked > 0 || summary.alreadyOrphaned > 0) {
+      console.log(`[control-server] [startup] orphan scan: orphaned=${summary.orphaned} alreadyOrphaned=${summary.alreadyOrphaned} blocked=${summary.blocked} terminalSkipped=${summary.terminalSkipped} queueManagedSkipped=${summary.queueManagedSkipped}`)
+    }
+    for (const item of summary.errors) {
+      console.error(`[control-server] [startup] orphan scan error: sessionId=${item.sessionId} detail=${item.error}`)
     }
     scheduleMemoryLifecycleMaintenance('startup_orphan_cleanup', 0)
   } catch (e) {

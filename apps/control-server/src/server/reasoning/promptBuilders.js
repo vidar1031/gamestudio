@@ -1049,6 +1049,7 @@ export function buildReasoningAnswerMessages(history, sessionId, userPrompt, art
       content: [
         `用户问题: ${userPrompt}`,
         '输出语言要求：中文。不要用英文标题或英文开场。',
+        '最终回答必须完整写入回复正文；不要只输出思考过程。引用的记忆文件无法直接读取时，基于已注入的信息直接作答。',
         l1ProductionKeywords,
         previousDraft ? `上一轮候选答案（仅可复用其结构，不可直接视为证据）:\n${previousDraft}` : '',
         '',

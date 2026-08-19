@@ -234,6 +234,7 @@ node --check apps/server/src/index.js
 - `control-console` 与 `control-server` 必须保持同一套控制语义；若一侧调整 contract，另一侧必须同步更新。
 - 左脑配置 -> 预检/自检 -> 启动/恢复的顺序不可绕过。
 - reasoning 与 chat 语义分离：`ping-model` 是普通聊天路径，`reasoning-sessions` 是可观测推理路径。
+- 本地重负载资源互斥（AUTO-R01）：OMLX 模型与 ComfyUI 出图共享机器内存，由 control 资源调度器互斥（出图 step 前卸载模型、批次结束回载、单模型守卫）；`HERMES_RESOURCE_SCHEDULER_ENABLED` 默认开，状态见 `GET /api/control/resources/state` 与守护台「资源互斥」卡片。
 - 详见 `docs/系统生产级推进方案.md` 与 `ai/control_architecture.md`。
 
 ### 编辑器契约
@@ -245,6 +246,8 @@ node --check apps/server/src/index.js
 ### 安全边界
 - 模型输出只能作为候选，不是事实。
 - 写入、删除、导出、脚本和外部服务动作必须受 review gate 约束。
+- 图片生成实行三级审核门禁（`STUDIO_IMAGE_REVIEW_MODE=manual` 时）：出图前审核（`pre_generate`）→ AI 评审后人工确认锁定（`lock_confirm`）→ 场景图人工确认绑定（`scene_bind`）。审核记录存 `<project>/reviews/image_reviews.jsonl`；`approve` 后才执行生成或写回。Control 驱动的调用默认带 `x-image-review-mode: off` 旁路（control 已有自己的步骤级审核）。
+- 长任务（锁定测试、场景渲染、批量渲染）必须经 `/api/projects/:id/ai/tasks` 暴露进度，禁止黑盒同步调用。
 - workspace 外路径必须拒绝。
 - `_inbox` proposal 不能自动晋级为 active intent、workflow 或 evaluator。
 - `.env` / `.env.local` 不得提交含真实密钥的版本。
@@ -289,6 +292,10 @@ curl -sS http://127.0.0.1:1999/api/health    # GameStudio Server
 curl -sS http://localhost:8868               # Editor
 curl -sS http://127.0.0.1:2099/api/health    # Control Server
 curl -sS http://127.0.0.1:2099/api/control/agents/hermes-manager/workflow-diagnostics
+curl -sS http://127.0.0.1:1999/api/ai/comfyui/capability-check   # ComfyUI 出图能力（节点/模型缺失）
+curl -sS "http://127.0.0.1:1999/api/projects/<id>/ai/tasks"      # 项目长任务进度
+curl -sS "http://127.0.0.1:1999/api/projects/<id>/ai/reviews?status=pending"   # 待人工审核
+curl -sS "http://127.0.0.1:2099/api/control/hermes/session-search?q=<关键词>"   # Hermes 历史会话只读检索（FTS5）
 ```
 
 ---
@@ -308,6 +315,8 @@ curl -sS http://127.0.0.1:2099/api/control/agents/hermes-manager/workflow-diagno
 | `COMFYUI_BASE_URL` | ComfyUI 服务地址 |
 | `SDWEBUI_BASE_URL` | SD-WebUI 服务地址 |
 | `STUDIO_PROXY_URL` | 本地 HTTP 代理（如 Clash） |
+| `STUDIO_IMAGE_REVIEW_MODE` | 图片生成审核模式：`manual`（默认，人工门禁）/ `ai_only`（AI 评审即终审）/ `off`（全自动） |
+| `MOONSHOT_API_KEY` | Moonshot/Kimi API 密钥；配置后锁定测试视觉评审走 Kimi |
 
 服务器启动时会自动加载 `.env` / `.env.local`（通过 `apps/server/src/env.js`）。
 
@@ -367,6 +376,17 @@ PID 与日志保存在 `.run/` 目录：
 | `project-analysis.md` | 增量分析，每次最多 10 个文件、2 层目录 |
 | `token-control.md` | Token 控制 |
 | `js-runtime-debug.md` | 运行时调试 |
+
+---
+
+## Agent 定位（最高优先级，不可偏离）
+
+- **我是 control 的建设者，不是生产操作员。** 禁止直接调用 GameStudio 生成类 API（出图、锁定测试、线稿、场景渲染、导出等）替用户完成生产任务——那会造成 token 浪费、绕过审核、产出无证据链的结果。
+- 生产任务（故事生成、场景图生成）必须由 **control 侧通过事件机制**驱动：用户 → control（hermes-manager）→ 事件分发（`apps/server/events/registry.v1.json` + `eventDispatcher`）→ GameStudio Server → ComfyUI。
+- 我的工作范围是修改 `apps/control-server` / `apps/control-console` / `apps/server` 的代码，让 control 具备并持续增强自动化能力：事件注册与映射、工作流编排、审核门禁、可观测执行链、能力自愈。
+- 验证生产链路时，由 control 侧事件链执行，我只观察证据（事件分发记录、reasoning sessions、`/ai/tasks` 进度、审核记录），不越俎代庖。
+- 任何"帮我跑一遍生产"的请求，都转化为"让 control 能跑一遍生产"的代码建设；发现 control 能力不足时，补 control 的能力，而不是自己下场。
+- 图片生产的把关在审核门禁（出图前/锁定确认/场景绑定），审核入口统一呈现在 control-console，人不需要切换到其他界面。
 
 ---
 

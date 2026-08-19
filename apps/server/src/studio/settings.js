@@ -129,6 +129,7 @@ export async function writeStudioSettings(storageRoot, incoming) {
   const inTts = inObj?.tts
   const inNet = inObj?.network
   const inSecrets = inObj?.secrets
+  const inReview = inObj?.review
 
   const next = {
     schemaVersion: '1.0',
@@ -168,6 +169,12 @@ export async function writeStudioSettings(storageRoot, incoming) {
       provider: has(inTts, 'provider') ? sanitizeProvider(inTts.provider) : sanitizeProvider(prev?.tts?.provider),
       model: has(inTts, 'model') ? sanitizeModel(inTts.model) : sanitizeModel(prev?.tts?.model),
       apiUrl: has(inTts, 'apiUrl') ? sanitizeUrl(inTts.apiUrl) : sanitizeUrl(prev?.tts?.apiUrl)
+    },
+    // AUTO-E05：完整度核实的视觉评审模型（moonshot / omlx），缺省走环境默认
+    review: {
+      provider: has(inReview, 'provider') ? sanitizeProvider(inReview.provider) : sanitizeProvider(prev?.review?.provider),
+      model: has(inReview, 'model') ? sanitizeModel(inReview.model) : sanitizeModel(prev?.review?.model),
+      apiUrl: has(inReview, 'apiUrl') ? sanitizeUrl(inReview.apiUrl) : sanitizeUrl(prev?.review?.apiUrl)
     },
     secrets: {
       openaiApiKey: has(inSecrets, 'openaiApiKey') ? sanitizeSecret(inSecrets.openaiApiKey) : sanitizeSecret(prev?.secrets?.openaiApiKey),
@@ -405,6 +412,17 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
       provider: settings?.tts?.provider ? String(settings.tts.provider) : 'none',
       model: settings?.tts?.model ? String(settings.tts.model) : null,
       apiUrl: settings?.tts?.apiUrl ? String(settings.tts.apiUrl) : null
+    },
+    // AUTO-E05：完整度核实视觉评审模型。默认 moonshot/kimi-for-coding；
+    // 选 omlx（本地视觉模型）时默认指向 OMLX 端点与 Qwen3.6-27B。
+    review: {
+      provider: settings?.review?.provider ? String(settings.review.provider).toLowerCase() : 'moonshot',
+      model: settings?.review?.model
+        ? String(settings.review.model)
+        : (String(settings?.review?.provider || '').toLowerCase() === 'omlx' ? (env.localoxmlModel || 'Qwen3.6-27B-4bit') : 'kimi-for-coding'),
+      apiUrl: settings?.review?.apiUrl
+        ? String(settings.review.apiUrl)
+        : (String(settings?.review?.provider || '').toLowerCase() === 'omlx' ? (env.localoxmlBaseUrl || 'http://127.0.0.1:18888/v1') : (String(process.env.MOONSHOT_BASE_URL || '').trim() || 'https://api.kimi.com/coding/v1'))
     },
     secrets: {
       openai: { present: Boolean(secretsOpenai.value), masked: maskKey(secretsOpenai.value), source: secretsOpenai.source, value: secretsOpenai.value || null },

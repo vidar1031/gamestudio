@@ -40,6 +40,7 @@ import {
   openChatHistoryFile,
   saveChatHistoryFile,
 } from '../services/chatApi'
+import { dispatchEvent, getEventRegistry } from '../services/eventsApi'
 
 type HealthResponse = {
   ok: boolean
@@ -429,6 +430,69 @@ type ChatHistoryEntry = {
   sourceKey?: string
 }
 
+type EventChainRegistryEvent = {
+  eventId: string
+  version?: number
+  category: string
+  kind: 'command' | 'query' | string
+  title: string
+  description?: string
+  reviewRequired?: boolean
+  timeoutMs?: number
+}
+
+type EventChainRegistryCategory = {
+  id: string
+  title: string
+}
+
+type EventChainRegistry = {
+  registryVersion: string
+  provider?: {
+    id?: string
+    name?: string
+    baseUrl?: string
+  }
+  categories?: EventChainRegistryCategory[]
+  events: EventChainRegistryEvent[]
+}
+
+type EventChainChatArg = {
+  name: string
+  required?: boolean
+  description?: string
+}
+
+type EventChainRegistryEventWithMeta = EventChainRegistryEvent & {
+  code?: string
+  aliases?: string[]
+  chatArgs?: EventChainChatArg[]
+}
+
+type EventDispatchResult = {
+  ok: boolean
+  provider?: string
+  eventId: string | null
+  code?: string | null
+  kind?: string
+  traceId: string
+  durationMs?: number
+  transport?: {
+    method?: string
+    endpoint?: string
+    status?: number
+  }
+  result?: unknown
+  error?: string | null
+  caller?: string
+}
+
+type EventConfirmPending = {
+  event: EventChainRegistryEventWithMeta
+  payload: Record<string, unknown>
+  argsText: string
+}
+
 type ReasoningSelfReview = {
   verdict: 'approve' | 'repair' | 'human_review'
   summary: string
@@ -659,6 +723,7 @@ export function useControlConsoleApp() {
   const brainActiveTab = ref<'left' | 'right'>('left')
   const skillProposalsList = ref<any[]>([])
   const skillIntentsActive = ref<any[]>([])
+  const skillProposalGovernance = ref<any[]>([])
   const skillProposalsBusy = ref(false)
   const skillProposalsError = ref('')
   const skillProposalsScanMessage = ref('')
@@ -718,6 +783,13 @@ export function useControlConsoleApp() {
   const submitGateOpen = ref(false)
   const submitGateMode = ref<'chat' | 'reasoning' | null>(null)
   const submitPromptDraft = ref('')
+  const eventChainVisible = ref(false)
+  const eventRegistry = ref<EventChainRegistry | null>(null)
+  const eventRegistryBusy = ref(false)
+  const eventRegistryError = ref('')
+  const eventDispatchBusy = ref(false)
+  const eventDispatchResult = ref<EventDispatchResult | null>(null)
+  const eventConfirmPending = ref<EventConfirmPending | null>(null)
   const contextCandidatesBusy = ref(false)
   const contextCandidatesError = ref('')
   const contextSourceCandidates = ref<ContextSourceCandidate[]>([])
@@ -916,7 +988,8 @@ export function useControlConsoleApp() {
   const reasoningReviewEvidence = computed(() => reasoningPendingReview.value?.evidence || null)
   const reasoningElapsedSeconds = computed(() => getReasoningSessionElapsedSeconds(activeReasoningSession.value, chatUiNow.value))
   const reasoningSessionInForeground = computed(() => ['planning', 'running', 'waiting_review'].includes(activeReasoningSession.value?.status || ''))
-  const canClearReasoningSession = computed(() => ['completed', 'failed', 'cancelled'].includes(activeReasoningSession.value?.status || ''))
+  // 清理按钮对所有已结束任务可用：终态（completed/blocked/cancelled/timeout）+ failed（重试耗尽的最终态）
+  const canClearReasoningSession = computed(() => ['completed', 'failed', 'cancelled', 'blocked', 'timeout'].includes(activeReasoningSession.value?.status || ''))
   const reviewModeLabel = computed(() => reasoningAutoApproveEnabled.value ? '自动直跑模式' : '人工全审模式')
   const primaryComposerActionLabel = computed(() => reasoningBusy.value ? '执行中...' : reasoningAutoApproveEnabled.value ? '直接开始任务流' : '开始任务执行')
   const shortTermMemoryHint = computed(() => String(leftBrain.value.model || '').trim().toLowerCase().includes('gemma-4-26b-a4b') ? 'Gemma-4-26B-A4B 当前 OMLX 配置应填写为：短期记忆最小窗口 65536。该项只校验上下文窗口；最大输出 token 4096 由模型服务配置控制，不在这里填写。' : '这里填写的是模型最小上下文窗口要求。要通过自检，模型的上下文窗口必须大于等于该值；最大输出 token 由模型服务自身配置控制。')
@@ -1194,8 +1267,12 @@ export function useControlConsoleApp() {
     if (normalizedSession) pendingReasoningUserPrompt.value = ''
     activeReasoningSession.value = normalizedSession
     persistActiveReasoningSessionId(normalizedSession?.sessionId || null)
-    reasoningBusy.value = Boolean(normalizedSession && (normalizedSession.status === 'planning' || normalizedSession.status === 'running'))
+    reasoningBusy.value = Boolean(normalizedSession && isReasoningLiveStatus(normalizedSession.status))
     rebuildDisplayedChatHistory()
+  }
+  // queued/retry_wait 由队列 worker 推进，pausing/resuming 由生命周期驱动——这些状态都要持续轮询
+  function isReasoningLiveStatus(status: string | null | undefined) {
+    return status === 'planning' || status === 'running' || status === 'queued' || status === 'retry_wait' || status === 'pausing' || status === 'resuming'
   }
   function stopChatHistoryPolling() {}
   function stopReasoningPolling() { if (reasoningPollTimer) { clearTimeout(reasoningPollTimer); reasoningPollTimer = null } }
@@ -2207,6 +2284,26 @@ export function useControlConsoleApp() {
     }
   }
 
+  // 恢复服务端最新未终结 session 为当前活跃任务链：
+  // 让非本页面提交（API / cron / 其他客户端）创建的任务，也能在聊天页看到逐阶段进度
+  async function restoreActiveReasoningSession() {
+    if (activeReasoningSession.value) return
+    try {
+      const response = await fetch('/api/control/agents/hermes-manager/reasoning-sessions?limit=20&includeTerminal=false')
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok || !Array.isArray(payload.sessions)) return
+      const sessions = payload.sessions as Array<{ sessionId?: string; updatedAt?: string; createdAt?: string }>
+      const latest = sessions.slice().sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))[0]
+      if (!latest?.sessionId) return
+      const session = await loadReasoningSession(String(latest.sessionId))
+      if (session && isReasoningLiveStatus(session.status)) {
+        scheduleReasoningPolling(500)
+      }
+    } catch {
+      // 恢复失败不影响聊天页其他初始化
+    }
+  }
+
   function scheduleReasoningPolling(delayMs = 1500) {
     stopReasoningPolling()
     const sessionId = activeReasoningSession.value?.sessionId
@@ -2214,7 +2311,7 @@ export function useControlConsoleApp() {
     reasoningPollTimer = setTimeout(async () => {
       const session = await loadReasoningSession(sessionId)
       if (!session) return
-      if (session.status === 'planning' || session.status === 'running') { scheduleReasoningPolling(delayMs); return }
+      if (isReasoningLiveStatus(session.status)) { scheduleReasoningPolling(delayMs); return }
       if (session.status === 'waiting_review' && reasoningAutoApproveEnabled.value) {
         await submitReasoningReview('approve', { skipManualDraft: true })
         // 自动审核提交后延迟重新轮询，让后端有时间处理；避免审核失败或未被处理时永久卡住
@@ -2226,6 +2323,17 @@ export function useControlConsoleApp() {
       if (session.status === 'waiting_review') return
       await loadChatHistory()
     }, delayMs)
+  }
+
+  // 新建会话：脱离当前执行链、清空输入与对话内容（服务端聊天记录先归档再清空，可溯），
+  // 让输入区回到干净起点；历史任务到会话列表查看。
+  async function startNewChatSession() {
+    stopReasoningPolling()
+    syncReasoningSessionUi(null)
+    sandboxPrompt.value = ''
+    pendingReasoningUserPrompt.value = ''
+    reasoningError.value = ''
+    await clearMemoryRecords(['chat-history'])
   }
 
   async function clearReasoningSession() {
@@ -2255,8 +2363,15 @@ export function useControlConsoleApp() {
     if (!sessionId) return
     const session = await loadReasoningSession(sessionId)
     if (!session) { persistActiveReasoningSessionId(null); return }
-    if (session.status === 'planning' || session.status === 'running') scheduleReasoningPolling()
-    if (session.status === 'waiting_review') scheduleReasoningPolling()
+    // 已结束的任务不在刷新后恢复附着（否则死任务反复回到当前执行链且无法摆脱）；
+    // 终态（completed/blocked/cancelled/timeout）+ failed 一律清理本地记录，历史任务到会话列表查看
+    if (['completed', 'failed', 'cancelled', 'blocked', 'timeout'].includes(session.status)) {
+      activeReasoningSession.value = null
+      persistActiveReasoningSessionId(null)
+      rebuildDisplayedChatHistory()
+      return
+    }
+    scheduleReasoningPolling()
   }
 
   async function loadActiveProductionTestSession() {
@@ -2270,7 +2385,7 @@ export function useControlConsoleApp() {
       const sessionId = String(payload.activeSession.sessionId)
       const currentSession = activeReasoningSession.value
       if (currentSession?.sessionId === sessionId) return
-      if (currentSession && !['completed', 'failed', 'cancelled'].includes(currentSession.status)) return
+      if (currentSession && !['completed', 'failed', 'cancelled', 'blocked', 'timeout'].includes(currentSession.status)) return
       const session = await loadReasoningSession(sessionId)
       if (!session) return
       dashboardActiveTab.value = 'reasoning'
@@ -2282,9 +2397,163 @@ export function useControlConsoleApp() {
     }
   }
 
+  async function loadEventChain() {
+    eventRegistryBusy.value = true
+    eventRegistryError.value = ''
+    try {
+      const response = await getEventRegistry()
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok || !payload?.registry) {
+        throw new Error(payload?.error || `event_registry_http_${response.status}`)
+      }
+      eventRegistry.value = payload.registry as EventChainRegistry
+      eventChainVisible.value = true
+    } catch (caught) {
+      eventRegistryError.value = caught instanceof Error ? caught.message : String(caught)
+      eventChainVisible.value = false
+    } finally {
+      eventRegistryBusy.value = false
+    }
+  }
+
+  function closeEventChain() {
+    eventChainVisible.value = false
+  }
+
+  function resolveEventByRef(ref: string): EventChainRegistryEventWithMeta | null {
+    const raw = String(ref || '').trim()
+    if (!raw) return null
+    let key = raw.toLowerCase()
+    if (key.startsWith('gamestudio.')) key = key.slice('gamestudio.'.length)
+    const events = (eventRegistry.value?.events || []) as EventChainRegistryEventWithMeta[]
+    return events.find((event) => String(event.eventId || '').toLowerCase() === key)
+      || events.find((event) => String(event.code || '').toLowerCase() === key)
+      || events.find((event) => (event.aliases || []).some((alias) => String(alias).toLowerCase() === key))
+      || null
+  }
+
+  function buildEventPayloadFromArgs(event: EventChainRegistryEventWithMeta, argsText: string): Record<string, unknown> {
+    const chatArgs = Array.isArray(event.chatArgs) ? event.chatArgs : []
+    const payload: Record<string, unknown> = {}
+    if (chatArgs.length === 0) return payload
+    const tokens = argsText.split(/\s+/).map((item) => item.trim()).filter(Boolean)
+    chatArgs.forEach((arg, index) => {
+      if (!arg?.name) return
+      if (chatArgs.length === 1 && arg.name === 'title') {
+        // 单参数 title 取整段剩余输入，支持含空格标题
+        payload[arg.name] = argsText.trim()
+        return
+      }
+      if (tokens[index] !== undefined) payload[arg.name] = tokens[index]
+    })
+    return payload
+  }
+
+  async function dispatchEventFromChat(event: EventChainRegistryEventWithMeta, payload: Record<string, unknown>, confirmed: boolean) {
+    eventDispatchBusy.value = true
+    eventDispatchResult.value = null
+    try {
+      const response = await dispatchEvent({
+        event: event.eventId,
+        payload,
+        caller: 'chat',
+        confirmed
+      })
+      const result = await response.json().catch(() => null)
+      if (!result || typeof result !== 'object') throw new Error(`event_dispatch_http_${response.status}`)
+      eventDispatchResult.value = result as EventDispatchResult
+      return result as EventDispatchResult
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught)
+      eventDispatchResult.value = {
+        ok: false,
+        eventId: event.eventId,
+        code: event.code || null,
+        traceId: '',
+        error: message
+      }
+      return null
+    } finally {
+      eventDispatchBusy.value = false
+    }
+  }
+
+  async function confirmEventDispatch() {
+    const pending = eventConfirmPending.value
+    if (!pending || eventDispatchBusy.value) return
+    eventConfirmPending.value = null
+    appendLocalChatEntry({ role: 'assistant', content: `已确认执行事件：${pending.event.title}（${pending.event.eventId}）。` })
+    const result = await dispatchEventFromChat(pending.event, pending.payload, true)
+    if (result && !result.ok) {
+      appendLocalChatEntry({ role: 'error', content: `事件执行失败：${result.error || 'unknown_error'}` })
+    }
+  }
+
+  function cancelEventDispatch() {
+    const pending = eventConfirmPending.value
+    eventConfirmPending.value = null
+    if (pending) {
+      appendLocalChatEntry({ role: 'assistant', content: `已取消事件：${pending.event.title}（${pending.event.eventId}）。` })
+    }
+  }
+
+  async function handleGameStudioEventCommand(prompt: string) {
+    const body = prompt.replace(/^gamestudio\s*/i, '').trim()
+    if (!body) {
+      appendLocalChatEntry({ role: 'assistant', content: '已载入 GameStudio 事件链，见下方事件卡片。' })
+      await loadEventChain()
+      if (eventRegistryError.value) {
+        appendLocalChatEntry({ role: 'error', content: `事件链载入失败：${eventRegistryError.value}` })
+      }
+      return
+    }
+
+    // 注册表未加载时先加载，便于解析事件引用
+    if (!eventRegistry.value) {
+      await loadEventChain()
+      if (eventRegistryError.value) {
+        appendLocalChatEntry({ role: 'error', content: `事件链载入失败：${eventRegistryError.value}` })
+        return
+      }
+    }
+
+    const [ref, ...restParts] = body.split(/\s+/)
+    const argsText = restParts.join(' ')
+    const event = resolveEventByRef(ref)
+    if (!event) {
+      appendLocalChatEntry({ role: 'error', content: `未找到事件：${ref}。输入 gamestudio 查看事件链。` })
+      return
+    }
+
+    const payload = buildEventPayloadFromArgs(event, argsText)
+    const missing = (event.chatArgs || []).filter((arg) => arg?.required && (payload[arg.name] === undefined || String(payload[arg.name] || '').trim() === ''))
+    if (missing.length > 0) {
+      appendLocalChatEntry({ role: 'error', content: `事件 ${event.title}（${event.eventId}）缺少必需参数：${missing.map((arg) => arg.name).join(', ')}` })
+      return
+    }
+
+    if (event.kind === 'command' && event.reviewRequired === true) {
+      eventConfirmPending.value = { event, payload, argsText }
+      return
+    }
+
+    const result = await dispatchEventFromChat(event, payload, false)
+    if (result && !result.ok) {
+      appendLocalChatEntry({ role: 'error', content: `事件执行失败：${result.error || 'unknown_error'}` })
+    }
+  }
+
   async function sendObservableReasoningChat() {
     const prompt = sandboxPrompt.value.trim()
     if (!prompt) return
+    // 对话激活事件链/事件调用：输入 gamestudio 载入事件链；
+    // 输入 gamestudio <eventId|code|别名> [参数] 调用事件（query 直接执行，command 先经确认卡片）。
+    if (/^gamestudio(\s|$)/i.test(prompt)) {
+      sandboxPrompt.value = ''
+      appendLocalChatEntry({ role: 'user', content: prompt })
+      await handleGameStudioEventCommand(prompt)
+      return
+    }
     if (reasoningAutoApproveEnabled.value) {
       await performReasoningSubmission(prompt, {})
       return
@@ -2466,6 +2735,7 @@ export function useControlConsoleApp() {
     window.addEventListener('keydown', handleEditorModalWindowKeydown, true)
     void loadContextCandidates()
     void fetchOverview()
+    void restoreActiveReasoningSession()
     void (async () => {
       const [healthResult, agentsResult] = await Promise.allSettled([getHealth(), getAgents()])
       if (healthResult.status === 'fulfilled') {
@@ -2517,6 +2787,7 @@ export function useControlConsoleApp() {
       if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_proposals_http_${response.status}`)
       skillProposalsList.value = Array.isArray(payload.proposals) ? payload.proposals : []
       skillIntentsActive.value = Array.isArray(payload.activeIntents) ? payload.activeIntents : []
+      skillProposalGovernance.value = Array.isArray(payload.governance) ? payload.governance : []
     } catch (caught) {
       skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
     } finally {
@@ -2548,52 +2819,93 @@ export function useControlConsoleApp() {
     }
   }
 
-  async function promoteSkillProposal(id: string) {
-    if (!id) return
-    skillProposalsActionBusy.value = `promote:${id}`
+  // AUTO-F02：proposal 治理动作统一携带人类操作者身份（console 为人工操作界面）；
+  // 服务端对 model/cron 等自动路径身份一律拒绝并审计
+  const SKILL_PROPOSAL_ACTOR = 'human:control-console'
+
+  async function postSkillProposalAction(actionPrefix: string, url: string, body: Record<string, unknown>, errorLabel: string) {
+    skillProposalsActionBusy.value = actionPrefix
     skillProposalsError.value = ''
     try {
-      const response = await fetch(`/api/control/skill-proposals/${encodeURIComponent(id)}/promote`, { method: 'POST' })
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actor: SKILL_PROPOSAL_ACTOR, ...body }),
+      })
       const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_proposal_promote_http_${response.status}`)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.detail || payload?.error || `${errorLabel}_http_${response.status}`)
       await loadSkillProposals()
+      return payload
     } catch (caught) {
       skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
+      return null
     } finally {
       skillProposalsActionBusy.value = ''
     }
+  }
+
+  async function testSkillProposal(id: string) {
+    if (!id) return
+    const payload = await postSkillProposalAction(
+      `test:${id}`,
+      `/api/control/skill-proposals/${encodeURIComponent(id)}/test`,
+      {},
+      'skill_proposal_test',
+    )
+    if (payload && payload.passed === false) {
+      const failed = Array.isArray(payload.checks) ? payload.checks.filter((check: any) => !check.passed) : []
+      skillProposalsError.value = `测试门禁未通过：${failed.map((check: any) => check.detail).join('；') || '未知原因'}`
+    }
+  }
+
+  async function reviewSkillProposal(id: string, decision: 'approve' | 'reject') {
+    if (!id) return
+    await postSkillProposalAction(
+      `review:${id}`,
+      `/api/control/skill-proposals/${encodeURIComponent(id)}/review`,
+      { decision },
+      'skill_proposal_review',
+    )
+  }
+
+  async function promoteSkillProposal(id: string) {
+    if (!id) return
+    await postSkillProposalAction(
+      `promote:${id}`,
+      `/api/control/skill-proposals/${encodeURIComponent(id)}/promote`,
+      {},
+      'skill_proposal_promote',
+    )
   }
 
   async function rejectSkillProposal(id: string) {
     if (!id) return
-    skillProposalsActionBusy.value = `reject:${id}`
-    skillProposalsError.value = ''
-    try {
-      const response = await fetch(`/api/control/skill-proposals/${encodeURIComponent(id)}/reject`, { method: 'POST' })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_proposal_reject_http_${response.status}`)
-      await loadSkillProposals()
-    } catch (caught) {
-      skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
-    } finally {
-      skillProposalsActionBusy.value = ''
-    }
+    await postSkillProposalAction(
+      `reject:${id}`,
+      `/api/control/skill-proposals/${encodeURIComponent(id)}/reject`,
+      {},
+      'skill_proposal_reject',
+    )
+  }
+
+  async function rollbackSkillIntent(id: string) {
+    if (!id) return
+    await postSkillProposalAction(
+      `rollback:${id}`,
+      `/api/control/skill-intents/${encodeURIComponent(id)}/rollback`,
+      { reason: 'console 人工回滚' },
+      'skill_intent_rollback',
+    )
   }
 
   async function deactivateSkillIntent(id: string) {
     if (!id) return
-    skillProposalsActionBusy.value = `deactivate:${id}`
-    skillProposalsError.value = ''
-    try {
-      const response = await fetch(`/api/control/skill-intents/${encodeURIComponent(id)}/deactivate`, { method: 'POST' })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `skill_intent_deactivate_http_${response.status}`)
-      await loadSkillProposals()
-    } catch (caught) {
-      skillProposalsError.value = caught instanceof Error ? caught.message : String(caught)
-    } finally {
-      skillProposalsActionBusy.value = ''
-    }
+    await postSkillProposalAction(
+      `deactivate:${id}`,
+      `/api/control/skill-intents/${encodeURIComponent(id)}/deactivate`,
+      { reason: 'console 人工下线' },
+      'skill_intent_deactivate',
+    )
   }
 
   // ---------------------- Versions ----------------------
@@ -2668,6 +2980,42 @@ export function useControlConsoleApp() {
   }
 
   // ---------------------- Smart start chain ----------------------
+  // 一键启动的启动段：对两类已知瞬时失败自动恢复——
+  // 1) config_not_saved：前端配置签名与服务端持久化不一致（常见于配置文件被外部修改或 SPA 会话签名陈旧），
+  //    强制重新加载配置并保存一次后重试；
+  // 2) runtime_action_busy：另一个 runtime 动作仍在执行，等待后重试。
+  function delay(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  async function startHermesWithRecovery() {
+    const busyRetryLimit = 3
+    for (let configAttempt = 1; configAttempt <= 2; configAttempt++) {
+      for (let busyRetry = 0; busyRetry < busyRetryLimit; busyRetry++) {
+        error.value = ''
+        await toggleHermesRuntime('left')
+        if (leftBrainRunning.value) return { ok: true }
+        const message = String(error.value || '')
+        if (/runtime_action_busy/.test(message) && busyRetry < busyRetryLimit - 1) {
+          smartStartMessage.value = `启动动作冲突，等待后重试（${busyRetry + 1}/${busyRetryLimit - 1}）...`
+          await delay(2000)
+          continue
+        }
+        if (/config_not_saved/.test(message) && configAttempt === 1) break
+        return { ok: false, error: message || 'start_failed' }
+      }
+      if (configAttempt === 1) {
+        smartStartMessage.value = '配置签名不一致，正在刷新配置并重新保存后重试...'
+        await loadEngineConfig()
+        await saveLeftBrainConfig()
+        if (configSaveError.value) {
+          return { ok: false, error: `config_resave_failed: ${configSaveError.value}` }
+        }
+      }
+    }
+    return { ok: false, error: error.value || 'start_failed' }
+  }
+
   // 一键串起：保存配置 → 自检 → 启动左脑 → 探测右脑。
   // 这只是把现有三个独立按钮的步骤按正确顺序串起来，
   // 不替换原本的三个按钮，符合 control 非回归约束。
@@ -2697,9 +3045,9 @@ export function useControlConsoleApp() {
         }
       }
       smartStartMessage.value = '步骤 3/4：启动 Hermes runtime...'
-      await toggleHermesRuntime('left')
-      if (!leftBrainRunning.value) {
-        smartStartMessage.value = error.value ? `启动失败：${error.value}` : '启动流程已发起，请观察右上方运行状态。'
+      const startResult = await startHermesWithRecovery()
+      if (!startResult.ok) {
+        smartStartMessage.value = `启动失败：${startResult.error}`
         return
       }
       // 步骤 4：如果右脑已启用，自动探测
@@ -2753,6 +3101,17 @@ export function useControlConsoleApp() {
     clearVisibleLogs,
     closeEditorModal,
     closeSubmitGate,
+    closeEventChain,
+    loadEventChain,
+    confirmEventDispatch,
+    cancelEventDispatch,
+    eventChainVisible,
+    eventRegistry,
+    eventRegistryBusy,
+    eventRegistryError,
+    eventDispatchBusy,
+    eventDispatchResult,
+    eventConfirmPending,
     configReadiness,
     configSaveError,
     configSaveMessage,
@@ -2912,6 +3271,7 @@ export function useControlConsoleApp() {
     selectedContextSourceId,
     selfCheck,
     sendObservableReasoningChat,
+    startNewChatSession,
     getMemoryRecordStatusLabel,
     getMemoryRecordStatusTone,
     isMemoryRecordUpdated,
@@ -2943,14 +3303,18 @@ export function useControlConsoleApp() {
     visibleLogLines,
     skillProposalsList,
     skillIntentsActive,
+    skillProposalGovernance,
     skillProposalsBusy,
     skillProposalsError,
     skillProposalsScanMessage,
     skillProposalsActionBusy,
     loadSkillProposals,
     scanSkillProposals,
+    testSkillProposal,
+    reviewSkillProposal,
     promoteSkillProposal,
     rejectSkillProposal,
+    rollbackSkillIntent,
     deactivateSkillIntent,
     smartStartHermes,
     smartStartBusy,

@@ -26,5 +26,8 @@
     "test:dashboard": "node scripts/test-dashboard/server.mjs",
     "sync:from-compose": "node tools/syncFromCompose.mjs",
     "lint": "echo \"(todo)\""
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.7.0"
   }
 }

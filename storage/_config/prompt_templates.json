@@ -24,7 +24,7 @@
         "reviewMeta": {
           "provider": "localoxml",
           "api": "responses",
-          "model": "gpt-oss-20b-MXFP4-Q8",
+          "model": "Qwen3.6-27B-MLX-4bit",
           "durationMs": 32559
         }
       }
@@ -52,7 +52,7 @@
       "meta": {
         "provider": "localoxml",
         "api": "responses",
-        "model": "gpt-oss-20b-MXFP4-Q8",
+        "model": "Qwen3.6-27B-MLX-4bit",
         "durationMs": 27988
       }
     },

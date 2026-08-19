@@ -336,6 +336,27 @@ export const REASONING_ACTIONS = {
     description: '调用 GameStudio Server 对指定 scene 执行场景图渲染，使用已锁定的 reference assets 保证角色/道具/地点一致性。',
     paramsSpec: ['projectId?: 项目标识。', 'sceneId?: 场景标识。']
   },
+  story_render_scene_backgrounds: {
+    title: '批量渲染场景背景（分层合成）',
+    tool: REASONING_TOOLS['gamestudio.story.renderSceneBackgrounds'].tool,
+    category: 'story-workflow',
+    description: '经 E03 批量队列以 background-only 模式渲染全部场景背景（人物/事物由立绘层承担），轮询批次直至终结并汇总 per-scene 成败。',
+    paramsSpec: ['projectId?: 项目标识。', 'width?: 图宽。', 'height?: 图高。', 'pollIntervalMs?: 批次轮询间隔。']
+  },
+  story_generate_scene_placements: {
+    title: '生成场景立绘分层站位',
+    tool: REASONING_TOOLS['gamestudio.story.generateScenePlacements'].tool,
+    category: 'story-workflow',
+    description: '按资产计划为各场景写回立绘 placements 并同步 characters[].imageAssetId；未锁定角色跳过并报告，prop 暂不合成（已知限制）。',
+    paramsSpec: ['projectId?: 项目标识。', 'sceneIds?: 指定场景子集。']
+  },
+  story_generate_lineart: {
+    title: '生成资产线稿',
+    tool: REASONING_TOOLS['gamestudio.story.generateLineart'].tool,
+    category: 'story-workflow',
+    description: '对已锁定主参考的必需资产逐个生成 ControlNet 线稿，写回资产计划 lineart 字段，供场景渲染作为附加一致性参考。',
+    paramsSpec: ['projectId?: 项目标识。']
+  },
   story_validate_project: {
     title: '校验互动故事项目',
     tool: REASONING_TOOLS['gamestudio.story.validateProject'].tool,
@@ -441,7 +462,10 @@ export const REASONING_STORY_WORKFLOW_ACTION_NAMES = [
   'story_create_asset_plan',
   'story_generate_lock_asset_references',
   'story_lock_test',
+  'story_generate_lineart',
   'story_render_scene',
+  'story_render_scene_backgrounds',
+  'story_generate_scene_placements',
   'story_generate_asset_candidate',
   'story_validate_project',
   'story_export_project'
@@ -468,6 +492,8 @@ export const REASONING_STORY_MUTATION_ACTION_NAMES = [
   'story_generate_lock_asset_references',
   'story_lock_test',
   'story_render_scene',
+  'story_render_scene_backgrounds',
+  'story_generate_scene_placements',
   'story_generate_asset_candidate',
   'story_export_project'
 ]
@@ -496,6 +522,34 @@ export function isReasoningInvokeAction(action) {
 
 export function isReasoningAnswerAction(action) {
   return action === 'generate_default_answer'
+}
+
+// HERMES-H03：右脑子 agent（监察）只读白名单。
+// 列入本清单的 action 必须已经在 REASONING_ACTIONS 注册、且属于只读性质
+// （reviewPolicy=auto、非 write/invoke 类别）；子 agent 只可直接调用这些 action。
+// 已注册但未列入的 action 对子 agent 属于越权（拒绝 + 审计），未注册的一律拒绝。
+// 对齐关系由 scripts/test/rightBrainSupervision.test.mjs 断言保护，新增 action 时同步维护。
+export const RIGHT_BRAIN_SUPERVISION_READ_ACTIONS = Object.freeze([
+  'read_recent_context',
+  'locate_project',
+  'list_directory_contents',
+  'inspect_server_image_entrypoints',
+  'inspect_control_backend_surfaces',
+  'read_file_content',
+  'search_workspace_text',
+  'gamestudio_read_settings',
+  'story_inspect_project',
+  'story_analyze_scripts',
+  'story_preflight_image_provider',
+  'story_validate_project',
+  'git_status',
+  'git_diff',
+  'git_log',
+  'git_branch'
+])
+
+export function isRightBrainSupervisionReadAction(action) {
+  return RIGHT_BRAIN_SUPERVISION_READ_ACTIONS.includes(String(action || ''))
 }
 
 export function buildReasoningActionCatalog() {

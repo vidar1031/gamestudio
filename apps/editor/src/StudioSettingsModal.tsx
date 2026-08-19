@@ -52,6 +52,12 @@ function normalizeDraft(settings: StudioSettings | null): StudioSettings {
       comfyuiModelsRoot: (s.image as any)?.comfyuiModelsRoot || ''
     },
     tts: { provider: s.tts?.provider || '', model: s.tts?.model || '', apiUrl: s.tts?.apiUrl || '' },
+    // AUTO-E05：完整度核实视觉评审模型（moonshot / omlx）
+    review: {
+      provider: s.review?.provider || 'moonshot',
+      model: s.review?.model || '',
+      apiUrl: s.review?.apiUrl || ''
+    },
     secrets: {
       openaiApiKey: (s as any)?.secrets?.openaiApiKey || '',
       localoxmlApiKey: (s as any)?.secrets?.localoxmlApiKey || '',
@@ -385,12 +391,13 @@ export default function StudioSettingsModal(props: Props) {
   const [imgPreflightDiagOpen, setImgPreflightDiagOpen] = useState(false)
   const [imgPreflightDiag, setImgPreflightDiag] = useState<any>(null)
   const suppressModelRememberRef = useRef(false)
-  const [foldOpen, setFoldOpen] = useState<{ scripts: boolean; prompt: boolean; translation: boolean; image: boolean; tts: boolean }>({
+  const [foldOpen, setFoldOpen] = useState<{ scripts: boolean; prompt: boolean; translation: boolean; image: boolean; tts: boolean; review: boolean }>({
     scripts: true,
     prompt: true,
     translation: false,
     image: true,
-    tts: false
+    tts: false,
+    review: false
   })
 
   useEffect(() => {
@@ -677,6 +684,7 @@ export default function StudioSettingsModal(props: Props) {
     if (effective.enabled.prompt && effective.prompt.apiUrl) lines.push(`  promptUrl：${effective.prompt.apiUrl}`)
     lines.push(`提示词翻译：${translationProvider}${effective.translation?.model ? ` / ${effective.translation.model}` : ''}`)
     if (effective.translation?.apiUrl) lines.push(`  translationUrl：${effective.translation.apiUrl}`)
+    if (effective.review?.provider) lines.push(`审核模型：${effective.review.provider}${effective.review.model ? ` / ${effective.review.model}` : ''}`)
     lines.push(`图像生成：${imageProvider}${effective.enabled.image && effective.image.provider !== 'comfyui' && effective.image.model ? ` / ${effective.image.model}` : ''}`)
     if (effective.image.provider === 'doubao') {
       if (effective.image.apiUrl) lines.push(`  imagesUrl：${effective.image.apiUrl}`)
@@ -916,7 +924,7 @@ export default function StudioSettingsModal(props: Props) {
     }
   }
 
-  function toggleFold(key: 'scripts' | 'prompt' | 'translation' | 'image' | 'tts') {
+  function toggleFold(key: 'scripts' | 'prompt' | 'translation' | 'image' | 'tts' | 'review') {
     setFoldOpen((prev) => ({ ...prev, [key]: !prev[key] }))
   }
 
@@ -1536,6 +1544,55 @@ export default function StudioSettingsModal(props: Props) {
                       />
                     </div>
                   ) : null}
+                </div> : null}
+              </div>
+
+              <div className="subfold">
+                <div className="subfold-head" onClick={() => toggleFold('review')}>
+                  <div className="subfold-title">审核模型</div>
+                  <div className="hint">{foldOpen.review ? '收起' : '展开'}</div>
+                </div>
+                {foldOpen.review ? <div className="subfold-body">
+                  <div className="hint" style={{ marginBottom: 8 }}>用于「完整度核实」的逐节点画面视觉评审。moonshot 使用 Kimi 视觉模型；omlx 使用本地视觉模型（需支持图片输入）。</div>
+                  <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
+                    <div>Provider</div>
+                    <select
+                      className="sel"
+                      value={String(draft.review?.provider || 'moonshot')}
+                      onChange={(e) => {
+                        const nextProvider = e.target.value
+                        const nextModel = nextProvider === 'omlx' ? 'Qwen3.6-27B-4bit' : nextProvider === 'moonshot' ? 'kimi-for-coding' : ''
+                        const nextApiUrl = nextProvider === 'omlx' ? 'http://127.0.0.1:18888/v1' : nextProvider === 'moonshot' ? 'https://api.kimi.com/coding/v1' : ''
+                        setDraft((d) => ({ ...d, review: { ...(d.review || {}), provider: nextProvider, model: nextModel, apiUrl: nextApiUrl } }))
+                      }}
+                    >
+                      <option value="moonshot">moonshot</option>
+                      <option value="omlx">omlx</option>
+                      <option value="none">none</option>
+                    </select>
+                  </div>
+                  <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
+                    <div>Model</div>
+                    <input
+                      value={String(draft.review?.model || '')}
+                      placeholder={String(draft.review?.provider || '') === 'omlx' ? 'Qwen3.6-27B-4bit' : 'kimi-for-coding'}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setDraft((d) => ({ ...d, review: { ...(d.review || {}), model: v } }))
+                      }}
+                    />
+                  </div>
+                  <div className="ai-modal-row" style={{ gridTemplateColumns: '110px 1fr' }}>
+                    <div>API 地址</div>
+                    <input
+                      value={String(draft.review?.apiUrl || '')}
+                      placeholder={String(draft.review?.provider || '') === 'omlx' ? 'http://127.0.0.1:18888/v1' : 'https://api.kimi.com/coding/v1'}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setDraft((d) => ({ ...d, review: { ...(d.review || {}), apiUrl: v } }))
+                      }}
+                    />
+                  </div>
                 </div> : null}
               </div>
 

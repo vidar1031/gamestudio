@@ -548,7 +548,20 @@ function sniffImageMetaFromBytes(buf) {
 
 // 入口函数：根据 `input.provider` 分发到不同的实现。
 // 返回对象：{ bytes: Buffer, ext: 'png'|'jpg'|'webp', meta: { provider: 'doubao'|'sdwebui', ... } }
+// 测试注入点：仅当环境变量 STUDIO_ENABLE_TEST_HOOKS=1 时生效。
+// 用于在无真实出图服务（ComfyUI/SD-WebUI 不可达）的测试环境下，验证
+// 「渲染输入装配 → 落盘 → 回填 → validate/export」的下游真实链路；
+// 注入函数只替代底层 provider 调用，其后的文件嗅探、写盘与数据回填仍为真实实现。
+// 生产环境不得设置该变量。
+let backgroundImageGeneratorForTest = null
+export function setBackgroundImageGeneratorForTest(fn) {
+  backgroundImageGeneratorForTest = typeof fn === 'function' ? fn : null
+}
+
 export async function generateBackgroundImage(input) {
+  if (process.env.STUDIO_ENABLE_TEST_HOOKS === '1' && backgroundImageGeneratorForTest) {
+    return backgroundImageGeneratorForTest(input)
+  }
   const provider = String(input && input.provider ? input.provider : pickProvider()).toLowerCase()
   if (provider === 'doubao') return generateBackgroundViaDoubao(input)
   if (provider === 'comfyui') return generateBackgroundViaComfyui(input)
@@ -737,10 +750,11 @@ function stripComfySchedulerWords(v) {
 }
 
 function parseComfyTimeoutMs(raw) {
-  if (raw == null || raw === '') return clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000)
+  // SDXL 在与 OMLX 并存（内存压力）下生成可能超过 300s，上限放宽到 900s 避免生成已成功但客户端轮询先超时
+  if (raw == null || raw === '') return clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 900_000, 600_000)
   const n = Number(raw)
   if (Number.isFinite(n) && n <= 0) return 0
-  return clampInt(n, 5_000, 300_000, clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 300_000, 180_000))
+  return clampInt(n, 5_000, 900_000, clampInt(process.env.STUDIO_BG_TIMEOUT_MS, 5_000, 900_000, 600_000))
 }
 
 export { parseComfyTimeoutMs }
@@ -1391,7 +1405,10 @@ async function buildComfyWorkflowNodes({
 }
 
 
-export async function generateComfyuiWhiteBackgroundFromReference({
+// 参考图 RMBG 抠图后处理：
+// - transparent=true：RMBG background='Alpha'，输出带透明通道的立绘（背景+立绘分层合成方向）
+// - transparent=false（默认）：保持原白底合成行为（background='Color' + 白色 background_color）
+export async function generateComfyuiCutoutFromReference({
   referenceBytes,
   referenceFilename,
   comfyuiBaseUrl,
@@ -1399,8 +1416,10 @@ export async function generateComfyuiWhiteBackgroundFromReference({
   sensitivity,
   processRes,
   timeoutMs,
-  prefix
+  prefix,
+  transparent
 }) {
+  const useAlpha = transparent === true
   const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
   const effectiveTimeoutMs = parseComfyTimeoutMs(timeoutMs)
 
@@ -1433,21 +1452,23 @@ export async function generateComfyuiWhiteBackgroundFromReference({
     'INSPYRENET'
   ]) || 'RMBG-2.0'
 
+  // background/background_color 均为 RMBG 可选输入：Alpha 模式下不传 background_color，避免白底合成
+  const rmbgInputs = {
+    image: ['1', 0],
+    model: chosenModel,
+    sensitivity: clampFloat(sensitivity, 0, 1, 1.0),
+    process_res: clampInt(processRes, 256, 2048, 1024),
+    mask_blur: 0,
+    mask_offset: 0,
+    invert_output: false,
+    refine_foreground: false,
+    background: useAlpha ? 'Alpha' : 'Color'
+  }
+  if (!useAlpha) rmbgInputs.background_color = '#FFFFFFFF'
   const workflow = {
     '1': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(loadImageSpec, { image: uploaded.imageValue, upload: 'image' }) },
-    '2': { class_type: 'RMBG', inputs: buildInputsForComfyNode(rmbgSpec, {
-      image: ['1', 0],
-      model: chosenModel,
-      sensitivity: clampFloat(sensitivity, 0, 1, 1.0),
-      process_res: clampInt(processRes, 256, 2048, 1024),
-      mask_blur: 0,
-      mask_offset: 0,
-      invert_output: false,
-      refine_foreground: false,
-      background: 'Color',
-      background_color: '#FFFFFFFF'
-    }) },
-    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || 'gamestudio_story_lock/white_bg') }) }
+    '2': { class_type: 'RMBG', inputs: buildInputsForComfyNode(rmbgSpec, rmbgInputs) },
+    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || `gamestudio_story_lock/${useAlpha ? 'cutout_alpha' : 'white_bg'}`) }) }
   }
 
   const result = await runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
@@ -1456,7 +1477,7 @@ export async function generateComfyuiWhiteBackgroundFromReference({
     ext: result.ext,
     meta: {
       provider: 'comfyui',
-      postprocess: 'rmbg_white_bg',
+      postprocess: useAlpha ? 'rmbg_alpha' : 'rmbg_white_bg',
       model: chosenModel,
       url: result.meta && result.meta.url ? result.meta.url : ''
     }
@@ -1643,7 +1664,8 @@ async function generateBackgroundViaComfyui(input) {
   const width = clampInt(input.width, 64, 2048, 768)
   const height = clampInt(input.height, 64, 2048, 1024)
   const comfyParams = resolveComfySamplerAndSchedule(input || {}, policy)
-  const seed = clampSeed(input && input.seed, null) ?? Math.floor(Math.random() * 9_999_999_999)
+  // 与 lock test 保持一致：seed 在 ComfyUI 有效范围内生成，避免被 clamp 成固定值命中空缓存
+  const seed = clampSeed(input && input.seed, null) ?? Math.floor(Math.random() * 4_294_967_296)
 
   if (!model) {
     let t = null

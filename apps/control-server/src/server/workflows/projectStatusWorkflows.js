@@ -154,11 +154,11 @@ export function buildProjectCapabilityStatusAnswer(userPrompt, artifacts = {}) {
 
   if (/heartbeat|长任务|OMLX|orphan|服务器重启|恢复|recover|可观测|可取消|可恢复/i.test(prompt)) {
     return [
-      '结论：Control 已具备可观测和可取消基础，但模型长任务、服务器重启、OMLX 异常后的自动恢复闭环仍未完全达标。',
-      '证据：长任务会写 heartbeat；cancel 可中断等待链路；orphaned session 会被标记；recover 后端路由可按 artifacts.nextStepIndex 继续。',
-      '达标程度：可观测/可取消部分达标，自动恢复与 UI 操作闭环未达标。',
-      '未达标缺口：Control Console 仍缺恢复入口，错误分类、自动恢复动作和状态机绑定还没有完整实现。',
-      '下一步门禁：恢复 UI、错误分类、状态机阶段绑定和 recover 回归测试必须通过。',
+      '结论：Control 已具备可观测、可取消与孤儿恢复基础，但模型长任务、OMLX 异常后的自动恢复闭环仍未完全达标。',
+      '证据：长任务会写 heartbeat；cancel 可中断等待链路；启动扫描把非终结 session 经状态机收敛为 orphaned（checkpoint 缺失/损坏/恢复超限的转 blocked）；recover 后端路由仅从 checkpoint 的 nextStepIndex 恢复，已成功 step 不重跑。',
+      '达标程度：可观测/可取消/孤儿恢复部分达标，自动恢复与 UI 操作闭环未达标。',
+      '未达标缺口：Control Console 仍缺恢复入口，错误分类、自动恢复动作还没有完整实现。',
+      '下一步门禁：恢复 UI、错误分类和 recover 回归测试必须通过。',
       evidenceLine
     ].join('\n')
   }
@@ -178,7 +178,7 @@ export function buildProjectCapabilityStatusAnswer(userPrompt, artifacts = {}) {
     return [
       '短期缺口优先级：1. story workflow registry 没有形成可执行闭环。',
       '2. create/configure/generate/validate/export 仍缺固定 action、artifact、deterministic evaluator 的成套验收。',
-      '3. orphan/recover 已有后端接口，但 UI 恢复入口、自动错误分类和自动恢复动作仍缺。',
+      '3. orphan/recover 已有状态机收敛与后端接口，但 UI 恢复入口、自动错误分类和自动恢复动作仍缺。',
       '4. 事件日志已存在，但还没有和状态机/阶段机绑定成可追踪任务单。',
       '5. 因此生产放行前应先补 workflow + evaluator + 恢复链路，而不是扩大自由聊天能力。',
       evidenceLine

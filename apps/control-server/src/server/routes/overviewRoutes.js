@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { gameStudioServerClient } from '../services/gameStudioServerClient.js'
+import { gameStudioServerClient, GAMESTUDIO_SERVER_BASE_URL } from '../services/gameStudioServerClient.js'
 
 export function registerOverviewRoutes(app, context) {
   const {
@@ -151,22 +151,27 @@ export function registerOverviewRoutes(app, context) {
     const config = getPersistedHermesControlConfig()
 
     // 真实探测 GameStudio Editor (Studio) 状态
+    // 注意：editor 的 Vite dev server 默认绑定 localhost（本机解析为 ::1，IPv6-only），
+    // 用 127.0.0.1 探测会被拒绝。必须以 canonical 地址 localhost 探测。
     let studioStatus = { reachable: false, detail: '未探测' }
-    try {
-      const studioController = new AbortController()
-      const studioTimeout = setTimeout(() => studioController.abort(), 2000)
-      const studioRes = await fetch('http://127.0.0.1:8868/', {
-        signal: studioController.signal,
-        method: 'HEAD'
-      })
-      clearTimeout(studioTimeout)
-      if (studioRes.ok || studioRes.status === 200 || studioRes.status === 404) {
-        studioStatus = { reachable: true, detail: 'Studio 编辑器可访问 (http://127.0.0.1:8868)' }
-      } else {
+    const studioProbeUrls = ['http://localhost:8868/', 'http://127.0.0.1:8868/']
+    for (const probeUrl of studioProbeUrls) {
+      try {
+        const studioController = new AbortController()
+        const studioTimeout = setTimeout(() => studioController.abort(), 2000)
+        const studioRes = await fetch(probeUrl, {
+          signal: studioController.signal,
+          method: 'HEAD'
+        })
+        clearTimeout(studioTimeout)
+        if (studioRes.ok || studioRes.status === 200 || studioRes.status === 404) {
+          studioStatus = { reachable: true, detail: `Studio 编辑器可访问 (${probeUrl.replace(/\/$/, '')})` }
+          break
+        }
         studioStatus = { reachable: false, detail: `Studio 返回 HTTP ${studioRes.status}` }
+      } catch (err) {
+        studioStatus = { reachable: false, detail: err instanceof Error ? err.message : String(err) }
       }
-    } catch (err) {
-      studioStatus = { reachable: false, detail: err instanceof Error ? err.message : String(err) }
     }
 
     // 真实探测 OMLX 服务状态
@@ -458,7 +463,9 @@ export function registerOverviewRoutes(app, context) {
       for (const file of files) {
         let s = null
         try { s = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { /* ignore */ }
-        if (s && s.sessionId && s.type === 'supervision') sessions.push(s)
+        // supervision 标识在 submissionContext.type（createReasoningSession 不落顶层 type 字段）
+        const sessionType = s?.submissionContext?.type || s?.type || ''
+        if (s && s.sessionId && sessionType === 'supervision') sessions.push(s)
       }
       sessions.sort((a, b) => {
         try { return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() } catch { return 0 }
@@ -485,14 +492,27 @@ export function registerOverviewRoutes(app, context) {
   app.post('/api/control/supervision/trigger', async (c) => {
     try {
       const body = await c.req.json().catch(() => ({}))
-      // 异步触发，立即返回
-      setTimeout(() => {
-        // 通过内部机制触发（这里简化处理，实际可通过 import 调用 triggerSupervision）
-        console.log(`[SUPERVISION] manual trigger requested: ${body.trigger || 'manual'}`)
-      }, 0)
-      return c.json({ ok: true, message: '监督评估已触发' })
+      const requested = String(body?.trigger || 'manual')
+      const trigger = ['manual', 'post_startup', 'periodic'].includes(requested) ? requested : 'manual'
+      // 真实触发：创建 supervision session 并返回 sessionId，评估在后台执行，前端轮询 /supervision/latest 跟踪
+      const result = await context.triggerSupervision({ trigger })
+      return c.json({ ok: true, message: '监督评估已触发', ...result, timer: context.getSupervisionTimerState() })
     } catch (error) {
-      return c.json({ ok: false, error: String(error) })
+      return c.json({ ok: false, error: String(error) }, 500)
+    }
+  })
+
+  app.get('/api/control/supervision/state', (c) => {
+    try {
+      return c.json({
+        ok: true,
+        enabled: context.isSupervisionEnabled(),
+        ...context.getSupervisionTimerState(),
+        // AUTO-C04：gateway 进程监督状态（重启次数/退避/阻断/最近事件），供守护台展示
+        gatewaySupervision: context.getGatewaySupervisionState()
+      })
+    } catch (error) {
+      return c.json({ ok: false, error: String(error) }, 500)
     }
   })
 
@@ -584,6 +604,43 @@ export function registerOverviewRoutes(app, context) {
       return c.json({ ok: result.ok, project: result.data?.project || null, error: result.error || null })
     } catch (error) {
       return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
+    }
+  })
+
+  // ── ComfyUI 能力检查与自愈代理（所有权属于 GameStudio server，此处透传）──
+  app.get('/api/control/gamestudio/comfyui/capability-check', async (c) => {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 15000)
+    try {
+      const res = await fetch(`${GAMESTUDIO_SERVER_BASE_URL}/api/ai/comfyui/capability-check`, { signal: controller.signal })
+      const payload = await res.json().catch(() => null)
+      if (!res.ok || !payload) return c.json({ ok: false, error: `capability_check_http_${res.status}` }, res.ok ? 500 : res.status)
+      return c.json({ ok: true, ...payload })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 502)
+    } finally {
+      clearTimeout(timeout)
+    }
+  })
+
+  app.post('/api/control/gamestudio/comfyui/auto-fix', async (c) => {
+    const body = await c.req.json().catch(() => ({}))
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 600000)
+    try {
+      const res = await fetch(`${GAMESTUDIO_SERVER_BASE_URL}/api/ai/comfyui/auto-fix`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+        signal: controller.signal
+      })
+      const payload = await res.json().catch(() => null)
+      if (!res.ok || !payload) return c.json({ ok: false, error: (payload && payload.message) || `auto_fix_http_${res.status}` }, res.ok ? 500 : res.status)
+      return c.json({ ok: Boolean(payload.success), ...payload })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 502)
+    } finally {
+      clearTimeout(timeout)
     }
   })
 }

@@ -1,0 +1,2425 @@
+{
+  "registryVersion": "1.0.0",
+  "generatedAt": "2026-08-05T14:52:35.268Z",
+  "provider": {
+    "id": "gamestudio",
+    "name": "GameStudio 互动故事生产能力层",
+    "baseUrl": "http://127.0.0.1:1999",
+    "healthEndpoint": "/api/health"
+  },
+  "contract": {
+    "naming": "domain.entity.verb（小写，点分）",
+    "kind": [
+      "command",
+      "query"
+    ],
+    "payloadEncoding": "application/json",
+    "payloadSchemaSource": "packages/schema/src/storyContract.ts（story.* 输出契约）与本文件内联 JSON Schema（项目/系统类）",
+    "notes": [
+      "command = 有副作用（写文件/调模型/导出），默认经过 Control 审核门；query = 只读，不触发审核。",
+      "transport.http 是过渡期映射：Layer 2 适配器用它把事件转成现有 REST 调用；GameStudio 事件端点落地后切换为 /api/events/dispatch。",
+      "path 中的 :id / :sceneId 由 payload.projectId / payload.sceneId 填充。",
+      "code（GS-01…）为事件短编号；aliases 为中文别名；chatArgs 为聊天激活时的位置参数说明。聊天输入格式：gamestudio <eventId|code|别名> [参数]。",
+      "code（GS-01…）为事件短编号；aliases 为中文别名；chatArgs 为聊天激活时的位置参数说明。聊天输入格式：gamestudio <eventId|code|别名> [参数]。"
+    ]
+  },
+  "categories": [
+    {
+      "id": "project",
+      "title": "项目生命周期"
+    },
+    {
+      "id": "story",
+      "title": "故事文本生产"
+    },
+    {
+      "id": "asset",
+      "title": "资产与图片"
+    },
+    {
+      "id": "studio",
+      "title": "工作室系统"
+    }
+  ],
+  "events": [
+    {
+      "code": "GS-01",
+      "eventId": "project.list",
+      "version": 1,
+      "category": "project",
+      "kind": "query",
+      "title": "列出项目",
+      "description": "返回 storage/projects 下全部项目的摘要列表。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "projects"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "projects": {
+            "type": "array"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 10000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/projects"
+        }
+      },
+      "aliases": [
+        "项目列表",
+        "列出项目"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-02",
+      "eventId": "project.create",
+      "version": 1,
+      "category": "project",
+      "kind": "command",
+      "title": "创建项目",
+      "description": "创建一个新互动故事项目，落盘 meta.json / project.json / 空 scripts / 空 blueprint。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "template": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "project"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "object",
+            "required": [
+              "id",
+              "title"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects"
+        }
+      },
+      "aliases": [
+        "创建项目",
+        "创建故事",
+        "新建项目"
+      ],
+      "chatArgs": [
+        {
+          "name": "title",
+          "required": true,
+          "description": "项目标题（取整段剩余输入）"
+        }
+      ]
+    },
+    {
+      "code": "GS-03",
+      "eventId": "project.inspect",
+      "version": 1,
+      "category": "project",
+      "kind": "query",
+      "title": "读取项目",
+      "description": "读取项目文档、顶层文件清单与状态快照，用于验证落盘与收集证据。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "project"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 10000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/projects/:id"
+        }
+      },
+      "aliases": [
+        "读取项目",
+        "检查项目",
+        "项目详情"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-04",
+      "eventId": "project.configure",
+      "version": 1,
+      "category": "project",
+      "kind": "command",
+      "title": "写入生成配置",
+      "description": "写入项目生成配置（题材/风格/目标受众/输出语言/公式参数），写入 project.generationConfig 并可读回验证。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "config"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "config": {
+            "type": "object",
+            "required": [
+              "genre",
+              "style",
+              "targetAudience",
+              "outputLanguage"
+            ],
+            "properties": {
+              "genre": {
+                "type": "string"
+              },
+              "style": {
+                "type": "string"
+              },
+              "targetAudience": {
+                "type": "string"
+              },
+              "outputLanguage": {
+                "type": "string"
+              },
+              "choicePoints": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "optionsPerChoice": {
+                "type": "integer",
+                "enum": [
+                  2,
+                  3
+                ]
+              },
+              "endings": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "project"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/project.json"
+      ],
+      "idempotent": true,
+      "reviewRequired": true,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "PUT",
+          "path": "/api/projects/:id",
+          "note": "适配器负责把 config 包装为 project.generationConfig / project.storyProduction.generationConfig"
+        }
+      },
+      "aliases": [
+        "写入配置",
+        "配置项目",
+        "设置项目"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-05",
+      "eventId": "project.update",
+      "version": 1,
+      "category": "project",
+      "kind": "command",
+      "title": "更新项目文档",
+      "description": "全量或部分更新 project.json（非生成配置场景，如标题、节点编辑结果）。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "project"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/project.json"
+      ],
+      "idempotent": true,
+      "reviewRequired": true,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "PUT",
+          "path": "/api/projects/:id"
+        }
+      },
+      "aliases": [
+        "更新项目"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-06",
+      "eventId": "project.delete",
+      "version": 1,
+      "category": "project",
+      "kind": "command",
+      "title": "删除项目",
+      "description": "删除整个项目目录。高风险操作，必须人工审核。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:delete:storage/projects/{projectId}"
+      ],
+      "idempotent": true,
+      "reviewRequired": true,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "DELETE",
+          "path": "/api/projects/:id"
+        }
+      },
+      "aliases": [
+        "删除项目"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-07",
+      "eventId": "project.validate",
+      "version": 1,
+      "category": "project",
+      "kind": "command",
+      "title": "校验项目",
+      "description": "执行蓝图结构校验与资源引用校验，返回 validation 结果。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "validation"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "validation": {
+            "type": "object",
+            "required": [
+              "ok"
+            ],
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              },
+              "errors": {
+                "type": "array"
+              },
+              "warnings": {
+                "type": "array"
+              }
+            }
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 30000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/validate/blueprint"
+        }
+      },
+      "aliases": [
+        "校验项目",
+        "验证项目"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-08",
+      "eventId": "project.export",
+      "version": 1,
+      "category": "project",
+      "kind": "command",
+      "title": "导出项目",
+      "description": "导出可运行 H5 产物到 builds/，返回 distUrl 与本地产物路径。必须在文本与资产全部验证通过后调用。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "evidence"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "distUrl": {
+                "type": "string"
+              },
+              "distPath": {
+                "type": "string"
+              },
+              "exportedAt": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/builds"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 60000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/export"
+        }
+      },
+      "aliases": [
+        "导出项目",
+        "导出 H5",
+        "导出"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-09",
+      "eventId": "project.exports.list",
+      "version": 1,
+      "category": "project",
+      "kind": "query",
+      "title": "列出导出产物",
+      "description": "列出项目历史导出产物。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "items"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 10000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/projects/:id/exports"
+        }
+      },
+      "aliases": [
+        "导出列表",
+        "产物列表"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-10",
+      "eventId": "story.scripts.generate",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "生成故事脚本候选",
+      "description": "由 GameStudio 内部机制（prompt 模板 + 全局规则 + 公式参数 + OMLX）生成脚本候选并写回 scripts.json。brief 只允许故事内容，不允许任务指令。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "brief"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "brief": {
+            "type": "string",
+            "minLength": 1,
+            "description": "纯故事内容描述，禁止包含任务指令/验证要求/技术术语"
+          },
+          "title": {
+            "type": "string"
+          },
+          "choicePoints": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "optionsPerChoice": {
+            "type": "integer",
+            "enum": [
+              2,
+              3
+            ]
+          },
+          "endings": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "scripts"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "scripts": {
+            "type": "object"
+          },
+          "gen": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/scripts.json",
+        "fs:write:storage/projects/{projectId}/blueprint.json",
+        "model:call:omlx"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 180000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/regenerate"
+        }
+      },
+      "aliases": [
+        "生成脚本",
+        "生成故事脚本"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-11",
+      "eventId": "story.scripts.read",
+      "version": 1,
+      "category": "story",
+      "kind": "query",
+      "title": "读取故事脚本",
+      "description": "读取项目 scripts.json。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "scripts"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "scripts": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 10000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/projects/:id/scripts"
+        }
+      },
+      "aliases": [
+        "读取脚本"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-12",
+      "eventId": "story.scripts.write",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "写入故事脚本",
+      "description": "将通过 schema 验证的 scripts 写入项目 scripts.json。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "scripts"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scripts": {
+            "type": "object",
+            "description": "ScriptDocV1"
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/scripts.json"
+      ],
+      "idempotent": true,
+      "reviewRequired": true,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "PUT",
+          "path": "/api/projects/:id/scripts"
+        }
+      },
+      "aliases": [
+        "写入脚本"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-13",
+      "eventId": "story.bible.generate",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "生成 Story Bible",
+      "description": "基于脚本生成角色/道具/地点设定集，持久化到 project.state.aiBackground.storyBible。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "bible": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/project.json",
+        "model:call:omlx"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 600000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/bible"
+        }
+      },
+      "aliases": [
+        "生成 Story Bible",
+        "故事圣经"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-14",
+      "eventId": "story.blueprint.compile",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "编译蓝图",
+      "description": "把 scripts.json 编译为 blueprint.json，返回编译报告与校验结果。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "report": {
+            "type": "object"
+          },
+          "validation": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/blueprint.json"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 30000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/compile/blueprint"
+        }
+      },
+      "aliases": [
+        "编译蓝图"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-15",
+      "eventId": "story.blueprint.review",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "蓝图 AI 评审",
+      "description": "由模型评审蓝图结构，返回 verdict/score/issues/repairPlan。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "review": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [
+        "model:call:reviewer"
+      ],
+      "idempotent": false,
+      "reviewRequired": false,
+      "timeoutMs": 300000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/review/blueprint"
+        }
+      },
+      "aliases": [
+        "蓝图评审",
+        "评审蓝图"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-16",
+      "eventId": "story.scripts.repair",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "修复脚本/蓝图",
+      "description": "按评审或校验结果修复脚本与蓝图。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/scripts.json",
+        "fs:write:storage/projects/{projectId}/blueprint.json",
+        "model:call:omlx"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 300000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/fix/scripts"
+        }
+      },
+      "aliases": [
+        "修复脚本",
+        "修复蓝图"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-17",
+      "eventId": "story.compose.compile",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "编译合成层",
+      "description": "把 blueprint 编译为可运行 project.json / story.json 合成层。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/project.json",
+        "fs:write:storage/projects/{projectId}/story.json"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 30000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/compile/compose"
+        }
+      },
+      "aliases": [
+        "编译合成层",
+        "编译合成"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-18",
+      "eventId": "asset.plan.create",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "创建故事资产计划",
+      "description": "基于 Story Bible 生成资产计划并落盘 story-assets/plan.json。缺 Story Bible 时必须返回 missing_story_bible。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rebuild": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "control_production_delivery"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "plan": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 60000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/assets/plan"
+        }
+      },
+      "aliases": [
+        "创建资产计划",
+        "资产计划"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-19",
+      "eventId": "asset.reference.generate",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "生成资产参考图",
+      "description": "为计划内资产生成候选参考图。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets/ai",
+        "image:call:comfyui"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 600000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/assets/reference"
+        }
+      },
+      "aliases": [
+        "生成参考图",
+        "生成资产参考图"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-20",
+      "eventId": "asset.reference.lock",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "锁定资产参考图",
+      "description": "把通过评审的参考图设为资产 primaryReferenceAssetUri。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/story-assets"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 60000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/assets/reference/select"
+        }
+      },
+      "aliases": [
+        "锁定参考图",
+        "锁定资产"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-21",
+      "eventId": "asset.lock.test",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "锁定测试图生成与评审",
+      "description": "生成单主体锁定测试图并经 AI 视觉评审，passed=true 才可保存为锁定参考。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "model": {
+            "type": "string"
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "attempts": {
+            "type": "array"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets/ai/story_lock_tests",
+        "image:call:comfyui",
+        "model:call:vision"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 600000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/lock/test"
+        }
+      },
+      "aliases": [
+        "锁定测试"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-22",
+      "eventId": "asset.scene.render",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "渲染场景图",
+      "description": "用已锁定参考图渲染指定场景。缺少必需锁定参考时必须返回 missing_required_asset。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "sceneId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets/ai/story_scenes",
+        "image:call:comfyui"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 600000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/scenes/:sceneId/render"
+        }
+      },
+      "aliases": [
+        "渲染场景",
+        "场景渲染"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-23",
+      "eventId": "asset.background.generate",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "生成背景图",
+      "description": "生成场景背景图（ComfyUI）。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "prompt"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets/ai",
+        "image:call:comfyui"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 300000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/background"
+        }
+      },
+      "aliases": [
+        "生成背景图",
+        "背景图"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-24",
+      "eventId": "studio.settings.read",
+      "version": 1,
+      "category": "studio",
+      "kind": "query",
+      "title": "读取工作室设置",
+      "description": "读取生效的工作室设置（provider/model/image 配置）。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "effective"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "effective": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 10000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/studio/settings"
+        }
+      },
+      "aliases": [
+        "设置",
+        "读取设置",
+        "工作室设置"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-25",
+      "eventId": "studio.settings.write",
+      "version": 1,
+      "category": "studio",
+      "kind": "command",
+      "title": "写入工作室设置",
+      "description": "写入工作室设置。高风险，影响全局默认 provider/model。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "settings"
+        ],
+        "properties": {
+          "settings": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:studio_settings"
+      ],
+      "idempotent": true,
+      "reviewRequired": true,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "PUT",
+          "path": "/api/studio/settings"
+        }
+      },
+      "aliases": [
+        "写入设置",
+        "保存设置"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-26",
+      "eventId": "studio.ai.status",
+      "version": 1,
+      "category": "studio",
+      "kind": "query",
+      "title": "AI 状态快照",
+      "description": "返回当前 AI provider/model/key 存在性快照（脱敏）。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "ai"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "ai": {
+            "type": "object"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 10000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/ai/status"
+        }
+      },
+      "aliases": [
+        "状态",
+        "AI 状态",
+        "ai状态",
+        "AI状态"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-27",
+      "eventId": "studio.image.preflight",
+      "version": 1,
+      "category": "studio",
+      "kind": "command",
+      "title": "图片 provider 预检",
+      "description": "检查图片 provider（ComfyUI）可达性、必需节点、模型文件。basic 模式只查基础节点；storyboard 模式加查 IP-Adapter/ControlNet。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "basic",
+              "storyboard"
+            ]
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 60000
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "checks"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "checks": {
+            "type": "object",
+            "required": [
+              "ok"
+            ],
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 60000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/studio/image/preflight"
+        }
+      },
+      "aliases": [
+        "图片预检",
+        "图片 provider 预检",
+        "preflight"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-28",
+      "eventId": "studio.runtime.status",
+      "version": 1,
+      "category": "studio",
+      "kind": "query",
+      "title": "运行状态检查",
+      "description": "返回 GameStudio server 是否运行中、editor 是否可达及整体运行状态。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "runtime"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "runtime": {
+            "type": "object",
+            "required": [
+              "allRunning"
+            ],
+            "properties": {
+              "allRunning": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 10000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/runtime/status"
+        }
+      },
+      "aliases": [
+        "运行状态",
+        "运行状态检查",
+        "是否运行中",
+        "runtime",
+        "启动状态"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-29",
+      "eventId": "studio.selfcheck",
+      "version": 1,
+      "category": "studio",
+      "kind": "query",
+      "title": "自检配置项",
+      "description": "返回 GameStudio 各项配置状态清单（server/editor/存储/设置/脚本 provider/图片 provider），不修改任何状态。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "ok",
+          "checks"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "checks": {
+            "type": "array"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/studio/selfcheck"
+        }
+      },
+      "aliases": [
+        "自检",
+        "自检配置",
+        "配置自检",
+        "selfcheck",
+        "配置状态"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-30",
+      "eventId": "asset.lineart.generate",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "生成资产线稿",
+      "description": "基于已锁定主参考生成 ControlNet 线稿（hint+final），写回 plan 的 lineart 字段。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "assetId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "assetId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets/ai/story_assets",
+        "image:call:comfyui"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 600000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/assets/lineart"
+        }
+      },
+      "aliases": [
+        "线稿",
+        "生成线稿"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "assetId",
+          "required": true,
+          "description": "资产 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-31",
+      "eventId": "asset.review.list",
+      "version": 1,
+      "category": "asset",
+      "kind": "query",
+      "title": "查询图片审核记录",
+      "description": "列出项目图片生成审核记录（pre_generate/lock_confirm/scene_bind），可按 status 过滤。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected"
+            ]
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "reviews": {
+            "type": "array"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/projects/:id/ai/reviews"
+        }
+      },
+      "aliases": [
+        "审核记录",
+        "待审核"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-32",
+      "eventId": "asset.review.approve",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "批准图片审核",
+      "description": "批准一条图片审核记录：pre_generate 批准后执行生成；lock_confirm 批准后落锁；scene_bind 批准后绑定场景图。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "reviewId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reviewId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/reviews",
+        "image:call:comfyui"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 120000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/reviews/:reviewId/approve"
+        }
+      },
+      "aliases": [
+        "批准审核",
+        "审核通过"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "reviewId",
+          "required": true,
+          "description": "审核记录 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-33",
+      "eventId": "asset.review.reject",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "拒绝图片审核",
+      "description": "拒绝一条图片审核记录（不执行生成/不写回），可附拒绝原因。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "reviewId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reviewId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/reviews"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/reviews/:reviewId/reject"
+        }
+      },
+      "aliases": [
+        "拒绝审核"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "reviewId",
+          "required": true,
+          "description": "审核记录 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-34",
+      "eventId": "asset.scene.renderAll",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "批量渲染缺失场景图",
+      "description": "异步串行渲染全部缺失场景图，立即返回 taskId，进度经 GS-35 查询。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "onlyMissing": {
+            "type": "boolean"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets/ai/story_scenes",
+        "image:call:comfyui"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 120000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/scenes/render-all"
+        }
+      },
+      "aliases": [
+        "批量渲染",
+        "渲染全部场景"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-35",
+      "eventId": "asset.task.list",
+      "version": 1,
+      "category": "asset",
+      "kind": "query",
+      "title": "查询项目任务进度",
+      "description": "列出项目 AI 长任务（锁定测试/场景渲染/批量渲染）的实时进度。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "tasks": {
+            "type": "array"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 15000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/projects/:id/ai/tasks"
+        }
+      },
+      "aliases": [
+        "任务进度"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-36",
+      "eventId": "studio.comfyui.capability",
+      "version": 1,
+      "category": "studio",
+      "kind": "query",
+      "title": "ComfyUI 出图能力检查",
+      "description": "对比工作流所需节点/模型与 ComfyUI 实装情况，返回缺失项与可修复性。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [],
+        "properties": {},
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 20000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/ai/comfyui/capability-check"
+        }
+      },
+      "aliases": [
+        "能力检查",
+        "comfyui检查"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-37",
+      "eventId": "asset.review.approveAll",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "批量批准图片审核",
+      "description": "按阶段批量批准全部待审核记录（典型：批量渲染后的场景图一次过审）。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "pre_generate",
+              "lock_confirm",
+              "scene_bind"
+            ]
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "okCount": {
+            "type": "integer"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/reviews",
+        "fs:write:storage/projects/{projectId}/story.json"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 120000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/reviews/approve-all"
+        }
+      },
+      "aliases": [
+        "批量批准",
+        "全部批准"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-38",
+      "eventId": "story.completeness.check",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "完整度核实",
+      "description": "用真实浏览器逐节点走查导出的可玩 H5：确定性检查（控制台错误/背景/立绘/文本/选项/可达性）+ AI 视觉评审 + 截图留证，产出完整度报告。异步执行，进度经 /ai/tasks 可见，报告落盘 reviews/。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string",
+            "description": "评审模型提供方（可选，覆盖设置）：moonshot / omlx"
+          },
+          "model": {
+            "type": "string",
+            "description": "评审模型（可选，覆盖设置）"
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/reviews",
+        "process:spawn:chrome-headless"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 30000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/completeness-check"
+        }
+      },
+      "aliases": [
+        "完整度核实",
+        "故事完整度核实",
+        "完整度检查",
+        "走查故事"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "provider",
+          "required": false,
+          "description": "评审模型提供方（可选）：moonshot / omlx"
+        },
+        {
+          "name": "model",
+          "required": false,
+          "description": "评审模型（可选）"
+        }
+      ]
+    }
+  ]
+}

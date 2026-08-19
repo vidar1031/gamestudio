@@ -20,6 +20,8 @@ export {
 export {
   INTENTS_DIR,
   INTENTS_INBOX_DIR,
+  getIntentsDir,
+  getIntentsInboxDir,
   ensureIntentDirs,
   loadActiveJsonIntents,
 } from './loadJsonIntents.js'

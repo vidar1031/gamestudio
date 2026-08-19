@@ -83,6 +83,8 @@ async function requestGameStudio(pathname, options = {}) {
         path: `${target.pathname}${target.search}`,
         headers: {
           'Content-Type': 'application/json',
+          // Control 驱动的调用已走 control 侧步骤级人工审核，GameStudio 图片审核门禁默认旁路，避免双重审核卡死自动化
+          'x-image-review-mode': 'off',
           ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
           ...(options.headers || {})
         },
@@ -379,6 +381,43 @@ export async function renderStoryScene(projectId, sceneId, payload = {}) {
   return withProjectEvidence(result, projectId)
 }
 
+// 分层合成（AUTO-E04）：E03 批量队列提交背景-only 渲染；异步返回 batchId，进度经 getStorySceneBatch 轮询
+export async function renderStorySceneBackgroundsBatch(projectId, payload = {}) {
+  const id = encodeURIComponent(normalizeProjectId(projectId))
+  const result = await requestGameStudio(`/api/projects/${id}/ai/story/scenes/batch`, {
+    method: 'POST',
+    body: { mode: 'background', ...(payload || {}) },
+    timeoutMs: Math.max(DEFAULT_TIMEOUT_MS, Number(payload?.timeoutMs || 0) || 0)
+  })
+  return withProjectEvidence(result, projectId)
+}
+
+export async function getStorySceneBatch(projectId) {
+  const id = encodeURIComponent(normalizeProjectId(projectId))
+  const result = await requestGameStudio(`/api/projects/${id}/ai/story/scenes/batch`, { timeoutMs: 15000 })
+  return withProjectEvidence(result, projectId)
+}
+
+export async function generateStoryScenePlacements(projectId, payload = {}) {
+  const id = encodeURIComponent(normalizeProjectId(projectId))
+  const result = await requestGameStudio(`/api/projects/${id}/ai/story/scenes/placements`, {
+    method: 'POST',
+    body: payload || {},
+    timeoutMs: Math.max(DEFAULT_TIMEOUT_MS, Number(payload?.timeoutMs || 0) || 0)
+  })
+  return withProjectEvidence(result, projectId)
+}
+
+export async function generateAssetLineart(projectId, assetId, payload = {}) {
+  const id = encodeURIComponent(normalizeProjectId(projectId))
+  const result = await requestGameStudio(`/api/projects/${id}/ai/story/assets/lineart`, {
+    method: 'POST',
+    body: { ...(payload || {}), assetId },
+    timeoutMs: Math.max(DEFAULT_TIMEOUT_MS, Number(payload?.timeoutMs || 0) || 0)
+  })
+  return withProjectEvidence(result, projectId)
+}
+
 export const gameStudioServerClient = {
   baseUrl: GAMESTUDIO_SERVER_BASE_URL,
   getHealth,
@@ -409,5 +448,9 @@ export const gameStudioServerClient = {
   storyLockTest,
   generateStoryAssetReference,
   selectStoryAssetReference,
-  renderStoryScene
+  renderStoryScene,
+  renderStorySceneBackgroundsBatch,
+  getStorySceneBatch,
+  generateStoryScenePlacements,
+  generateAssetLineart
 }

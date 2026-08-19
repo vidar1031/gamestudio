@@ -83,7 +83,7 @@ function renderIndexHtml({ title }) {
       </div>
     </div>
     <script type="module">
-      import { Application, Container, Sprite, Texture } from 'https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.mjs'
+      import { Application, Container, Sprite, Texture, Graphics, Text, TextStyle } from 'https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.mjs'
 
       const rootEl = document.getElementById('app')
       const metaEl = document.getElementById('nodeMeta')
@@ -553,6 +553,24 @@ function renderIndexHtml({ title }) {
               s.x = 0; s.y = 0; s.width = stageW; s.height = stageH
               root.addChild(s)
             }
+          } else {
+            // 缺图占位：场景图像未生成时，给统一的占位样式，避免空白/破图，让用户明确当前是仅文字可玩
+            const pad = 24
+            const ph = new Graphics()
+            ph.roundRect(pad, pad, stageW - pad * 2, stageH - pad * 2, 18)
+            ph.fill({ color: 0x0d1a2b, alpha: 0.62 })
+            ph.stroke({ color: 0x5eccff, alpha: 0.22, width: 2 })
+            root.addChild(ph)
+            const icon = new Text({ text: '🖼', style: new TextStyle({ fontSize: 44, fill: 0x5eccff }) })
+            icon.anchor.set(0.5)
+            icon.x = stageW / 2
+            icon.y = stageH / 2 - 26
+            root.addChild(icon)
+            const hint = new Text({ text: '场景图像未生成 · 仅文字可玩', style: new TextStyle({ fontSize: 16, fill: 0x9daab8 }) })
+            hint.anchor.set(0.5)
+            hint.x = stageW / 2
+            hint.y = stageH / 2 + 26
+            root.addChild(hint)
           }
         } catch (_) {}
 

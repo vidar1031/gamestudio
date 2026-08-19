@@ -52,16 +52,16 @@ onMounted(() => {
           <div class="card-status" :data-tone="app.leftBrainRunning.value ? 'success' : 'warn'">
             {{ app.leftBrainRunning.value ? '运行中' : '已停止' }}
           </div>
-          <div class="card-detail">{{ app.leftBrainSummary.value || '左脑尚未启动' }}</div>
+          <div class="card-detail">
+            {{ app.leftBrainSummary.value.providerLabel }} · {{ app.leftBrainSummary.value.modelLabel }}
+          </div>
+          <div class="card-detail sub">{{ app.leftBrainSummary.value.baseUrlLabel }} · {{ app.leftBrainSummary.value.statusLabel }}</div>
+          <div v-if="app.smartStartMessage.value" class="card-progress" :data-busy="app.smartStartBusy.value">
+            {{ app.smartStartMessage.value }}
+          </div>
         </div>
-        <div class="card-actions">
-          <button
-            class="card-btn primary"
-            :disabled="app.smartStartBusy.value || app.runtimeBusy.value"
-            @click="app.smartStartHermes()"
-          >
-            {{ app.leftBrainRunning.value ? '重启 Hermes' : '⚡ 一键启动' }}
-          </button>
+        <div v-if="!app.leftBrainRunning.value" class="card-actions">
+          <div class="card-detail sub">使用右上角「一键启动 Hermes」启动。</div>
         </div>
       </div>
 
@@ -234,6 +234,27 @@ onMounted(() => {
   font-size: 13px;
   color: var(--c-text-sub);
   line-height: 1.45;
+}
+
+.card-detail.sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+
+.card-progress {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-accent);
+  border: 1px solid var(--c-accent-dim);
+  background: rgba(94, 204, 255, 0.06);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.card-progress[data-busy='false'] {
+  color: var(--c-text-sub);
 }
 
 .card-actions {

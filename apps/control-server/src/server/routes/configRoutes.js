@@ -354,7 +354,7 @@ function clearTerminalRuntimeSessionFiles(fs, path, directoryPath) {
     const filePath = path.join(directoryPath, fileName)
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-      if (parsed?.status === 'completed' || parsed?.status === 'failed' || parsed?.status === 'cancelled') {
+      if (parsed?.status === 'completed' || parsed?.status === 'failed' || parsed?.status === 'cancelled' || parsed?.status === 'blocked' || parsed?.status === 'timeout') {
         fs.unlinkSync(filePath)
         clearedCount += 1
       }
@@ -475,7 +475,7 @@ function archiveAndClearTerminalRuntimeSessionFiles(fs, path, rootDir, directory
     const filePath = path.join(directoryPath, fileName)
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-      if (parsed?.status === 'completed' || parsed?.status === 'failed' || parsed?.status === 'cancelled') {
+      if (parsed?.status === 'completed' || parsed?.status === 'failed' || parsed?.status === 'cancelled' || parsed?.status === 'blocked' || parsed?.status === 'timeout') {
         archiveFileForManualClear(fs, path, rootDir, archive, filePath, 'runtime-session')
         fs.unlinkSync(filePath)
         clearedCount += 1
@@ -603,6 +603,33 @@ export function registerConfigRoutes(app, context) {
 
     const memoryFileReady = memoryFiles.every((item) => item.exists)
 
+    // strict 路由可见性：声明 hermes+strict 但当前不可满足（模型与绑定不一致）的路由
+    // 必须在诊断面暴露，运行期会显式失败（route_unavailable），不再是静默降级。
+    const modelRouting = binding?.workflow?.modelRouting || {}
+    const routingEntries = [
+      ...Object.entries(modelRouting.phaseRoutes || {}).map(([key, route]) => [`phase:${key}`, route]),
+      ...Object.entries(modelRouting.actionRoutes || {}).map(([key, route]) => [`action:${key}`, route])
+    ]
+    const strictRoutes = routingEntries
+      .filter(([, route]) => route && route.strict === true)
+      .map(([routeId, route]) => ({
+        routeId,
+        transport: route.transport,
+        requestedTransport: route.requestedTransport || route.transport,
+        model: route.model || '',
+        satisfiable: !route.unavailableReason,
+        unavailableReason: route.unavailableReason || null
+      }))
+    const degradedRoutes = routingEntries
+      .filter(([, route]) => route && route.degradedFrom)
+      .map(([routeId, route]) => ({
+        routeId,
+        requestedTransport: route.degradedFrom,
+        transport: route.transport,
+        model: route.model || '',
+        detail: '非 strict 路由声明与左脑绑定不一致，已按既有 best-effort 语义显式直连（非静默）。'
+      }))
+
     return c.json({
       ok: true,
       diagnostics: {
@@ -610,7 +637,14 @@ export function registerConfigRoutes(app, context) {
           controllerLayerEnabled: true,
           memoryOverlayMode: String(binding?.workflow?.memoryOverlayMode || 'references-only'),
           replayWindowMessages: Math.max(0, Number(binding?.workflow?.replayWindowMessages || 0)),
-          reasoningReplayWindowMessages: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0))
+          reasoningReplayWindowMessages: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0)),
+          modelRouting: {
+            strictRoutes,
+            degradedRoutes,
+            strictRouteRequiredPhases: Array.isArray(modelRouting.strictRouteRequiredPhases)
+              ? modelRouting.strictRouteRequiredPhases.map((value) => String(value)).filter(Boolean)
+              : []
+          }
         },
         shortTermMemory: {
           enabled: minContextTokens > 0,

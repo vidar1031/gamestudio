@@ -38,6 +38,45 @@ function stripJsonCodeFence(s) {
   return fenced ? String(fenced[1] || '').trim() : raw
 }
 
+// 仅转义字符串字面量内的裸控制字符（\n \r \t 及其他 <0x20），不动 JSON 结构
+function escapeControlCharsInJsonStrings(s) {
+  let inString = false
+  let out = ''
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i]
+    const code = s.charCodeAt(i)
+    if (inString && ch === '\\') { out += ch + (s[i + 1] || ''); i += 1; continue }
+    if (ch === '"') { inString = !inString; out += ch; continue }
+    if (inString && code < 0x20) {
+      if (ch === '\n') { out += '\\n'; continue }
+      if (ch === '\r') { out += '\\r'; continue }
+      if (ch === '\t') { out += '\\t'; continue }
+      out += `\\u${code.toString(16).padStart(4, '0')}`
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+// 模型输出宽松 JSON 解析：Qwen 等模型会在 JSON 字符串字面量内输出裸换行/制表符，
+// 严格 JSON.parse 直接失败（Bad control character，实测脚本候选步因此整链阻断）。
+// 顺序：直解析 → 截取首个对象 → 字符串内控制字符转义后重试；不改语义内容。
+export function parseModelJsonLenient(text) {
+  const raw = stripJsonCodeFence(text)
+  if (!raw) throw new Error('empty_ai_output')
+  try {
+    return JSON.parse(raw)
+  } catch (_) {}
+  const objStart = raw.indexOf('{')
+  const objEnd = raw.lastIndexOf('}')
+  const candidate = objStart >= 0 && objEnd > objStart ? raw.slice(objStart, objEnd + 1) : raw
+  try {
+    return JSON.parse(candidate)
+  } catch (_) {}
+  return JSON.parse(escapeControlCharsInJsonStrings(candidate))
+}
+
 export function extractResponseOutputText(respJson) {
   let raw = ''
   try {
@@ -474,7 +513,7 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
       const text = typeof content === 'string' ? content.trim() : (typeof reasoning === 'string' ? reasoning.trim() : '')
       if (!text) throw new Error('empty_ai_output')
       return {
-        draft: JSON.parse(text),
+        draft: parseModelJsonLenient(text),
         meta: { provider: cfg.provider, api: 'chat.completions', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
       }
     }
@@ -500,7 +539,7 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
     const text = extractResponseOutputText(resp)
     if (!text) throw new Error('empty_ai_output')
     return {
-      draft: JSON.parse(text),
+      draft: parseModelJsonLenient(text),
       meta: { provider: cfg.provider, api: 'responses', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
     }
   } catch (e) {
@@ -520,7 +559,7 @@ export async function generateScriptsViaOpenAI({ prompt, title, rules, formula, 
     const text = typeof content === 'string' ? content.trim() : ''
     if (!text) throw new Error('empty_ai_output')
     return {
-      draft: JSON.parse(text),
+      draft: parseModelJsonLenient(text),
       meta: { provider: cfg.provider, api: 'chat.completions', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
     }
   }
@@ -648,7 +687,7 @@ export async function repairScriptsViaOpenAI({
   const text = extractResponseOutputText(resp)
   if (!text) throw new Error('empty_ai_output')
   return {
-    draft: JSON.parse(text),
+    draft: parseModelJsonLenient(text),
     meta: { provider: cfg.provider, api: 'responses', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
   }
 }
@@ -766,7 +805,7 @@ export async function reviewBlueprintViaOpenAI({ projectTitle, formula, scripts,
     const text = extractResponseOutputText(resp)
     if (!text) throw new Error('empty_ai_output')
     return {
-      review: JSON.parse(text),
+      review: parseModelJsonLenient(text),
       meta: { provider: cfg.provider, api: 'responses', model, durationMs: Math.max(0, Date.now() - startedAt) }
     }
   } catch (e) {

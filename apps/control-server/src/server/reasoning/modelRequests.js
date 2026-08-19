@@ -212,11 +212,33 @@ async function requestReasoningAnswerFromModel({
     signal,
     timeoutMs: HERMES_CHAT_REQUEST_TIMEOUT_MS
   })
-  const rawContent = String(data.choices?.[0]?.message?.content || '').trim()
+  let rawContent = String(data.choices?.[0]?.message?.content || '').trim()
+  let usage = data.usage || null
+  // gpt-oss 等推理模型在引用文件不可读等场景会只输出思考（reasoning_content）而正文为空；
+  // 追加一轮明确的“输出正文”续写请求拿最终回答——确定性兜底，不伪造内容
+  if (!rawContent && String(data.choices?.[0]?.message?.reasoning_content || '').trim()) {
+    const continuation = await requestHermesChatCompletion({
+      sessionId,
+      phase: 'reasoning_answer_continue',
+      messages: [
+        ...answerMessages,
+        { role: 'user', content: '系统检测：你的上一轮回复正文为空，只有思考过程。请直接输出最终回答正文（中文），不要重复思考，不要提及本提示。' }
+      ],
+      maxTokens: 8192,
+      route: answerRoute,
+      signal,
+      timeoutMs: HERMES_CHAT_REQUEST_TIMEOUT_MS
+    })
+    const continuedContent = String(continuation.choices?.[0]?.message?.content || '').trim()
+    if (continuedContent) {
+      rawContent = continuedContent
+      usage = continuation.usage || usage
+    }
+  }
   const reply = rawContent || '[模型未返回可见回答内容]'
   return {
     reply,
-    usage: data.usage || null,
+    usage,
     outboundPreview: buildStructuredOutboundPreview({
       binding: routedBinding,
       requestRoute: answerRoute,

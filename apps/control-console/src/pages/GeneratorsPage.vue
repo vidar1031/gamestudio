@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useControlConsoleApp } from '../composables/useControlConsoleApp'
 
 const app = useControlConsoleApp()
@@ -11,11 +11,59 @@ const providers = [
   { value: 'doubao', label: '豆包（云端）' }
 ]
 
+// ComfyUI 能力检查与自愈：节点/模型缺失在此可见并可一键修复
+type CapabilityFeature = { label: string; ok: boolean; missingNodes: string[]; missingModels: Array<{ label?: string }> }
+const comfyCapability = ref<{ ok: boolean; reachable: boolean; features: Record<string, CapabilityFeature>; message?: string } | null>(null)
+const capabilityLoading = ref(false)
+const capabilityError = ref('')
+const autoFixBusy = ref(false)
+const autoFixMessage = ref('')
+
+async function loadComfyCapability() {
+  capabilityLoading.value = true
+  capabilityError.value = ''
+  try {
+    const res = await fetch('/api/control/gamestudio/comfyui/capability-check')
+    const json = await res.json()
+    if (!json.ok && json.reachable === false) {
+      comfyCapability.value = { ok: false, reachable: false, features: {}, message: json.message || json.error || 'ComfyUI 不可达' }
+    } else if (!json.ok && !json.features) {
+      capabilityError.value = json.error || '能力检查失败'
+    } else {
+      comfyCapability.value = { ok: Boolean(json.ok), reachable: json.reachable !== false, features: json.features || {} }
+    }
+  } catch (e: any) {
+    capabilityError.value = e && e.message ? String(e.message) : String(e)
+  } finally {
+    capabilityLoading.value = false
+  }
+}
+
+async function runComfyAutoFix(restart: boolean) {
+  autoFixBusy.value = true
+  autoFixMessage.value = ''
+  try {
+    const res = await fetch('/api/control/gamestudio/comfyui/auto-fix', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ restart })
+    })
+    const json = await res.json()
+    autoFixMessage.value = json.ok ? (restart ? '修复完成，ComfyUI 已重启' : '依赖修复完成') : (json.message || json.error || '修复失败')
+    await loadComfyCapability()
+  } catch (e: any) {
+    autoFixMessage.value = e && e.message ? String(e.message) : String(e)
+  } finally {
+    autoFixBusy.value = false
+  }
+}
+
 onMounted(() => {
   app.loadEngineConfig()
   app.loadHermesSelfCheck()
   app.fetchLocalModels('left')
   app.fetchLocalModels('right')
+  void loadComfyCapability()
 })
 </script>
 
@@ -126,7 +174,35 @@ onMounted(() => {
             <input type="text" value="http://127.0.0.1:8188" />
           </div>
         </div>
+
+        <div v-if="comfyCapability" class="capability-card">
+          <div class="capability-title">ComfyUI 出图能力</div>
+          <div v-if="!comfyCapability.reachable" class="capability-row">
+            <span>状态</span>
+            <span data-tone="error">不可达{{ comfyCapability.message ? `：${comfyCapability.message}` : '' }}</span>
+          </div>
+          <template v-else>
+            <div v-for="(feature, key) in comfyCapability.features" :key="key" class="capability-row">
+              <span>{{ feature.label }}</span>
+              <span :data-tone="feature.ok ? 'success' : 'warn'">
+                {{ feature.ok ? '就绪' : `缺失：${[...feature.missingNodes, ...(feature.missingModels || []).map((m) => m.label || '')].filter(Boolean).join('、')}` }}
+              </span>
+            </div>
+          </template>
+        </div>
+        <div v-if="capabilityError" class="message-error">{{ capabilityError }}</div>
+        <div v-if="autoFixMessage" class="message-tip">{{ autoFixMessage }}</div>
+
         <div class="action-bar">
+          <button class="action-btn" :disabled="capabilityLoading" @click="loadComfyCapability">
+            {{ capabilityLoading ? '检查中...' : '能力检查' }}
+          </button>
+          <button class="action-btn" :disabled="autoFixBusy || (comfyCapability?.ok ?? true)" @click="runComfyAutoFix(false)">
+            {{ autoFixBusy ? '修复中...' : '自动修复依赖' }}
+          </button>
+          <button class="action-btn" :disabled="autoFixBusy || (comfyCapability?.ok ?? true)" @click="runComfyAutoFix(true)">
+            {{ autoFixBusy ? '修复中...' : '修复并重启 ComfyUI' }}
+          </button>
           <button class="action-btn" @click="app.loadHermesSelfCheck()">刷新自检</button>
         </div>
       </div>

@@ -1,0 +1,46 @@
+{
+  "caseVersion": "1.0.0",
+  "caseId": "gamestudio.story-create",
+  "title": "创建故事项目（狼来了）",
+  "description": "通过事件层创建一个新互动故事项目，并验证项目目录与初始文件真实落盘。覆盖 registry 事件：project.create、project.inspect。",
+  "provider": "gamestudio",
+  "tags": ["p0", "story", "project"],
+  "preconditions": [
+    { "type": "service.reachable", "target": "gamestudio.server", "ref": "http://127.0.0.1:1999/api/health" }
+  ],
+  "vars": {
+    "storyTitle": "狼来了"
+  },
+  "steps": [
+    {
+      "stepId": "create",
+      "title": "创建项目",
+      "event": "project.create",
+      "payload": { "title": "${vars.storyTitle}" },
+      "capture": { "projectId": "$.project.id" },
+      "assert": [
+        { "type": "http.ok" },
+        { "type": "json.path.exists", "path": "$.project.id" },
+        { "type": "json.path.equals", "path": "$.project.title", "value": "${vars.storyTitle}" }
+      ]
+    },
+    {
+      "stepId": "inspect",
+      "title": "读取项目验证落盘",
+      "event": "project.inspect",
+      "payload": { "projectId": "${capture.projectId}" },
+      "assert": [
+        { "type": "http.ok" },
+        { "type": "json.path.equals", "path": "$.project.id", "value": "${capture.projectId}" },
+        { "type": "fs.exists", "path": "storage/projects/${capture.projectId}/meta.json" },
+        { "type": "fs.exists", "path": "storage/projects/${capture.projectId}/project.json" },
+        { "type": "fs.exists", "path": "storage/projects/${capture.projectId}/scripts.json" }
+      ]
+    }
+  ],
+  "expectedVerdict": "PASS",
+  "artifacts": {
+    "keepProject": true,
+    "reason": "创建的项目目录作为事件层证据保留，供后续用例（配置/脚本/导出）复用或人工复查"
+  }
+}

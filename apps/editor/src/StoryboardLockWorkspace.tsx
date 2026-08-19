@@ -1,5 +1,5 @@
 import React from 'react'
-import { resolveUrl, type AiBackgroundRequest, type StoryAssetGalleryEntry } from './api'
+import { resolveUrl, listProjectAiTasks, renderAllStoryScenesAi, listImageReviewsAi, approveImageReviewAi, rejectImageReviewAi, approveAllImageReviewsAi, type AiBackgroundRequest, type AiTaskProgress, type ImageReviewRecord, type StoryAssetGalleryEntry } from './api'
 
 function getAssetCategoryLabel(category: string) {
   const c = String(category || '').trim()
@@ -217,6 +217,7 @@ export default function StoryboardLockWorkspace(props: {
   logs: string[]
   error?: string
   onClose: () => void
+  onReloadProject?: () => void
   onRunOpenChecks: () => void
   onGenerateEntity: () => void
   onBuildAssetPlan: () => void
@@ -267,6 +268,115 @@ export default function StoryboardLockWorkspace(props: {
   const translateCountdownSec = Number(props.translateCountdownSec || 0)
   const translateCountdownLabel = translateCountdownSec > 0 ? ` ${translateCountdownSec}s` : ''
   const storyBibleSummary = summarizeStoryBible(String((props.value as any)?.storyBibleJson || ''))
+
+  // AI 任务进度轮询：锁定测试/场景渲染/批量渲染的真实阶段在此可见（非黑盒）
+  const [aiTasks, setAiTasks] = React.useState<AiTaskProgress[]>([])
+  const [pendingReviews, setPendingReviews] = React.useState<ImageReviewRecord[]>([])
+  const [reviewBusyIds, setReviewBusyIds] = React.useState<string[]>([])
+  const [renderAllBusy, setRenderAllBusy] = React.useState(false)
+  const reloadedTaskIdsRef = React.useRef<Set<string>>(new Set())
+  const projectId = String(props.projectId || '').trim()
+
+  React.useEffect(() => {
+    if (!props.open || !projectId) return undefined
+    let stopped = false
+    const pull = async () => {
+      try {
+        const [tasks, reviews] = await Promise.all([
+          listProjectAiTasks(projectId),
+          listImageReviewsAi(projectId, 'pending').catch(() => [] as ImageReviewRecord[])
+        ])
+        if (stopped) return
+        setAiTasks(tasks)
+        setPendingReviews(reviews)
+        // 批量渲染完成后自动刷新项目数据（场景图写回 story.json/project.json）
+        for (const t of tasks) {
+          if (t.kind === 'story.scenes.render_all' && t.done && !reloadedTaskIdsRef.current.has(t.taskId)) {
+            reloadedTaskIdsRef.current.add(t.taskId)
+            props.onReloadProject?.()
+          }
+        }
+      } catch (_) { /* 轮询失败忽略，下轮重试 */ }
+    }
+    void pull()
+    const timer = window.setInterval(pull, 1500)
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [props.open, projectId])
+
+  const reviewPhaseLabel = (phase: string) => {
+    if (phase === 'pre_generate') return '出图前审核'
+    if (phase === 'lock_confirm') return '锁定确认'
+    if (phase === 'scene_bind') return '场景图绑定'
+    return phase || '审核'
+  }
+
+  const decideReview = async (review: ImageReviewRecord, approved: boolean) => {
+    if (!projectId || reviewBusyIds.includes(review.reviewId)) return
+    setReviewBusyIds((prev) => [...prev, review.reviewId])
+    try {
+      if (approved) await approveImageReviewAi(projectId, review.reviewId)
+      else await rejectImageReviewAi(projectId, review.reviewId)
+      const reviews = await listImageReviewsAi(projectId, 'pending').catch(() => [] as ImageReviewRecord[])
+      setPendingReviews(reviews)
+      if (approved && (review.phase === 'lock_confirm' || review.phase === 'scene_bind')) props.onReloadProject?.()
+    } catch (e: any) {
+      window.alert(`审核操作失败：${e && e.message ? e.message : String(e)}`)
+    } finally {
+      setReviewBusyIds((prev) => prev.filter((x) => x !== review.reviewId))
+    }
+  }
+
+  const approveAllSceneBinds = async () => {
+    if (!projectId) return
+    try {
+      const res = await approveAllImageReviewsAi(projectId, 'scene_bind')
+      window.alert(`批量批准完成：${res.okCount}/${res.total}`)
+      const reviews = await listImageReviewsAi(projectId, 'pending').catch(() => [] as ImageReviewRecord[])
+      setPendingReviews(reviews)
+      props.onReloadProject?.()
+    } catch (e: any) {
+      window.alert(`批量批准失败：${e && e.message ? e.message : String(e)}`)
+    }
+  }
+
+  const visibleTasks = React.useMemo(() => {
+    const now = Date.now()
+    return aiTasks.filter((t) => !t.done || now - Date.parse(t.updatedAt) < 20000).slice(0, 4)
+  }, [aiTasks])
+  const renderAllActive = aiTasks.some((t) => t.kind === 'story.scenes.render_all' && !t.done)
+
+  const taskKindLabel = (kind: string) => {
+    if (kind === 'story.lock_test') return '锁定测试'
+    if (kind === 'story.scene.render') return '场景渲染'
+    if (kind === 'story.scenes.render_all') return '批量渲染'
+    return kind || '任务'
+  }
+  const taskStageLabel = (task: AiTaskProgress) => {
+    const stageMap: Record<string, string> = {
+      queued: '排队中', preparing: '准备中', generating: '生成中', reviewing: '评审中',
+      loading_refs: '加载参考图', writing: '写回文档', rendering: '渲染中',
+      passed: '已通过', failed: '未通过', done: '完成', partial: '部分完成',
+      error: '出错', interrupted: '已中断'
+    }
+    const stageText = stageMap[task.stage] || task.stage || '进行中'
+    const progressText = task.total > 0 ? ` ${task.current}/${task.total}` : ''
+    return `${stageText}${progressText}`
+  }
+
+  const runRenderAllScenes = async () => {
+    if (!projectId || renderAllBusy || renderAllActive) return
+    setRenderAllBusy(true)
+    try {
+      const res = await renderAllStoryScenesAi(projectId, {})
+      if (!res.taskId && res.message) window.alert(res.message)
+      const tasks = await listProjectAiTasks(projectId).catch(() => [])
+      setAiTasks(tasks)
+    } catch (e: any) {
+      window.alert(`批量渲染启动失败：${e && e.message ? e.message : String(e)}`)
+    } finally {
+      setRenderAllBusy(false)
+    }
+  }
 
   React.useEffect(() => {
     setGallerySelectedPaths([])
@@ -330,7 +440,60 @@ export default function StoryboardLockWorkspace(props: {
           <button className="btn secondary" type="button" onClick={props.onRunOpenChecks} disabled={props.assetPlanBusy || props.busyEntity}>重新体检</button>
           <button className="btn secondary" type="button" onClick={props.onGenerateAllMissingAssetRefs} disabled={props.assetPlanBusy || !assetPlan || missingBatchCount === 0}>生成全部缺失参考图 ({missingBatchCount})</button>
           <button className="btn secondary" type="button" onClick={props.onConfirmAssetPlan} disabled={props.assetPlanBusy || !assetPlan || unlockedCount > 0}>{props.assetConfirmReady ? '已确认' : '确认锁定无误'}</button>
+          <button className="btn secondary" type="button" onClick={() => void runRenderAllScenes()} disabled={renderAllBusy || renderAllActive || !projectId}>{renderAllActive ? '批量渲染进行中…' : '渲染缺失场景'}</button>
         </div>
+
+        {pendingReviews.length > 0 && (
+          <div className="ai-review-pending-list">
+            <div className="ai-review-pending-head">
+              <span className="ai-review-pending-title">待审核（{pendingReviews.length}）</span>
+              {pendingReviews.filter((r) => r.phase === 'scene_bind').length > 1 && (
+                <button className="btn secondary" type="button" onClick={() => void approveAllSceneBinds()}>全部批准场景图</button>
+              )}
+            </div>
+            {pendingReviews.map((review) => {
+              const busy = reviewBusyIds.includes(review.reviewId)
+              const targetName = String(review.params?.targetName || review.params?.sceneName || review.assetId || review.sceneId || '')
+              return (
+                <div key={review.reviewId} className="ai-review-pending-item">
+                  <div className="ai-review-pending-main">
+                    <span className="ai-review-phase">{reviewPhaseLabel(review.phase)}</span>
+                    <span className="ai-review-target">{targetName}</span>
+                    {review.aiReview && Number.isFinite(Number(review.aiReview.score)) && (
+                      <span className="ai-review-score">AI {Math.round(Number(review.aiReview.score))} 分</span>
+                    )}
+                  </div>
+                  {review.resultImagePath && (
+                    <img className="ai-review-thumb" src={toProjectAssetUrl(projectId, review.resultImagePath)} alt={targetName} />
+                  )}
+                  {review.prompt && (
+                    <div className="ai-review-prompt" title={review.prompt}>{review.prompt.length > 180 ? `${review.prompt.slice(0, 180)}…` : review.prompt}</div>
+                  )}
+                  {review.aiReview?.summary && <div className="ai-review-summary">AI 评语：{review.aiReview.summary}</div>}
+                  <div className="ai-review-actions">
+                    <button className="btn secondary" type="button" disabled={busy} onClick={() => void decideReview(review, true)}>{busy ? '处理中…' : '批准'}</button>
+                    <button className="btn secondary" type="button" disabled={busy} onClick={() => void decideReview(review, false)}>拒绝</button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {visibleTasks.length > 0 && (
+          <div className="ai-task-progress-list">
+            {visibleTasks.map((task) => (
+              <div key={task.taskId} className={`ai-task-progress-item ${task.done ? (task.error ? 'error' : 'done') : 'active'}`}>
+                <span className="ai-task-progress-kind">{taskKindLabel(task.kind)}</span>
+                <span className="ai-task-progress-stage">{taskStageLabel(task)}</span>
+                {task.total > 0 && !task.done && (
+                  <span className="ai-task-progress-bar"><span className="ai-task-progress-bar-inner" style={{ width: `${Math.min(100, Math.round((task.current / task.total) * 100))}%` }} /></span>
+                )}
+                <span className="ai-task-progress-message">{task.error || task.message || ''}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="story-lock-global-prompts">
           <div className="story-lock-global-card story-lock-bible-card">

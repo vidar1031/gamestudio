@@ -1005,8 +1005,20 @@ export default function Hub(props: Props) {
                       <span className={`hub-mini-dot ${s.stages.export ? 'done' : ''}`} />
                     </div>
                     <div className={`hub-stage-label ${s.stage === 'playable' ? 'playable' : ''}`}>
-                      {s.stage === 'playable' ? '可玩 ↗' : stageLabelOf(s)} · {s.cards} 卡 / {s.blueprintNodes} 节点
+                      {(() => {
+                        if (s.stage !== 'playable') return `${stageLabelOf(s)} · ${s.cards} 卡 / ${s.blueprintNodes} 节点`
+                        const img = s.imageStats
+                        if (img && img.totalScenes > 0) {
+                          return img.withImages >= img.totalScenes
+                            ? `可玩 ↗ · 图文完整 · ${s.cards} 卡 / ${s.blueprintNodes} 节点`
+                            : `文字可玩 ↗ · 缺图 ${img.missingImages}/${img.totalScenes} · ${s.cards} 卡 / ${s.blueprintNodes} 节点`
+                        }
+                        return `可玩 ↗ · ${s.cards} 卡 / ${s.blueprintNodes} 节点`
+                      })()}
                     </div>
+                    {s.stage === 'playable' && s.imageStats && s.imageStats.totalScenes > 0 && s.imageStats.withImages < s.imageStats.totalScenes ? (
+                      <div className="hub-image-missing-hint">场景图像未生成，仅文字可玩</div>
+                    ) : null}
                     <div className="hub-project-meta">{String(s.updatedAt || '').slice(0, 16).replace('T', ' ')}</div>
                   </div>
                 ))}

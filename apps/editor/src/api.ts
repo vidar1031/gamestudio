@@ -81,6 +81,7 @@ export type ProjectSummary = {
   cards: number
   blueprintNodes: number
   storyNodes: number
+  imageStats?: { totalScenes: number; withImages: number; missingImages: number }
   stages: { scripts: boolean; blueprint: boolean; compose: boolean; export: boolean }
   stage: 'script' | 'blueprint' | 'compose' | 'export' | 'playable'
   distUrl: string | null
@@ -898,6 +899,154 @@ export async function analyzeStoryAssetReferenceAi(
   }
 }
 
+// AI 任务进度：服务端长任务（锁定测试/场景渲染/批量渲染）的阶段轮询
+export type AiTaskProgress = {
+  taskId: string
+  projectId: string
+  kind: string
+  stage: string
+  current: number
+  total: number
+  message: string
+  createdAt: string
+  updatedAt: string
+  done: boolean
+  error: string
+  result?: any
+}
+
+export async function listProjectAiTasks(projectId: string): Promise<AiTaskProgress[]> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/tasks`)
+  return Array.isArray(json.tasks) ? (json.tasks as AiTaskProgress[]) : []
+}
+
+export async function renderAllStoryScenesAi(
+  projectId: string,
+  payload?: { width?: number; height?: number; timeoutMs?: number; onlyMissing?: boolean }
+): Promise<{ taskId: string | null; total: number; message?: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/render-all`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return {
+    taskId: json.taskId ? String(json.taskId) : null,
+    total: Number(json.total || 0),
+    message: json.message ? String(json.message) : undefined
+  }
+}
+
+// AUTO-E05：故事完整度核实（真实浏览器逐节点走查导出 H5 + AI 视觉评审 + 截图留证）
+export type StoryCompletenessNodeReport = {
+  nodeId: string
+  name: string
+  kind: string
+  reachable: boolean
+  pathLength: number
+  observed: {
+    dialogText: string
+    choiceButtons: { text: string; disabled: boolean }[]
+    canvasExists: boolean
+    endingVisible: boolean
+  } | null
+  checks: Record<string, string>
+  issues: { code: string; message: string }[]
+  consoleErrors: string[]
+  screenshot: string
+  aiReview: { status: string; passed?: boolean; score?: number; issues?: string[]; summary?: string; reason?: string }
+}
+
+export type StoryCompletenessReport = {
+  schemaVersion: string
+  kind: string
+  projectId: string
+  checkedAt: string
+  runId: string
+  screenshotDir: string
+  distUrl: string
+  review: { provider: string; model: string; apiUrl: string } | null
+  verdict: 'pass' | 'fail'
+  aiReviewStatus: string
+  summary: {
+    total: number
+    visited: number
+    passed: number
+    failed: number
+    unreachableStatic: number
+    aiReview: { completed: number; unavailable: number; failed: number }
+  }
+  failedNodes: { nodeId: string; name: string; reasons: string[] }[]
+  nodes: StoryCompletenessNodeReport[]
+}
+
+export async function runStoryCompletenessCheckAi(
+  projectId: string,
+  payload?: { provider?: string; model?: string }
+): Promise<{ taskId: string | null; total: number }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/completeness-check`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return {
+    taskId: json.taskId ? String(json.taskId) : null,
+    total: Number(json.total || 0)
+  }
+}
+
+export async function getLatestStoryCompletenessReport(projectId: string): Promise<{ file: string; report: StoryCompletenessReport } | null> {
+  try {
+    const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/completeness-check/latest`)
+    return { file: String(json.file || ''), report: json.report as StoryCompletenessReport }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (/no_report|暂无完整度报告/.test(msg)) return null
+    throw e
+  }
+}
+
+// 图片生成审核：出图前 / 锁定确认 / 场景绑定的人工门禁
+export type ImageReviewRecord = {
+  reviewId: string
+  phase: 'pre_generate' | 'lock_confirm' | 'scene_bind' | string
+  targetKey: string
+  assetId: string
+  sceneId: string
+  prompt: string
+  negativePrompt: string
+  params?: any
+  resultImagePath: string
+  aiReview?: { score?: number; summary?: string; issues?: string[] } | null
+  status: 'pending' | 'approved' | 'rejected'
+  createdAt: string
+  decidedAt?: string
+  rejectReason?: string
+}
+
+export async function listImageReviewsAi(projectId: string, status = 'pending'): Promise<ImageReviewRecord[]> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/reviews?status=${encodeURIComponent(status)}`)
+  return Array.isArray(json.reviews) ? (json.reviews as ImageReviewRecord[]) : []
+}
+
+export async function approveImageReviewAi(projectId: string, reviewId: string): Promise<{ ok: boolean }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/reviews/${encodeURIComponent(reviewId)}/approve`, { method: 'POST' })
+  return { ok: Boolean(json.success) }
+}
+
+export async function rejectImageReviewAi(projectId: string, reviewId: string, reason = ''): Promise<{ ok: boolean }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/reviews/${encodeURIComponent(reviewId)}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ reason })
+  })
+  return { ok: Boolean(json.success) }
+}
+
+export async function approveAllImageReviewsAi(projectId: string, phase: string): Promise<{ okCount: number; total: number }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/reviews/approve-all`, {
+    method: 'POST',
+    body: JSON.stringify({ phase })
+  })
+  return { okCount: Number(json.okCount || 0), total: Number(json.total || 0) }
+}
+
 export async function optimizeStoryAssetReferenceAi(
   projectId: string,
   payload: {
@@ -1248,6 +1397,8 @@ export type StudioSettings = {
     comfyuiModelsRoot?: string | null
   }
   tts?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
+  // AUTO-E05：完整度核实的视觉评审模型（moonshot / omlx）
+  review?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
   // NOTE: secrets are accepted on save, but never returned in full by the server.
   secrets?: { openaiApiKey?: string | null; localoxmlApiKey?: string | null; doubaoArkApiKey?: string | null }
   network?: { proxyUrl?: string | null }
@@ -1269,6 +1420,7 @@ export type StudioEffectiveConfig = {
     comfyuiModelsRoot?: string | null
   }
   tts: { provider: string; model: string | null; apiUrl: string | null }
+  review?: { provider: string; model: string | null; apiUrl: string | null }
   secrets?: {
     openai: { present: boolean; masked: string | null; source: string; value?: string | null }
     localoxml: { present: boolean; masked: string | null; source: string; value?: string | null }

@@ -35,15 +35,17 @@ code {
 .app {
   height: 100vh;
   display: grid;
-  grid-template-rows: 52px 1fr;
+  grid-template-rows: auto 1fr;
 }
 
 .topbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 12px;
+  padding: 6px 12px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(2, 6, 23, 0.72);
   color: #e5e7eb;
@@ -2512,6 +2514,14 @@ code {
   color: #4dd68c;
   font-weight: 700;
 }
+.hub-stage-label.playable:has(+ .hub-image-missing-hint) {
+  color: #f6c94e;
+}
+.hub-image-missing-hint {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #f6c94e;
+}
 .hub-project-meta {
   font-size: 11px;
   color: #5e6e82;
@@ -2562,4 +2572,128 @@ code {
 }
 .hub-rail .section {
   padding: 12px;
+}
+
+/* AI 任务进度横幅：锁定测试/场景渲染/批量渲染的真实阶段展示 */
+.ai-task-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.ai-task-progress-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  background: #0b1220;
+  font-size: 12px;
+}
+.ai-task-progress-item.active {
+  border-color: #5eccff44;
+}
+.ai-task-progress-item.done {
+  border-color: #22c55e44;
+}
+.ai-task-progress-item.error {
+  border-color: #ef444466;
+}
+.ai-task-progress-kind {
+  color: #5eccff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ai-task-progress-stage {
+  color: #e5e7eb;
+  white-space: nowrap;
+}
+.ai-task-progress-message {
+  color: #9ca3af;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.ai-task-progress-bar {
+  width: 120px;
+  height: 4px;
+  border-radius: 2px;
+  background: #1f2937;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.ai-task-progress-bar-inner {
+  display: block;
+  height: 100%;
+  background: #5eccff;
+  transition: width 0.4s ease;
+}
+
+/* 图片生成审核：待审核卡片 */
+.ai-review-pending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid #eab30855;
+  border-radius: 10px;
+  background: #131007;
+}
+.ai-review-pending-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ai-review-pending-title {
+  color: #eab308;
+  font-weight: 600;
+  font-size: 13px;
+}
+.ai-review-pending-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  background: #0b1220;
+}
+.ai-review-pending-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.ai-review-phase {
+  color: #eab308;
+  font-weight: 600;
+}
+.ai-review-target {
+  color: #e5e7eb;
+}
+.ai-review-score {
+  color: #5eccff;
+}
+.ai-review-thumb {
+  max-width: 160px;
+  border-radius: 6px;
+  border: 1px solid #1f2937;
+}
+.ai-review-prompt {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.ai-review-summary {
+  font-size: 11px;
+  color: #d1d5db;
+}
+.ai-review-actions {
+  display: flex;
+  gap: 8px;
 }

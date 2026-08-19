@@ -10,6 +10,8 @@ import {
 } from '../lib/reasoning'
 import ReasoningTaskCard from '../components/ReasoningTaskCard.vue'
 import ReasoningReviewCard from '../components/ReasoningReviewCard.vue'
+import EventChainCard from '../components/EventChainCard.vue'
+import EventResultCard from '../components/EventResultCard.vue'
 import { useControlConsoleAppContext } from '../composables/useControlConsoleAppContext'
 
 const app = useControlConsoleAppContext()
@@ -87,6 +89,38 @@ watch(
         :status-label="app.reasoningStatusLabel.value"
         :elapsed-seconds="app.reasoningElapsedSeconds.value"
       />
+      <EventChainCard
+        v-if="app.eventChainVisible.value && app.eventRegistry.value"
+        :registry="app.eventRegistry.value"
+        :busy="app.eventRegistryBusy.value"
+        :error="app.eventRegistryError.value"
+        @close="app.closeEventChain()"
+      />
+
+      <!-- 事件执行确认卡（command + reviewRequired 事件先确认再执行） -->
+      <div v-if="app.eventConfirmPending.value" class="event-confirm-card">
+        <div class="event-confirm-title">
+          确认执行事件
+          <span class="event-confirm-sub">该事件为指令类且需要审核</span>
+        </div>
+        <div class="event-confirm-meta">
+          <span>{{ app.eventConfirmPending.value.event.title }}</span>
+          <span>{{ app.eventConfirmPending.value.event.eventId }}</span>
+          <span v-if="app.eventConfirmPending.value.event.code">{{ app.eventConfirmPending.value.event.code }}</span>
+        </div>
+        <pre class="event-confirm-payload">{{ JSON.stringify(app.eventConfirmPending.value.payload, null, 2) }}</pre>
+        <div class="event-confirm-actions">
+          <button class="chat-btn outline" :disabled="app.eventDispatchBusy.value" @click="app.cancelEventDispatch()">取消</button>
+          <button class="chat-btn primary" :disabled="app.eventDispatchBusy.value" @click="app.confirmEventDispatch()">{{ app.eventDispatchBusy.value ? '执行中...' : '确认执行' }}</button>
+        </div>
+      </div>
+
+      <EventResultCard
+        v-if="app.eventDispatchResult.value"
+        :result="app.eventDispatchResult.value"
+        :busy="app.eventDispatchBusy.value"
+        @close="app.eventDispatchResult.value = null"
+      />
       <ReasoningReviewCard
         v-if="app.reasoningPendingReview.value"
         :review="app.reasoningPendingReview.value"
@@ -116,6 +150,11 @@ watch(
       <div class="chat-composer-footer">
         <div class="chat-composer-hint">Enter 换行，Cmd/Ctrl + Enter 开始任务执行。所有模型调用统一提交给 Hermes。</div>
         <div class="chat-composer-actions">
+          <button
+            class="chat-btn outline"
+            title="脱离当前执行链、清空输入与对话内容（聊天记录归档后清空），开始全新会话"
+            @click="app.startNewChatSession()"
+          >新建会话</button>
           <label class="chat-toggle">
             <input v-model="app.reasoningAutoApproveEnabled.value" type="checkbox" />
             <span>{{ app.reviewModeLabel.value }}</span>
@@ -246,7 +285,10 @@ watch(
   background: var(--c-bg-panel);
   padding: 6px 4px;
   min-height: 160px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.chat-thread::-webkit-scrollbar { display: none; }
 .chat-empty { padding: 32px 16px; text-align: center; }
 .chat-empty-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
 .chat-empty-copy { font-size: 12px; color: var(--c-text-muted); line-height: 1.6; }
@@ -285,7 +327,10 @@ watch(
   line-height: 1.5;
   resize: vertical;
   min-height: 64px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.chat-composer-input::-webkit-scrollbar { display: none; }
 .chat-composer-input:focus { outline: none; border-color: var(--c-accent); }
 .chat-composer-footer {
   display: flex;
@@ -344,7 +389,10 @@ watch(
   overflow-y: auto;
   border-top: 1px solid var(--c-border);
   padding: 8px 12px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.chat-log-body::-webkit-scrollbar { display: none; }
 .chat-log-row {
   display: flex;
   gap: 10px;
@@ -384,7 +432,10 @@ watch(
   padding: 8px;
   white-space: pre-wrap;
   word-break: break-all;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.chat-log-pre::-webkit-scrollbar { display: none; }
 .chat-log-time { flex: none; font-size: 11px; color: var(--c-text-muted); }
 .chat-gate-backdrop {
   position: fixed;
@@ -405,7 +456,10 @@ watch(
   background: var(--c-bg-panel);
   padding: 16px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.chat-gate-modal::-webkit-scrollbar { display: none; }
 .chat-gate-title { font-size: 14px; font-weight: 600; color: var(--c-accent); }
 .chat-gate-sub { font-size: 11px; color: var(--c-text-muted); font-weight: 400; margin-left: 6px; }
 .chat-gate-label { margin-top: 12px; font-size: 12px; color: var(--c-text-sub); }
@@ -440,4 +494,37 @@ watch(
 .chat-btn.danger:hover:not(:disabled) {
   background: rgba(255, 107, 107, 0.12);
 }
+.event-confirm-card {
+  margin: 6px 12px;
+  border: 1px solid rgba(246, 201, 78, 0.4);
+  border-radius: 10px;
+  background: var(--c-bg-panel);
+  padding: 12px;
+}
+.event-confirm-title { font-size: 13px; font-weight: 600; color: var(--c-warn); }
+.event-confirm-sub { font-size: 11px; color: var(--c-text-muted); font-weight: 400; margin-left: 6px; }
+.event-confirm-meta {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--c-text-muted);
+  font-family: monospace;
+}
+.event-confirm-payload {
+  margin: 8px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.event-confirm-payload::-webkit-scrollbar { display: none; }
+.event-confirm-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
 </style>
