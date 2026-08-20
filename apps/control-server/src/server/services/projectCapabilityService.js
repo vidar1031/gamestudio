@@ -111,36 +111,14 @@ export function getProjectCapabilities(binding) {
     }
   }
 
-  // 2) 显式兜底：manifest 缺失时才允许 registry 推导，并明确标记为非权威来源
-  const local = readLocalRegistry(binding.repoPath)
-  if (!local) {
-    return {
-      ok: true,
-      available: false,
-      capabilities: [],
-      runtimeDescriptor: null,
-      source: 'none',
-      error: manifestResult.error || 'registry_not_found'
-    }
-  }
-
-  const { registry, filePath } = local
-  const events = Array.isArray(registry.events) ? registry.events : []
-  const capabilities = events
-    .map(mapEventToCapability)
-    .filter((cap) => cap.id)
-
+  // 2) manifest 缺失：明确拒绝，不得隐式生成伪能力
   return {
     ok: true,
-    available: true,
-    capabilities,
-    runtimeDescriptor: {
-      ...buildRuntimeDescriptor(registry, binding, filePath),
-      manifestRequired: true,
-      manifestFound: false,
-      registryFallback: true
-    },
-    source: 'local_registry_fallback',
-    error: null
+    available: false,
+    capabilities: [],
+    runtimeDescriptor: null,
+    source: 'none',
+    error: 'project_manifest_required',
+    detail: '项目能力声明 manifest 缺失，无法提供可信能力列表。请在绑定项目根目录创建 apps/server/events/project-manifest.v1.json。'
   }
 }

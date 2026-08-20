@@ -132,6 +132,7 @@ export function restoreActionArtifacts(actionId, backups, runtimeDescriptor, rea
   }
 
   // 2) 读取快照，删除新增文件
+  const deleteErrors = []
   try {
     const snapFile = snapshotFilePath(actionId)
     if (fs.existsSync(snapFile)) {
@@ -149,8 +150,8 @@ export function restoreActionArtifacts(actionId, backups, runtimeDescriptor, rea
             try {
               fs.unlinkSync(absFile)
               deleted.push(file)
-            } catch {
-              // 删除失败不阻断
+            } catch (err) {
+              deleteErrors.push({ file, error: err instanceof Error ? err.message : String(err) })
             }
           }
         }
@@ -160,24 +161,25 @@ export function restoreActionArtifacts(actionId, backups, runtimeDescriptor, rea
           if (!remaining.length) {
             fs.rmdirSync(absDir, { recursive: true })
           }
-        } catch {
-          // 忽略
+        } catch (err) {
+          deleteErrors.push({ dir: relDir, error: err instanceof Error ? err.message : String(err) })
         }
       }
     }
-  } catch {
-    // 快照读取失败不阻断恢复
+  } catch (err) {
+    deleteErrors.push({ snapshot: 'read_failed', error: err instanceof Error ? err.message : String(err) })
   }
 
+  const hasErrors = deleteErrors.length > 0
   appendGovernanceAudit({
     action: 'action_rollback',
-    result: 'ok',
-    detail: `动作 ${actionId} 回滚：${reason}，恢复文件 ${restored.join(', ') || '无'}，删除新增 ${deleted.join(', ') || '无'}`,
+    result: hasErrors ? 'partial' : 'ok',
+    detail: `动作 ${actionId} 回滚：${reason}，恢复文件 ${restored.join(', ') || '无'}，删除新增 ${deleted.join(', ') || '无'}${hasErrors ? `，删除失败 ${deleteErrors.length} 项` : ''}`,
     actor: 'system',
-    data: { actionId, reason, restored, deleted }
+    data: { actionId, reason, restored, deleted, deleteErrors }
   })
 
-  return { ok: true, restored, deleted, error: null }
+  return { ok: !hasErrors, restored, deleted, deleteErrors, error: hasErrors ? 'rollback_partial' : null }
 }
 
 /**
@@ -216,10 +218,18 @@ export function rollbackAction(actionId, reason) {
     type: 'rollback',
     reason,
     restored: result.restored,
-    deleted: result.deleted
+    deleted: result.deleted,
+    deleteErrors: result.deleteErrors || []
   })
 
-  return { ok: result.ok, action: updated, restored: result.restored, deleted: result.deleted }
+  return {
+    ok: result.ok,
+    action: updated,
+    restored: result.restored,
+    deleted: result.deleted,
+    deleteErrors: result.deleteErrors || [],
+    error: result.error || null
+  }
 }
 
 // 延迟引入避免循环依赖

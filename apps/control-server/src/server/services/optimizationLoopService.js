@@ -21,10 +21,13 @@ function analyzeFailure(action) {
     const error = String(action.error)
     reasons.push(error)
     if (error.includes('timeout') || error.includes('timed_out')) categories.add('timeout')
-    if (error.includes('review_required')) categories.add('review')
+    if (error.includes('review_required') || error.includes('review_not_approved')) categories.add('review')
     if (error.includes('boundary')) categories.add('boundary')
     if (error.includes('not_found')) categories.add('not_found')
     if (error.includes('validation')) categories.add('validation')
+    if (error.includes('event_not_found') || error.includes('event_id_missing') || error.includes('dispatch_failed')) categories.add('event')
+    if (error.includes('runtime') || error.includes('hermes') || error.includes('omlx') || error.includes('model')) categories.add('runtime')
+    if (error.includes('schema') || error.includes('missing_required')) categories.add('schema')
   }
 
   const lastEvidence = Array.isArray(action.evidence) ? action.evidence[action.evidence.length - 1] : null

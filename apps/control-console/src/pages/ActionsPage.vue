@@ -51,7 +51,8 @@ const stateOptions = [
   { value: 'failed', label: '失败' },
   { value: 'retry_wait', label: '待重试' },
   { value: 'completed', label: '已完成' },
-  { value: 'rolled_back', label: '已回滚' }
+  { value: 'rolled_back', label: '已回滚' },
+  { value: 'cancelled', label: '已取消' }
 ]
 
 function stateLabel(state: string) {

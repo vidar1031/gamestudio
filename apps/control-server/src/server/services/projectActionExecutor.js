@@ -20,6 +20,23 @@ import { backupActionArtifacts, rollbackAction } from './rollbackService.js'
 import { appendGovernanceAudit } from '../reasoning/governanceAudit.js'
 
 /**
+ * 证据链完整性检查：确保 action 具备认定成功所需的最小证据集。
+ */
+function checkEvidenceCompleteness(action, capability) {
+  const missing = []
+  const evidenceTypes = new Set((action?.evidence || []).map((item) => item?.type))
+
+  if (!evidenceTypes.has('capability_bound')) missing.push('capability_bound')
+  if (!evidenceTypes.has('execution_start')) missing.push('execution_start')
+  if (!evidenceTypes.has('validation')) missing.push('validation')
+  if (!action?.result && !action?.error) missing.push('result_or_error')
+  if (capability?.type === 'write' && !evidenceTypes.has('artifact_backup')) missing.push('artifact_backup')
+  if (capability?.requiresReview && !action?.review) missing.push('review_record')
+
+  return { ok: missing.length === 0, missing }
+}
+
+/**
  * 执行动作。
  * @param {string} actionId
  * @param {object} options
@@ -196,10 +213,30 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
     // 验证失败：回滚到之前版本
     rollbackAction(actionId, `validation_failed:${validation.issues.join('; ')}`)
   }
+
+  // 证据链完整性检查：无证据不能认定成功
+  const currentAction = getAction(actionId)
+  const evidenceCheck = checkEvidenceCompleteness(currentAction, capability)
+  if (!evidenceCheck.ok) {
+    transitionAction(actionId, ACTION_STATE.FAILED, 'evidence_incomplete', {
+      type: 'evidence_check',
+      missing: evidenceCheck.missing
+    })
+    appendGovernanceAudit({
+      action: 'action_evidence_blocked',
+      result: 'blocked',
+      detail: `动作 ${actionId} 证据链不完整：${evidenceCheck.missing.join(', ')}`,
+      actor: action.actor,
+      data: { actionId, missing: evidenceCheck.missing }
+    })
+    return { ok: false, error: 'evidence_incomplete', action: getAction(actionId), validation, evidenceCheck }
+  }
+
   const finalState = validation.ok ? ACTION_STATE.COMPLETED : ACTION_STATE.FAILED
   const finalAction = transitionAction(actionId, finalState, validation.ok ? 'validation_passed' : 'validation_failed', {
     type: 'validation',
-    validation
+    validation,
+    evidenceCheck
   })
 
   appendGovernanceAudit({

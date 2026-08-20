@@ -13,7 +13,8 @@ export function registerProjectCapabilityRoutes(app) {
       capabilities: summary.capabilities,
       runtimeDescriptor: summary.runtimeDescriptor,
       source: summary.source,
-      error: summary.error
+      error: summary.error,
+      detail: summary.detail || null
     })
   })
 
