@@ -770,6 +770,84 @@ export function buildStoryWorkflowDeterministicAnswer(userPrompt, artifacts) {
   ].join('\n')
 }
 
+/**
+ * 用户对话通道：把 story workflow artifacts 转化为自然语言回复。
+ * 输出协议：先说状态 → 再说失败点 → 再说证据 → 最后说下一步。
+ * 禁止直接打印 artifact schema。
+ */
+export function buildStoryWorkflowUserReply(userPrompt, artifacts) {
+  const storyProduction = artifacts?.storyProduction && typeof artifacts.storyProduction === 'object'
+    ? artifacts.storyProduction
+    : null
+  if (!storyProduction) return ''
+
+  const lastResult = compactStoryWorkflowResult(storyProduction.lastResult)
+  const steps = storyProduction.steps && typeof storyProduction.steps === 'object'
+    ? Object.entries(storyProduction.steps).map(([stepId, result]) => ({ stepId, result: compactStoryWorkflowResult(result) }))
+    : []
+  const projectId = lastResult?.projectId || storyProduction.currentProjectId || storyProduction.lastProjectId || ''
+  const evidence = lastResult?.evidence || {}
+  const snapshot = lastResult?.snapshot || {}
+  const evaluator = lastResult?.evaluator || {}
+  const failedSteps = steps.filter((item) => item.result && item.result.ok === false)
+  const success = Boolean(lastResult?.ok)
+
+  const lines = []
+
+  // 1) 状态
+  if (success) {
+    lines.push(`已启动创建故事项目，当前状态：完成。`)
+  } else {
+    lines.push(`已启动创建故事项目，当前状态：失败。`)
+  }
+
+  // 2) 当前执行到哪一步
+  if (steps.length) {
+    const lastStep = steps[steps.length - 1]
+    const stepName = lastStep.stepId.replace(/^step_story_/, '').replace(/_/g, ' ')
+    lines.push(`执行到步骤：${stepName}。`)
+  }
+
+  // 3) 失败点与证据
+  if (!success) {
+    const failedStep = failedSteps[failedSteps.length - 1]
+    if (failedStep) {
+      lines.push(`失败原因：${failedStep.result?.summary || '未知错误'}。`)
+      if (failedStep.result?.failedStage) {
+        lines.push(`失败阶段：${failedStep.result.failedStage}。`)
+      }
+    } else if (lastResult?.summary) {
+      lines.push(`失败原因：${lastResult.summary}。`)
+    }
+
+    // 缺失证据
+    const missing = []
+    if (!snapshot.scriptCards) missing.push('scripts 卡片数为 0')
+    if (!snapshot.blueprintNodes) missing.push('blueprint 节点数为 0')
+    if (!snapshot.storyNodes) missing.push('story 节点数为 0')
+    if (missing.length) {
+      lines.push(`缺失证据：${missing.join('，')}。`)
+    }
+  } else {
+    // 成功时的关键证据
+    if (projectId) {
+      lines.push(`项目 ID：${projectId}。`)
+    }
+    if (snapshot.scriptCards) {
+      lines.push(`已生成 ${snapshot.scriptCards} 张脚本卡片。`)
+    }
+  }
+
+  // 4) 下一步建议
+  if (!success) {
+    lines.push('下一步建议：请检查项目创建入口是否正常；若 project.create 事件执行失败，需要修复该 API 或事件映射。')
+  } else {
+    lines.push('下一步建议：可以在项目列表中查看新项目，或继续生成脚本与蓝图。')
+  }
+
+  return lines.join('\n')
+}
+
 function compactGameStudioBootstrapResult(result) {
   if (!result || typeof result !== 'object') return null
   return {

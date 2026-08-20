@@ -23,6 +23,7 @@ import {
   buildGameStudioBootstrapDeterministicAnswer,
   buildReasoningPlannerMessages,
   buildStoryWorkflowDeterministicAnswer,
+  buildStoryWorkflowUserReply,
   extractJsonObjectString,
   isLikelyReadOnlyReasoningPrompt,
   normalizeReasoningPlan,
@@ -476,6 +477,21 @@ export async function generateReasoningPlan(userPrompt, history, binding, option
   }
 }
 
+/**
+ * 判断用户是否在询问任务状态/执行证据/审计详情。
+ * 只有这类查询才允许走 deterministic artifact summary；普通问答必须走自然语言。
+ */
+function isStatusOnlyPrompt(userPrompt) {
+  const text = String(userPrompt || '').trim().toLowerCase()
+  if (!text) return false
+  const statusKeywords = [
+    '状态', '详情', '证据', '审计', 'artifact', '执行结果', '运行结果',
+    'task status', 'evidence', 'audit', 'detail', 'result', 'summary',
+    '查看状态', '查看证据', '查看详情', '任务详情', '执行详情'
+  ]
+  return statusKeywords.some((keyword) => text.includes(keyword))
+}
+
 export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifacts, binding, history, options = {}) {
   const requireModelAnswer = Boolean(options.contextSelection?.requireModelAnswer || options.contextSelection?.requireHermesModelAnswer)
   const hasGameStudioBootstrapArtifacts = Boolean(artifacts?.gameStudioBootstrap && typeof artifacts.gameStudioBootstrap === 'object')
@@ -504,25 +520,50 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
   }
   const hasStoryWorkflowArtifacts = Boolean(artifacts?.storyProduction && typeof artifacts.storyProduction === 'object')
   if (!requireModelAnswer && hasStoryWorkflowArtifacts) {
-    const storyReply = buildStoryWorkflowDeterministicAnswer(userPrompt, artifacts)
-    if (storyReply) {
-      return {
-        reply: storyReply,
-        usage: null,
-        fallback: true,
-        fallbackReason: 'deterministic_story_workflow_artifact_answer',
-        intentId: 'story_workflow_execute',
-        outboundPreview: buildStructuredOutboundPreview({
-          binding,
-          messages: [],
-          purpose: 'deterministic-story-workflow-answer',
-          mode: 'reasoning',
-          userPrompt,
-          replayedMessageCount: 0,
-          contextSelection: options.contextSelection || {},
-          history
-        }),
-        rawResponsePreview: truncateReasoningPreview(storyReply, 2400)
+    // 双通道输出：status-only 查询走 artifact summary；普通问答走自然语言
+    if (isStatusOnlyPrompt(userPrompt)) {
+      const storyReply = buildStoryWorkflowDeterministicAnswer(userPrompt, artifacts)
+      if (storyReply) {
+        return {
+          reply: storyReply,
+          usage: null,
+          fallback: true,
+          fallbackReason: 'deterministic_story_workflow_artifact_answer',
+          intentId: 'story_workflow_execute',
+          outboundPreview: buildStructuredOutboundPreview({
+            binding,
+            messages: [],
+            purpose: 'deterministic-story-workflow-answer',
+            mode: 'reasoning',
+            userPrompt,
+            replayedMessageCount: 0,
+            contextSelection: options.contextSelection || {},
+            history
+          }),
+          rawResponsePreview: truncateReasoningPreview(storyReply, 2400)
+        }
+      }
+    } else {
+      const userReply = buildStoryWorkflowUserReply(userPrompt, artifacts)
+      if (userReply) {
+        return {
+          reply: userReply,
+          usage: null,
+          fallback: true,
+          fallbackReason: 'story_workflow_user_reply',
+          intentId: 'story_workflow_execute',
+          outboundPreview: buildStructuredOutboundPreview({
+            binding,
+            messages: [],
+            purpose: 'story-workflow-user-reply',
+            mode: 'reasoning',
+            userPrompt,
+            replayedMessageCount: 0,
+            contextSelection: options.contextSelection || {},
+            history
+          }),
+          rawResponsePreview: truncateReasoningPreview(userReply, 2400)
+        }
       }
     }
   }
