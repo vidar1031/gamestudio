@@ -74,14 +74,34 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
     return { ok: true, action: getAction(actionId), validation: { ok: true, dryRun: true } }
   }
 
-  // review gate：需要审核但未确认
-  if (capability.requiresReview && !confirmed) {
-    transitionAction(actionId, ACTION_STATE.WAITING_REVIEW, 'review_required', {
-      type: 'review_gate',
-      capability: { id: capability.id, requiresReview: true },
-      boundaryCheck: 'passed'
-    })
-    return { ok: false, error: 'review_required', action: getAction(actionId) }
+  // review gate 强制闭环：需要审核的动作，必须处于 APPROVED 状态才能执行真实 output。
+  // confirmed 参数仅在 action.state === APPROVED 时有效；否则一律拒绝。
+  if (capability.requiresReview) {
+    if (action.state !== ACTION_STATE.APPROVED) {
+      if (!confirmed) {
+        transitionAction(actionId, ACTION_STATE.WAITING_REVIEW, 'review_required', {
+          type: 'review_gate',
+          capability: { id: capability.id, requiresReview: true },
+          boundaryCheck: 'passed'
+        })
+        return { ok: false, error: 'review_required', action: getAction(actionId) }
+      }
+      // 已确认但未获批准：强制拒绝，防止绕过审核直接执行
+      transitionAction(actionId, ACTION_STATE.FAILED, 'review_not_approved', {
+        type: 'review_gate',
+        capability: { id: capability.id, requiresReview: true },
+        boundaryCheck: 'passed',
+        error: 'action_not_approved'
+      })
+      appendGovernanceAudit({
+        action: 'action_review_bypass_blocked',
+        result: 'blocked',
+        detail: `动作 ${actionId} 未获批准但被尝试执行（confirmed=${confirmed}），已强制阻断`,
+        actor: action.actor,
+        data: { actionId, confirmed, state: action.state }
+      })
+      return { ok: false, error: 'review_not_approved', action: getAction(actionId) }
+    }
   }
 
   // 写入类动作：执行前备份将被修改的文件

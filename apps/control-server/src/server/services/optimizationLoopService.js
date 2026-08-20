@@ -115,11 +115,18 @@ export async function runOptimizationLoop(actionId, { maxRounds = DEFAULT_MAX_RO
 
     const roundRecord = {
       round,
+      version: `round_${round}`,
+      objective: current.capabilityId,
       actionId: current.actionId,
       target: current.capabilityId,
       input: current.input,
       ok: result.ok,
       score: validation.score,
+      failures: failureAnalysis.reasons.map((reason, index) => ({
+        id: `failure_${round}_${index}`,
+        reason,
+        category: failureAnalysis.categories[index] || 'unknown'
+      })),
       failureReasons: failureAnalysis.reasons,
       failureCategories: failureAnalysis.categories,
       revision: null,
@@ -139,7 +146,15 @@ export async function runOptimizationLoop(actionId, { maxRounds = DEFAULT_MAX_RO
         actor: current.actor,
         data: { actionId: current.actionId, round, score: validation.score }
       })
-      return { ok: true, finalAction: getAction(current.actionId), rounds, bestAction }
+      const bestRound = rounds.find((r) => r.actionId === bestAction?.actionId) || null
+      return {
+        ok: true,
+        finalAction: getAction(current.actionId),
+        rounds,
+        bestAction,
+        bestRound,
+        bestScore
+      }
     }
 
     // 失败：记录并准备下一轮
@@ -157,7 +172,16 @@ export async function runOptimizationLoop(actionId, { maxRounds = DEFAULT_MAX_RO
         maxRounds,
         rounds
       })
-      return { ok: false, error: 'max_rounds_exceeded', finalAction: getAction(current.actionId), rounds, bestAction }
+      const bestRound = rounds.find((r) => r.actionId === bestAction?.actionId) || null
+      return {
+        ok: false,
+        error: 'max_rounds_exceeded',
+        finalAction: getAction(current.actionId),
+        rounds,
+        bestAction,
+        bestRound,
+        bestScore
+      }
     }
 
     // 创建下一轮动作

@@ -97,6 +97,76 @@ export function validateActionInputPaths(input, { projectRoot, allowedRoots = []
 }
 
 /**
+ * 业务动作特定边界校验规则。
+ * 每种业务动作除了通用路径字段校验外，还有自己的业务路径约束。
+ */
+const BUSINESS_BOUNDARY_RULES = {
+  'story.create': (input, errors) => {
+    // story.create 只允许 title/template，不允许任何路径字段
+    const forbidden = ['path', 'file', 'dir', 'outputPath', 'targetPath', 'rootDir', 'workdir']
+    for (const field of forbidden) {
+      if (input[field] !== undefined) {
+        errors.push({ field, path: String(input[field]), error: 'field_not_allowed_for_story_create' })
+      }
+    }
+  },
+  'story.configure': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+  },
+  'story.generate_scripts': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+    if (!input.brief || String(input.brief).trim().length < 1) {
+      errors.push({ field: 'brief', path: '', error: 'brief_required' })
+    }
+  },
+  'story.validate': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+  },
+  'story.compile_blueprint': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+  },
+  'story.generate_asset_plan': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+  },
+  'story.lock_asset': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+    if (!input.assetId || String(input.assetId).includes('..') || String(input.assetId).includes('/')) {
+      errors.push({ field: 'assetId', path: String(input.assetId || ''), error: 'invalid_asset_id' })
+    }
+  },
+  'scene.render': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+    if (!input.sceneId || String(input.sceneId).includes('..') || String(input.sceneId).includes('/')) {
+      errors.push({ field: 'sceneId', path: String(input.sceneId || ''), error: 'invalid_scene_id' })
+    }
+  },
+  'story.export': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+  },
+  'project.review': (input, errors) => {
+    if (!input.projectId || String(input.projectId).includes('..') || String(input.projectId).includes('/')) {
+      errors.push({ field: 'projectId', path: String(input.projectId || ''), error: 'invalid_project_id' })
+    }
+  }
+}
+
+/**
  * 校验 action 是否允许在当前项目边界内执行。
  * @param {object} action - action 记录
  * @param {object} capability - capability 定义
@@ -111,13 +181,19 @@ export function enforceActionBoundary(action, capability, runtimeDescriptor) {
 
   const errors = []
 
-  // 1) input 中的路径字段校验
+  // 1) input 中的通用路径字段校验
   const pathCheck = validateActionInputPaths(action?.input, { projectRoot, allowedRoots })
   if (!pathCheck.ok) {
     errors.push(...pathCheck.errors)
   }
 
-  // 2) 写入类动作必须声明 artifacts，且 artifacts 必须在项目根目录内
+  // 2) 业务动作特定边界校验
+  const businessRule = BUSINESS_BOUNDARY_RULES[capability?.id]
+  if (businessRule) {
+    businessRule(action?.input || {}, errors)
+  }
+
+  // 3) 写入类动作必须声明 artifacts，且 artifacts 必须在项目根目录内
   if (capability?.type === 'write') {
     const artifacts = Array.isArray(capability?.artifacts) ? capability.artifacts : []
     for (const artifact of artifacts) {
@@ -126,14 +202,6 @@ export function enforceActionBoundary(action, capability, runtimeDescriptor) {
         errors.push({ field: 'artifacts', path: artifact, error: result.error })
       }
     }
-  }
-
-  // 3) 跨项目写入防护：action.projectId 必须与当前绑定项目一致（如果声明了 projectId）
-  const boundProjectId = String(runtimeDescriptor?.projectId || '').trim()
-  const actionProjectId = String(action?.projectId || '').trim()
-  if (boundProjectId && actionProjectId && boundProjectId !== actionProjectId) {
-    // 注意：GameStudio 的 projectId 是存储项目 ID（如 f51aec2e...），不是绑定 ID（gamestudio）
-    // 这里不强制相等，只记录警告；真正的跨项目防护由路径根目录限制保证
   }
 
   return { ok: errors.length === 0, errors }

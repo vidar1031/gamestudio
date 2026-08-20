@@ -80,7 +80,7 @@ function buildRuntimeDescriptor(registry, binding, sourcePath) {
 
 /**
  * 获取当前绑定项目的能力摘要。
- * 优先读取 project-manifest.v1.json（真实能力声明）；缺失时回退到事件注册表推导。
+ * manifest 是唯一可信源；registry 推导仅在 manifest 缺失时作为显式兜底，并在 source 中明确标记。
  * @param {object} binding - projectBindingService.getProjectBinding() 返回值
  * @returns {{ok:boolean, available:boolean, capabilities:Array, runtimeDescriptor:object|null, source:string, error:string|null}}
  */
@@ -96,13 +96,22 @@ export function getProjectCapabilities(binding) {
     }
   }
 
-  // 1) 优先读取项目能力声明 manifest
+  // 1) 唯一可信源：项目能力声明 manifest
   const manifestResult = getProjectCapabilitiesFromManifest(binding)
   if (manifestResult.available) {
-    return manifestResult
+    return {
+      ...manifestResult,
+      source: 'project_manifest',
+      runtimeDescriptor: {
+        ...manifestResult.runtimeDescriptor,
+        manifestRequired: true,
+        manifestFound: true,
+        registryFallback: false
+      }
+    }
   }
 
-  // 2) 回退：从事件注册表推导
+  // 2) 显式兜底：manifest 缺失时才允许 registry 推导，并明确标记为非权威来源
   const local = readLocalRegistry(binding.repoPath)
   if (!local) {
     return {
@@ -125,8 +134,13 @@ export function getProjectCapabilities(binding) {
     ok: true,
     available: true,
     capabilities,
-    runtimeDescriptor: buildRuntimeDescriptor(registry, binding, filePath),
-    source: 'local_registry',
+    runtimeDescriptor: {
+      ...buildRuntimeDescriptor(registry, binding, filePath),
+      manifestRequired: true,
+      manifestFound: false,
+      registryFallback: true
+    },
+    source: 'local_registry_fallback',
     error: null
   }
 }
