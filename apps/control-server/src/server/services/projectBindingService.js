@@ -3,6 +3,7 @@
 // - 绑定决定「项目事件」注册表与项目页卡片的来源 GameStudio 实例；
 // - 默认绑定本机 GameStudio（label「GameStudio 交互故事」，baseUrl http://127.0.0.1:1999），
 //   未写入绑定文件时回落默认；env GAMESTUDIO_SERVER_BASE_URL 可作为默认 baseUrl 覆盖（兼容既有部署）；
+// - repoPath 指向 GameStudio 仓库根目录，用于本地读取事件注册表等静态文件，默认为 GAMESTUDIO_ROOT；
 // - 绑定持久化到 state/project-binding.json（小 state 文件，原子写：tmp + rename）；
 // - 仅接受本机 http(s) 地址（localhost/127.0.0.1/::1），拒绝任意外部地址；
 // - 支持 bound=false 的显式解绑状态，供事件页呈现明确空态。
@@ -18,7 +19,8 @@ const DEFAULT_BASE_URL = String(
 
 export const DEFAULT_PROJECT_BINDING = Object.freeze({
   id: 'gamestudio',
-  label: 'GameStudio 交互故事'
+  label: 'GameStudio 交互故事',
+  repoPath: GAMESTUDIO_ROOT
 })
 
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
@@ -55,7 +57,7 @@ export function getProjectBinding() {
     if (fs.existsSync(file)) {
       const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
       if (parsed && parsed.bound === false) {
-        return { bound: false, id: '', label: '', baseUrl: '', source: 'file', updatedAt: parsed.updatedAt || null }
+        return { bound: false, id: '', label: '', baseUrl: '', repoPath: '', source: 'file', updatedAt: parsed.updatedAt || null }
       }
       const normalized = normalizeBindingBaseUrl(parsed?.baseUrl)
       if (normalized.ok) {
@@ -64,6 +66,7 @@ export function getProjectBinding() {
           id: String(parsed?.id || DEFAULT_PROJECT_BINDING.id),
           label: String(parsed?.label || DEFAULT_PROJECT_BINDING.label),
           baseUrl: normalized.baseUrl,
+          repoPath: String(parsed?.repoPath || DEFAULT_PROJECT_BINDING.repoPath || GAMESTUDIO_ROOT),
           source: 'file',
           updatedAt: parsed?.updatedAt || null
         }
@@ -77,6 +80,7 @@ export function getProjectBinding() {
     id: DEFAULT_PROJECT_BINDING.id,
     label: DEFAULT_PROJECT_BINDING.label,
     baseUrl: DEFAULT_BASE_URL,
+    repoPath: DEFAULT_PROJECT_BINDING.repoPath,
     source: 'default',
     updatedAt: null
   }
@@ -96,7 +100,7 @@ export function setProjectBinding(input = {}) {
   const updatedAt = new Date().toISOString()
   if (input.bound === false) {
     atomicWriteJson(file, { bound: false, updatedAt })
-    return { bound: false, id: '', label: '', baseUrl: '', source: 'file', updatedAt }
+    return { bound: false, id: '', label: '', baseUrl: '', repoPath: '', source: 'file', updatedAt }
   }
   const normalized = normalizeBindingBaseUrl(input.baseUrl)
   if (!normalized.ok) {
@@ -106,7 +110,8 @@ export function setProjectBinding(input = {}) {
   }
   const label = String(input.label || '').trim() || DEFAULT_PROJECT_BINDING.label
   const id = String(input.id || '').trim() || DEFAULT_PROJECT_BINDING.id
-  const record = { bound: true, id, label, baseUrl: normalized.baseUrl, updatedAt }
+  const repoPath = String(input.repoPath || '').trim() || DEFAULT_PROJECT_BINDING.repoPath || GAMESTUDIO_ROOT
+  const record = { bound: true, id, label, baseUrl: normalized.baseUrl, repoPath, updatedAt }
   atomicWriteJson(file, record)
   return { ...record, source: 'file' }
 }

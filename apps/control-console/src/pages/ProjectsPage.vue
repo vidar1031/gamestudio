@@ -1,20 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { listProjects, createProject, deleteProject } from '../services/projectApi'
 import { getProjectBinding, putProjectBinding, type ProjectBinding, type ProjectBindingProbe } from '../services/bindingApi'
 import { getEventRegistry } from '../services/eventsApi'
-
-type ProjectItem = {
-  id: string
-  title: string
-  updatedAt?: string
-  createdAt?: string
-}
-
-const projects = ref<ProjectItem[]>([])
-const busy = ref(false)
-const error = ref('')
-const newTitle = ref('')
 
 // 当前绑定项目卡片状态
 const binding = ref<ProjectBinding | null>(null)
@@ -90,61 +77,8 @@ async function unbind() {
   }
 }
 
-async function load() {
-  busy.value = true
-  error.value = ''
-  try {
-    const res = await listProjects()
-    const payload = await res.json().catch(() => null)
-    if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
-    projects.value = Array.isArray(payload.projects) ? payload.projects : []
-  } catch (e) {
-    error.value = String(e)
-  } finally {
-    busy.value = false
-  }
-}
-
-async function create() {
-  if (!newTitle.value.trim()) return
-  busy.value = true
-  error.value = ''
-  try {
-    const res = await createProject(newTitle.value.trim())
-    const payload = await res.json().catch(() => null)
-    if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
-    newTitle.value = ''
-    await load()
-  } catch (e) {
-    error.value = String(e)
-  } finally {
-    busy.value = false
-  }
-}
-
-async function remove(id: string) {
-  if (!confirm('确定要删除该项目吗？')) return
-  busy.value = true
-  error.value = ''
-  try {
-    const res = await deleteProject(id)
-    const payload = await res.json().catch(() => null)
-    if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
-    await load()
-  } catch (e) {
-    error.value = String(e)
-  } finally {
-    busy.value = false
-  }
-}
-
-function openEditor(projectId: string) {
-  window.open(`http://localhost:8868/?project=${encodeURIComponent(projectId)}`, '_blank')
-}
-
 onMounted(() => {
   loadBinding()
-  load()
 })
 </script>
 
@@ -199,37 +133,12 @@ onMounted(() => {
 
     <section class="page-section">
       <div class="section-header">
-        <h2>项目库</h2>
-        <button class="action-btn" :disabled="busy" @click="load">刷新</button>
+        <h2>交互方式说明</h2>
       </div>
-      <p class="section-hint">管理 storage/projects 中的互动故事项目。点击项目可在 Editor 中打开。</p>
-
-      <div class="create-bar">
-        <input
-          v-model="newTitle"
-          class="create-input"
-          placeholder="新项目标题"
-          @keydown.enter="create"
-        />
-        <button class="action-btn primary" :disabled="busy || !newTitle.trim()" @click="create">
-          创建项目
-        </button>
-      </div>
-
-      <div v-if="error" class="error-banner">{{ error }}</div>
-
-      <div class="project-list">
-        <div v-if="!projects.length && !busy" class="empty-state">暂无项目</div>
-        <div v-for="project in projects" :key="project.id" class="project-card">
-          <div class="project-info">
-            <div class="project-title">{{ project.title || '未命名项目' }}</div>
-            <div class="project-meta">ID: {{ project.id }}</div>
-          </div>
-          <div class="project-actions">
-            <button class="action-btn" @click="openEditor(project.id)">在 Editor 中打开</button>
-            <button class="action-btn danger" :disabled="busy" @click="remove(project.id)">删除</button>
-          </div>
-        </div>
+      <p class="section-hint">守护台智能体不直接管理绑定项目的内部内容。它通过互动聊天与「项目事件」映射触发动作；绑定项目自行运行生产。故事项目的创建与管理在 Studio 编辑器中进行。</p>
+      <div class="binding-links">
+        <router-link class="action-btn" to="/events">查看项目事件</router-link>
+        <a class="action-btn" href="http://localhost:8868/" target="_blank" rel="noopener">打开 Studio 编辑器</a>
       </div>
     </section>
   </div>

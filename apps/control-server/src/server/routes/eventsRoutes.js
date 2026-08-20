@@ -1,9 +1,30 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { dispatchGameStudioEvent } from '../events/eventDispatcher.js'
 import { readGameStudioEventRuns } from '../events/eventRunsReader.js'
 import { getProjectBinding } from '../services/projectBindingService.js'
 
-// 事件层路由：注册表透传 + 事件分发入口 + 执行历史只读查询。
-// 注册表所有权属于 GameStudio（apps/server/events/registry.v1.json），此处只做透传与错误归一。
+const DEFAULT_REGISTRY_REL_PATH = path.join('apps', 'server', 'events', 'registry.v1.json')
+
+function readLocalRegistry(repoPath) {
+  const root = String(repoPath || '').trim()
+  if (!root) return null
+  const file = path.resolve(root, DEFAULT_REGISTRY_REL_PATH)
+  try {
+    if (!fs.existsSync(file)) return null
+    const content = fs.readFileSync(file, 'utf8')
+    if (!content.trim()) return null
+    const registry = JSON.parse(content)
+    if (!registry || typeof registry !== 'object' || !Array.isArray(registry.events)) return null
+    return registry
+  } catch {
+    return null
+  }
+}
+
+// 事件层路由：注册表本地文件优先 + 活服务兜底 + 事件分发入口 + 执行历史只读查询。
+// 注册表所有权属于 GameStudio（apps/server/events/registry.v1.json），守护台本地持有该文件副本，
+// 因此「事件地图」等只读展示不再依赖 GameStudio 服务在线；仅事件执行（/dispatch）需要服务可达。
 // 注册表来源跟随「当前绑定项目」（projectBindingService），未绑定/不可达时返回明确 unavailable，绝不 500。
 // /dispatch 是聊天激活与外挂测试 runner 共用的唯一事件执行入口。
 export function registerEventsRoutes(app) {
@@ -12,6 +33,21 @@ export function registerEventsRoutes(app) {
     if (!binding.bound) {
       return c.json({ ok: true, available: false, reason: 'project_not_bound', error: 'project_not_bound', binding })
     }
+
+    // 1) 本地文件优先：绑定项目的 repoPath 下读取 registry.v1.json
+    const localRegistry = readLocalRegistry(binding.repoPath)
+    if (localRegistry) {
+      return c.json({
+        ok: true,
+        available: true,
+        registry: localRegistry,
+        binding,
+        source: 'local_file',
+        sourcePath: path.resolve(binding.repoPath, DEFAULT_REGISTRY_REL_PATH)
+      })
+    }
+
+    // 2) 活服务兜底：本地文件缺失或损坏时请求 GameStudio /api/events/registry
     const baseUrl = binding.baseUrl
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10000)
@@ -29,7 +65,7 @@ export function registerEventsRoutes(app) {
           binding
         })
       }
-      return c.json({ ok: true, available: true, registry: payload.registry, binding, source: `${baseUrl}/api/events/registry` })
+      return c.json({ ok: true, available: true, registry: payload.registry, binding, source: 'gamestudio_server', sourcePath: `${baseUrl}/api/events/registry` })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return c.json({ ok: true, available: false, reason: 'registry_unreachable', error: `gamestudio_registry_unreachable: ${message}`, binding })
