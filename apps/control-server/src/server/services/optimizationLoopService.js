@@ -11,42 +11,73 @@ import { appendGovernanceAudit } from '../reasoning/governanceAudit.js'
 const DEFAULT_MAX_ROUNDS = 3
 
 /**
- * 失败归因：从 action error / validation issues 中提取可修正信号。
+ * 结构化失败归因：从 action error / validation issues / boundary errors 中提取分类信号。
  */
 function analyzeFailure(action) {
   const reasons = []
-  if (action.error) reasons.push(String(action.error))
+  const categories = new Set()
+
+  if (action.error) {
+    const error = String(action.error)
+    reasons.push(error)
+    if (error.includes('timeout') || error.includes('timed_out')) categories.add('timeout')
+    if (error.includes('review_required')) categories.add('review')
+    if (error.includes('boundary')) categories.add('boundary')
+    if (error.includes('not_found')) categories.add('not_found')
+    if (error.includes('validation')) categories.add('validation')
+  }
+
   const lastEvidence = Array.isArray(action.evidence) ? action.evidence[action.evidence.length - 1] : null
   if (lastEvidence?.validation?.issues) {
-    reasons.push(...lastEvidence.validation.issues.map(String))
+    for (const issue of lastEvidence.validation.issues) {
+      reasons.push(String(issue))
+      if (String(issue).includes('missing_required')) categories.add('schema')
+    }
   }
-  return reasons.length ? reasons : ['unknown_failure']
+  if (lastEvidence?.type === 'boundary_check' && Array.isArray(lastEvidence.errors)) {
+    for (const err of lastEvidence.errors) {
+      reasons.push(`${err.field}:${err.error}`)
+      categories.add('boundary')
+    }
+  }
+
+  return {
+    reasons: reasons.length ? reasons : ['unknown_failure'],
+    categories: Array.from(categories)
+  }
 }
 
 /**
- * 策略修正：根据失败原因生成下一轮输入调整。
- * 当前为最小实现：仅在 input 中追加 retryHint；后续可接入模型改写 prompt。
+ * 策略修正：根据失败分类生成下一轮输入调整。
  */
-function reviseStrategy(action, failureReasons) {
+function reviseStrategy(action, failureAnalysis) {
+  const { reasons, categories } = failureAnalysis
   const revision = {
     type: 'retry_with_hint',
-    failureReasons,
+    failureReasons: reasons,
+    failureCategories: categories,
     changes: {}
   }
   const nextInput = { ...(action.input || {}) }
-  // 针对常见失败模式做最小修正
-  if (failureReasons.some((r) => r.includes('missing_required'))) {
+
+  if (categories.includes('schema') || reasons.some((r) => r.includes('missing_required'))) {
     revision.type = 'retry_fill_required'
     revision.changes.fillRequired = true
-  } else if (failureReasons.some((r) => r.includes('timeout'))) {
+  } else if (categories.includes('timeout')) {
     revision.type = 'retry_extend_timeout'
     nextInput.timeoutMs = Math.min(600000, Number(nextInput.timeoutMs || 30000) * 2)
     revision.changes.timeoutMs = nextInput.timeoutMs
-  } else if (failureReasons.some((r) => r.includes('review_required'))) {
+  } else if (categories.includes('review')) {
     revision.type = 'retry_with_confirmation'
     revision.changes.requiresConfirmation = true
+  } else if (categories.includes('boundary')) {
+    revision.type = 'retry_constrain_path'
+    revision.changes.constrainToProjectRoot = true
+  } else if (categories.includes('not_found')) {
+    revision.type = 'retry_verify_target'
+    revision.changes.verifyTargetExists = true
   } else {
-    nextInput.retryHint = `上一轮失败：${failureReasons.join('; ')}`
+    nextInput.retryHint = `上一轮失败：${reasons.join('; ')}`
     revision.changes.retryHint = nextInput.retryHint
   }
   return { nextInput, revision }
@@ -80,7 +111,7 @@ export async function runOptimizationLoop(actionId, { maxRounds = DEFAULT_MAX_RO
 
     const result = await executeAction(current.actionId, { confirmed })
     const validation = result.validation || { ok: false, score: 0, issues: [] }
-    const failureReasons = result.ok ? [] : analyzeFailure(getAction(current.actionId))
+    const failureAnalysis = result.ok ? { reasons: [], categories: [] } : analyzeFailure(getAction(current.actionId))
 
     const roundRecord = {
       round,
@@ -89,7 +120,8 @@ export async function runOptimizationLoop(actionId, { maxRounds = DEFAULT_MAX_RO
       input: current.input,
       ok: result.ok,
       score: validation.score,
-      failureReasons,
+      failureReasons: failureAnalysis.reasons,
+      failureCategories: failureAnalysis.categories,
       revision: null,
       finishedAt: new Date().toISOString()
     }
@@ -114,9 +146,9 @@ export async function runOptimizationLoop(actionId, { maxRounds = DEFAULT_MAX_RO
     appendGovernanceAudit({
       action: 'optimization_loop',
       result: 'failed',
-      detail: `动作 ${current.actionId} 第 ${round} 轮失败：${failureReasons.join('; ')}`,
+      detail: `动作 ${current.actionId} 第 ${round} 轮失败：${failureAnalysis.reasons.join('; ')}`,
       actor: current.actor,
-      data: { actionId: current.actionId, round, failureReasons }
+      data: { actionId: current.actionId, round, failureReasons: failureAnalysis.reasons, failureCategories: failureAnalysis.categories }
     })
 
     if (round >= maxRounds) {
@@ -129,7 +161,7 @@ export async function runOptimizationLoop(actionId, { maxRounds = DEFAULT_MAX_RO
     }
 
     // 创建下一轮动作
-    const { nextInput, revision } = reviseStrategy(current, failureReasons)
+    const { nextInput, revision } = reviseStrategy(current, failureAnalysis)
     roundRecord.revision = revision
     const nextAction = createAction({
       sessionId: current.sessionId,

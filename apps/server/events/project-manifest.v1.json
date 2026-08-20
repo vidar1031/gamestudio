@@ -1,0 +1,348 @@
+{
+  "version": "1.0",
+  "projectId": "gamestudio",
+  "kind": "gamestudio-story-project",
+  "displayName": "GameStudio 交互故事",
+  "rootDir": "/Volumes/ovokit2t/aiwork/gamestudio",
+  "capabilities": [
+    {
+      "id": "story.create",
+      "type": "write",
+      "label": "创建故事项目",
+      "description": "创建一个新的互动故事项目，落盘 meta.json / project.json / 空 scripts / 空 blueprint。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "inputSchema": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "template": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "project"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "project": {
+            "type": "object",
+            "required": ["id", "title"],
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" }
+            }
+          }
+        }
+      },
+      "artifacts": ["meta.json", "project.json", "scripts.json", "blueprint.json"],
+      "timeoutMs": 15000,
+      "event": { "code": "GS-02", "eventId": "project.create", "kind": "command" }
+    },
+    {
+      "id": "story.configure",
+      "type": "write",
+      "label": "写入生成配置",
+      "description": "写入项目生成配置（题材/风格/目标受众/输出语言/公式参数）。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId", "config"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 },
+          "config": {
+            "type": "object",
+            "required": ["genre", "style", "targetAudience", "outputLanguage"],
+            "properties": {
+              "genre": { "type": "string" },
+              "style": { "type": "string" },
+              "targetAudience": { "type": "string" },
+              "outputLanguage": { "type": "string" },
+              "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3 },
+              "optionsPerChoice": { "type": "integer", "enum": [2, 3] },
+              "endings": { "type": "integer", "minimum": 1, "maximum": 3 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "project"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "project": { "type": "object" }
+        }
+      },
+      "artifacts": ["project.json"],
+      "timeoutMs": 15000,
+      "event": { "code": "GS-04", "eventId": "project.configure", "kind": "command" }
+    },
+    {
+      "id": "story.generate_scripts",
+      "type": "write",
+      "label": "生成故事脚本候选",
+      "description": "由 GameStudio 内部机制生成脚本候选并写回 scripts.json。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId", "brief"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 },
+          "brief": { "type": "string", "minLength": 1 },
+          "title": { "type": "string" },
+          "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "optionsPerChoice": { "type": "integer", "enum": [2, 3] },
+          "endings": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 600000 }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "scripts"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "scripts": { "type": "object" },
+          "gen": { "type": "object" }
+        }
+      },
+      "artifacts": ["scripts.json", "blueprint.json"],
+      "timeoutMs": 180000,
+      "event": { "code": "GS-10", "eventId": "story.scripts.generate", "kind": "command" }
+    },
+    {
+      "id": "story.validate",
+      "type": "read",
+      "label": "校验故事项目",
+      "description": "执行蓝图结构校验与资源引用校验，返回 validation 结果。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "validation"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "validation": {
+            "type": "object",
+            "required": ["ok"],
+            "properties": {
+              "ok": { "type": "boolean" },
+              "errors": { "type": "array" },
+              "warnings": { "type": "array" }
+            }
+          }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 30000,
+      "event": { "code": "GS-07", "eventId": "project.validate", "kind": "command" }
+    },
+    {
+      "id": "story.compile_blueprint",
+      "type": "write",
+      "label": "编译蓝图",
+      "description": "把 scripts.json 编译为 blueprint.json，返回编译报告与校验结果。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "report": { "type": "object" },
+          "validation": { "type": "object" }
+        }
+      },
+      "artifacts": ["blueprint.json"],
+      "timeoutMs": 30000,
+      "event": { "code": "GS-14", "eventId": "story.blueprint.compile", "kind": "command" }
+    },
+    {
+      "id": "story.generate_asset_plan",
+      "type": "write",
+      "label": "生成资产计划",
+      "description": "基于脚本与 Story Bible 生成角色/道具/场景资产计划。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "plan": { "type": "object" }
+        }
+      },
+      "artifacts": ["project.json"],
+      "timeoutMs": 60000,
+      "event": { "code": "GS-16", "eventId": "story.asset.plan.generate", "kind": "command" }
+    },
+    {
+      "id": "story.lock_asset",
+      "type": "write",
+      "label": "锁定资产",
+      "description": "锁定角色/道具参考图，作为后续场景渲染的基准。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId", "assetId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 },
+          "assetId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "asset": { "type": "object" }
+        }
+      },
+      "artifacts": ["project.json"],
+      "timeoutMs": 60000,
+      "event": { "code": "GS-17", "eventId": "story.asset.lock", "kind": "command" }
+    },
+    {
+      "id": "scene.render",
+      "type": "write",
+      "label": "渲染场景图",
+      "description": "基于锁定资产与场景描述渲染场景图。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId", "sceneId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 },
+          "sceneId": { "type": "string", "minLength": 1 },
+          "referenceAssets": { "type": "array" }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "image": { "type": "object" }
+        }
+      },
+      "artifacts": ["assets/"],
+      "timeoutMs": 300000,
+      "event": { "code": "GS-18", "eventId": "scene.render", "kind": "command" }
+    },
+    {
+      "id": "story.export",
+      "type": "write",
+      "label": "导出故事项目",
+      "description": "导出可运行 H5 产物到 builds/，返回 distUrl 与本地产物路径。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_export",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "evidence"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "distUrl": { "type": "string" },
+              "distPath": { "type": "string" },
+              "exportedAt": { "type": "string" }
+            }
+          }
+        }
+      },
+      "artifacts": ["builds/"],
+      "timeoutMs": 60000,
+      "event": { "code": "GS-08", "eventId": "project.export", "kind": "command" }
+    },
+    {
+      "id": "project.review",
+      "type": "read",
+      "label": "项目评审",
+      "description": "读取项目文档、顶层文件清单与状态快照，用于验证落盘与收集证据。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "project"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "project": { "type": "object" }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 10000,
+      "event": { "code": "GS-03", "eventId": "project.inspect", "kind": "query" }
+    }
+  ],
+  "events": [
+    "project.create",
+    "project.configure",
+    "story.scripts.generate",
+    "project.validate",
+    "story.blueprint.compile",
+    "story.asset.plan.generate",
+    "story.asset.lock",
+    "scene.render",
+    "project.export",
+    "project.inspect"
+  ],
+  "workflows": [
+    "story_production",
+    "story_review",
+    "story_export"
+  ],
+  "boundaries": {
+    "allowedRoots": ["/Volumes/ovokit2t/aiwork/gamestudio/storage/projects"],
+    "disallowOutsideWorkspace": true
+  }
+}

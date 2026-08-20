@@ -13,6 +13,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { GAMESTUDIO_ROOT } from '../../config/paths.js'
+import { getProjectCapabilitiesFromManifest } from './projectCapabilityManifest.js'
 
 const DEFAULT_REGISTRY_REL_PATH = path.join('apps', 'server', 'events', 'registry.v1.json')
 
@@ -79,6 +80,7 @@ function buildRuntimeDescriptor(registry, binding, sourcePath) {
 
 /**
  * 获取当前绑定项目的能力摘要。
+ * 优先读取 project-manifest.v1.json（真实能力声明）；缺失时回退到事件注册表推导。
  * @param {object} binding - projectBindingService.getProjectBinding() 返回值
  * @returns {{ok:boolean, available:boolean, capabilities:Array, runtimeDescriptor:object|null, source:string, error:string|null}}
  */
@@ -94,6 +96,13 @@ export function getProjectCapabilities(binding) {
     }
   }
 
+  // 1) 优先读取项目能力声明 manifest
+  const manifestResult = getProjectCapabilitiesFromManifest(binding)
+  if (manifestResult.available) {
+    return manifestResult
+  }
+
+  // 2) 回退：从事件注册表推导
   const local = readLocalRegistry(binding.repoPath)
   if (!local) {
     return {
@@ -102,7 +111,7 @@ export function getProjectCapabilities(binding) {
       capabilities: [],
       runtimeDescriptor: null,
       source: 'none',
-      error: 'registry_not_found'
+      error: manifestResult.error || 'registry_not_found'
     }
   }
 

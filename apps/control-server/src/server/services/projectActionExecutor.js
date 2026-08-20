@@ -15,6 +15,8 @@ import {
   ACTION_STATE
 } from './actionExecutionService.js'
 import { validateActionResult } from './actionValidator.js'
+import { enforceActionBoundary } from './projectBoundaryGuard.js'
+import { backupActionArtifacts, rollbackAction } from './rollbackService.js'
 import { appendGovernanceAudit } from '../reasoning/governanceAudit.js'
 
 /**
@@ -30,7 +32,7 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
   if (!action) {
     return { ok: false, error: 'action_not_found', action: null }
   }
-  if (action.state !== ACTION_STATE.READY && action.state !== ACTION_STATE.RETRY_WAIT) {
+  if (action.state !== ACTION_STATE.READY && action.state !== ACTION_STATE.RETRY_WAIT && action.state !== ACTION_STATE.APPROVED) {
     return { ok: false, error: `action_not_executable:${action.state}`, action }
   }
 
@@ -45,11 +47,29 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
     return { ok: false, error: 'capability_not_found', action: failed }
   }
 
+  // 项目边界保护：所有动作执行前必须校验路径与项目边界
+  const boundaryCheck = enforceActionBoundary(action, capability, capabilitySummary.runtimeDescriptor)
+  if (!boundaryCheck.ok) {
+    transitionAction(actionId, ACTION_STATE.FAILED, 'boundary_violation', {
+      type: 'boundary_check',
+      errors: boundaryCheck.errors
+    })
+    appendGovernanceAudit({
+      action: 'action_boundary_blocked',
+      result: 'blocked',
+      detail: `动作 ${actionId} 越界被拦截：${boundaryCheck.errors.map((e) => `${e.field}=${e.path}(${e.error})`).join('; ')}`,
+      actor: action.actor,
+      data: { actionId, errors: boundaryCheck.errors }
+    })
+    return { ok: false, error: 'boundary_violation', action: getAction(actionId), boundaryErrors: boundaryCheck.errors }
+  }
+
   // dryRun：只校验 schema 与 review 要求，不真正执行
   if (dryRun) {
     transitionAction(actionId, ACTION_STATE.READY, 'dry_run_validated', {
       type: 'dry_run',
-      capability: { id: capability.id, type: capability.type, requiresReview: capability.requiresReview }
+      capability: { id: capability.id, type: capability.type, requiresReview: capability.requiresReview },
+      boundaryCheck: 'passed'
     })
     return { ok: true, action: getAction(actionId), validation: { ok: true, dryRun: true } }
   }
@@ -58,9 +78,30 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
   if (capability.requiresReview && !confirmed) {
     transitionAction(actionId, ACTION_STATE.WAITING_REVIEW, 'review_required', {
       type: 'review_gate',
-      capability: { id: capability.id, requiresReview: true }
+      capability: { id: capability.id, requiresReview: true },
+      boundaryCheck: 'passed'
     })
     return { ok: false, error: 'review_required', action: getAction(actionId) }
+  }
+
+  // 写入类动作：执行前备份将被修改的文件
+  let backups = []
+  if (capability.type === 'write') {
+    const backupResult = backupActionArtifacts(actionId, action, capability, capabilitySummary.runtimeDescriptor)
+    if (!backupResult.ok) {
+      transitionAction(actionId, ACTION_STATE.FAILED, 'backup_failed', {
+        type: 'backup_error',
+        error: backupResult.error
+      })
+      return { ok: false, error: `backup_failed:${backupResult.error}`, action: getAction(actionId) }
+    }
+    backups = backupResult.backups
+    if (backups.length) {
+      transitionAction(actionId, ACTION_STATE.READY, 'artifacts_backed_up', {
+        type: 'artifact_backup',
+        backups: backups.map((b) => ({ relPath: b.relPath, backupPath: b.backupPath }))
+      })
+    }
   }
 
   transitionAction(actionId, ACTION_STATE.EXECUTING, 'execution_started', {
@@ -68,10 +109,20 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
     dryRun: false
   })
 
+  // 确定底层事件 ID：优先使用 capability.event.eventId（业务动作到真实事件的映射）
+  const eventId = String(capability.event?.eventId || action.capabilityId || '').trim()
+  if (!eventId) {
+    transitionAction(actionId, ACTION_STATE.FAILED, 'event_id_missing', {
+      type: 'execution_error',
+      error: 'event_id_missing'
+    })
+    return { ok: false, error: 'event_id_missing', action: getAction(actionId) }
+  }
+
   let result = null
   let error = null
   try {
-    const dispatchResult = await dispatchGameStudioEvent(action.capabilityId, action.input, {
+    const dispatchResult = await dispatchGameStudioEvent(eventId, action.input, {
       caller: action.actor === 'console' ? 'console' : 'workflow',
       confirmed,
       sessionId: action.sessionId || null
@@ -89,6 +140,10 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
   setActionResult(actionId, result, error)
 
   if (error) {
+    // 写入类动作执行失败：尝试回滚
+    if (capability.type === 'write' && backups.length) {
+      rollbackAction(actionId, `execution_failed:${error}`)
+    }
     const nextState = action.retryCount < action.maxRetries ? ACTION_STATE.RETRY_WAIT : ACTION_STATE.FAILED
     const updated = transitionAction(actionId, nextState, error, {
       type: 'execution_error',
@@ -117,6 +172,10 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
 
   // 验证结果
   const validation = validateActionResult(action, capability, result)
+  if (!validation.ok && capability.type === 'write' && backups.length) {
+    // 验证失败：回滚到之前版本
+    rollbackAction(actionId, `validation_failed:${validation.issues.join('; ')}`)
+  }
   const finalState = validation.ok ? ACTION_STATE.COMPLETED : ACTION_STATE.FAILED
   const finalAction = transitionAction(actionId, finalState, validation.ok ? 'validation_passed' : 'validation_failed', {
     type: 'validation',

@@ -30,17 +30,37 @@ export const ACTION_STATE = Object.freeze({
   FAILED: 'failed',
   RETRY_WAIT: 'retry_wait',
   COMPLETED: 'completed',
-  ROLLED_BACK: 'rolled_back'
+  ROLLED_BACK: 'rolled_back',
+  CANCELLED: 'cancelled'
 })
 
 const TERMINAL_ACTION_STATES = new Set([
   ACTION_STATE.COMPLETED,
   ACTION_STATE.FAILED,
-  ACTION_STATE.ROLLED_BACK
+  ACTION_STATE.ROLLED_BACK,
+  ACTION_STATE.CANCELLED
+])
+
+// 合法状态转移表：明确允许的状态迁移路径，非法转移一律拒绝
+const ALLOWED_TRANSITIONS = new Map([
+  [ACTION_STATE.PLANNED, new Set([ACTION_STATE.READY, ACTION_STATE.FAILED, ACTION_STATE.CANCELLED])],
+  [ACTION_STATE.READY, new Set([ACTION_STATE.EXECUTING, ACTION_STATE.WAITING_REVIEW, ACTION_STATE.FAILED, ACTION_STATE.CANCELLED])],
+  [ACTION_STATE.EXECUTING, new Set([ACTION_STATE.COMPLETED, ACTION_STATE.FAILED, ACTION_STATE.WAITING_REVIEW, ACTION_STATE.RETRY_WAIT])],
+  [ACTION_STATE.WAITING_REVIEW, new Set([ACTION_STATE.APPROVED, ACTION_STATE.FAILED, ACTION_STATE.CANCELLED])],
+  [ACTION_STATE.APPROVED, new Set([ACTION_STATE.EXECUTING, ACTION_STATE.FAILED, ACTION_STATE.CANCELLED])],
+  [ACTION_STATE.RETRY_WAIT, new Set([ACTION_STATE.READY, ACTION_STATE.EXECUTING, ACTION_STATE.FAILED, ACTION_STATE.CANCELLED])],
+  [ACTION_STATE.COMPLETED, new Set()],
+  [ACTION_STATE.FAILED, new Set([ACTION_STATE.RETRY_WAIT])],
+  [ACTION_STATE.ROLLED_BACK, new Set()]
 ])
 
 export function isTerminalActionState(status) {
   return TERMINAL_ACTION_STATES.has(status)
+}
+
+export function isLegalActionTransition(from, to) {
+  const allowed = ALLOWED_TRANSITIONS.get(from)
+  return allowed ? allowed.has(to) : false
 }
 
 function getActionsDir() {
@@ -174,6 +194,9 @@ export function transitionAction(actionId, toState, reason, evidence = null) {
   const to = String(toState || '').trim()
   if (!Object.values(ACTION_STATE).includes(to)) {
     throw new Error(`invalid_action_state:${to}`)
+  }
+  if (!isLegalActionTransition(from, to)) {
+    throw new Error(`illegal_action_transition:${from}_to_${to}`)
   }
   action.state = to
   action.updatedAt = now

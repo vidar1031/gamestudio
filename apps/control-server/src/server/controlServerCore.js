@@ -201,6 +201,7 @@ import { registerEventsRoutes } from './routes/eventsRoutes.js'
 import { registerMaintenanceRoutes } from './routes/maintenanceRoutes.js'
 import { registerOverviewRoutes } from './routes/overviewRoutes.js'
 import { registerProjectBindingRoutes } from './routes/projectBindingRoutes.js'
+import { registerProjectCapabilityRoutes } from './routes/projectCapabilityRoutes.js'
 import { registerActionRoutes } from './routes/actionRoutes.js'
 import { registerEvidenceRoutes } from './routes/evidenceRoutes.js'
 import { registerReasoningRoutes } from './routes/reasoningRoutes.js'
@@ -3596,6 +3597,7 @@ function registerPrimaryControlServerRoutes(app) {
   registerRegistryRoutes(app)
   registerEventsRoutes(app)
   registerProjectBindingRoutes(app)
+  registerProjectCapabilityRoutes(app)
   registerActionRoutes(app)
   registerEvidenceRoutes(app)
   registerMaintenanceRoutes(app)

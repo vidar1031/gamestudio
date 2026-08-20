@@ -85,7 +85,7 @@ export function registerActionRoutes(app) {
       return c.json({ ok: false, error: 'review_required', action: result.action }, 409)
     }
     if (!result.ok) {
-      return c.json({ ok: false, error: result.error, action: result.action, validation: result.validation }, 502)
+      return c.json({ ok: false, error: result.error, action: result.action, validation: result.validation, boundaryErrors: result.boundaryErrors || null }, 502)
     }
     return c.json({ ok: true, action: result.action, validation: result.validation })
   })
@@ -114,6 +114,7 @@ export function registerActionRoutes(app) {
     const reason = String(body.reason || 'manual_transition').trim()
     const actor = String(body.actor || 'console').trim()
     const note = String(body.note || '').trim()
+    const autoExecute = body?.autoExecute === true
 
     const action = getAction(actionId)
     if (!action) {
@@ -131,6 +132,17 @@ export function registerActionRoutes(app) {
       actor,
       note
     })
+
+    // 批准后自动继续执行（强门禁：未批准不执行，批准后立即继续）
+    if (toState === ACTION_STATE.APPROVED && autoExecute) {
+      const execResult = await executeAction(actionId, { confirmed: true })
+      return c.json({
+        ok: true,
+        action: execResult.action || updated,
+        execution: execResult.ok ? { ok: true, validation: execResult.validation } : { ok: false, error: execResult.error }
+      })
+    }
+
     return c.json({ ok: true, action: updated })
   })
 }
