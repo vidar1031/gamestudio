@@ -1,17 +1,33 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { getProjectBinding, putProjectBinding, type ProjectBinding, type ProjectBindingProbe } from '../services/bindingApi'
-import { getEventRegistry } from '../services/eventsApi'
+import { ref, onMounted, computed } from 'vue'
+import {
+  getProjectBinding,
+  putProjectBinding,
+  type ProjectBinding,
+  type ProjectBindingProbe,
+  type ProjectCapability,
+  type ProjectRuntimeDescriptor
+} from '../services/bindingApi'
 
 // 当前绑定项目卡片状态
 const binding = ref<ProjectBinding | null>(null)
 const bindingProbe = ref<ProjectBindingProbe | null>(null)
-const bindingEventCount = ref<number | null>(null)
+const capabilities = ref<ProjectCapability[]>([])
+const runtimeDescriptor = ref<ProjectRuntimeDescriptor | null>(null)
+const capabilityError = ref<string | null>(null)
 const bindingEditing = ref(false)
 const bindingLabel = ref('')
 const bindingBaseUrl = ref('')
 const bindingBusy = ref(false)
 const bindingError = ref('')
+
+const capabilityStats = computed(() => {
+  const total = capabilities.value.length
+  const readCount = capabilities.value.filter((item) => item.type === 'read').length
+  const writeCount = capabilities.value.filter((item) => item.type === 'write').length
+  const reviewCount = capabilities.value.filter((item) => item.requiresReview).length
+  return { total, readCount, writeCount, reviewCount }
+})
 
 async function loadBinding() {
   bindingError.value = ''
@@ -21,15 +37,9 @@ async function loadBinding() {
     if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
     binding.value = payload.binding || null
     bindingProbe.value = payload.probe || null
-    bindingEventCount.value = null
-    // 绑定可达时再拉事件数；不可达保持 null，由卡片呈现「-」
-    if (binding.value?.bound && bindingProbe.value?.reachable) {
-      const regRes = await getEventRegistry()
-      const regPayload = await regRes.json().catch(() => null)
-      if (regPayload?.available === true && Array.isArray(regPayload?.registry?.events)) {
-        bindingEventCount.value = regPayload.registry.events.length
-      }
-    }
+    capabilities.value = Array.isArray(payload.capabilities) ? payload.capabilities : []
+    runtimeDescriptor.value = payload.runtimeDescriptor || null
+    capabilityError.value = payload.capabilityError || null
   } catch (e) {
     bindingError.value = e instanceof Error ? e.message : String(e)
   }
@@ -118,7 +128,7 @@ onMounted(() => {
           <div class="project-meta">{{ binding.baseUrl }}</div>
         </div>
         <div class="binding-side">
-          <span class="binding-events">事件数：{{ bindingEventCount === null ? '-' : bindingEventCount }}</span>
+          <span class="binding-events">能力数：{{ capabilityStats.total }}</span>
           <router-link class="action-btn link" to="/events">查看项目事件</router-link>
         </div>
       </div>
@@ -129,6 +139,36 @@ onMounted(() => {
       <div v-else-if="binding && !binding.bound" class="empty-state">
         尚未绑定项目。点击右上角「去绑定」选择要对接的 GameStudio 服务。
       </div>
+    </section>
+
+    <section v-if="binding?.bound" class="page-section">
+      <div class="section-header">
+        <h2>项目能力</h2>
+        <router-link class="action-btn link" to="/events">查看事件地图</router-link>
+      </div>
+      <p class="section-hint">以下能力来自绑定项目的事件注册表，是智能体可发现、可计划、可受控执行的动作清单。</p>
+
+      <div v-if="capabilityError" class="error-banner">{{ capabilityError }}</div>
+
+      <div class="capability-stats">
+        <span class="stat-chip">共 {{ capabilityStats.total }} 项</span>
+        <span class="stat-chip">只读 {{ capabilityStats.readCount }}</span>
+        <span class="stat-chip">写入 {{ capabilityStats.writeCount }}</span>
+        <span class="stat-chip warn">需审核 {{ capabilityStats.reviewCount }}</span>
+      </div>
+
+      <div v-if="capabilities.length" class="capability-list">
+        <div v-for="cap in capabilities" :key="cap.id" class="capability-card">
+          <div class="capability-header">
+            <span class="capability-label">{{ cap.label }}</span>
+            <span class="capability-type" :data-type="cap.type">{{ cap.type === 'read' ? '只读' : '写入' }}</span>
+            <span v-if="cap.requiresReview" class="capability-review">需审核</span>
+          </div>
+          <div class="capability-id">{{ cap.id }}</div>
+          <div v-if="cap.description" class="capability-desc">{{ cap.description }}</div>
+        </div>
+      </div>
+      <div v-else class="empty-state">未从事件注册表中解析到能力。</div>
     </section>
 
     <section class="page-section">
@@ -349,5 +389,88 @@ onMounted(() => {
 .project-actions {
   display: flex;
   gap: 8px;
+}
+
+.capability-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.stat-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--c-border);
+  color: var(--c-text-sub);
+  font-size: 12px;
+}
+
+.stat-chip.warn {
+  background: rgba(246, 201, 78, 0.12);
+  border-color: rgba(246, 201, 78, 0.3);
+  color: var(--c-warn);
+}
+
+.capability-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.capability-card {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--c-bg-panel);
+  border: 1px solid var(--c-border);
+}
+
+.capability-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.capability-label {
+  font-weight: 600;
+  color: var(--c-text-inv);
+  font-size: 13px;
+}
+
+.capability-type {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(94, 204, 255, 0.12);
+  color: var(--c-accent);
+}
+
+.capability-type[data-type='write'] {
+  background: rgba(255, 183, 77, 0.14);
+  color: var(--c-warn);
+}
+
+.capability-review {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(255, 107, 107, 0.14);
+  color: var(--c-error);
+}
+
+.capability-id {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--c-text-muted);
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.capability-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--c-text-sub);
+  line-height: 1.5;
 }
 </style>

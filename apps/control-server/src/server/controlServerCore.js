@@ -44,6 +44,8 @@ import {
   STORAGE_PROJECTS_ROOT,
 } from '../config/paths.js'
 import { hermesAgentDefinition } from './agentDefinitions.js'
+import { getProjectBinding } from './services/projectBindingService.js'
+import { getProjectCapabilities } from './services/projectCapabilityService.js'
 import {
   inspectControlBackendSurfaces,
   inspectWorkspaceDirectory,
@@ -1327,42 +1329,50 @@ function trimPromptSection(content, maxChars = 1800) {
 }
 
 function buildHermesEphemeralSystemPrompt(binding) {
+  // 精简版全局 system prompt：只保留 control 管理模式的核心规则与当前项目能力摘要。
+  // 大段记忆文件（AGENTS.md/USER.md/MEMORY.md 等）不再全量注入，避免本地 27B/4bit 模型
+  // 在 prefill 阶段因固定前缀过长而超内存；具体事实由 control 在每次请求时按需注入。
   const sections = [
     '你当前运行在 GameStudio 的 control 管理模式中。',
     '默认使用中文回复，除非用户明确要求其他语言。',
-    'Telegram / 其它聊天入口也必须遵守当前 GameStudio control + Hermes 的项目契约，不要回退到通用英文 Planner 自我介绍。',
-    '如果用户询问项目状态、任务进度、控制面行为、Hermes 约束，优先依据以下记忆文件，而不是假设 memory 为空。',
+    '你通过 control 与 GameStudio 项目交互，不要回退到通用英文 Planner 自我介绍。',
+    '回答前必须先基于 control 提供的事实或工具查证，禁止编造未观测到的项目状态。'
   ]
 
-  const memorySections = [
-    ['AGENTS', binding?.memory?.agentDefinitionFile],
-    ['USER', binding?.memory?.userFile],
-    ['MEMORY', binding?.memory?.memoryFile],
-    ['LONG_TASKS', binding?.memory?.longTasksFile],
-    ['STATUS', binding?.memory?.statusFile],
-    ['TASK_QUEUE', binding?.memory?.taskQueueFile],
-    ['DECISIONS', binding?.memory?.decisionsFile]
-  ]
-
-  for (const [label, filePath] of memorySections) {
-    if (!filePath || !fs.existsSync(filePath)) continue
-    const content = trimPromptSection(readMarkdownFile(filePath), label === 'AGENTS' ? 2600 : 1400)
-    if (!content) continue
-    sections.push(`## ${label} (${filePath})\n${content}`)
-  }
-
-  const skillFiles = Array.isArray(binding?.skills?.availableSkillFiles) ? binding.skills.availableSkillFiles : []
-  if (skillFiles.length > 0) {
-    const skillFile = skillFiles[0]
-    const skillContent = trimPromptSection(readMarkdownFile(skillFile), 1600)
-    if (skillContent) {
-      sections.push(`## ACTIVE_SKILL (${skillFile})\n${skillContent}`)
+  // 注入当前绑定项目的能力摘要（来自事件注册表），让 agent 能直接回答"能做什么"。
+  try {
+    const bindingInfo = getProjectBinding()
+    if (bindingInfo?.bound) {
+      const capabilitySummary = getProjectCapabilities(bindingInfo)
+      if (capabilitySummary?.available) {
+        const caps = capabilitySummary.capabilities || []
+        const readCount = caps.filter((item) => item.type === 'read').length
+        const writeCount = caps.filter((item) => item.type === 'write').length
+        const reviewCount = caps.filter((item) => item.requiresReview).length
+        sections.push('')
+        sections.push(`当前绑定项目：${bindingInfo.label || capabilitySummary.runtimeDescriptor?.displayName || 'GameStudio 交互故事'}`)
+        sections.push(`- 项目 ID：${bindingInfo.id || capabilitySummary.runtimeDescriptor?.projectId || 'unknown'}`)
+        sections.push(`- 服务地址：${bindingInfo.baseUrl || 'unknown'}`)
+        sections.push(`- 仓库路径：${bindingInfo.repoPath || capabilitySummary.runtimeDescriptor?.rootDir || 'unknown'}`)
+        sections.push(`- 能力总数：${caps.length}（只读 ${readCount} / 写入 ${writeCount} / 需审核 ${reviewCount}）`)
+        if (caps.length) {
+          const preview = caps.slice(0, 12).map((cap) => {
+            const mark = cap.requiresReview ? '（需审核）' : ''
+            return `  - ${cap.id}: ${cap.label || cap.id} [${cap.type}]${mark}`
+          })
+          sections.push('- 能力清单（前 12 项）：')
+          sections.push(...preview)
+          if (caps.length > 12) sections.push(`  - … 其余 ${caps.length - 12} 项略`)
+        }
+      }
     }
+  } catch {
+    // 能力摘要注入失败不阻断启动
   }
 
-  sections.push('不要声称 workspace 刚初始化、memory 目录为空，除非你已经根据上述文件事实确认它们真的为空。')
-  sections.push('如果用户来自 Telegram，也要把自己视为当前 control 管理下的 Hermes，而不是脱离 control 的独立 Planner。')
-  return sections.join('\n\n').trim()
+  sections.push('')
+  sections.push('不要声称 workspace 刚初始化、memory 目录为空；如无法确认，应说明"未查证"。')
+  return sections.join('\n').trim()
 }
 
 /**

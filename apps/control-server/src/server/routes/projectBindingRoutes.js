@@ -1,16 +1,26 @@
 import { appendGovernanceAudit } from '../reasoning/governanceAudit.js'
 import { getProjectBinding, setProjectBinding, probeProjectBinding } from '../services/projectBindingService.js'
+import { getProjectCapabilities } from '../services/projectCapabilityService.js'
 
 // 项目绑定路由：守护台「当前绑定项目」的读写入口。
-// GET 只读并附带活性探测；PUT 是写动作（D02 访问边界自动覆盖），
-// 无论成功/拒绝都写治理审计（governanceAudit），供治理页追溯。
+// GET 只读并附带活性探测与项目能力摘要（capabilities/runtimeDescriptor），供 agent 与控制台发现可执行动作；
+// PUT 是写动作（D02 访问边界自动覆盖），无论成功/拒绝都写治理审计（governanceAudit），供治理页追溯。
 export function registerProjectBindingRoutes(app) {
   app.get('/api/control/project-binding', async (c) => {
     const binding = getProjectBinding()
     const probe = binding.bound
       ? await probeProjectBinding(binding.baseUrl)
       : { reachable: false, detail: '尚未绑定项目', checkedAt: new Date().toISOString() }
-    return c.json({ ok: true, binding, probe })
+    const capabilitySummary = getProjectCapabilities(binding)
+    return c.json({
+      ok: true,
+      binding,
+      probe,
+      capabilities: capabilitySummary.capabilities,
+      runtimeDescriptor: capabilitySummary.runtimeDescriptor,
+      capabilitySource: capabilitySummary.source,
+      capabilityError: capabilitySummary.error
+    })
   })
 
   app.put('/api/control/project-binding', async (c) => {

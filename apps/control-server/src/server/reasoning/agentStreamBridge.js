@@ -36,15 +36,46 @@ const TARGET_PREVIEW_LIMIT = 160
 const CANCEL_CHECK_INTERVAL_MS = 1500
 
 // 咨询只读模式的系统提示（随请求 ephemeral 注入；hermes 核心系统提示仍加载 GameStudio 契约文件）
-export const AGENT_STREAM_SYSTEM_PROMPT = [
-  '你是 GameStudio 守护台的咨询答疑 agent，正在回答用户关于 GameStudio / control / 项目事实的问题。',
-  '',
-  '硬性约束（咨询只读模式）：',
-  '1. 你只能使用只读工具查证：read_file、search_files、session_search、skill_view、skills_list、web_search、web_extract。',
-  '2. 禁止调用任何有副作用的工具（execute_code、terminal、process、write_file、patch、memory、skill_manage 等）。一旦发起越权工具调用，control 会立即中断本次回答并记录证据。',
-  '3. 如果用户需求需要写文件 / 执行命令 / 触发故事生产，不要自己动手，在回答里说明这需要走 control 生产工作流，并给出建议操作。',
-  '4. 默认中文回答；先查证再下结论，不编造未观测到的事实；回答简洁、关键结论先行。'
-].join('\n')
+// 通过 buildAgentStreamSystemPrompt 动态拼接当前项目能力摘要，避免 agent 依赖大段通用上下文猜测。
+export function buildAgentStreamSystemPrompt(capabilitySummary = null) {
+  const lines = [
+    '你是 GameStudio 守护台的咨询答疑 agent，正在回答用户关于 GameStudio / control / 项目事实的问题。',
+    '',
+    '硬性约束（咨询只读模式）：',
+    '1. 你只能使用只读工具查证：read_file、search_files、session_search、skill_view、skills_list、web_search、web_extract。',
+    '2. 禁止调用任何有副作用的工具（execute_code、terminal、process、write_file、patch、memory、skill_manage 等）。一旦发起越权工具调用，control 会立即中断本次回答并记录证据。',
+    '3. 如果用户需求需要写文件 / 执行命令 / 触发故事生产，不要自己动手，在回答里说明这需要走 control 生产工作流，并给出建议操作。',
+    '4. 默认中文回答；先查证再下结论，不编造未观测到的事实；回答简洁、关键结论先行。'
+  ]
+
+  if (capabilitySummary && capabilitySummary.available === true) {
+    const binding = capabilitySummary.binding || {}
+    const runtime = capabilitySummary.runtimeDescriptor || {}
+    const caps = Array.isArray(capabilitySummary.capabilities) ? capabilitySummary.capabilities : []
+    const readCount = caps.filter((item) => item.type === 'read').length
+    const writeCount = caps.filter((item) => item.type === 'write').length
+    const reviewCount = caps.filter((item) => item.requiresReview).length
+    lines.push('')
+    lines.push('当前绑定项目事实（可直接引用，无需再查证）：')
+    lines.push(`- 项目名称：${binding.label || runtime.displayName || '未命名'}`)
+    lines.push(`- 项目 ID：${binding.id || runtime.projectId || 'unknown'}`)
+    lines.push(`- 服务地址：${binding.baseUrl || 'unknown'}`)
+    lines.push(`- 仓库路径：${binding.repoPath || runtime.rootDir || 'unknown'}`)
+    lines.push(`- 能力总数：${caps.length}（只读 ${readCount} / 写入 ${writeCount} / 需人工审核 ${reviewCount}）`)
+    if (caps.length) {
+      lines.push('- 能力清单：')
+      for (const cap of caps.slice(0, 20)) {
+        const reviewMark = cap.requiresReview ? '（需审核）' : ''
+        lines.push(`  - ${cap.id}: ${cap.label || cap.id} [${cap.type}]${reviewMark}`)
+      }
+      if (caps.length > 20) {
+        lines.push(`  - … 其余 ${caps.length - 20} 项略`)
+      }
+    }
+  }
+
+  return lines.join('\n')
+}
 
 export function truncateAgentStreamText(text, limit = THINKING_PREVIEW_LIMIT) {
   const value = String(text || '')
@@ -235,25 +266,29 @@ function writeMappingFile(stateDir, agentId, hermesSessionId) {
 }
 
 /**
- * 确保咨询桥使用的 hermes 会话存在（跨消息复用同一会话，保证多轮上下文连续）。
+ * 确保咨询桥使用的 hermes 会话存在。
+ * 注意：agent 流式咨询每次强制创建新会话，避免旧会话历史消息累积导致本地模型上下文超限。
  * 失效（404）时重建并更新映射。
  */
-export async function ensureAgentStreamHermesSession({ agentId, stateDir = DEFAULT_STATE_DIR, apiOrigin, apiKey, fetchImpl = fetch }) {
+export async function ensureAgentStreamHermesSession({ agentId, stateDir = DEFAULT_STATE_DIR, apiOrigin, apiKey, fetchImpl = fetch, forceNew = true }) {
   const headers = { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) }
-  const existing = readMappingFile(stateDir, agentId)
-  if (existing) {
-    try {
-      const check = await fetchImpl(`${apiOrigin}/api/sessions/${encodeURIComponent(existing)}`, { headers })
-      if (check.ok) return { hermesSessionId: existing, created: false }
-    } catch {
-      // 校验失败按重建处理
+  if (!forceNew) {
+    const existing = readMappingFile(stateDir, agentId)
+    if (existing) {
+      try {
+        const check = await fetchImpl(`${apiOrigin}/api/sessions/${encodeURIComponent(existing)}`, { headers })
+        if (check.ok) return { hermesSessionId: existing, created: false }
+      } catch {
+        // 校验失败按重建处理
+      }
     }
   }
   const hermesSessionId = `ctrlstream_${agentId}_${Math.random().toString(16).slice(2, 10)}`
+  const titleSuffix = Math.random().toString(16).slice(2, 6)
   const response = await fetchImpl(`${apiOrigin}/api/sessions`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ id: hermesSessionId, title: `control 咨询流（${agentId}）` })
+    body: JSON.stringify({ id: hermesSessionId, title: `control 咨询流（${agentId}）#${titleSuffix}` })
   })
   if (!response.ok) {
     throw new Error(`hermes_session_create_http_${response.status}`)
@@ -276,7 +311,8 @@ export async function runAgentStreamChat({
   appendEvidence = () => {},
   isAborted = () => false,
   log = () => {},
-  stateDir = DEFAULT_STATE_DIR
+  stateDir = DEFAULT_STATE_DIR,
+  systemPrompt = null
 }) {
   const apiOrigin = String(hermesApiBaseUrl || '').replace(/\/+$/, '').replace(/\/v1$/, '')
   if (!apiOrigin) throw new Error('hermes_api_base_url_missing')
@@ -304,7 +340,7 @@ export async function runAgentStreamChat({
       Accept: 'text/event-stream',
       ...(hermesApiKey ? { Authorization: `Bearer ${hermesApiKey}` } : {})
     },
-    body: JSON.stringify({ message: String(prompt || ''), system_message: AGENT_STREAM_SYSTEM_PROMPT }),
+    body: JSON.stringify({ message: String(prompt || ''), system_message: systemPrompt || buildAgentStreamSystemPrompt() }),
     signal: controller.signal
   })
   if (!response.ok || !response.body) {

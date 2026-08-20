@@ -1,8 +1,10 @@
 import { streamSSE } from 'hono/streaming'
 
 import { classifyReasoningRequest } from '../reasoning/requestClassifier.js'
-import { runAgentStreamChat } from '../reasoning/agentStreamBridge.js'
+import { runAgentStreamChat, buildAgentStreamSystemPrompt } from '../reasoning/agentStreamBridge.js'
 import { REASONING_SESSION_STATE, applySessionTransition } from '../reasoning/sessionStateMachine.js'
+import { getProjectBinding } from '../services/projectBindingService.js'
+import { getProjectCapabilities } from '../services/projectCapabilityService.js'
 
 // 流式咨询执行模式标记：写入 session.submissionContext.executionMode，供 UI/治理区分确定性链路与 agent 流
 export const AGENT_STREAM_EXECUTION_MODE = 'agent_stream'
@@ -113,6 +115,9 @@ export function registerAgentStreamRoutes(app, context) {
       }, 20000)
 
       try {
+        const binding = getProjectBinding()
+        const capabilitySummary = getProjectCapabilities(binding)
+        const systemPrompt = buildAgentStreamSystemPrompt({ ...capabilitySummary, binding })
         const result = await runAgentStreamChat({
           prompt: userPrompt,
           agentId,
@@ -120,7 +125,8 @@ export function registerAgentStreamRoutes(app, context) {
           hermesApiKey: typeof readHermesApiServerKey === 'function' ? readHermesApiServerKey() : '',
           onStreamEvent: (evt) => send(evt.type, evt),
           appendEvidence: (type, title, summary, extra) => appendReasoningEvent(sessionId, type, title, summary, extra),
-          isAborted: () => clientGone || readReasoningSession(sessionId)?.status === REASONING_SESSION_STATE.CANCELLED
+          isAborted: () => clientGone || readReasoningSession(sessionId)?.status === REASONING_SESSION_STATE.CANCELLED,
+          systemPrompt
         })
 
         if (result.aborted) {
