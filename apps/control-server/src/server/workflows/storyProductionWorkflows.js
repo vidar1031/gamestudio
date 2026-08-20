@@ -327,13 +327,27 @@ export function buildStoryWorkflowPlan(userPrompt) {
   }
 
   if (wantsCreate) {
-    add('step_story_create_project', '创建互动故事项目', 'story_create_project', { title })
-    if (wantsConfig) add('step_story_configure_project', '写入故事生成配置', 'story_configure_project', { projectId, config })
-    add('step_story_inspect_project', '读取项目目录证据', 'story_inspect_project', { projectId })
+    // 用户说"创建故事"时，默认走 AI 创建路径（生成真实脚本与蓝图）；
+    // 只有用户明确说"创建空白项目"时才创建空骨架。
+    const wantsBlankProject = /空白项目|空项目|仅创建项目|只创建项目|项目骨架/i.test(prompt)
+    if (wantsBlankProject) {
+      add('step_story_create_project', '创建互动故事项目', 'story_create_project', { title })
+      if (wantsConfig) add('step_story_configure_project', '写入故事生成配置', 'story_configure_project', { projectId, config })
+      add('step_story_inspect_project', '读取项目目录证据', 'story_inspect_project', { projectId })
+      appendAnswerStep(steps)
+      return {
+        planId: createPlanId(),
+        goal: '通过 Control story workflow 创建互动故事项目并返回可验证目录证据',
+        strategy: 'sequential',
+        steps
+      }
+    }
+    // 默认：AI 创建故事（生成脚本与蓝图）
+    appendAiStoryToComposeSteps(add, { projectId, title, prompt })
     appendAnswerStep(steps)
     return {
       planId: createPlanId(),
-      goal: '通过 Control story workflow 创建互动故事项目并返回可验证目录证据',
+      goal: '通过 Control 托管 GameStudio AI 创建故事、蓝图智能体评审、必要修复和合成校验',
       strategy: 'sequential',
       steps
     }

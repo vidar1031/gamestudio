@@ -3671,11 +3671,26 @@ app.post('/api/projects', storyInputGate('story.project.create'), async (c) => {
 })
 
 // AI: Create new project + scripts from prompt (P0: scripts layer only)
+// 支持两种模式：
+// - 独立编辑器模式：使用 GameStudio Settings 中的 provider/model/apiUrl
+// - 守护台受控模式：使用 Control 签发的 modelExecution（含 provider/model/apiUrl/leaseId），
+//   此时必须携带有效 leaseId，否则拒绝执行
 app.post('/api/projects/ai/create', storyInputGate('story.project.create'), async (c) => {
   await ensureDirs()
   const body = await c.req.json().catch(() => ({}))
   const prompt = String(body?.prompt || '').trim()
   if (!prompt) return c.json({ success: false, error: 'missing_prompt', message: 'prompt 不能为空' }, 400)
+
+  // 受控模式判定：请求中携带 modelExecution 时进入守护台受控模式
+  const modelExecution = body?.modelExecution && typeof body.modelExecution === 'object' ? body.modelExecution : null
+  const isControlledMode = Boolean(modelExecution)
+  if (isControlledMode) {
+    const leaseId = String(modelExecution?.leaseId || '').trim()
+    if (!leaseId) {
+      return c.json({ success: false, error: 'missing_lease_id', message: '受控模式必须携带有效 leaseId' }, 403)
+    }
+    // TODO: 校验 leaseId 有效性（与 Control 资源调度器核对）
+  }
 
   const studio = await getEffectiveStudioConfig(ROOT)
   if (!studio.effective.enabled.scripts) {
@@ -3689,15 +3704,25 @@ app.post('/api/projects/ai/create', storyInputGate('story.project.create'), asyn
 
   const startedAt = Date.now()
   const aiTimeoutMs = 90_000
-  const requestedProvider = String(studio.effective.scripts.provider || 'local').toLowerCase()
-  const requestedModel = studio.effective.scripts.model || null
+
+  // 模型路由：受控模式使用 modelExecution，独立模式使用 Studio Settings
+  const requestedProvider = isControlledMode
+    ? String(modelExecution?.provider || '').toLowerCase()
+    : String(studio.effective.scripts.provider || 'local').toLowerCase()
+  const requestedModel = isControlledMode
+    ? (modelExecution?.model || null)
+    : (studio.effective.scripts.model || null)
+  const requestedApiUrl = isControlledMode
+    ? (modelExecution?.apiUrl || undefined)
+    : (studio.effective.scripts.apiUrl || undefined)
+
   if (!requestedProvider || requestedProvider === 'none') {
     return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“写故事脚本”并选择 Provider/Model' }, 400)
   }
   const globalRules = await readGlobalRules(ROOT)
   try {
     console.log(
-      `[gamestudio] ai.create:start project=${id} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${formula.choicePoints} optionsPerChoice=${formula.optionsPerChoice} endings=${formula.endings}`
+      `[gamestudio] ai.create:start project=${id} mode=${isControlledMode ? 'controlled' : 'standalone'} requestedProvider=${requestedProvider}${requestedModel ? ` model=${requestedModel}` : ''} promptChars=${prompt.length}${titleIn ? ` titleChars=${titleIn.length}` : ''} choicePoints=${formula.choicePoints} optionsPerChoice=${formula.optionsPerChoice} endings=${formula.endings}`
     )
   } catch (_) {}
   const closed = await generateClosedScriptDraft({
@@ -3708,7 +3733,7 @@ app.post('/api/projects/ai/create', storyInputGate('story.project.create'), asyn
     formula,
     provider: requestedProvider,
     model: requestedModel || undefined,
-    apiUrl: studio.effective.scripts.apiUrl || undefined,
+    apiUrl: requestedApiUrl,
     proxyUrl: studio.effective.network.proxyUrl,
     timeoutMs: aiTimeoutMs,
     prevScripts: null,
@@ -3793,6 +3818,8 @@ app.post('/api/projects/ai/create', storyInputGate('story.project.create'), asyn
     blueprint: closed.blueprint,
     gen: {
       ok: true,
+      mode: isControlledMode ? 'controlled' : 'standalone',
+      leaseId: isControlledMode ? String(modelExecution?.leaseId || '') : undefined,
       requestedProvider,
       provider: closed.meta?.provider || requestedProvider,
       model: closed.meta?.model || null,

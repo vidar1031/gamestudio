@@ -7222,13 +7222,28 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
   if (action === 'story_create_ai_project') {
     const title = String(step.params?.title || extractStoryTitleFromPrompt(userPrompt) || '').trim() || '未命名互动故事'
     const prompt = String(step.params?.prompt || step.params?.brief || userPrompt || '').trim()
+
+    // 由 Control 签发模型执行上下文：决定模型路由并生成 leaseId
+    const binding = buildHermesBinding()
+    const modelRoute = resolveModelRouteForPhase(binding, 'story_scripts_generate', { action })
+    const leaseId = `lease_${sessionId}_${stepIndex}_${Date.now()}`
+    const modelExecution = {
+      provider: modelRoute.provider,
+      model: modelRoute.model,
+      apiUrl: modelRoute.baseUrl,
+      leaseId,
+      requestId: `req_${sessionId}_${stepIndex}`,
+      timeoutMs: Math.max(90000, Number(step.params?.timeoutMs || 180000))
+    }
+
     const payload = {
       title,
       prompt,
       choicePoints: Math.max(1, Number(step.params?.choicePoints || 2)),
       optionsPerChoice: Math.max(2, Number(step.params?.optionsPerChoice || 2)),
       endings: Math.max(2, Number(step.params?.endings || 2)),
-      timeoutMs: Math.max(90000, Number(step.params?.timeoutMs || 180000))
+      timeoutMs: modelExecution.timeoutMs,
+      modelExecution
     }
     const serverResult = prompt
       ? await observeGameStudioOperation(sessionId, step, stepIndex, 'createAiProject', {

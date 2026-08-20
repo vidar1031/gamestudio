@@ -69,6 +69,15 @@ export const BlueprintDocV1Schema = z.object({
 
 // ===== Output payload schemas per action type =====
 
+const ModelExecutionSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  apiUrl: z.string().optional(),
+  leaseId: z.string().min(1),
+  requestId: z.string().optional(),
+  timeoutMs: z.number().int().min(1000).max(600000).optional(),
+}).strict()
+
 export const StoryProjectCreatePayloadSchema = z.object({
   title: z.string().min(1).max(200),
   prompt: z.string().min(1).max(2000).optional(),
@@ -76,6 +85,7 @@ export const StoryProjectCreatePayloadSchema = z.object({
   optionsPerChoice: z.number().int().min(2).max(10).optional(),
   endings: z.number().int().min(1).max(20).optional(),
   timeoutMs: z.number().int().min(1000).max(600000).optional(),
+  modelExecution: ModelExecutionSchema.optional(),
 }).strict()
 
 export const StoryScriptsWritePayloadSchema = z.object({

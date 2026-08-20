@@ -60,8 +60,10 @@ export async function generateScriptDraft({ prompt, title, rules, formula, provi
   const p = String(provider || process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
   if (p === 'doubao') return generateScriptsViaDoubao({ prompt, title, rules, formula, model, apiUrl, proxyUrl, timeoutMs })
   if (p === 'ollama') return generateScriptsViaOllama({ prompt, title, rules, formula, model, apiUrl, proxyUrl, timeoutMs })
-  if (p !== 'openai' && p !== 'localoxml') return null
-  return generateScriptsViaOpenAI({ prompt, title, rules, formula, model, apiUrl, proxyUrl, timeoutMs, provider: p })
+  // omlx 是 localoxml 的别名（Control 受控模式传入）
+  if (p !== 'openai' && p !== 'localoxml' && p !== 'omlx') return null
+  const normalizedProvider = p === 'omlx' ? 'localoxml' : p
+  return generateScriptsViaOpenAI({ prompt, title, rules, formula, model, apiUrl, proxyUrl, timeoutMs, provider: normalizedProvider })
 }
 
 export async function repairScriptDraft({

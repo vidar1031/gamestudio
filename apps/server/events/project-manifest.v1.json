@@ -8,10 +8,11 @@
     {
       "id": "story.create",
       "type": "write",
-      "label": "创建故事项目",
-      "description": "创建一个新的互动故事项目，落盘 meta.json / project.json / 空 scripts / 空 blueprint。",
+      "label": "创建空白故事项目",
+      "description": "创建一个新的互动故事项目骨架，落盘 meta.json / project.json / 空 scripts / 空 blueprint。仅适用于用户明确要求创建空白项目。",
       "requiresReview": true,
       "reviewPolicy": "manual_before_write",
+      "resourceKind": "none",
       "inputSchema": {
         "type": "object",
         "required": ["title"],
@@ -39,6 +40,62 @@
       "artifacts": ["meta.json", "project.json", "scripts.json", "blueprint.json"],
       "timeoutMs": 15000,
       "event": { "code": "GS-02", "eventId": "project.create", "kind": "command" }
+    },
+    {
+      "id": "story.create_ai",
+      "type": "write",
+      "label": "AI 创建故事项目",
+      "description": "根据用户故事目标调用模型生成脚本与蓝图，创建完整互动故事项目。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "llm",
+      "inputSchema": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": { "type": "string", "minLength": 1, "description": "纯故事内容描述，禁止包含任务指令" },
+          "title": { "type": "string" },
+          "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "optionsPerChoice": { "type": "integer", "enum": [2, 3] },
+          "endings": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "modelExecution": {
+            "type": "object",
+            "required": ["provider", "model", "leaseId"],
+            "properties": {
+              "provider": { "type": "string" },
+              "model": { "type": "string" },
+              "apiUrl": { "type": "string" },
+              "leaseId": { "type": "string" },
+              "requestId": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "project", "scripts"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "project": { "type": "object" },
+          "scripts": { "type": "object" },
+          "blueprint": { "type": "object" },
+          "gen": {
+            "type": "object",
+            "properties": {
+              "ok": { "type": "boolean" },
+              "mode": { "type": "string" },
+              "provider": { "type": "string" },
+              "model": { "type": "string" },
+              "durationMs": { "type": "number" }
+            }
+          }
+        }
+      },
+      "artifacts": ["meta.json", "project.json", "scripts.json", "blueprint.json"],
+      "timeoutMs": 120000,
+      "event": { "code": "GS-19", "eventId": "story.project.create_ai", "kind": "command" }
     },
     {
       "id": "story.configure",
@@ -326,6 +383,7 @@
   ],
   "events": [
     "project.create",
+    "story.project.create_ai",
     "project.configure",
     "story.scripts.generate",
     "project.validate",
