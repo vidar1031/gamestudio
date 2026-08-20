@@ -59,13 +59,13 @@
         "type": "object",
         "required": [
           "success",
-          "projects"
+          "items"
         ],
         "properties": {
           "success": {
             "type": "boolean"
           },
-          "projects": {
+          "items": {
             "type": "array"
           }
         }

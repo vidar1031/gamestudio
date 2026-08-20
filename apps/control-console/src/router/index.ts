@@ -44,6 +44,12 @@ const routes = [
         meta: { title: '项目事件', icon: '✦' }
       },
       {
+        path: 'actions',
+        name: 'Actions',
+        component: () => import('../pages/ActionsPage.vue'),
+        meta: { title: '项目动作', icon: '▶' }
+      },
+      {
         path: 'sessions',
         name: 'Sessions',
         component: () => import('../pages/SessionsPage.vue'),

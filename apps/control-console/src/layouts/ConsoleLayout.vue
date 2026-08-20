@@ -14,6 +14,7 @@ const navItems = [
   { name: 'Agents', path: '/agents', icon: '◆', label: '本地 Agent' },
   { name: 'Projects', path: '/projects', icon: '▣', label: '项目' },
   { name: 'Events', path: '/events', icon: '✦', label: '项目事件' },
+  { name: 'Actions', path: '/actions', icon: '▶', label: '项目动作' },
   { name: 'Sessions', path: '/sessions', icon: '▶', label: '任务与会话' },
   { name: 'Governance', path: '/governance', icon: '◈', label: '治理' },
   { name: 'Logs', path: '/logs', icon: '≡', label: '日志与诊断' },

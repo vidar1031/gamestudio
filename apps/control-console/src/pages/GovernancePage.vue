@@ -187,6 +187,9 @@ const busy = ref(false)
 const reviewBusyId = ref('')
 const cronBusyId = ref('')
 const supervisionBusy = ref(false)
+const evidencePacks = ref<Array<{ actionId: string; packId: string; generatedAt: string; capabilityId?: string; state?: string; filePath?: string }>>([])
+const evidencePacksBusy = ref(false)
+const evidencePacksError = ref('')
 const suggestionBusyId = ref('')
 const error = ref('')
 const actionMessage = ref('')
@@ -618,11 +621,45 @@ async function loadAll() {
   busy.value = true
   error.value = ''
   try {
-    await Promise.all([loadPendingReviews(), loadAudit(), loadQueue(), loadHealth(), loadCronJobs(), loadRightBrainSupervision(), loadSkillGovernance()])
+    await Promise.all([loadPendingReviews(), loadAudit(), loadQueue(), loadHealth(), loadCronJobs(), loadRightBrainSupervision(), loadSkillGovernance(), loadEvidencePacks()])
   } catch (e) {
     error.value = String(e)
   } finally {
     busy.value = false
+  }
+}
+
+async function loadEvidencePacks() {
+  evidencePacksBusy.value = true
+  evidencePacksError.value = ''
+  try {
+    const res = await fetch('/api/control/evidence-packs?limit=50')
+    const payload = await res.json().catch(() => null)
+    if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
+    evidencePacks.value = Array.isArray(payload.packs) ? payload.packs : []
+  } catch (e) {
+    evidencePacksError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    evidencePacksBusy.value = false
+  }
+}
+
+async function downloadEvidencePack(actionId: string) {
+  try {
+    const res = await fetch(`/api/control/evidence-packs/${encodeURIComponent(actionId)}`)
+    const payload = await res.json().catch(() => null)
+    if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
+    const blob = new Blob([JSON.stringify(payload.pack, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `evidence-pack-${actionId}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    evidencePacksError.value = e instanceof Error ? e.message : String(e)
   }
 }
 
@@ -1219,6 +1256,45 @@ onMounted(loadAll)
               <td class="mono-cell muted">{{ record.sessionId || '-' }}</td>
               <td class="mono-cell muted">{{ record.taskId || '-' }}</td>
               <td class="reason-cell">{{ record.detail || '-' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 动作证据包 -->
+    <section class="page-section">
+      <div class="section-header">
+        <h2>动作证据包</h2>
+        <button class="action-btn" :disabled="busy" @click="loadEvidencePacks">刷新</button>
+      </div>
+      <p class="section-hint">项目动作的完整执行证据包，包含输入、输出、审核记录、状态转移与 traceId，可用于回溯与导出。</p>
+
+      <div v-if="evidencePacksError" class="error-banner">{{ evidencePacksError }}</div>
+
+      <div class="audit-table-wrap">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>生成时间</th>
+              <th>动作 ID</th>
+              <th>能力</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!evidencePacks.length && !evidencePacksBusy">
+              <td colspan="5" class="empty-cell">暂无证据包</td>
+            </tr>
+            <tr v-for="pack in evidencePacks" :key="pack.actionId">
+              <td class="time-cell">{{ formatTime(pack.generatedAt) }}</td>
+              <td class="mono-cell muted">{{ pack.actionId }}</td>
+              <td>{{ pack.capabilityId || '-' }}</td>
+              <td><span class="result-badge" :data-ok="pack.state === 'completed'">{{ pack.state || '-' }}</span></td>
+              <td>
+                <button class="action-btn small" @click="downloadEvidencePack(pack.actionId)">下载</button>
+              </td>
             </tr>
           </tbody>
         </table>
