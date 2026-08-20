@@ -11,13 +11,32 @@
 ## 控制平面常用接口
 
 - 聊天发送：`POST /api/control/agents/hermes-manager/ping-model`
+- agent 流式咨询（answer_only/R013 咨询路径，SSE）：`POST /api/control/agents/hermes-manager/agent-stream`
 - 发送预览：`POST /api/control/agents/hermes-manager/submission-preview`
 - 可观测执行创建：`POST /api/control/agents/hermes-manager/reasoning-sessions`
 - 可观测执行查询：`GET /api/control/agents/hermes-manager/reasoning-sessions/:sessionId`
 - 可观测执行审核：`POST /api/control/agents/hermes-manager/reasoning-sessions/:sessionId/review`
+- 失败会话人工重试（受控）：`POST /api/control/agents/hermes-manager/reasoning-sessions/:sessionId/retry`
 - 工作流诊断：`GET /api/control/agents/hermes-manager/workflow-diagnostics`
 - 历史会话检索（只读，直查 Hermes state.db FTS5）：`GET /api/control/hermes/session-search?q=`
-- 技能候选扫描（含 hub 新装技能，待人审）：`GET /api/control/skills/candidates`
+
+### 事件层与项目绑定
+
+- 事件注册表（跟随当前绑定项目）：`GET /api/control/events/registry`
+- 事件执行历史：`GET /api/control/events/runs`
+- 事件执行入口（唯一）：`POST /api/control/events/dispatch`
+- 当前绑定项目读取/修改：`GET /api/control/project-binding`、`PUT /api/control/project-binding`
+
+### 治理页对应端点
+
+- 待审核中心：`GET /api/control/reviews/pending`
+- 治理操作审计：`GET /api/control/governance/audit`
+- 任务队列只读列表/详情：`GET /api/control/queue/items`、`GET /api/control/queue/items/:sessionId`
+- 资源互斥调度状态（AUTO-R01）：`GET /api/control/resources/state`
+- cron 定时任务：`GET/POST /api/control/cron/jobs`、`POST /api/control/cron/jobs/:jobId/status`、`DELETE /api/control/cron/jobs/:jobId`、`POST /api/control/cron/jobs/:jobId/trigger`
+- 右脑监察：`GET /api/control/supervision/right-brain`、`POST /api/control/supervision/right-brain/run`、`POST /api/control/supervision/right-brain/runs/:runId/suggestions/:suggestionId/review`；运行状态：`GET /api/control/supervision/state`
+- 项目/workflow 注册表：`GET /api/control/registry/overview`、`GET /api/control/registry/projects`、`GET /api/control/registry/workflows`、受控触发 `POST /api/control/registry/workflows/:workflowId/runs`、run 审核 `POST /api/control/registry/runs/:runId/review`
+- 技能治理：候选扫描 `GET /api/control/skills/candidates`、候选内容 `GET /api/control/skills/candidates/:name/content`、人审 `POST /api/control/skills/candidates/:name/review`、已激活 `GET /api/control/skills/active`
 
 ## GameStudio Server 常用接口
 

@@ -45,7 +45,9 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 - GameStudio Server: `http://127.0.0.1:1999`
 - GameStudio Editor: `http://localhost:8868`
 - Control Server: `http://127.0.0.1:2099`
-- Control Console: `http://127.0.0.1:8870`
+- Control Console（守护台）: `http://127.0.0.1:8870`
+
+守护台（8870）是统一治理与操作入口：聊天页发起生产与咨询；治理页含待审核、操作审计、cron 定时任务、右脑监察、技能学习、历史检索、资源互斥等区块；「项目事件」页展示当前绑定项目的事件注册表与执行历史（事件层：`/api/control/events/*`，项目绑定：`/api/control/project-binding`）。
 
 ## Hermes / Control 权威输入文件
 
@@ -57,7 +59,6 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 - `ai/memory/STATUS.md`
 - `ai/memory/TASK_QUEUE.md`
 - `ai/memory/DECISIONS.md`
-- `ai/memory/YYYY-MM-DD.md` 中的最新当日日志
 
 辅助文件：
 
@@ -91,4 +92,3 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 - 联调测试说明：`docs/Control + GameStudio 生产工作流联调测试说明.md`
 - 生产缺陷报告：`docs/PRODUCTION_DEFECTS.md`
 - 交互故事编辑器契约：`ai/interactive_story_editor.contract.md`
-- 页内编辑器是:vue-codemirror

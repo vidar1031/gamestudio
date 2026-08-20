@@ -3,8 +3,8 @@
 > 本文定义 Control 系统中左脑（本地 OMLX）与右脑（云端 Kimi）的任务分工、路由规则和降级策略。
 >
 > **关联文档**：
-> - `docs/KIMI_RIGHT_BRAIN_SUPERVISION_PLAN.md` — 右脑监督左脑任务执行的实施计划（评估标准、修正机制、持续测试循环）
-> - `docs/KIMI_RIGHT_BRAIN_TEST_PLAN.md` — 左右脑双模型架构测试规划
+> - `docs/archive/KIMI_RIGHT_BRAIN_SUPERVISION_PLAN.md` — 右脑监督左脑任务执行的实施计划（评估标准、修正机制、持续测试循环；完成态计划档案，已落地为 HERMES-H03）
+> - `docs/archive/KIMI_RIGHT_BRAIN_TEST_PLAN.md` — 左右脑双模型架构测试规划（完成态计划档案）
 >
 > 更新规则：新增路由规则时同步更新本文；模型能力变化时重新评估分工边界。
 
@@ -16,9 +16,9 @@
 |------|---------|---------|
 | Provider | `omlx` | `moonshot` |
 | Base URL | `http://127.0.0.1:18888/v1` | `https://api.kimi.com/coding/v1` |
-| 模型 | `gpt-oss-20b-MXFP4-Q8` | `kimi-for-coding` |
+| 模型 | `Qwen3.6-27B-MLX-4bit` | `kimi-for-coding` |
 | 上下文窗口 | ~128K | 262,144 tokens |
-| 部署方式 | 本地进程（Hermes Gateway） | 云端 API（direct route） |
+| 部署方式 | 本地 OMLX 服务（direct 路由直连） | 云端 API（direct route） |
 | 可用性 | 依赖本地硬件 | 依赖外网 + API Key |
 | 特性 | 低成本、低延迟、隐私安全 | 大上下文、强推理、代码能力 |
 
@@ -65,6 +65,8 @@
 
 ### 3.1 当前配置
 
+以下为 `config/hermes/manager.left-brain.json` 中 `workflow.modelRouting` 的当前真实内容（2026-08-19 核对）：
+
 ```json
 {
   "workflow": {
@@ -72,13 +74,24 @@
       "defaultRoute": {
         "provider": "omlx",
         "baseUrl": "http://127.0.0.1:18888/v1",
-        "model": "gpt-oss-20b-MXFP4-Q8",
-        "transport": "hermes",
-        "strict": false
+        "model": "Qwen3.6-27B-MLX-4bit",
+        "transport": "direct",
+        "requestedTransport": "direct",
+        "strict": false,
+        "unavailableReason": "",
+        "degradedFrom": ""
       },
       "phaseRoutes": {
-        "story_scripts_candidate": { "provider": "omlx", "transport": "hermes", "strict": true },
-        "story_blueprint_review": { "provider": "omlx", "transport": "hermes", "strict": true }
+        "story_blueprint_review": {
+          "provider": "omlx",
+          "baseUrl": "http://127.0.0.1:18888/v1",
+          "model": "Qwen3.6-27B-MLX-4bit",
+          "transport": "direct",
+          "requestedTransport": "direct",
+          "strict": true,
+          "unavailableReason": "",
+          "degradedFrom": ""
+        }
       },
       "actionRoutes": {
         "meta_analysis": {
@@ -86,13 +99,34 @@
           "baseUrl": "https://api.kimi.com/coding/v1",
           "model": "kimi-for-coding",
           "transport": "direct",
-          "strict": false
+          "requestedTransport": "direct",
+          "strict": false,
+          "unavailableReason": "",
+          "degradedFrom": ""
+        },
+        "right_brain_supervision": {
+          "provider": "moonshot",
+          "baseUrl": "https://api.kimi.com/coding/v1",
+          "model": "kimi-for-coding",
+          "transport": "direct",
+          "requestedTransport": "direct",
+          "strict": false,
+          "unavailableReason": "",
+          "degradedFrom": ""
         }
-      }
+      },
+      "strictRouteRequiredPhases": [
+        "story_blueprint_review"
+      ]
     }
   }
 }
 ```
+
+说明：
+- 左脑默认路由已改为 `transport: "direct"`（直连 OMLX，不再经 Hermes Gateway 转发）。
+- `right_brain_supervision` 为右脑监察（HERMES-H03）专用 action 路由，与 `meta_analysis` 同一通道。
+- `strictRouteRequiredPhases` 列出 strict 语义必须满足的 phase；hermes+strict 与左脑绑定不一致时显式失败（`route_unavailable:strict_route_model_mismatch:*`），不再静默降级（详见 `ai/memory/DECISIONS.md` 与 `ai/control_architecture.md`）。
 
 ### 3.2 解析优先级
 
@@ -158,7 +192,11 @@ const route = {
 
 ## 6. 扩展计划
 
-未来可能新增右脑任务：
+已兑现项：
+
+- ~~右脑监督左脑任务执行~~：已落地为 `right_brain_supervision` action 路由 + 治理端点（HERMES-H03，`apps/control-server/src/server/reasoning/rightBrainSupervision.js` + `routes/supervisionRoutes.js`，守护台治理页「右脑监察」区块），详见 `ai/control_architecture.md`。
+
+未来可能新增右脑任务（仍未实现）：
 
 - `code_review`：跨文件代码审查
 - `architecture_advice`：系统架构改进建议

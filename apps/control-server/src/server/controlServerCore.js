@@ -200,6 +200,7 @@ import { registerMaintenanceRoutes } from './routes/maintenanceRoutes.js'
 import { registerOverviewRoutes } from './routes/overviewRoutes.js'
 import { registerProjectBindingRoutes } from './routes/projectBindingRoutes.js'
 import { registerReasoningRoutes } from './routes/reasoningRoutes.js'
+import { registerAgentStreamRoutes } from './routes/agentStreamRoutes.js'
 import { registerResourceRoutes } from './routes/resourceRoutes.js'
 import { registerCronRoutes } from './routes/cronRoutes.js'
 import { registerSupervisionRoutes } from './routes/supervisionRoutes.js'
@@ -3515,6 +3516,7 @@ function createControlServerRouteContext() {
     prepareReasoningSessionPlan,
     readContextPoolEntry,
     readHermesChatHistory,
+    readHermesApiServerKey,
     readReasoningSession,
     readStoredHermesChatHistory,
     readUtf8FileRecord,
@@ -3572,6 +3574,7 @@ function registerPrimaryControlServerRoutes(app) {
   registerContextRoutes(app, context)
   registerChatRoutes(app, context)
   registerReasoningRoutes(app, context)
+  registerAgentStreamRoutes(app, context)
   registerCronRoutes(app, context)
   registerSupervisionRoutes(app, context)
   registerResourceRoutes(app, context)
@@ -9740,7 +9743,9 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
     const answer = await runManagedReasoningTask(sessionId, 'answer', binding, ({ signal }) => generateReasoningFinalAnswer(sessionId, userPrompt, session?.artifacts || {}, binding, history, {
       signal,
       correctionPrompt,
-      contextSelection: session?.submissionContext || {}
+      contextSelection: session?.submissionContext || {},
+      // 滚动压缩探索路径的分块/压缩/自检事件落 session 执行链（咨询类回答可观测）
+      appendEvent: (type, title, summary, extra = {}) => appendReasoningEvent(sessionId, type, title, summary, extra)
     }))
     const answerPersisted = persistHermesChatReply(sessionId, answer.reply, answer.usage || null, { provisional: true })
     updateReasoningSession(sessionId, (current) => ({

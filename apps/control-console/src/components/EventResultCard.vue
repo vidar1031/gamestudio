@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { summarizeEventResultPayload } from '../lib/humanize'
 
 type DispatchResult = {
   ok: boolean
@@ -27,13 +28,18 @@ const emit = defineEmits<{
 }>()
 
 const resultPreview = computed(() => {
+  if (props.result.result === undefined || props.result.result === null) return ''
   try {
     const text = JSON.stringify(props.result.result, null, 2)
+    if (!text) return ''
     return text.length > 1200 ? `${text.slice(0, 1200)}...` : text
   } catch {
     return '[unserializable]'
   }
 })
+
+// 人话摘要（首屏）：事件结果提炼为一句话；原始结构化负载收进「技术细节」折叠区
+const resultSummary = computed(() => summarizeEventResultPayload(props.result.result))
 
 const statusLabel = computed(() => (props.result.ok ? '执行成功' : '执行失败'))
 const transportLine = computed(() => {
@@ -61,7 +67,11 @@ const transportLine = computed(() => {
     </div>
     <div v-if="busy" class="event-result-loading">执行中...</div>
     <div v-else-if="result.error" class="event-result-error">{{ result.error }}</div>
-    <pre v-if="!busy && resultPreview" class="event-result-preview">{{ resultPreview }}</pre>
+    <div v-if="!busy && resultSummary" class="event-result-summary">{{ resultSummary }}</div>
+    <details v-if="!busy && resultPreview" class="event-result-tech">
+      <summary>技术细节（原始返回）</summary>
+      <pre class="event-result-preview">{{ resultPreview }}</pre>
+    </details>
   </div>
 </template>
 
@@ -110,6 +120,20 @@ const transportLine = computed(() => {
 }
 .event-result-close:hover { color: var(--c-text); border-color: var(--c-accent); }
 .event-result-loading { margin-top: 8px; font-size: 12px; color: var(--c-text-muted); }
+.event-result-summary {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--c-text);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.event-result-tech {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+.event-result-tech summary { cursor: pointer; user-select: none; }
 .event-result-error {
   margin-top: 8px;
   font-size: 12px;

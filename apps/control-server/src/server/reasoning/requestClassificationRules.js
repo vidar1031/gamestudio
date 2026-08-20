@@ -25,9 +25,19 @@ const STORY_WORKFLOW_ACTION_PATTERN = /创建|新建|生成|生产|配置|写入
 const GAMESTUDIO_BOOTSTRAP_PATTERN = /(?:gamestudio|game studio|游戏工作室).*(?:启动|打开|界面|工作台|editor|workbench|ai[-_\s]?create[-_\s]?story|自检|检查|配置|comfyui|本地模型|local model|diagnose|preflight|bootstrap|settings)|(?:启动|打开|open|launch|自检|配置).*(?:gamestudio|game studio|游戏工作室)/i
 const CONTEXTUAL_PLAN_PATTERN = /继续|接着|按照|基于|根据|上面|之前|刚才|这个设计|这套方案|实施|推进|修复|落地|同步文档|计划|规划|方案|检查|分析/i
 const ANSWER_ONLY_PATTERN = /是什么|为什么|解释|说明|区别|含义|原理|建议|是否合理|会不会有问题|对不对|what|why|explain|suggest|reasonable|^在吗|^(hi|hello|hey|hiya)\b|^你好|^您好|^早上好|^下午好|^晚上好/i
+// 咨询问句形态：吗/呢/么 结尾或带问号、能不能/能否/可以…吗/会不会/是不是/是什么/为什么/如何/先回答/先告诉我 等。
+// 注意「吧」结尾多为祈使（如"创建故事吧"），不算咨询形态。
+const CONSULTATIVE_QUESTION_PATTERN = /[吗呢么][？?]|[吗呢][？?！!。.…]*$|能不能|能否|可否|可不可以|会不会|该不该|是不是|是什么|为什么|为何|怎么样|如何|先回答|先告诉我|先说明|先解释/i
 
 function normalizePrompt(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
+}
+
+// 问句形态判定（导出供单测与上层复用）。
+export function isConsultativeQuestionPrompt(prompt) {
+  const text = normalizePrompt(prompt)
+  if (!text) return false
+  return CONSULTATIVE_QUESTION_PATTERN.test(text)
 }
 
 function loadRuleTable() {
@@ -120,6 +130,29 @@ export function classifyReasoningRequestFromRuleTable(userPrompt, options = {}) 
       deterministicPlan: true,
       modelDecision: false,
       ruleId: 'R009_capability_status_inspection',
+    }
+  }
+
+  // 问句形态优先于关键词强制（2026-08-19 用户明确指令，取舍记录见 ai/memory/DECISIONS.md）：
+  // 咨询问句即使命中 story/bootstrap 工作流关键词（如"可以使用gamestudio创建故事…吗？"），
+  // 也先走 answer_only 咨询路径（滚动压缩探索），不触发生产副作用；
+  // 祈使句（"创建/生成/开始/执行…"）维持 ai/AGENTS.md 硬性生产规则第 2 条的强制工作流不变。
+  if (isConsultativeQuestionPrompt(prompt)) {
+    const forcedWorkflowType = matchesDetector('story_workflow_execute', prompt)
+      ? 'story_workflow_execute'
+      : (matchesDetector('gamestudio_bootstrap_execute', prompt) ? 'gamestudio_bootstrap_execute' : null)
+    if (forcedWorkflowType) {
+      return {
+        type: 'answer_only',
+        confidence: 0.97,
+        reason: `consultative_question_form_overrides_${forcedWorkflowType}`,
+        route: 'answer_only',
+        needsContext: false,
+        requiresHumanReview: false,
+        deterministicPlan: false,
+        modelDecision: false,
+        ruleId: 'R013_consultative_question_form',
+      }
     }
   }
 

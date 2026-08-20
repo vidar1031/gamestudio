@@ -1,7 +1,19 @@
 # UI 重设计提案：Editor 流水线工作台 + Control-console 三区工作台
 
-> 状态：待评审。本文是设计沟通稿，确认后才进入实施计划。
+> 状态：**部分已实施（2026-08-19 标注）**。本文原为设计沟通稿，主要条目已落地，剩余项见下表；本文保留作设计依据存档，不再作为待评审提案推进。
 > 依据：`ai/interactive_story_editor.contract.md`（四区契约）、`docs/系统生产级推进方案.md`（UI 约束）、2026-07-22 真实 e2e 交付过程中暴露的可观测性缺口。
+>
+> **实施状态对照**：
+>
+> | 分期 | 内容 | 状态 |
+> |---|---|---|
+> | Editor E1 项目库卡片墙 | 卡片画廊 + 四格迷你轨道 + 可玩徽标 + 继续上次/新建入口 | 已落地（`apps/editor/src/studios/Hub.tsx`） |
+> | Editor E2 新建流程 | 单屏表单 + 五态进度环 | 入口已落地（Hub「新建互动故事」：一句话创意 → AI 生成脚本草稿 → 进入蓝图审阅）；五态进度环未完整实现 |
+> | Editor E3 工作台阶段轨道 + 健康徽章 | 项目内主轨 | 未实施（卡片迷你轨道已具备） |
+> | Editor E4 AI 协作环 + ComposeStudio 拆分 | ComposeStudio.tsx 拆分 | 未实施（仍约 9500 行） |
+> | Console P1 对话内任务卡片 + 审核卡片 | 步骤图内嵌聊天流、审核就地化 | 已落地（`ReasoningTaskCard.vue` / `ReasoningReviewCard.vue`，人话摘要 + 技术细节折叠） |
+> | Console P2 态势带 + 监察右栏 + 审核记录 | 服务状态/三道闸/审核记录检索 | 已落地为顶栏服务状态行 + 治理页（`GovernancePage.vue`：待审核/操作审计/运行健康/资源互斥/定时任务/右脑监察） |
+> | Console 扩展 | 项目事件、任务队列 | 已落地（`EventsPage.vue`「项目事件」、`SessionsPage.vue`「任务队列」区块） |
 
 ---
 

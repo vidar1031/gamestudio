@@ -72,7 +72,8 @@
   "skills": {
     "skillRoot": "/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills",
     "skillFiles": [
-      "/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md"
+      "/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio-workspace/SKILL.md",
+      "/Volumes/ovokit2t/aiwork/gamestudio/config/hermes/skills/gamestudio/SKILL.md"
     ]
   },
   "brains": {

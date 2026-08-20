@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { renderChatMessage } from '../lib/chatMarkdown'
+import { formatPayloadRows } from '../lib/humanize'
 import {
   formatDurationSeconds,
   formatReasoningEventTime,
@@ -12,6 +13,7 @@ import ReasoningTaskCard from '../components/ReasoningTaskCard.vue'
 import ReasoningReviewCard from '../components/ReasoningReviewCard.vue'
 import EventChainCard from '../components/EventChainCard.vue'
 import EventResultCard from '../components/EventResultCard.vue'
+import AgentStreamSteps from '../components/AgentStreamSteps.vue'
 import { useControlConsoleAppContext } from '../composables/useControlConsoleAppContext'
 
 const app = useControlConsoleAppContext()
@@ -22,6 +24,9 @@ const userScrolledUp = ref(false)
 
 const sessionEvents = computed(() => app.activeReasoningSession.value?.events || [])
 const eventCount = computed(() => sessionEvents.value.length)
+// agent 流式咨询进行中/刚结束时展示流式步骤区；此时 session 无确定性 plan，任务执行链卡片让位
+const agentStreamVisible = computed(() => app.agentStreamActive.value || app.agentStreamSteps.value.length > 0)
+const eventConfirmPayloadRows = computed(() => formatPayloadRows(app.eventConfirmPending.value?.payload))
 
 function handleChatThreadScroll() {
   const el = chatThreadRef.value
@@ -31,7 +36,7 @@ function handleChatThreadScroll() {
 }
 
 watch(
-  () => [app.chatHistory.value.length, eventCount.value, app.activeReasoningSession.value?.status],
+  () => [app.chatHistory.value.length, eventCount.value, app.activeReasoningSession.value?.status, app.agentStreamSteps.value.length, app.agentStreamAnswerDraft.value.length],
   async () => {
     await nextTick()
     const el = chatThreadRef.value
@@ -83,8 +88,14 @@ watch(
           </div>
         </div>
       </div>
+      <AgentStreamSteps
+        v-if="agentStreamVisible"
+        :steps="app.agentStreamSteps.value"
+        :answer-draft="app.agentStreamAnswerDraft.value"
+        :active="app.agentStreamActive.value"
+      />
       <ReasoningTaskCard
-        v-if="app.activeReasoningSession.value"
+        v-if="app.activeReasoningSession.value && !agentStreamVisible"
         :session="app.activeReasoningSession.value"
         :status-label="app.reasoningStatusLabel.value"
         :elapsed-seconds="app.reasoningElapsedSeconds.value"
@@ -108,7 +119,17 @@ watch(
           <span>{{ app.eventConfirmPending.value.event.eventId }}</span>
           <span v-if="app.eventConfirmPending.value.event.code">{{ app.eventConfirmPending.value.event.code }}</span>
         </div>
-        <pre class="event-confirm-payload">{{ JSON.stringify(app.eventConfirmPending.value.payload, null, 2) }}</pre>
+        <!-- 人话参数行优先；原始 payload 收进折叠的技术细节 -->
+        <div v-if="eventConfirmPayloadRows.length" class="event-confirm-rows">
+          <div v-for="row in eventConfirmPayloadRows" :key="row.key" class="event-confirm-row">
+            <span class="event-confirm-key">{{ row.key }}</span>
+            <span class="event-confirm-value">{{ row.value }}</span>
+          </div>
+        </div>
+        <details v-if="app.eventConfirmPending.value.payload && Object.keys(app.eventConfirmPending.value.payload).length" class="event-confirm-tech">
+          <summary>技术细节（原始参数）</summary>
+          <pre class="event-confirm-payload">{{ JSON.stringify(app.eventConfirmPending.value.payload, null, 2) }}</pre>
+        </details>
         <div class="event-confirm-actions">
           <button class="chat-btn outline" :disabled="app.eventDispatchBusy.value" @click="app.cancelEventDispatch()">取消</button>
           <button class="chat-btn primary" :disabled="app.eventDispatchBusy.value" @click="app.confirmEventDispatch()">{{ app.eventDispatchBusy.value ? '执行中...' : '确认执行' }}</button>
@@ -175,38 +196,6 @@ watch(
       </div>
     </div>
 
-    <!-- 提交前确认门（人工全审模式下发送前必经） -->
-    <div v-if="app.submitGateOpen.value" class="chat-gate-backdrop" @click.self="app.closeSubmitGate()">
-      <div class="chat-gate-modal" tabindex="-1" role="dialog" aria-modal="true" aria-label="提交前确认">
-        <div class="chat-gate-title">提交前确认 <span class="chat-gate-sub">agentRuntime 可观测执行 · 确认后创建任务</span></div>
-        <div class="chat-gate-label">本次问题</div>
-        <textarea v-model="app.submitPromptDraft.value" class="chat-gate-editor" rows="3" spellcheck="false" />
-        <div class="chat-gate-label">压缩后的运行上下文 <span class="chat-gate-sub">点击“生成发送预览”自动填入，可手工改写</span></div>
-        <textarea v-model="app.submitConfirmedSummary.value" class="chat-gate-editor" rows="4" spellcheck="false" placeholder="点击“生成发送预览”后自动填入本轮上下文压缩摘要；也可以手工改写后再提交。" />
-        <div v-if="app.submitDraftResult.value?.summary" class="chat-gate-preview">{{ app.submitDraftResult.value.summary }}</div>
-        <div v-if="app.submitDraftError.value" class="chat-banner error">{{ app.submitDraftError.value }}</div>
-        <div class="chat-gate-actions">
-          <button
-            class="chat-btn outline"
-            :disabled="app.submitDraftBusy.value || app.contextCandidatesBusy.value || !app.submitPromptDraft.value.trim()"
-            @click="app.generateSubmitContextDraft()"
-          >{{ app.submitDraftBusy.value ? '预览中...' : '生成发送预览' }}</button>
-          <div class="chat-gate-actions-spacer" />
-          <button class="chat-btn outline" :disabled="app.submitDraftBusy.value" @click="app.closeSubmitGate()">返回 / 取消</button>
-          <button
-            class="chat-btn outline danger"
-            :disabled="app.submitDraftBusy.value"
-            @click="app.rejectSubmitGate()"
-          >拒绝</button>
-          <button
-            class="chat-btn primary"
-            :disabled="app.submitDraftBusy.value || !app.submitPromptDraft.value.trim()"
-            @click="app.confirmSubmitGate()"
-          >确认开始任务执行</button>
-        </div>
-      </div>
-    </div>
-
     <!-- 执行日志 -->
     <div class="chat-log-section">
       <button class="chat-log-header" type="button" @click="logOpen = !logOpen">
@@ -228,8 +217,10 @@ watch(
               <div v-for="line in getReasoningEventOps(event)" :key="`${event.eventId}-${line}`" class="chat-log-op-line">{{ line }}</div>
             </div>
             <div v-for="block in getReasoningEventPreviewBlocks(event)" :key="`${event.eventId}-${block.title}`" class="chat-log-ops">
-              <div class="chat-log-ops-title">{{ block.title }}</div>
-              <pre class="chat-log-pre">{{ block.content }}</pre>
+              <details class="chat-log-details">
+                <summary>{{ block.title }}（技术细节）</summary>
+                <pre class="chat-log-pre">{{ block.content }}</pre>
+              </details>
             </div>
           </div>
           <div class="chat-log-time">{{ formatReasoningEventTime(event.timestamp) }}</div>
@@ -437,63 +428,6 @@ watch(
 }
 .chat-log-pre::-webkit-scrollbar { display: none; }
 .chat-log-time { flex: none; font-size: 11px; color: var(--c-text-muted); }
-.chat-gate-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-.chat-gate-modal {
-  width: min(720px, calc(100vw - 40px));
-  max-height: calc(100vh - 40px);
-  overflow-y: auto;
-  border: 1px solid var(--c-accent-dim);
-  border-radius: 10px;
-  background: var(--c-bg-panel);
-  padding: 16px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.chat-gate-modal::-webkit-scrollbar { display: none; }
-.chat-gate-title { font-size: 14px; font-weight: 600; color: var(--c-accent); }
-.chat-gate-sub { font-size: 11px; color: var(--c-text-muted); font-weight: 400; margin-left: 6px; }
-.chat-gate-label { margin-top: 12px; font-size: 12px; color: var(--c-text-sub); }
-.chat-gate-editor {
-  margin-top: 4px;
-  width: 100%;
-  box-sizing: border-box;
-  background: var(--c-bg-input);
-  color: var(--c-text);
-  border: 1px solid var(--c-border-mid);
-  border-radius: 8px;
-  padding: 8px;
-  font: inherit;
-  font-size: 12px;
-  resize: vertical;
-}
-.chat-gate-preview {
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--c-text-sub);
-  border-left: 2px solid var(--c-accent-dim);
-  padding: 4px 8px;
-  white-space: pre-wrap;
-}
-.chat-gate-actions { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
-.chat-gate-actions-spacer { flex: 1; }
-.chat-btn.danger {
-  border-color: var(--c-error);
-  color: var(--c-error);
-  background: transparent;
-}
-.chat-btn.danger:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.12);
-}
 .event-confirm-card {
   margin: 6px 12px;
   border: 1px solid rgba(246, 201, 78, 0.4);
@@ -512,6 +446,19 @@ watch(
   color: var(--c-text-muted);
   font-family: monospace;
 }
+.event-confirm-rows {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.event-confirm-row { display: flex; gap: 8px; align-items: baseline; }
+.event-confirm-key { flex: none; color: var(--c-text-muted); min-width: 72px; }
+.event-confirm-value { color: var(--c-text); word-break: break-all; }
+.event-confirm-tech { margin-top: 8px; font-size: 11px; color: var(--c-text-muted); }
+.event-confirm-tech summary { cursor: pointer; user-select: none; }
+.chat-log-details summary { cursor: pointer; user-select: none; font-size: 11px; color: var(--c-text-muted); }
 .event-confirm-payload {
   margin: 8px 0 0;
   max-height: 160px;

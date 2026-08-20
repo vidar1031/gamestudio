@@ -3,7 +3,7 @@
 > 本文是 `docs/` 中唯一集中记录**当前仍然存在**的生产缺陷、未实现项和系统性不足的文档。同时，本文定义了联调测试的**四阶段基准**，所有生产测试必须按阶段严格执行，不得跳过前置阶段。
 >
 > **关联文档**：
-> - `docs/KIMI_RIGHT_BRAIN_SUPERVISION_PLAN.md` — 右脑（Kimi）监督左脑任务执行的实施计划，定义了评估标准、修正机制和持续测试循环。本文中的缺陷可通过该计划的监督机制自动发现和修正。
+> - `docs/archive/KIMI_RIGHT_BRAIN_SUPERVISION_PLAN.md` — 右脑（Kimi）监督左脑任务执行的实施计划（完成态档案，已落地为 HERMES-H03），定义了评估标准、修正机制和持续测试循环。本文中的缺陷可通过该监督机制自动发现和修正。
 >
 > 更新规则：发现新缺陷时直接追加；修复后移动到"已修复归档"区或删除；定期清理过期条目。
 
@@ -184,7 +184,7 @@ step_story_export_project          → 导出 H5
 
 #### 3.3 已知阻塞项
 
-- `L4-04` evaluator false-pass：`compose evaluator` 失败时 case 仍被自动判为 `PASS`。**必须在进入第四阶段前修复。**
+- ~~`L4-04` evaluator false-pass~~：已修复（2026-08，`finalizeReasoningSessionWithQualityGate` 收紧：evaluator 失败记为 FAIL 不再自动 PASS；回归测试 `scripts/test/qualityGateEvaluatorFalsePass.test.mjs` 在案，见已修复归档 F-24）。
 - `L1-02` 长尾：`step_generate_capability_answer` 耗时过长，可能阻塞测试。**测试时需设置显式超时。**
 
 #### 3.4 第三阶段测试题目（10 题）
@@ -353,8 +353,6 @@ Step G: 资源回填与校验
 
 | # | 缺陷/不足 | 影响 | 状态 | 修复方向 |
 |---|-----------|------|------|----------|
-| P0-01 | **`L4-04` evaluator false-pass** | `compose evaluator` 失败时 case 仍被自动判为 `PASS` | 活跃 | 收紧 `finalizeReasoningSessionWithQualityGate` 判定逻辑：evaluator 失败必须记为 FAIL |
-| P0-02 | **Character asset pipeline 未实现** | `assetKind === 'character'` 时直接返回失败，角色 sprite 无法生成 | 活跃 | 实现 character sprite 生成 workflow，或从当前生产路径中移除并给出明确降级说明 |
 | P0-03 | **模型切换回滚可能留空模型** | unload 成功但 rollback load 失败时，OMLX 处于无模型状态 | 待验证 | rollback 失败时自动加载最小可用模型，并标记降级状态 |
 
 ---
@@ -384,10 +382,7 @@ Step G: 资源回填与校验
 
 | # | 缺陷/不足 | 影响 | 状态 | 修复方向 |
 |---|-----------|------|------|----------|
-| P2-01 | **Control API 完全无认证** | 任何人可启停 Hermes、切换模型 | 活跃 | 添加 `X-API-Key` 中间件，至少限制 localhost 暴露 |
 | P2-02 | **OMLX API key 硬编码 fallback** | `LOCALOXML_API_KEY` 未设置时回退到 `'omlx123'` | 活跃 | 移除 fallback，强制从 env 读取 |
-| P2-04 | **Reasoning session 文件永久累积** | `state/agent-runtime-sessions/` 无限增长 | 活跃 | 添加定期清理（保留最近 N 天），或按 session 完成时间归档 |
-| P2-05 | **Chat history JSON 无上限** | `readStoredHermesChatHistory` 读取文件越来越大 | 活跃 | 添加最大 entry 数限制 |
 
 ---
 
@@ -397,15 +392,15 @@ Step G: 资源回填与校验
 
 | # | 能力 | 当前状态 | 预期实现方式 |
 |---|------|----------|--------------|
-| U-01 | 完整任务状态机和阶段机 | 未实现 | 定义 session 生命周期状态（queued → running → pausing → paused → resuming → completed/failed/cancelled）|
-| U-02 | 跨重启 checkpoint 恢复 | 未实现 | 定期持久化 session 状态，重启后扫描 orphan session 并收敛 |
-| U-03 | 批量任务队列、暂停、取消、续跑 | 未实现 | 建立任务队列服务，支持 per-project workflow 的批量调度 |
-| U-04 | `_inbox` proposal 自动化测试与晋级 | 未实现 | proposal 必须经自动化测试、可视化审批后才可晋级为 active intent/workflow |
-| U-05 | 完整图片资产闭环 | 前置门禁已具备，后续未实现 | Story Bible → asset plan → 锁定事物 → 串行生成 → 落盘 → 引用回填 → 校验 → 重新导出 |
-| U-06 | 生产运维 UI：一键取消/恢复 | 未实现 | Control Console 增加"取消当前 session"、"停止 production test"、"恢复异常任务"按钮 |
-| U-07 | 动态模型切换 UI 配置入口 | 后端已部分支持，UI 未开放 | Control Console 增加 `workflow.modelRouting` 配置面板 |
-| U-08 | 安全自我强化闭环 | 未实现 | `_inbox` 的审核、测试、晋级、回滚和可视化审批流程 |
-| U-09 | Hermes Gateway 崩溃自动重启 | 无感知，下次状态检查才发现 | 注册 `child.on('exit')` 自动重启逻辑 |
+| U-01 | 完整任务状态机和阶段机 | 部分实现 | session 状态机、超时取消（B04）、持久化队列（C01）、重试分类（C02）已落地；完整阶段机语义未补全 |
+| U-02 | 跨重启 checkpoint 恢复 | 部分实现 | 启动时 orphan 收敛 + 从 checkpoint `nextStepIndex` 恢复已落地（见 `ai/control_architecture.md` §4.1） |
+| U-03 | 批量任务队列、暂停、取消、续跑 | 部分实现 | 持久化队列（C01：入队/领取/同项目串行/全局并发上限）、取消（B04）、自动重试（C02）与人工重试（D01）已落地；多项目批量编排未实现 |
+| U-04 | `_inbox` proposal 自动化测试与晋级 | 已实现（2026-08，AUTO-F02） | 测试门禁（可编译/样例命中/理论分达标）+ 人工审核 + 晋级激活 + 版本记录与回滚，见 `ai/control_architecture.md` |
+| U-05 | 完整图片资产闭环 | 已实现（2026-08-05） | Story Bible → asset plan → 锁定事物 → 分层合成（透明立绘+背景批量渲染+placements）→ 落盘 → 引用回填 → 校验 → 重新导出，《狼来了》实测通过；三级图片审核门禁在案 |
+| U-06 | 生产运维 UI：一键取消/恢复 | 已实现主体（2026-08，AUTO-D01/HERMES-H01） | 守护台治理页（待审核/操作审计）+ Sessions 页「任务队列」区块（取消/恢复/重试）已落地；「停止 production test」等个别入口待补 |
+| U-07 | 动态模型切换 UI 配置入口 | 未实现（后端已生效） | `workflow.modelRouting` 后端已生效，Control Console 配置面板未开放 |
+| U-08 | 安全自我强化闭环 | 已实现（2026-08，AUTO-F02） | `_inbox` 审核、测试、晋级、回滚和可视化审批全流程在案 |
+| U-09 | Hermes Gateway 崩溃自动重启 | 已实现（2026-08，AUTO-C04，默认关闭） | `HERMES_GATEWAY_SUPERVISION_ENABLED=true` 启用；exit 分类 + 指数退避有限重启 + 受影响任务收敛，状态见 `/api/control/supervision/state` |
 
 ---
 
@@ -436,9 +431,14 @@ Step G: 资源回填与校验
 | F-21 | 记忆改写 fallback 把"刷新指令"当内容落盘：`DECISIONS.md`/`LONG_TASKS.md` 自 2026-06-18 起内容为指令文本且每日注入 planner prompt | 2026-07-23 | 两文件已重建为真实内容；`generateReasoningFileRewrite` 模型未产出有效内容时显式失败，禁止指令落盘 |
 | F-22 | supervision 定时器（启动 30s + 每 30 分钟）在 meta_analysis 401 下空转烧钱，已制造 75 个无效 session | 2026-07-23 | 加 `SUPERVISION_ENABLED` 开关，默认关停；Kimi key 已轮换并验证可用（2026-08-15），需要时显式启用 |
 | F-23 | 56 个历史 `waiting_review` 会话永久积压（最早 2026-04-28），无超时/升级机制 | 2026-07-23 | 超 7 天的 56 个已批量 cancel；审核队列视图列入守护台 P2 |
+| F-24 | `L4-04` evaluator false-pass：`compose evaluator` 失败时 case 仍被自动判为 `PASS`（原 P0-01） | 2026-08 | `finalizeReasoningSessionWithQualityGate` 判定收紧：evaluator 失败记为 FAIL；回归测试 `scripts/test/qualityGateEvaluatorFalsePass.test.mjs` 在案 |
+| F-25 | Character asset pipeline 未实现（原 P0-02） | 2026-08-05 | 分层合成路径落地：3 角色透明立绘锁定 + 线稿在《狼来了》项目实测通过（Kimi 视觉评审 + 人工确认），旧失败分支已不存在；同 P1-B01 |
+| F-26 | Control API 完全无认证（原 P2-01） | 2026-08 | AUTO-D02 访问边界中间件：`CONTROL_API_ACCESS_MODE`（默认 `localhost`，写类 API 仅本机；`token` 模式支持 Bearer 凭证），拒绝写审计日志，4xx/5xx 统一脱敏 |
+| F-27 | Reasoning session 文件永久累积（原 P2-04） | 2026-08 | AUTO-C03 保留清理：终态 session 超 TTL（默认 30 天）先归档后删除，queue item/checkpoint 同理；报告落 `state/retention-cleanup/` |
+| F-28 | Chat history JSON 无上限（原 P2-05） | 2026-08 | 归档阈值与条目上限 env 化：`HERMES_CHAT_ARCHIVE_AFTER_DAYS`（默认 30）/ `HERMES_CHAT_MAX_ENTRIES_PER_FILE`（默认 120） |
 
 ---
 
-> 本文最后更新：2026-07-22
+> 本文最后更新：2026-08-19
 >
 > **元分析更新**：通过右脑 Kimi 对 286 个 reasoning sessions 进行元分析，发现会话悬挂（最长 61.8h）、性能统计埋点 Bug、`read_recent_context` 异常缓慢（平均 4m）、服务器重启导致孤儿会话（33% 失败）、21% 会话状态不明等新缺陷。详见 P1-08 ~ P1-12。

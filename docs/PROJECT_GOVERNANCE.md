@@ -27,8 +27,12 @@
 ├── docs/                          # 系统级权威文档（只读契约）
 │   ├── PROJECT_GOVERNANCE.md      # ← 本文档（最高级规则）
 │   ├── 系统生产级推进方案.md       # 系统分工、启动流程、任务流、路由规则
+│   ├── 狼来了内容质量闭环工作流.md  # 现行生产主手册（22 步全链路 + 质量闭环）
 │   ├── Control + GameStudio 生产工作流联调测试说明.md  # 联调测试标准与验证清单
 │   ├── PRODUCTION_DEFECTS.md      # 当前生产缺陷与未实现项
+│   ├── UI_REDESIGN_PROPOSAL.md    # UI 重设计提案（实施状态见文档头）
+│   ├── HERMES_EVALUATION_2026-07-23.md  # Hermes 评估记录（留存追溯）
+│   ├── archive/                   # 完成态计划档案（playbook、KIMI 四件套等，仅追溯）
 │   └── README.md                  # docs/ 目录索引
 │
 ├── ai/                            # Agent 契约与运行时记忆
@@ -36,13 +40,16 @@
 │   ├── MEMORY.md                  # 长任务方向
 │   ├── TOOLS.md                   # 工具与接口细节
 │   ├── USER.md                    # 用户偏好
+│   ├── BRAIN_DIVISION.md          # 左右脑分工与路由规则
 │   ├── control_architecture.md    # Control 架构说明
 │   ├── interactive_story_editor.contract.md
+│   ├── chat/                      # 聊天历史（按日期 JSON，自动维护）
 │   └── memory/                    # ← 运行时记忆（唯一权威）
 │       ├── STATUS.md              # 当前目标/结果/阻塞/下一步
 │       ├── TASK_QUEUE.md          # 短任务队列
 │       ├── DECISIONS.md           # 稳定规则与架构边界
-│       └── LONG_TASKS.md          # 长任务方向与里程碑
+│       ├── LONG_TASKS.md          # 长任务方向与里程碑
+│       └── daily/                 # 当日日志（系统自动写入，禁止手工创建）
 │
 ├── memory/                        # ⚠️ 已弃用（见 README.md）
 │
@@ -50,8 +57,20 @@
 │   ├── memory-archive/            # 记忆归档目录
 │   ├── memory-lifecycle/          # 生命周期维护报告
 │   ├── agent-runtime-sessions/    # Reasoning session 存储
-│   ├── reasoning-sessions/        # Reasoning session 存储（旧）
+│   ├── reasoning-queue/           # 持久化任务队列（AUTO-C01）
+│   ├── reasoning-checkpoints/     # Session checkpoint
+│   ├── events/ + event-runs/      # 事件层执行记录
+│   ├── agent-stream-bridge/       # agent 流式咨询会话映射
+│   ├── retention-cleanup/         # 保留清理报告（AUTO-C03）
 │   ├── story-production/          # 生产项目状态
+│   ├── cron-jobs.json             # cron 定时任务（HERMES-H02）
+│   ├── governance-audit.jsonl     # 治理操作审计（HERMES-H01）
+│   ├── proposal-governance.json   # proposal 治理状态（AUTO-F02）
+│   ├── project-workflow-registry.json  # 项目/workflow 注册表（HERMES-H04）
+│   ├── resource-scheduler.json    # 资源互斥调度状态（AUTO-R01）
+│   ├── project-binding.json       # 当前绑定项目
+│   ├── right-brain-supervision.json    # 右脑监察记录（HERMES-H03）
+│   ├── skill-governance.json      # 技能治理状态
 │   └── *.jsonl                    # 事件流、评审记录等
 │
 └── storage/projects/              # 项目产物真相源
@@ -98,6 +117,8 @@
 | `TASK_QUEUE.md` | 短任务推进队列 | 任务状态变化时 | Markdown 列表 |
 | `DECISIONS.md` | 稳定规则与架构边界 | 新的稳定取舍确认后 | Markdown，编号决策 |
 | `LONG_TASKS.md` | 长任务方向与里程碑 | 长任务方向变化时 | Markdown，阶段划分 |
+
+另有 `daily/` 子目录：当日日志由 Control Server 在有实质变更后自动写入（`ai/memory/daily/YYYY-MM-DD.md`），不属于手工记忆文件，不适用 4 文件限制；**禁止手工**在 `ai/memory/` 下创建日期日志。
 
 ### 2.2 禁止在 ai/memory/ 下创建的文件
 
@@ -479,6 +500,6 @@ Agent 运行时遵循以下分类优先级（从高到低）：
 
 ---
 
-> 本文档最后更新：2026-05-18
-> 下次审查：2026-06-01
+> 本文档最后更新：2026-08-19
+> 下次审查：2026-09-01
 > 文档状态：`authoritative-enforced`

@@ -40,13 +40,11 @@ const {
   clearReasoningSession,
   clearVisibleLogs,
   closeEditorModal,
-  closeSubmitGate,
   configSaveError,
   configSaveMessage,
   configSaving,
   modelSwitchBusy,
   modelSwitchMessage,
-  confirmSubmitGate,
   contextCandidatesBusy,
   contextCandidatesError,
   contextSourceCandidates,
@@ -59,8 +57,6 @@ const {
   contextPoolFileDirty,
   contextPoolFileSaveMessage,
   contextPoolEditorExtensions,
-  contextPoolSaveBusy,
-  contextPoolSaveMessage,
   dashboardActiveTab,
   deleteContextPoolEntry,
   editorModalKind,
@@ -69,12 +65,8 @@ const {
   error,
   fetchLocalModels,
   fetchingLeft,
-  generateSubmitContextDraft,
   getChineseCheckLabel,
   getLogLineColor,
-  getPreviewControllerRequest,
-  getPreviewPlannerHints,
-  getPreviewRuntimeRoute,
   handleChatComposerKeydown,
   handleModelChange,
   handleProviderChange,
@@ -159,7 +151,6 @@ const {
   runtimeState,
   saveChatMemoryFile,
   saveMemoryRecordFile,
-  saveConfirmedContextPoolEntry,
   saveContextPoolEntryEdits,
   saveContextSourceFile,
   saveLeftBrainConfig,
@@ -185,16 +176,7 @@ const {
   sourceEditorFile,
   sourceEditorSaveBusy,
   sourceEditorSaveMessage,
-  submitConfirmedSummary,
-  submitDraftBusy,
-  submitDraftError,
-  submitDraftResult,
-  submitGateMode,
-  submitGateOpen,
-  submitPromptDraft,
   submitReasoningReview,
-  submitSelectedContextPoolIds,
-  submitSelectedSourceIds,
   actOnModel,
   toggleHermesRuntime,
   visibleLogLines,
@@ -826,48 +808,6 @@ function getWorkflowPhaseTone(status: string) {
         </div>
         <div v-if="reasoningSubmitBlockedReason" class="message-banner error" style="margin-top: 8px; font-size: 12px;">{{ reasoningSubmitBlockedReason }}</div>
 
-        <div v-if="submitGateOpen" class="chat-context-panel submit-gate-panel">
-          <div class="chat-context-summary-line"><strong>提交前确认</strong><span>agentRuntime 可观测执行</span><span>可先预览 Control 提交包、Hermes 当前运行时路由和命中的 skill/action hints，再决定是否发送</span></div>
-          <div class="submit-gate-block"><div class="chat-memory-title">本次问题</div><textarea v-model="submitPromptDraft" class="chat-memory-editor" rows="3" spellcheck="false" /></div>
-          <div class="submit-gate-grid">
-            <div class="submit-gate-block">
-              <div class="chat-memory-title">手工附加上下文源</div>
-              <div v-if="contextCandidatesBusy" class="chat-memory-desc">读取中...</div>
-              <div v-else class="submit-source-list">
-                <label v-for="source in contextSourceCandidates" :key="source.sourceId" class="submit-source-item">
-                  <div class="submit-source-item-header">
-                    <label class="submit-source-checkbox-line"><input v-model="submitSelectedSourceIds" type="checkbox" :value="source.sourceId" :disabled="!source.exists" /><span>{{ source.label }}</span></label>
-                    <button class="action-btn outline submit-source-open-btn" type="button" @click.stop="loadContextSourceFile(source.sourceId)" :disabled="sourceEditorBusy">{{ selectedContextSourceId === source.sourceId ? '已打开' : '查看/编辑' }}</button>
-                  </div>
-                  <span class="chat-context-source-meta">{{ source.exists ? `载入 ${source.loadedChars} / ${source.totalChars} 字符` : '当前文件缺失' }}</span>
-                </label>
-                <div v-if="contextSourceCandidates.length === 0" class="chat-memory-desc">当前没有需要手工附加的原始上下文源；Hermes 启动后会自行读取默认 memory 文件。</div>
-              </div>
-            </div>
-            <div class="submit-gate-block">
-              <div class="chat-memory-title">已确认上下文池</div>
-              <div v-if="contextCandidatesBusy" class="chat-memory-desc">读取中...</div>
-              <div v-else class="submit-source-list">
-                <label v-for="entry in contextPoolEntries" :key="entry.entryId" class="submit-source-item"><input v-model="submitSelectedContextPoolIds" type="checkbox" :value="entry.entryId" /><span>{{ entry.title }}</span><span class="chat-memory-desc">{{ entry.updatedAt }}</span></label>
-                <div v-if="contextPoolEntries.length === 0" class="chat-memory-desc">当前还没有已确认的上下文池记录。</div>
-              </div>
-            </div>
-          </div>
-          <div class="submit-gate-block" style="margin-top: 12px;"><div class="chat-memory-title">原始上下文文件编辑器</div><div v-if="sourceEditorError" class="message-banner error" style="font-size: 12px;">{{ sourceEditorError }}</div><div v-if="selectedContextSource && sourceEditorFile" class="chat-memory-desc">当前已选择 {{ selectedContextSource.label }}。点击上方“查看/编辑”会用弹窗打开编辑器，快捷键将锁定在编辑器内。</div><div v-else class="chat-memory-desc">如有手工附加源，点击上方“查看/编辑”即可在弹窗中在线打开文件。</div></div>
-          <div class="submit-gate-block" style="margin-top: 12px;"><div class="chat-memory-title">压缩后的运行上下文</div><div class="chat-memory-desc">点击“查看发送预览”后会自动生成本轮上下文压缩摘要。你可以直接修改，确认后会随本次 agentRuntime 任务一起注入。</div><textarea v-model="submitConfirmedSummary" class="chat-memory-editor" rows="5" spellcheck="false" placeholder="这里会自动填入本轮上下文压缩摘要；也可以手工改写后再提交。" /><div class="reasoning-review-actions" style="margin-top: 8px;"><button class="action-btn outline" @click="saveConfirmedContextPoolEntry" :disabled="contextPoolSaveBusy || !submitConfirmedSummary.trim()">{{ contextPoolSaveBusy ? '保存中...' : '保存到上下文池' }}</button></div><div v-if="contextPoolSaveMessage" class="chat-memory-desc" style="margin-top: 6px;">{{ contextPoolSaveMessage }}</div></div>
-          <div class="reasoning-review-actions" style="margin-top: 12px;"><button class="action-btn outline" @click="generateSubmitContextDraft" :disabled="submitDraftBusy || contextCandidatesBusy || !submitPromptDraft.trim() || !!reasoningSubmitBlockedReason">{{ submitDraftBusy ? '预览中...' : '查看发送预览' }}</button><button class="action-btn outline" @click="closeSubmitGate" :disabled="submitDraftBusy || contextPoolSaveBusy">取消</button><button class="action-btn" @click="confirmSubmitGate" :disabled="submitDraftBusy || contextPoolSaveBusy || !submitPromptDraft.trim() || !!reasoningSubmitBlockedReason" :title="reasoningSubmitBlockedReason || ''">确认开始任务执行</button></div>
-          <div v-if="contextCandidatesError || submitDraftError" class="message-banner error" style="margin-top: 8px; font-size: 12px;">{{ contextCandidatesError || submitDraftError }}</div>
-          <div v-if="submitDraftResult" class="reasoning-review-box" style="margin-top: 12px;">
-            <div class="reasoning-plan-title">提交流程预览</div>
-            <div v-if="submitDraftResult.summary" class="chat-memory-desc" style="margin-bottom: 10px; white-space: pre-wrap;">{{ submitDraftResult.summary }}</div>
-            <div v-if="getPreviewControllerRequest(submitDraftResult.outboundPreview) || getPreviewRuntimeRoute(submitDraftResult.outboundPreview) || getPreviewPlannerHints(submitDraftResult.outboundPreview)" class="transport-preview-grid">
-              <div v-if="getPreviewControllerRequest(submitDraftResult.outboundPreview)" class="transport-preview-card controller"><div class="transport-preview-card-title">Control 提交给 Hermes</div><div class="transport-preview-meta">目标 {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.target }}</div><div class="transport-preview-meta">调度模型 hermes-agent · 共 {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.totalMessages }} 条消息 · system {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.systemMessageCount }} · 历史重放 {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.replayedMessageCount }} · user {{ getPreviewControllerRequest(submitDraftResult.outboundPreview)?.userMessageCount }}</div><pre class="reasoning-evidence-pre transport-preview-pre">{{ formatReasoningEvidence(getPreviewControllerRequest(submitDraftResult.outboundPreview)?.messages || []) }}</pre></div>
-              <div v-if="getPreviewRuntimeRoute(submitDraftResult.outboundPreview)" class="transport-preview-card route"><div class="transport-preview-card-title">Hermes 当前运行时路由</div><div class="transport-preview-meta">运行时 {{ getPreviewRuntimeRoute(submitDraftResult.outboundPreview)?.provider }} / {{ getPreviewRuntimeRoute(submitDraftResult.outboundPreview)?.model }}</div><div class="transport-preview-meta">Base URL {{ getPreviewRuntimeRoute(submitDraftResult.outboundPreview)?.baseUrl }}</div><div class="chat-memory-desc" style="white-space: pre-wrap;">{{ getPreviewRuntimeRoute(submitDraftResult.outboundPreview)?.note }}</div></div>
-              <div v-if="getPreviewPlannerHints(submitDraftResult.outboundPreview)" class="transport-preview-card hints"><div class="transport-preview-card-title">命中的 skill / action hints</div><div v-if="getPreviewPlannerHints(submitDraftResult.outboundPreview)?.suggestedActions?.length" class="transport-preview-meta">建议动作 {{ getPreviewPlannerHints(submitDraftResult.outboundPreview)?.suggestedActions?.join(', ') }}</div><div v-if="getPreviewPlannerHints(submitDraftResult.outboundPreview)?.selectedSkills?.length" class="chat-context-sources-list" style="margin-top: 8px;"><div v-for="skill in getPreviewPlannerHints(submitDraftResult.outboundPreview)?.selectedSkills || []" :key="skill.filePath" class="chat-context-source-line"><strong class="chat-context-source-label">{{ skill.name }}</strong><span class="chat-context-source-ok">{{ skill.hintCount }} 条 hint</span><span>{{ skill.filePath }}</span></div></div></div>
-            </div>
-          </div>
-        </div>
-
         <div class="dashboard-tabs">
           <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'reasoning' }" @click="dashboardActiveTab = 'reasoning'">可观测推理链</button>
           <button class="dashboard-tab-btn" :class="{ active: dashboardActiveTab === 'plan' }" @click="dashboardActiveTab = 'plan'">Agent Runtime</button>
@@ -937,7 +877,7 @@ function getWorkflowPhaseTone(status: string) {
               <button class="action-btn outline" type="button" @click="loadContextCandidates" :disabled="contextCandidatesBusy">{{ contextCandidatesBusy ? '刷新中...' : '刷新上下文源' }}</button>
             </div>
             <div v-if="contextCandidatesError" class="message-banner error" style="margin-top: 8px; font-size: 12px;">{{ contextCandidatesError }}</div>
-            <div v-if="!chatContextInfo" class="chat-memory-desc" style="margin-top: 8px;">当前没有正在执行或刚生成的提交上下文。点击“查看发送预览”或开始一次可观测执行后，这里会显示本轮压缩上下文、历史重放和运行时路由。</div>
+            <div v-if="!chatContextInfo" class="chat-memory-desc" style="margin-top: 8px;">当前没有正在执行或刚生成的提交上下文。开始一次可观测执行后，这里会显示本轮压缩上下文、历史重放和运行时路由。</div>
             <div class="chat-context-sources-list" style="margin-top: 10px;">
               <div v-for="source in contextSourceCandidates" :key="source.sourceId" class="chat-context-source-line">
                 <strong class="chat-context-source-label">{{ source.label }}</strong>
@@ -1074,7 +1014,7 @@ function getWorkflowPhaseTone(status: string) {
                 <div class="chat-memory-desc">{{ entry.summary || '无摘要' }}</div>
                 <div class="chat-memory-desc">{{ entry.updatedAt }}</div>
               </div>
-              <div v-if="!contextCandidatesBusy && contextPoolEntries.length === 0" class="chat-memory-desc">当前还没有已确认的上下文池记录。提交前预览里保存“压缩后的运行上下文”后，这里会出现可复用记录。</div>
+              <div v-if="!contextCandidatesBusy && contextPoolEntries.length === 0" class="chat-memory-desc">当前还没有已确认的上下文池记录。</div>
             </div>
           </div>
         </div>

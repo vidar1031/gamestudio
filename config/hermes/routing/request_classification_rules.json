@@ -1,5 +1,5 @@
 {
-  "version": "2026-05-08",
+  "version": "2026-08-19",
   "fallback": {
     "requestType": "contextual_plan_answer",
     "reason": "rule_table_unmatched",
@@ -7,6 +7,18 @@
     "route": "plan_then_answer"
   },
   "rules": [
+    {
+      "ruleId": "R013_consultative_question_form",
+      "requestType": "answer_only",
+      "priority": 140,
+      "detector": "consultative_question_form",
+      "reason": "consultative_question_form_overrides_story_workflow_execute",
+      "needsContext": false,
+      "requiresHumanReview": false,
+      "deterministicPlan": false,
+      "route": "answer_only",
+      "note": "问句形态优先于故事工作流强制（2026-08-19 用户明确指令）。实际执行为代码级前置覆盖（apps/control-server/src/server/reasoning/requestClassificationRules.js，在规则表循环之前判定）：咨询问句形态命中 story_workflow_execute / gamestudio_bootstrap_execute 关键词时改判 answer_only（滚动压缩探索路径），不触发生产副作用；祈使句维持 R007 强制工作流不变。取舍记录见 ai/memory/DECISIONS.md。"
+    },
     {
       "ruleId": "R012_gamestudio_bootstrap_execute",
       "requestType": "gamestudio_bootstrap_execute",

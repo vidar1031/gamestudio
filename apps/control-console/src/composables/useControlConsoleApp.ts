@@ -32,14 +32,14 @@ import {
   getReasoningSession,
 } from '../services/reasoningApi'
 import {
-  createContextDraft,
   getChatHistory as getChatHistoryRequest,
   getChatHistoryFile,
   getContextCandidates,
-  getSubmissionPreview,
   openChatHistoryFile,
+  postAgentStream,
   saveChatHistoryFile,
 } from '../services/chatApi'
+import type { AgentStreamStep } from '../types/agentStream'
 import { dispatchEvent, getEventRegistry } from '../services/eventsApi'
 
 type HealthResponse = {
@@ -200,67 +200,6 @@ type ContextPoolEntryDetail = ContextPoolEntrySummary & {
   prompt?: string
   selectedSourceIds?: string[]
   selectedContextPoolIds?: string[]
-}
-
-type ContextDraftResult = {
-  summary: string
-  usage?: TokenUsage | null
-  outboundPreview?: unknown
-  rawResponsePreview?: string
-  contextSources?: ChatContextInfo | null
-}
-
-type OutboundPreviewMessage = {
-  index: number
-  role: string
-  content: string
-}
-
-type StructuredOutboundPreview = {
-  provider: string
-  model: string
-  baseUrl: string
-  messages?: OutboundPreviewMessage[]
-  controllerRequest?: {
-    purpose: string
-    mode: string
-    target: string
-    model: string
-    totalMessages: number
-    systemMessageCount: number
-    replayedMessageCount: number
-    userMessageCount: number
-    messages: OutboundPreviewMessage[]
-  }
-  runtimeRoute?: {
-    provider: string
-    model: string
-    baseUrl: string
-    note?: string
-  }
-  plannerHints?: {
-    selectedSkills?: Array<{
-      filePath: string
-      name: string
-      hintCount: number
-      actionHints: Array<{
-        hintId: string
-        keywords: string[]
-        requiredActions: string[]
-        answerAction: string
-      }>
-    }>
-    matchedRules?: Array<{
-      key: string
-      goal: string
-      source: string
-      skillFile?: string | null
-      keywords?: string[] | null
-      requiredActions: string[]
-      answerAction?: string | null
-    }>
-    suggestedActions?: string[]
-  }
 }
 
 type ReasoningActionCapability = {
@@ -780,9 +719,6 @@ export function useControlConsoleApp() {
   const preflightBusy = ref(false)
   const preflightResult = ref<PreflightResult | null>(null)
   const preflightError = ref('')
-  const submitGateOpen = ref(false)
-  const submitGateMode = ref<'chat' | 'reasoning' | null>(null)
-  const submitPromptDraft = ref('')
   const eventChainVisible = ref(false)
   const eventRegistry = ref<EventChainRegistry | null>(null)
   const eventRegistryBusy = ref(false)
@@ -794,17 +730,9 @@ export function useControlConsoleApp() {
   const contextCandidatesError = ref('')
   const contextSourceCandidates = ref<ContextSourceCandidate[]>([])
   const contextPoolEntries = ref<ContextPoolEntrySummary[]>([])
-  const submitSelectedSourceIds = ref<string[]>([])
-  const submitSelectedContextPoolIds = ref<string[]>([])
-  const submitDraftBusy = ref(false)
-  const submitDraftError = ref('')
-  const submitDraftResult = ref<ContextDraftResult | null>(null)
   const reasoningCapabilities = ref<ReasoningCapabilities | null>(null)
   const reasoningCapabilitiesBusy = ref(false)
   const reasoningCapabilitiesError = ref('')
-  const submitConfirmedSummary = ref('')
-  const contextPoolSaveBusy = ref(false)
-  const contextPoolSaveMessage = ref('')
   const contextPoolEditorBusy = ref(false)
   const contextPoolEditorError = ref('')
   const contextPoolDeleteBusy = ref(false)
@@ -859,6 +787,10 @@ export function useControlConsoleApp() {
   const chatHistory = ref<ChatHistoryEntry[]>([])
   const persistedChatHistory = ref<ChatHistoryEntry[]>([])
   const pendingReasoningUserPrompt = ref('')
+  // agent 流式咨询状态：steps 按 STEP 分组（思考/动作/结果），answerDraft 为流式回答草稿
+  const agentStreamSteps = ref<AgentStreamStep[]>([])
+  const agentStreamActive = ref(false)
+  const agentStreamAnswerDraft = ref('')
   let logInterval: ReturnType<typeof setInterval> | null = null
   let chatUiClockInterval: ReturnType<typeof setInterval> | null = null
   let memoryRecordPollInterval: ReturnType<typeof setInterval> | null = null
@@ -1103,16 +1035,6 @@ export function useControlConsoleApp() {
     try { return JSON.stringify(value, null, 2) } catch { return String(value) }
   }
 
-  function parseStructuredOutboundPreview(value: unknown): StructuredOutboundPreview | null {
-    if (!value || typeof value !== 'object') return null
-    const preview = value as StructuredOutboundPreview
-    if (!preview.controllerRequest && !preview.runtimeRoute && !preview.plannerHints) return null
-    return preview
-  }
-
-  function getPreviewControllerRequest(value: unknown) { return parseStructuredOutboundPreview(value)?.controllerRequest || null }
-  function getPreviewRuntimeRoute(value: unknown) { return parseStructuredOutboundPreview(value)?.runtimeRoute || null }
-  function getPreviewPlannerHints(value: unknown) { return parseStructuredOutboundPreview(value)?.plannerHints || null }
   function formatActionHintLine(hint: { keywords: string[]; requiredActions: string[]; answerAction: string }) { return `${hint.keywords.join(' | ')} => ${[...hint.requiredActions, hint.answerAction].filter(Boolean).join(', ')}` }
   function validateJsonEditorContent(filePath: string, content: string) { if (/\.json$/i.test(filePath)) JSON.parse(content) }
   function formatClearArchiveMessage(payload: any) {
@@ -1276,14 +1198,6 @@ export function useControlConsoleApp() {
   }
   function stopChatHistoryPolling() {}
   function stopReasoningPolling() { if (reasoningPollTimer) { clearTimeout(reasoningPollTimer); reasoningPollTimer = null } }
-  function closeSubmitGate() { submitGateOpen.value = false; submitGateMode.value = null }
-  function rejectSubmitGate() {
-    submitGateOpen.value = false
-    submitGateMode.value = null
-    sandboxPrompt.value = ''
-    submitPromptDraft.value = ''
-    resetSubmitGateState()
-  }
   function closeEditorModal() { editorModalOpen.value = false; editorModalKind.value = null }
   function focusActiveEditorInModal() {
     void nextTick(() => {
@@ -1311,14 +1225,6 @@ export function useControlConsoleApp() {
     if (['s', 'w', 'p', 'l'].includes(lowerKey)) { event.preventDefault(); event.stopPropagation() }
     if (lowerKey === 's') void saveActiveEditorModal()
     if (lowerKey === 'w') closeEditorModal()
-  }
-  function resetSubmitGateState() {
-    submitDraftBusy.value = false
-    submitDraftError.value = ''
-    submitDraftResult.value = null
-    submitConfirmedSummary.value = ''
-    contextPoolSaveBusy.value = false
-    contextPoolSaveMessage.value = ''
   }
   function handleChatComposerKeydown(event: KeyboardEvent) {
     if (event.key !== 'Enter') return
@@ -2019,82 +1925,6 @@ export function useControlConsoleApp() {
     }
   }
 
-  async function openSubmitGate(mode: 'reasoning' = 'reasoning') {
-    const prompt = sandboxPrompt.value.trim()
-    if (!prompt) return
-    if (reasoningSubmitBlockedReason.value) {
-      reasoningError.value = reasoningSubmitBlockedReason.value
-      return
-    }
-    submitGateOpen.value = true
-    submitGateMode.value = mode
-    submitPromptDraft.value = sandboxPrompt.value
-    resetSubmitGateState()
-    await loadContextCandidates()
-    if (contextPoolEntries.value.length > 0) {
-      submitSelectedContextPoolIds.value = contextPoolEntries.value.map((entry) => entry.entryId)
-      submitSelectedSourceIds.value = []
-    } else {
-      submitSelectedSourceIds.value = contextSourceCandidates.value.filter((source) => source.exists).map((source) => source.sourceId)
-      submitSelectedContextPoolIds.value = []
-    }
-  }
-
-  async function generateSubmitContextDraft() {
-    if (!submitPromptDraft.value.trim() || !submitGateMode.value) return
-    submitDraftBusy.value = true
-    submitDraftError.value = ''
-    contextPoolSaveMessage.value = ''
-    try {
-      const response = await getSubmissionPreview('hermes-manager', { mode: 'reasoning', prompt: submitPromptDraft.value, selectedSourceIds: submitSelectedSourceIds.value, selectedContextPoolIds: submitSelectedContextPoolIds.value })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload?.ok || !payload?.preview) throw new Error(payload?.error || `submission_preview_http_${response.status}`)
-      submitDraftResult.value = payload.preview
-      if (payload.preview.contextSources) chatContextInfo.value = payload.preview.contextSources
-
-      const draftResponse = await createContextDraft('hermes-manager', {
-        prompt: submitPromptDraft.value,
-        selectedSourceIds: submitSelectedSourceIds.value,
-        selectedContextPoolIds: submitSelectedContextPoolIds.value,
-        confirmedContextSummary: submitConfirmedSummary.value
-      })
-      const draftPayload = await draftResponse.json().catch(() => null)
-      if (!draftResponse.ok || !draftPayload?.ok || !draftPayload?.draft) {
-        throw new Error(draftPayload?.error || `context_draft_http_${draftResponse.status}`)
-      }
-      submitConfirmedSummary.value = String(draftPayload.draft.summary || '').trim()
-      if (draftPayload.draft.contextSources) chatContextInfo.value = draftPayload.draft.contextSources
-    } catch (caught) {
-      submitDraftError.value = caught instanceof Error ? caught.message : String(caught)
-    } finally {
-      submitDraftBusy.value = false
-    }
-  }
-
-  async function saveConfirmedContextPoolEntry() {
-    if (!submitConfirmedSummary.value.trim()) return
-    contextPoolSaveBusy.value = true
-    contextPoolSaveMessage.value = ''
-    try {
-      const response = await fetch('/api/control/agents/hermes-manager/context-pool', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: submitPromptDraft.value.trim().slice(0, 60) || 'Confirmed Context', prompt: submitPromptDraft.value, summary: submitConfirmedSummary.value, selectedSourceIds: submitSelectedSourceIds.value, selectedContextPoolIds: submitSelectedContextPoolIds.value })
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload?.ok || !payload?.entry) throw new Error(payload?.error || `context_pool_create_http_${response.status}`)
-      contextPoolSaveMessage.value = '已保存到上下文池。'
-      await loadContextCandidates()
-      submitSelectedContextPoolIds.value = Array.from(new Set([...submitSelectedContextPoolIds.value, payload.entry.entryId]))
-      selectedContextPoolEntryId.value = payload.entry.entryId
-      await loadContextPoolEntry(payload.entry.entryId)
-    } catch (caught) {
-      contextPoolSaveMessage.value = caught instanceof Error ? caught.message : String(caught)
-    } finally {
-      contextPoolSaveBusy.value = false
-    }
-  }
-
   async function loadContextSourceFile(sourceId: string) {
     if (!sourceId) return
     sourceEditorBusy.value = true
@@ -2199,7 +2029,6 @@ export function useControlConsoleApp() {
         contextPoolFileContent.value = ''
         closeEditorModal()
       }
-      submitSelectedContextPoolIds.value = submitSelectedContextPoolIds.value.filter((value) => value !== entryId)
       await loadContextCandidates()
     } catch (caught) {
       contextPoolEditorError.value = caught instanceof Error ? caught.message : String(caught)
@@ -2223,6 +2052,145 @@ export function useControlConsoleApp() {
     }
   }
 
+  function resetAgentStreamState() {
+    agentStreamSteps.value = []
+    agentStreamActive.value = false
+    agentStreamAnswerDraft.value = ''
+  }
+
+  function findOrCreateAgentStreamStep(stepIndex: number) {
+    const existing = agentStreamSteps.value.find((step) => step.stepIndex === stepIndex)
+    if (existing) return existing
+    const created: AgentStreamStep = { stepIndex, thinking: [], actions: [] }
+    agentStreamSteps.value = [...agentStreamSteps.value, created]
+    return created
+  }
+
+  // 应用一条 server 桥聚合后的流事件到步骤区（思考/动作/结果/回答草稿）
+  function applyAgentStreamEvent(evt: Record<string, any>): string | null {
+    const type = String(evt?.type || '')
+    if (type === 'session') return String(evt.sessionId || '') || null
+    if (type === 'thinking') {
+      const step = findOrCreateAgentStreamStep(Number(evt.stepIndex) || 1)
+      step.thinking.push(String(evt.text || ''))
+      return null
+    }
+    if (type === 'action') {
+      const step = findOrCreateAgentStreamStep(Number(evt.stepIndex) || 1)
+      step.actions.push({
+        actionId: String(evt.actionId || `act_${step.stepIndex}_${step.actions.length + 1}`),
+        tool: String(evt.tool || ''),
+        actionLabel: String(evt.actionLabel || evt.tool || '调用工具'),
+        target: String(evt.target || ''),
+        status: 'running',
+      })
+      return null
+    }
+    if (type === 'action_result') {
+      const stepIndex = Number(evt.stepIndex) || 1
+      const step = findOrCreateAgentStreamStep(stepIndex)
+      const action = step.actions.find((item) => item.actionId === evt.actionId)
+        || [...step.actions].reverse().find((item) => item.status === 'running')
+      if (action) {
+        action.status = evt.ok ? 'done' : 'failed'
+        if (evt.error) action.error = String(evt.error)
+      }
+      return null
+    }
+    if (type === 'blocked') {
+      // 只读边界拦截：以 blocked 动作卡呈现，后续 final 事件给出人话说明
+      const lastStep = agentStreamSteps.value[agentStreamSteps.value.length - 1]
+      const step = lastStep || findOrCreateAgentStreamStep(1)
+      step.actions.push({
+        actionId: `blocked_${step.actions.length + 1}`,
+        tool: String(evt.tool || ''),
+        actionLabel: String(evt.actionLabel || evt.tool || '调用工具'),
+        target: String(evt.target || ''),
+        status: 'blocked',
+        error: '已拦截：超出咨询只读边界',
+      })
+      return null
+    }
+    if (type === 'answer_delta') {
+      agentStreamAnswerDraft.value += String(evt.delta || '')
+      return null
+    }
+    if (type === 'final') {
+      agentStreamAnswerDraft.value = ''
+      return null
+    }
+    return null
+  }
+
+  // 消费 control 桥透传的 SSE 流（fetch + ReadableStream，增量解析 event:/data: 帧）
+  async function consumeAgentStreamResponse(response: Response) {
+    if (!response.body) throw new Error('agent_stream_body_missing')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf8')
+    let buffer = ''
+    let streamSessionId = ''
+    const handleFrame = (frame: string) => {
+      let eventName = 'message'
+      const dataLines: string[] = []
+      for (const line of frame.split('\n')) {
+        if (!line || line.startsWith(':')) continue
+        if (line.startsWith('event:')) eventName = line.slice('event:'.length).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice('data:'.length).replace(/^ /, ''))
+      }
+      if (!dataLines.length) return
+      let evt: Record<string, any> = {}
+      try {
+        evt = JSON.parse(dataLines.join('\n'))
+      } catch {
+        return
+      }
+      const sessionId = applyAgentStreamEvent(evt)
+      if (sessionId) {
+        streamSessionId = sessionId
+        // 附着到活跃 session：状态栏/停止按钮/执行日志照常工作，治理证据可视
+        void loadReasoningSession(sessionId)
+      }
+      if (eventName === 'error' || evt.type === 'error') {
+        reasoningError.value = String(evt.message || 'agent_stream_error')
+      }
+    }
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let index = buffer.indexOf('\n\n')
+      while (index >= 0) {
+        handleFrame(buffer.slice(0, index).replace(/\r/g, ''))
+        buffer = buffer.slice(index + 2)
+        index = buffer.indexOf('\n\n')
+      }
+    }
+    if (buffer.trim()) handleFrame(buffer.replace(/\r/g, ''))
+    agentStreamActive.value = false
+    // 流结束后归位：同步 session 终态（任务状态/执行日志证据），并刷新聊天记录显示最终回答
+    if (streamSessionId) await loadReasoningSession(streamSessionId)
+    reasoningBusy.value = false
+    await loadChatHistory()
+  }
+
+  // 咨询/问答类优先尝试 agent 流式路径；服务端分类为非咨询（not_consultative）时返回 false 回退确定性链
+  async function tryAgentStreamSubmission(userText: string): Promise<boolean> {
+    const response = await postAgentStream('hermes-manager', {
+      prompt: userText,
+      reviewMode: reasoningAutoApproveEnabled.value ? 'full-auto' : 'manual',
+    })
+    const contentType = String(response.headers.get('content-type') || '')
+    if (response.ok && contentType.includes('text/event-stream')) {
+      agentStreamActive.value = true
+      await consumeAgentStreamResponse(response)
+      return true
+    }
+    const payload = await response.json().catch(() => null)
+    if (payload?.code === 'not_consultative') return false
+    // 其它失败（runtime 未运行/左脑门禁未就绪）与既有路径同语义，直接抛给统一错误处理
+    throw new Error(payload?.details || payload?.error || `agent_stream_http_${response.status}`)
+  }
+
   async function performReasoningSubmission(userText: string, submissionContext: Record<string, unknown>) {
     if (reasoningSubmitBlockedReason.value) {
       reasoningError.value = reasoningSubmitBlockedReason.value
@@ -2237,7 +2205,10 @@ export function useControlConsoleApp() {
     stopReasoningPolling()
     pendingReasoningUserPrompt.value = userText
     syncReasoningSessionUi(null)
+    resetAgentStreamState()
     try {
+      // 咨询/问答类由服务端分流进 agent 流式路径；非咨询返回 not_consultative 后回退既有确定性链
+      if (await tryAgentStreamSubmission(userText)) return
       const response = await createReasoningSession('hermes-manager', {
         prompt: userText,
         reviewMode: reasoningAutoApproveEnabled.value ? 'full-auto' : 'manual',
@@ -2255,19 +2226,6 @@ export function useControlConsoleApp() {
       appendLocalChatEntry({ role: 'user', content: userText })
       appendLocalChatEntry({ role: 'error', content: reasoningError.value })
     }
-  }
-
-  async function confirmSubmitGate() {
-    if (!submitGateMode.value || !submitPromptDraft.value.trim()) return
-    if (reasoningSubmitBlockedReason.value) {
-      submitDraftError.value = reasoningSubmitBlockedReason.value
-      return
-    }
-    const submissionContext: Record<string, unknown> = { selectedSourceIds: submitSelectedSourceIds.value, selectedContextPoolIds: submitSelectedContextPoolIds.value }
-    if (submitConfirmedSummary.value.trim()) submissionContext.confirmedContextSummary = submitConfirmedSummary.value
-    const prompt = submitPromptDraft.value
-    closeSubmitGate()
-    await performReasoningSubmission(prompt, submissionContext)
   }
 
   async function loadReasoningSession(sessionId: string) {
@@ -2329,6 +2287,7 @@ export function useControlConsoleApp() {
   // 让输入区回到干净起点；历史任务到会话列表查看。
   async function startNewChatSession() {
     stopReasoningPolling()
+    resetAgentStreamState()
     syncReasoningSessionUi(null)
     sandboxPrompt.value = ''
     pendingReasoningUserPrompt.value = ''
@@ -2554,11 +2513,8 @@ export function useControlConsoleApp() {
       await handleGameStudioEventCommand(prompt)
       return
     }
-    if (reasoningAutoApproveEnabled.value) {
-      await performReasoningSubmission(prompt, {})
-      return
-    }
-    await openSubmitGate('reasoning')
+    // 提交即创建任务：answer_only 由服务端分类器直跑，生产类步骤在执行链中由审核卡片承担（不再有提交前确认门）
+    await performReasoningSubmission(prompt, {})
   }
 
   async function submitReasoningReview(decision: 'approve' | 'reject' | 'back', options: { skipManualDraft?: boolean } = {}) {
@@ -3074,6 +3030,9 @@ export function useControlConsoleApp() {
     actOnModel,
     agentOptions,
     agentSelectionLocked,
+    agentStreamActive,
+    agentStreamAnswerDraft,
+    agentStreamSteps,
     availableLeftModels,
     availableRightModels,
     canAllRestartRuntime,
@@ -3100,7 +3059,6 @@ export function useControlConsoleApp() {
     clearReasoningSession,
     clearVisibleLogs,
     closeEditorModal,
-    closeSubmitGate,
     closeEventChain,
     loadEventChain,
     confirmEventDispatch,
@@ -3118,8 +3076,6 @@ export function useControlConsoleApp() {
     configSaving,
     modelSwitchBusy,
     modelSwitchMessage,
-    confirmSubmitGate,
-    rejectSubmitGate,
     connectSelectedAgent,
     connecting,
     contextCandidatesBusy,
@@ -3134,8 +3090,6 @@ export function useControlConsoleApp() {
     contextPoolFileDirty,
     contextPoolFileSaveMessage,
     contextPoolEditorExtensions,
-    contextPoolSaveBusy,
-    contextPoolSaveMessage,
     brainActiveTab,
     dashboardActiveTab,
     deleteContextPoolEntry,
@@ -3151,12 +3105,8 @@ export function useControlConsoleApp() {
     fetchingRight,
     formatActionHintLine,
     formatReasoningEvidence,
-    generateSubmitContextDraft,
     getChineseCheckLabel,
     getLogLineColor,
-    getPreviewControllerRequest,
-    getPreviewPlannerHints,
-    getPreviewRuntimeRoute,
     handleChatComposerKeydown,
     handleModelChange,
     handleProviderChange,
@@ -3210,7 +3160,6 @@ export function useControlConsoleApp() {
     openContextPoolEntryInEditor,
     openMemoryRecordInEditor,
     openEditorModal,
-    openSubmitGate,
     overview,
     overviewError,
     fetchOverview,
@@ -3258,7 +3207,6 @@ export function useControlConsoleApp() {
     sandboxPrompt,
     saveMemoryRecordFile,
     saveChatMemoryFile,
-    saveConfirmedContextPoolEntry,
     saveContextPoolEntryEdits,
     saveContextSourceFile,
     saveLeftBrainConfig,
@@ -3287,16 +3235,7 @@ export function useControlConsoleApp() {
     sourceEditorFile,
     sourceEditorSaveBusy,
     sourceEditorSaveMessage,
-    submitConfirmedSummary,
-    submitDraftBusy,
-    submitDraftError,
-    submitDraftResult,
-    submitGateMode,
-    submitGateOpen,
-    submitPromptDraft,
     submitReasoningReview,
-    submitSelectedContextPoolIds,
-    submitSelectedSourceIds,
     syncReasoningSessionUi,
     toggleGlobalRuntime,
     toggleHermesRuntime,

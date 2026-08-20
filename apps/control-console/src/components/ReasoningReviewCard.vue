@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { ReasoningReview } from '../types/reasoning'
+import { extractEvidenceKeyParams } from '../lib/humanize'
 
-defineProps<{
+const props = defineProps<{
   review: ReasoningReview
   targetLabel: string
   busy: boolean
@@ -19,6 +21,9 @@ const emit = defineEmits<{
   (e: 'update:draft', value: string): void
 }>()
 
+// 首屏关键参数（人话 chips）：从 outboundPreview 挑平铺字段，原始负载统一收进「技术细节」
+const keyParams = computed(() => extractEvidenceKeyParams(props.evidence))
+
 function onDraftInput(event: Event) {
   emit('update:draft', (event.target as HTMLTextAreaElement).value)
 }
@@ -29,19 +34,27 @@ function onDraftInput(event: Event) {
     <div class="review-card-kind">{{ targetLabel }}</div>
     <div class="review-card-title">{{ review.title }}</div>
     <div class="review-card-summary">{{ review.summary }}</div>
+    <div v-if="keyParams.length" class="review-card-params">
+      <span v-for="param in keyParams" :key="param.label" class="review-card-param">
+        {{ param.label }}: {{ param.value }}
+      </span>
+    </div>
     <div class="review-card-mode-hint">{{ autoApprove ? '当前为自动直跑模式：运行任务图和步骤不会停在审核框。' : '当前为人工全审模式：运行任务图、执行步骤和最终回答都会进入审核。' }}</div>
-    <div v-if="evidence?.outboundPreview" class="review-card-evidence">
-      <div class="review-card-evidence-title">本轮提交流程</div>
-      <pre class="review-card-evidence-pre">{{ formatEvidence(evidence.outboundPreview) }}</pre>
-    </div>
-    <div v-if="evidence?.rawResponsePreview" class="review-card-evidence">
-      <div class="review-card-evidence-title">模型首先返回的结果</div>
-      <pre class="review-card-evidence-pre">{{ evidence.rawResponsePreview }}</pre>
-    </div>
-    <div v-if="evidence?.structuredResult" class="review-card-evidence">
-      <div class="review-card-evidence-title">结构化结果摘要</div>
-      <pre class="review-card-evidence-pre">{{ formatEvidence(evidence.structuredResult) }}</pre>
-    </div>
+    <details v-if="evidence?.outboundPreview || evidence?.rawResponsePreview || evidence?.structuredResult" class="review-card-tech">
+      <summary>技术细节（原始负载）</summary>
+      <div v-if="evidence?.outboundPreview" class="review-card-evidence">
+        <div class="review-card-evidence-title">本轮提交流程</div>
+        <pre class="review-card-evidence-pre">{{ formatEvidence(evidence.outboundPreview) }}</pre>
+      </div>
+      <div v-if="evidence?.rawResponsePreview" class="review-card-evidence">
+        <div class="review-card-evidence-title">模型首先返回的结果</div>
+        <pre class="review-card-evidence-pre">{{ evidence.rawResponsePreview }}</pre>
+      </div>
+      <div v-if="evidence?.structuredResult" class="review-card-evidence">
+        <div class="review-card-evidence-title">结构化结果摘要</div>
+        <pre class="review-card-evidence-pre">{{ formatEvidence(evidence.structuredResult) }}</pre>
+      </div>
+    </details>
     <textarea
       :value="draft"
       class="review-card-editor"
@@ -88,6 +101,26 @@ function onDraftInput(event: Event) {
   font-size: 12px;
   color: var(--c-text-muted, rgba(255, 255, 255, 0.5));
 }
+.review-card-params {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.review-card-param {
+  border: 1px solid var(--c-border, rgba(255, 255, 255, 0.14));
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: 11px;
+  color: var(--c-text-muted, rgba(255, 255, 255, 0.65));
+  word-break: break-all;
+}
+.review-card-tech {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--c-text-muted, rgba(255, 255, 255, 0.55));
+}
+.review-card-tech summary { cursor: pointer; user-select: none; }
 .review-card-evidence {
   margin-top: 8px;
 }

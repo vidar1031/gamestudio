@@ -39,9 +39,11 @@ import {
   buildStructuredOutboundPreview,
   collectReplayableHermesMessages,
   inferWorkspaceDirectoriesFromRecentContext,
+  buildProjectMemorySystemMessage,
   resolveModelRouteForPhase,
   truncateReasoningPreview,
 } from '../controlServerCore.js'
+import { assembleExploreEvidenceSources, runExploreAnswer } from './exploreAnswer.js'
 
 export function getReasoningRequestError(error, phase) {
   if (error?.name === 'AbortError') {
@@ -597,7 +599,12 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
   }
 
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), HERMES_CHAT_REQUEST_TIMEOUT_MS)
+  // 咨询/问答类（answer_only）走「滚动压缩探索」，含多次模型调用（分块提取/压缩/综合/自检），
+  // 外层 blanket 中止窗口对齐受监督任务硬超时；单跳路径保持原 HERMES_CHAT_REQUEST_TIMEOUT_MS。
+  const answerRequestType = classifyReasoningRequest(userPrompt, { contextSelection: options.contextSelection || {} })?.type
+  const useExploreAnswer = !requireModelAnswer && !options.contextSelection?.productionTest && answerRequestType === 'answer_only'
+  const answerOverallTimeoutMs = useExploreAnswer ? HERMES_REASONING_TASK_HARD_TIMEOUT_MS : HERMES_CHAT_REQUEST_TIMEOUT_MS
+  const timeout = setTimeout(() => controller.abort(), answerOverallTimeoutMs)
   const externalSignal = options.signal || null
   const abortFromExternalSignal = () => controller.abort(externalSignal?.reason || 'reasoning_cancelled_by_user')
   const correctionPrompt = String(options.correctionPrompt || '').trim()
@@ -611,6 +618,60 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
   }
 
   try {
+    // 咨询/问答类（answer_only）走「滚动压缩探索」：分块证据提取 → 水位压缩 → 综合 → 切题自检。
+    // story/bootstrap 等确定性模板答案已在上方短路；生产测试与 requireModelAnswer 硬门禁保持单跳路径不变。
+    if (useExploreAnswer) {
+      const exploreRoute = resolveModelRouteForPhase(binding, 'reasoning_answer')
+      const exploreSources = await assembleExploreEvidenceSources({
+        binding,
+        route: exploreRoute,
+        userPrompt,
+        history,
+        sessionId,
+        contextSelection: options.contextSelection || {},
+        deps: {
+          // 记忆文件正文复用 content-injection 有界注入（任务 C 思路：每文件/总量上限 + 截尾标注）
+          buildProjectMemorySections: (currentBinding, prompt, contextSelection) => {
+            const memory = buildProjectMemorySystemMessage(currentBinding, prompt, { ...contextSelection, memoryOverlayMode: 'content-injection' })
+            return memory?.overlayInjection?.sections || []
+          },
+          collectReplayableMessages: (currentHistory, replayOptions) => collectReplayableHermesMessages(currentHistory, replayOptions),
+        },
+      })
+      const exploreResult = await runExploreAnswer({
+        sessionId,
+        userPrompt,
+        sources: exploreSources,
+        binding,
+        route: exploreRoute,
+        signal: controller.signal,
+        correctionPrompt,
+        appendEvent: options.appendEvent || null,
+      })
+      return {
+        reply: exploreResult.reply,
+        usage: exploreResult.usage,
+        fallback: false,
+        intentId: 'answer_only_explore',
+        outboundPreview: buildStructuredOutboundPreview({
+          binding: exploreRoute.binding,
+          requestRoute: exploreRoute,
+          messages: exploreResult.synthesisMessages,
+          purpose: 'reasoning-explore-answer',
+          mode: 'reasoning',
+          userPrompt,
+          replayedMessageCount: collectReplayableHermesMessages(history, {
+            excludeRequestId: sessionId,
+            limit: Math.max(0, Number(binding?.workflow?.reasoningReplayWindowMessages || 0)),
+            userPrompt
+          }).length,
+          contextSelection: options.contextSelection || {},
+          history
+        }),
+        rawResponsePreview: truncateReasoningPreview(exploreResult.reply, 2400),
+        exploreStats: exploreResult.stats
+      }
+    }
     const firstAttempt = await requestReasoningAnswerFromModel({
       sessionId,
       userPrompt,
@@ -666,6 +727,10 @@ export async function generateReasoningFinalAnswer(sessionId, userPrompt, artifa
   } catch (error) {
     if (externalSignal?.aborted) {
       throw new Error(String(externalSignal.reason || 'reasoning_cancelled_by_user'))
+    }
+    // 探索路径的模型调用失败：显式失败（step_failed/session_failed 可观测），不落确定性兜底、不伪造回答
+    if (error?.exploreFailure) {
+      throw error
     }
     const fallbackReply = buildReasoningFallbackAnswer(userPrompt, artifacts)
     const answerMessages = buildReasoningAnswerMessages(

@@ -383,16 +383,16 @@ onMounted(load)
 }
 
 .event-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 12px;
+  align-items: stretch;
 }
 
 .event-card {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
+  flex-direction: column;
+  gap: 10px;
   padding: 14px 16px;
   border-radius: 10px;
   background: var(--c-bg-panel);
@@ -482,9 +482,11 @@ onMounted(load)
 
 .event-actions {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
   flex-shrink: 0;
+  margin-top: auto;
+  justify-content: flex-end;
 }
 
 .action-btn {

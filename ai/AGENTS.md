@@ -78,14 +78,15 @@
 - 禁止绕过 Control 直接调用 GameStudio Server API 进行故事生产。
 
 ### 2. 故事生产工作流强制规则
-- 用户输入包含以下关键词时，**强制**走 `story_workflow_execute` 完整 P0 链路（13 步），不依赖模型判断：
+- 用户输入包含以下关键词时，**强制**走 `story_workflow_execute`，不依赖模型判断：
   - 创建/新建/生成/生产 + 故事
   - 一口气 + 故事
   - 完整/闭环 + 故事
   - 互动故事、故事项目
   - 大纲、脚本、分镜、资产、出图
   - interactive story、story workflow
-- 完整 P0 链路必须包含以下步骤（不可跳过）：
+- **收窄说明（R013，2026-08-19 起生效）**：问句形态优先于关键词强制。命中咨询问句形态（吗/呢/么 结尾或带问号、能不能/能否/可以…吗/会不会/是不是/是什么/为什么/如何/先回答/先告诉我 等）的输入，即使含上述生产关键词，也先走 `answer_only` 咨询路径（滚动压缩探索），**不触发**本强制工作流；仅祈使句（创建/生成/开始/执行…）适用本规则。取舍记录见 `ai/memory/DECISIONS.md`，实现见 `apps/control-server/src/server/reasoning/requestClassificationRules.js` 的 `R013_consultative_question_form`。
+- 现行完整全链路为 **22 步**（权威说明见 `docs/狼来了内容质量闭环工作流.md`）：P0 文本 12 步 + P1 分层合成 6 步 + 记忆同步×3（STATUS/TASK_QUEUE/DECISIONS）+ 最终回答。其中 P0 文本链路（含最终回答共 13 步）不可跳过：
   1. `story_create_project` — 创建项目
   2. `story_configure_project` — 写入配置
   3. `story_generate_scripts_candidate` — 生成脚本候选
@@ -99,6 +100,7 @@
   11. `story_validate_project` — 项目校验
   12. `story_export_project` — 导出项目
   13. `generate_default_answer` — 生成最终回答
+- P1 分层合成 6 步（声明「背景+立绘分层合成/全链路交付」时追加在 P0 导出之后）：`story_create_asset_plan` 资产计划 → `story_generate_lock_asset_references` 透明立绘绘制锁定 → `story_render_scene_backgrounds` 背景批量渲染 → `story_generate_scene_placements` placements 立绘站位 → `story_validate_project` 校验 → `story_export_project` 重新导出。
 
 ### 3. 本地模型能力不足时的兜底策略
 - 当本地模型（OMLX）分类错误或生成质量不达标时：
