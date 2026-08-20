@@ -17,6 +17,7 @@ import {
 import { validateActionResult } from './actionValidator.js'
 import { enforceActionBoundary } from './projectBoundaryGuard.js'
 import { backupActionArtifacts, rollbackAction } from './rollbackService.js'
+import { validateArtifact, extractProjectIdFromResult } from './artifactValidator.js'
 import { appendGovernanceAudit } from '../reasoning/governanceAudit.js'
 
 /**
@@ -207,14 +208,44 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
     return { ok: false, error, action: getAction(actionId) }
   }
 
-  // 验证结果
+  // 验证结果（schema 级）
   const validation = validateActionResult(action, capability, result)
   if (!validation.ok && capability.type === 'write' && backups.length) {
     // 验证失败：回滚到之前版本
     rollbackAction(actionId, `validation_failed:${validation.issues.join('; ')}`)
   }
 
-  // 证据链完整性检查：无证据不能认定成功
+  // 产物验证（真实文件级）：不信任模型口头宣称，只信真实产物
+  const projectId = extractProjectIdFromResult(result) || action.projectId
+  const artifactCheck = projectId
+    ? validateArtifact(capability.event?.eventId || action.capabilityId, projectId)
+    : { ok: false, missing: ['project_id_missing'], expected: {}, actual: {} }
+  if (!artifactCheck.ok) {
+    if (capability.type === 'write' && backups.length) {
+      rollbackAction(actionId, `artifact_validation_failed:${artifactCheck.missing.join('; ')}`)
+    }
+    transitionAction(actionId, ACTION_STATE.FAILED, 'artifact_validation_failed', {
+      type: 'artifact_validation',
+      artifactCheck
+    })
+    appendGovernanceAudit({
+      action: 'action_artifact_blocked',
+      result: 'blocked',
+      detail: `动作 ${actionId} 产物验证失败：${artifactCheck.missing.join(', ')}`,
+      actor: action.actor,
+      data: { actionId, artifactCheck }
+    })
+    return { ok: false, error: 'artifact_validation_failed', action: getAction(actionId), validation, artifactCheck }
+  }
+
+  const finalState = validation.ok ? ACTION_STATE.COMPLETED : ACTION_STATE.FAILED
+  const finalAction = transitionAction(actionId, finalState, validation.ok ? 'validation_passed' : 'validation_failed', {
+    type: 'validation',
+    validation,
+    artifactCheck
+  })
+
+  // 证据链完整性检查：无证据不能认定成功（在 validation 证据记录之后执行）
   const currentAction = getAction(actionId)
   const evidenceCheck = checkEvidenceCompleteness(currentAction, capability)
   if (!evidenceCheck.ok) {
@@ -231,13 +262,6 @@ export async function executeAction(actionId, { dryRun = false, confirmed = fals
     })
     return { ok: false, error: 'evidence_incomplete', action: getAction(actionId), validation, evidenceCheck }
   }
-
-  const finalState = validation.ok ? ACTION_STATE.COMPLETED : ACTION_STATE.FAILED
-  const finalAction = transitionAction(actionId, finalState, validation.ok ? 'validation_passed' : 'validation_failed', {
-    type: 'validation',
-    validation,
-    evidenceCheck
-  })
 
   appendGovernanceAudit({
     action: 'action_executed',

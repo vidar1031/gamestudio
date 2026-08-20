@@ -2420,6 +2420,82 @@
           "description": "评审模型（可选）"
         }
       ]
+    },
+    {
+      "code": "GS-39",
+      "eventId": "story.project.create_ai",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "AI 创建故事项目",
+      "description": "根据用户故事目标调用模型生成脚本与蓝图，创建完整互动故事项目。受控模式必须携带 modelExecution.leaseId。",
+      "payloadSchema": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": { "type": "string", "minLength": 1 },
+          "title": { "type": "string" },
+          "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "optionsPerChoice": { "type": "integer", "enum": [2, 3] },
+          "endings": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 600000 },
+          "modelExecution": {
+            "type": "object",
+            "required": ["provider", "model", "leaseId"],
+            "properties": {
+              "provider": { "type": "string" },
+              "model": { "type": "string" },
+              "apiUrl": { "type": "string" },
+              "leaseId": { "type": "string" },
+              "requestId": { "type": "string" },
+              "timeoutMs": { "type": "integer" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": ["success", "project", "scripts"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "project": { "type": "object" },
+          "scripts": { "type": "object" },
+          "blueprint": { "type": "object" },
+          "gen": { "type": "object" }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}",
+        "model:call:omlx"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 120000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/ai/create"
+        }
+      },
+      "aliases": [
+        "AI 创建故事",
+        "AI 生成故事",
+        "智能创建故事"
+      ],
+      "chatArgs": [
+        {
+          "name": "prompt",
+          "required": true,
+          "description": "故事内容描述"
+        },
+        {
+          "name": "title",
+          "required": false,
+          "description": "项目标题"
+        }
+      ]
     }
   ]
 }

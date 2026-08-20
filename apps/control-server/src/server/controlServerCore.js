@@ -204,6 +204,7 @@ import { registerProjectBindingRoutes } from './routes/projectBindingRoutes.js'
 import { registerProjectCapabilityRoutes } from './routes/projectCapabilityRoutes.js'
 import { registerActionRoutes } from './routes/actionRoutes.js'
 import { registerEvidenceRoutes } from './routes/evidenceRoutes.js'
+import { registerProductionRoutes } from './routes/productionRoutes.js'
 import { registerReasoningRoutes } from './routes/reasoningRoutes.js'
 import { registerAgentStreamRoutes } from './routes/agentStreamRoutes.js'
 import { registerResourceRoutes } from './routes/resourceRoutes.js'
@@ -3600,6 +3601,7 @@ function registerPrimaryControlServerRoutes(app) {
   registerProjectCapabilityRoutes(app)
   registerActionRoutes(app)
   registerEvidenceRoutes(app)
+  registerProductionRoutes(app)
   registerMaintenanceRoutes(app)
 
   // 启动时执行一次保留清理（先归档后清理，活跃数据受保护）
