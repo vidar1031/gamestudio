@@ -842,7 +842,11 @@ export function buildStoryWorkflowUserReply(userPrompt, artifacts) {
   if (!success) {
     lines.push('下一步建议：请检查项目创建入口是否正常；若 project.create 事件执行失败，需要修复该 API 或事件映射。')
   } else {
-    lines.push('下一步建议：可以在项目列表中查看新项目，或继续生成脚本与蓝图。')
+    if (projectId) {
+      lines.push(`下一步建议：点击打开项目编辑器 http://localhost:8868/?projectId=${projectId} 查看和继续编辑。`)
+    } else {
+      lines.push('下一步建议：可以在项目列表中查看新项目，或继续生成脚本与蓝图。')
+    }
   }
 
   return lines.join('\n')

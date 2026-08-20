@@ -202,6 +202,30 @@ export function registerReasoningRoutes(app, context) {
       return c.json({ ok: false, error: 'prompt_required' }, 400)
     }
 
+    // 故事需求确认拦截：创建故事类请求先整理需求规格，用户确认后再执行
+    const isStoryCreation = /创建.*故事|生成.*故事|AI.*创建.*故事/i.test(userPrompt)
+    const skipRequirementConfirm = Boolean(body.skipRequirementConfirm || body.submissionContext?.skipRequirementConfirm)
+    if (isStoryCreation && !skipRequirementConfirm) {
+      const { compileStoryRequirement } = await import('../services/storyRequirementCompiler.js')
+      const requirement = compileStoryRequirement(userPrompt)
+      if (!requirement.complete) {
+        // 有缺失字段：返回追问
+        return c.json({
+          ok: true,
+          requirementConfirm: true,
+          requirement,
+          message: `请补充以下信息：\n${requirement.missing.map((m) => m.question).join('\n')}`
+        })
+      }
+      // 字段完整：返回需求规格确认
+      return c.json({
+        ok: true,
+        requirementConfirm: true,
+        requirement,
+        message: `请确认故事需求规格：\n${requirement.summary}\n\n确认后我将开始创建故事。`
+      })
+    }
+
     const productionTest = Boolean(body.productionTest || body.submissionContext?.productionTest)
     const requireModelAnswer = Boolean(body.requireModelAnswer || body.requireHermesModelAnswer || body.submissionContext?.requireModelAnswer || body.submissionContext?.requireHermesModelAnswer)
 
@@ -258,7 +282,14 @@ export function registerReasoningRoutes(app, context) {
     }
 
     const disableQualityAutoRetry = body.disableQualityAutoRetry ?? body.submissionContext?.disableQualityAutoRetry
-    const session = await createReasoningSession(agentId, userPrompt, {
+
+    // 用户确认后的需求规格：如果携带了确认的需求规格，使用它构建 story workflow
+    const confirmedRequirement = body.requirement || body.submissionContext?.requirement
+    const effectivePrompt = confirmedRequirement
+      ? `创建故事：${confirmedRequirement.fields?.title || ''}。${confirmedRequirement.fields?.brief || ''}`
+      : userPrompt
+
+    const session = await createReasoningSession(agentId, effectivePrompt, {
       parentSessionId,
       reviewMode: String(body.reviewMode || body.submissionContext?.reviewMode || '').trim().toLowerCase() || 'manual',
       childGoals: body.childGoals,
@@ -273,13 +304,15 @@ export function registerReasoningRoutes(app, context) {
       caseId: String(body.caseId || body.submissionContext?.caseId || '').trim() || null,
       // HERMES-H04：显式 workflow 归属透传（已过注册表门禁），供队列/审计对照
       ...(submitWorkflow ? { workflow: submitWorkflow } : {}),
-      title: String(body.title || body.submissionContext?.title || '').trim() || userPrompt,
+      title: String(body.title || body.submissionContext?.title || confirmedRequirement?.fields?.title || '').trim() || effectivePrompt,
       // AUTO-C01：projectId 透传进 submissionContext，队列按它做同 project 串行
       projectId: String(body.projectId || body.submissionContext?.projectId || '').trim() || null,
       expectations: body.expectations && typeof body.expectations === 'object'
         ? body.expectations
         : (body.submissionContext?.expectations && typeof body.submissionContext.expectations === 'object' ? body.submissionContext.expectations : null),
-      forceFreshRun: Boolean(body.forceFreshRun || body.submissionContext?.forceFreshRun)
+      forceFreshRun: Boolean(body.forceFreshRun || body.submissionContext?.forceFreshRun),
+      // 确认的需求规格透传
+      confirmedRequirement: confirmedRequirement || null
     })
     persistHermesChatPrompt(session.sessionId, userPrompt)
     if (session.status === 'completed' && session.artifacts?.finalAnswer) {
