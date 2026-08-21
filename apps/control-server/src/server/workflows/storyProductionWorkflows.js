@@ -84,8 +84,8 @@ export function inferStoryConfigFromPrompt(userPrompt) {
     return fallback
   }
   return {
-    genre: pick(['题材', '类型', 'genre'], /时间循环|雨夜|咖啡馆/.test(prompt) ? '悬疑时间循环' : '互动剧情'),
-    style: pick(['风格', 'style'], /雨夜|咖啡馆/.test(prompt) ? '电影感、轻悬疑、温暖霓虹' : '清晰、可互动、适合 H5'),
+    genre: pick(['题材', '类型', 'genre'], '互动剧情'),
+    style: pick(['风格', 'style'], '清晰、可互动、适合 H5'),
     targetAudience: pick(['目标受众', '受众', 'audience'], '泛娱乐互动故事读者'),
     outputLanguage: pick(['输出语言', '语言', 'language'], /英文|英语|en-US/i.test(prompt) ? 'en-US' : 'zh-CN'),
     choicePoints: /选择点/.test(prompt) ? null : 1,

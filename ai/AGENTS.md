@@ -65,7 +65,7 @@
 - 短任务变化：更新 `ai/memory/TASK_QUEUE.md`
 - 当前目标 / 阻塞 / 下一步变化：更新 `ai/memory/STATUS.md`
 - 新的稳定取舍：更新 `ai/memory/DECISIONS.md`
-- **禁止在 `ai/memory/` 下创建按日期的日志文件（如 `2026-05-18.md`）**；当日进展直接更新 `STATUS.md`，详细过程进入 `state/` 或测试 artifacts
+- 当日日志由系统自动写 `ai/memory/daily/`（如 `2026-05-18.md`），禁止手工创建日期日志；当日进展直接更新 `STATUS.md`，详细过程进入 `state/` 或测试 artifacts
 - 当多步骤执行改变了项目状态、流程规则或当前主线时，必须在最终回答前同步上述记忆文件，而不是只更新聊天历史。
 
 ## 硬性生产规则（不可被模型覆盖）
