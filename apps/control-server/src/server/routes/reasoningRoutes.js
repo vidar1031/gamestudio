@@ -202,6 +202,32 @@ export function registerReasoningRoutes(app, context) {
       return c.json({ ok: false, error: 'prompt_required' }, 400)
     }
 
+    // 会话恢复：用户输入"继续"时，恢复最近的未完成 session
+    const isContinueRequest = /^继续|^接着|^继续创建|^恢复|^接着之前/i.test(userPrompt)
+    if (isContinueRequest && !parentSessionId) {
+      const activeSessions = listReasoningSessions({ limit: 10, includeTerminal: false })
+      const resumable = activeSessions.find((s) => s.status === 'waiting_review' || s.status === 'running' || s.status === 'paused')
+      if (resumable) {
+        return c.json({
+          ok: true,
+          resumed: true,
+          session: {
+            sessionId: resumable.sessionId,
+            status: resumable.status,
+            currentStepId: resumable.currentStepId,
+            title: resumable.title,
+            userPrompt: resumable.userPrompt
+          },
+          message: `已恢复未完成任务：${resumable.title || resumable.userPrompt}（当前状态：${resumable.status}）`
+        })
+      }
+      return c.json({
+        ok: true,
+        resumed: false,
+        message: '没有正在进行的任务。请告诉我您要创建什么故事。'
+      })
+    }
+
     // 故事需求确认拦截：创建故事类请求先整理需求规格，用户确认后再执行
     const isStoryCreation = /创建.*故事|生成.*故事|AI.*创建.*故事/i.test(userPrompt)
     const skipRequirementConfirm = Boolean(body.skipRequirementConfirm || body.submissionContext?.skipRequirementConfirm)
