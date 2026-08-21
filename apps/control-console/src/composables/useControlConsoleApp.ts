@@ -787,6 +787,8 @@ export function useControlConsoleApp() {
   const chatHistory = ref<ChatHistoryEntry[]>([])
   const persistedChatHistory = ref<ChatHistoryEntry[]>([])
   const pendingReasoningUserPrompt = ref('')
+  // 故事需求确认待办：服务端要求补充/确认字段时暂存，等待用户下一句话回应
+  const pendingStoryRequirementConfirm = ref<{ prompt: string; requirement: Record<string, unknown> } | null>(null)
   // agent 流式咨询状态：steps 按 STEP 分组（思考/动作/结果），answerDraft 为流式回答草稿
   const agentStreamSteps = ref<AgentStreamStep[]>([])
   const agentStreamActive = ref(false)
@@ -2215,7 +2217,17 @@ export function useControlConsoleApp() {
         ...submissionContext,
       })
       const payload = await response.json().catch(() => null)
+      // 需求确认分支：服务端要求补充/确认字段，不是失败——以 hermes 回复呈现，等用户下一句话回应
+      if (response.ok && payload?.ok && payload?.requirementConfirm) {
+        reasoningBusy.value = false
+        pendingReasoningUserPrompt.value = ''
+        pendingStoryRequirementConfirm.value = payload.requirement?.complete ? { prompt: userText, requirement: payload.requirement } : null
+        appendLocalChatEntry({ role: 'user', content: userText })
+        appendLocalChatEntry({ role: 'hermes', content: String(payload.message || '') })
+        return
+      }
       if (!response.ok || !payload?.ok || !payload?.session) throw new Error(payload?.details || payload?.error || `reasoning_start_http_${response.status}`)
+      pendingStoryRequirementConfirm.value = null
       syncReasoningSessionUi({ sessionId: payload.session.sessionId, runtimeSessionId: payload.session.runtimeSessionId ?? payload.session.sessionId, sessionKind: payload.session.sessionKind ?? 'agent_runtime', agentId: 'hermes-manager', userPrompt: userText, status: payload.session.status, createdAt: payload.session.createdAt, updatedAt: payload.session.createdAt, plan: payload.session.runtimeTaskGraph ?? payload.session.plan, runtimeTaskGraph: payload.session.runtimeTaskGraph ?? payload.session.plan, currentStepId: null, review: null, events: [], artifacts: {}, error: null })
       await loadReasoningSession(payload.session.sessionId)
       scheduleReasoningPolling()
@@ -2511,6 +2523,15 @@ export function useControlConsoleApp() {
       sandboxPrompt.value = ''
       appendLocalChatEntry({ role: 'user', content: prompt })
       await handleGameStudioEventCommand(prompt)
+      return
+    }
+    // 需求确认待办存在时，本句视为对上一次确认摘要的回应：带 skipRequirementConfirm 直接创建 session
+    const pendingConfirm = pendingStoryRequirementConfirm.value
+    if (pendingConfirm) {
+      pendingStoryRequirementConfirm.value = null
+      sandboxPrompt.value = ''
+      appendLocalChatEntry({ role: 'user', content: prompt })
+      await performReasoningSubmission(pendingConfirm.prompt, { skipRequirementConfirm: true, requirement: pendingConfirm.requirement })
       return
     }
     // 提交即创建任务：answer_only 由服务端分类器直跑，生产类步骤在执行链中由审核卡片承担（不再有提交前确认门）

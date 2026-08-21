@@ -72,8 +72,14 @@ export function extractStoryFields(userPrompt) {
  */
 export function identifyMissingFields(fields) {
   const missing = []
-  if (!fields.title) missing.push({ field: 'title', label: '故事标题', question: '请提供故事标题（如：三只小猪）' })
-  if (!fields.brief) missing.push({ field: 'brief', label: '故事简介', question: '请提供故事简介（如：三只小猪抵抗大野狼）' })
+  if (!fields.title) {
+    missing.push({ field: 'title', label: '故事标题', question: '请提供故事标题（如：乌鸦喝水）' })
+  }
+  if (!fields.brief) {
+    // 根据已提取的标题动态生成示例
+    const example = fields.title ? `${fields.title}的主要情节` : '三只小猪抵抗大野狼'
+    missing.push({ field: 'brief', label: '故事简介', question: `请提供故事简介（如：${example}）` })
+  }
   return missing
 }
 

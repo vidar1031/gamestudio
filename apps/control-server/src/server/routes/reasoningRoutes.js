@@ -209,12 +209,23 @@ export function registerReasoningRoutes(app, context) {
       const { compileStoryRequirement } = await import('../services/storyRequirementCompiler.js')
       const requirement = compileStoryRequirement(userPrompt)
       if (!requirement.complete) {
-        // 有缺失字段：返回追问
+        // 有缺失字段：返回已提取信息 + 追问
+        const extracted = []
+        if (requirement.fields.title) extracted.push(`标题：${requirement.fields.title}`)
+        if (requirement.fields.brief) extracted.push(`简介：${requirement.fields.brief}`)
+        const lines = []
+        if (extracted.length) {
+          lines.push('已提取信息：')
+          lines.push(...extracted)
+          lines.push('')
+        }
+        lines.push('请补充以下信息：')
+        lines.push(...requirement.missing.map((m) => m.question))
         return c.json({
           ok: true,
           requirementConfirm: true,
           requirement,
-          message: `请补充以下信息：\n${requirement.missing.map((m) => m.question).join('\n')}`
+          message: lines.join('\n')
         })
       }
       // 字段完整：返回需求规格确认
