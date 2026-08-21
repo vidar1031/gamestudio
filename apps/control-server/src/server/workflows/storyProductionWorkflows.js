@@ -306,6 +306,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsProductionDelivery) {
     appendFullP0Steps(add, { projectId, title, config, prompt })
     appendP1AssetSteps(add, { projectId })
+    add('step_story_completeness_check', '完整度核实', 'story_completeness_check', { projectId })
     appendAnswerStep(steps)
     return {
       planId: createPlanId(),

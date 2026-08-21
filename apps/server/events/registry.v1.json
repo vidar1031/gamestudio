@@ -2496,6 +2496,142 @@
           "description": "项目标题"
         }
       ]
+    },
+    {
+      "code": "GS-40",
+      "eventId": "asset.scene.renderBatch",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "批量渲染场景队列",
+      "description": "批量场景队列（per-scene checkpoint 落盘 scene-batch-queue.json，成功保护跳过、失败退避重试、断点恢复；单项目单批次守卫）。",
+      "payloadSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 },
+          "sceneIds": { "type": "array" },
+          "regenerate": { "type": "boolean" },
+          "mode": { "type": "string" },
+          "backgroundOnly": { "type": "boolean" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "taskId": { "type": "string" }
+        }
+      },
+      "sideEffects": ["fs:write:storage/projects/{projectId}/assets"],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 300000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/scenes/batch"
+        }
+      },
+      "aliases": ["批量渲染场景", "批量场景渲染"],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-41",
+      "eventId": "asset.scene.placements",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "生成场景立绘站位",
+      "description": "立绘 placements 确定性生成：写 story.json visuals.placements + project.json characters[].imageAssetId（幂等，保留人工站位）。",
+      "payloadSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 },
+          "sceneIds": { "type": "array" }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "placements": { "type": "object" }
+        }
+      },
+      "sideEffects": ["fs:write:storage/projects/{projectId}/story.json"],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 30000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/scenes/placements"
+        }
+      },
+      "aliases": ["立绘站位", "场景站位"],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
+    },
+    {
+      "code": "GS-42",
+      "eventId": "story.analyze.scripts",
+      "version": 1,
+      "category": "story",
+      "kind": "query",
+      "title": "分析脚本结构",
+      "description": "脚本结构分析（蓝图前置分析，只读）。",
+      "payloadSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "analysis": { "type": "object" }
+        }
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 30000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/analyze/scripts"
+        }
+      },
+      "aliases": ["分析脚本", "脚本分析"],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
     }
   ]
 }
