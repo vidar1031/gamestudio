@@ -149,7 +149,7 @@ function appendP1AssetSteps(add, { projectId }) {
     rebuild: false,
     source: 'control_production_delivery'
   })
-  add('step_story_preflight_image_provider', '检查图片 Provider 生产前置条件', 'story_preflight_image_provider', {
+  add('step_p1_preflight_image_provider', '检查图片 Provider 生产前置条件', 'story_preflight_image_provider', {
     projectId,
     mode: 'storyboard',
     timeoutMs: 15000
@@ -171,8 +171,8 @@ function appendP1AssetSteps(add, { projectId }) {
     height: 1024,
     timeoutMs: 600000
   })
-  add('step_story_validate_project', '校验锁定资产引用和项目结构', 'story_validate_project', { projectId })
-  add('step_story_export_project', '重新导出带资产的互动故事项目', 'story_export_project', { projectId })
+  add('step_p1_validate_project', '校验锁定资产引用和项目结构', 'story_validate_project', { projectId })
+  add('step_p1_export_project', '重新导出带资产的互动故事项目', 'story_export_project', { projectId })
 }
 
 // 分层合成资产链（背景+立绘方向）：场景只出背景（E03 批量 background-only），人物/事物为独立
@@ -206,8 +206,8 @@ function appendP1LayeredAssetSteps(add, { projectId }) {
     stepTimeoutMs: 3600000
   })
   add('step_story_generate_scene_placements', '生成各场景立绘分层站位', 'story_generate_scene_placements', { projectId })
-  add('step_story_validate_project', '校验分层合成数据与项目结构', 'story_validate_project', { projectId })
-  add('step_story_export_project', '导出分层合成互动故事项目', 'story_export_project', { projectId })
+  add('step_p1_layered_validate_project', '校验分层合成数据与项目结构', 'story_validate_project', { projectId })
+  add('step_p1_layered_export_project', '导出分层合成互动故事项目', 'story_export_project', { projectId })
 }
 
 export function buildStoryWorkflowPlan(userPrompt) {

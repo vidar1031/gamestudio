@@ -329,6 +329,7 @@ export async function runAgentStreamChat({
   let lastCancelCheckAt = 0
   let toolCallCount = 0
   const MAX_TOOL_CALLS = 2 // 最多 2 次工具调用，防止上下文无限累积
+  const toolResults = [] // 滚动上下文：保存压缩后的工具结果
 
   const { hermesSessionId } = await ensureAgentStreamHermesSession({
     agentId,
@@ -422,11 +423,13 @@ export async function runAgentStreamChat({
       const ok = name === 'tool.completed'
       const evt = assembler.toolFinished(tool, ok, ok ? null : String(data?.preview || '工具执行失败'))
       onStreamEvent(evt)
-      // 工具结果压缩：只保留关键信息，丢弃冗余细节
+      // 滚动上下文：工具结果极度压缩（最多 100 字符），只保留最近 1 次
       const preview = String(data?.preview || '')
-      const compressed = preview.length > 500 ? `${preview.slice(0, 500)}…` : preview
+      const compressed = preview.length > 100 ? `${preview.slice(0, 100)}…` : preview
+      toolResults.length = 0 // 清空之前的结果
+      toolResults.push({ tool, ok, summary: compressed, timestamp: new Date().toISOString() })
       appendEvidence('agent_tool_result', ok ? `完成：${tool}` : `失败：${tool}`, ok ? `只读查证完成。${compressed}` : '工具执行失败。', {
-        data: { stepIndex: evt.stepIndex, tool, ok, compressed: true }
+        data: { stepIndex: evt.stepIndex, tool, ok, compressed: true, toolResultsCount: toolResults.length }
       })
       return
     }

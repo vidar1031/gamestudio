@@ -15,31 +15,59 @@
       "resourceKind": "none",
       "inputSchema": {
         "type": "object",
-        "required": ["title"],
+        "required": [
+          "title"
+        ],
         "properties": {
-          "title": { "type": "string", "minLength": 1 },
-          "template": { "type": "string" }
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "template": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success", "project"],
+        "required": [
+          "success",
+          "project"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
+          "success": {
+            "type": "boolean"
+          },
           "project": {
             "type": "object",
-            "required": ["id", "title"],
+            "required": [
+              "id",
+              "title"
+            ],
             "properties": {
-              "id": { "type": "string" },
-              "title": { "type": "string" }
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
             }
           }
         }
       },
-      "artifacts": ["meta.json", "project.json", "scripts.json", "blueprint.json"],
+      "artifacts": [
+        "meta.json",
+        "project.json",
+        "scripts.json",
+        "blueprint.json"
+      ],
       "timeoutMs": 15000,
-      "event": { "code": "GS-02", "eventId": "project.create", "kind": "command" }
+      "event": {
+        "code": "GS-02",
+        "eventId": "project.create",
+        "kind": "command"
+      }
     },
     {
       "id": "story.create_ai",
@@ -51,22 +79,58 @@
       "resourceKind": "llm",
       "inputSchema": {
         "type": "object",
-        "required": ["prompt"],
+        "required": [
+          "prompt"
+        ],
         "properties": {
-          "prompt": { "type": "string", "minLength": 1, "description": "纯故事内容描述，禁止包含任务指令" },
-          "title": { "type": "string" },
-          "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3 },
-          "optionsPerChoice": { "type": "integer", "enum": [2, 3] },
-          "endings": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "纯故事内容描述，禁止包含任务指令"
+          },
+          "title": {
+            "type": "string"
+          },
+          "choicePoints": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "optionsPerChoice": {
+            "type": "integer",
+            "enum": [
+              2,
+              3
+            ]
+          },
+          "endings": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
           "modelExecution": {
             "type": "object",
-            "required": ["provider", "model", "leaseId"],
+            "required": [
+              "provider",
+              "model",
+              "leaseId"
+            ],
             "properties": {
-              "provider": { "type": "string" },
-              "model": { "type": "string" },
-              "apiUrl": { "type": "string" },
-              "leaseId": { "type": "string" },
-              "requestId": { "type": "string" }
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "apiUrl": {
+                "type": "string"
+              },
+              "leaseId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              }
             },
             "additionalProperties": false
           }
@@ -75,27 +139,58 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success", "project", "scripts"],
+        "required": [
+          "success",
+          "project",
+          "scripts"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "project": { "type": "object" },
-          "scripts": { "type": "object" },
-          "blueprint": { "type": "object" },
+          "success": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "object"
+          },
+          "scripts": {
+            "type": "object"
+          },
+          "blueprint": {
+            "type": "object"
+          },
           "gen": {
             "type": "object",
             "properties": {
-              "ok": { "type": "boolean" },
-              "mode": { "type": "string" },
-              "provider": { "type": "string" },
-              "model": { "type": "string" },
-              "durationMs": { "type": "number" }
+              "ok": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "durationMs": {
+                "type": "number"
+              }
             }
           }
         }
       },
-      "artifacts": ["meta.json", "project.json", "scripts.json", "blueprint.json"],
+      "artifacts": [
+        "meta.json",
+        "project.json",
+        "scripts.json",
+        "blueprint.json"
+      ],
       "timeoutMs": 120000,
-      "event": { "code": "GS-19", "eventId": "story.project.create_ai", "kind": "command" }
+      "event": {
+        "code": "GS-39",
+        "eventId": "story.project.create_ai",
+        "kind": "command"
+      }
     },
     {
       "id": "story.configure",
@@ -106,20 +201,53 @@
       "reviewPolicy": "manual_before_write",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId", "config"],
+        "required": [
+          "projectId",
+          "config"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 },
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
           "config": {
             "type": "object",
-            "required": ["genre", "style", "targetAudience", "outputLanguage"],
+            "required": [
+              "genre",
+              "style",
+              "targetAudience",
+              "outputLanguage"
+            ],
             "properties": {
-              "genre": { "type": "string" },
-              "style": { "type": "string" },
-              "targetAudience": { "type": "string" },
-              "outputLanguage": { "type": "string" },
-              "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3 },
-              "optionsPerChoice": { "type": "integer", "enum": [2, 3] },
-              "endings": { "type": "integer", "minimum": 1, "maximum": 3 }
+              "genre": {
+                "type": "string"
+              },
+              "style": {
+                "type": "string"
+              },
+              "targetAudience": {
+                "type": "string"
+              },
+              "outputLanguage": {
+                "type": "string"
+              },
+              "choicePoints": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "optionsPerChoice": {
+                "type": "integer",
+                "enum": [
+                  2,
+                  3
+                ]
+              },
+              "endings": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              }
             },
             "additionalProperties": false
           }
@@ -128,15 +256,28 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success", "project"],
+        "required": [
+          "success",
+          "project"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "project": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "object"
+          }
         }
       },
-      "artifacts": ["project.json"],
+      "artifacts": [
+        "project.json"
+      ],
       "timeoutMs": 15000,
-      "event": { "code": "GS-04", "eventId": "project.configure", "kind": "command" }
+      "event": {
+        "code": "GS-04",
+        "eventId": "project.configure",
+        "kind": "command"
+      }
     },
     {
       "id": "story.generate_scripts",
@@ -147,30 +288,75 @@
       "reviewPolicy": "manual_before_write",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId", "brief"],
+        "required": [
+          "projectId",
+          "brief"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 },
-          "brief": { "type": "string", "minLength": 1 },
-          "title": { "type": "string" },
-          "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3 },
-          "optionsPerChoice": { "type": "integer", "enum": [2, 3] },
-          "endings": { "type": "integer", "minimum": 1, "maximum": 3 },
-          "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 600000 }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "brief": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "choicePoints": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "optionsPerChoice": {
+            "type": "integer",
+            "enum": [
+              2,
+              3
+            ]
+          },
+          "endings": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          }
         },
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success", "scripts"],
+        "required": [
+          "success",
+          "scripts"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "scripts": { "type": "object" },
-          "gen": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "scripts": {
+            "type": "object"
+          },
+          "gen": {
+            "type": "object"
+          }
         }
       },
-      "artifacts": ["scripts.json", "blueprint.json"],
+      "artifacts": [
+        "scripts.json",
+        "blueprint.json"
+      ],
       "timeoutMs": 180000,
-      "event": { "code": "GS-10", "eventId": "story.scripts.generate", "kind": "command" }
+      "event": {
+        "code": "GS-10",
+        "eventId": "story.scripts.generate",
+        "kind": "command"
+      }
     },
     {
       "id": "story.validate",
@@ -181,31 +367,53 @@
       "reviewPolicy": "auto_allowed",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId"],
+        "required": [
+          "projectId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success", "validation"],
+        "required": [
+          "success",
+          "validation"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
+          "success": {
+            "type": "boolean"
+          },
           "validation": {
             "type": "object",
-            "required": ["ok"],
+            "required": [
+              "ok"
+            ],
             "properties": {
-              "ok": { "type": "boolean" },
-              "errors": { "type": "array" },
-              "warnings": { "type": "array" }
+              "ok": {
+                "type": "boolean"
+              },
+              "errors": {
+                "type": "array"
+              },
+              "warnings": {
+                "type": "array"
+              }
             }
           }
         }
       },
       "artifacts": [],
       "timeoutMs": 30000,
-      "event": { "code": "GS-07", "eventId": "project.validate", "kind": "command" }
+      "event": {
+        "code": "GS-07",
+        "eventId": "project.validate",
+        "kind": "command"
+      }
     },
     {
       "id": "story.compile_blueprint",
@@ -216,24 +424,43 @@
       "reviewPolicy": "auto_with_versioning",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId"],
+        "required": [
+          "projectId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success"],
+        "required": [
+          "success"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "report": { "type": "object" },
-          "validation": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "report": {
+            "type": "object"
+          },
+          "validation": {
+            "type": "object"
+          }
         }
       },
-      "artifacts": ["blueprint.json"],
+      "artifacts": [
+        "blueprint.json"
+      ],
       "timeoutMs": 30000,
-      "event": { "code": "GS-14", "eventId": "story.blueprint.compile", "kind": "command" }
+      "event": {
+        "code": "GS-14",
+        "eventId": "story.blueprint.compile",
+        "kind": "command"
+      }
     },
     {
       "id": "story.generate_asset_plan",
@@ -244,23 +471,40 @@
       "reviewPolicy": "manual_before_write",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId"],
+        "required": [
+          "projectId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": true
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success"],
+        "required": [
+          "success"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "plan": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "plan": {
+            "type": "object"
+          }
         }
       },
-      "artifacts": ["project.json"],
+      "artifacts": [
+        "project.json"
+      ],
       "timeoutMs": 60000,
-      "event": { "code": "GS-16", "eventId": "story.asset.plan.generate", "kind": "command" }
+      "event": {
+        "code": "GS-18",
+        "eventId": "asset.plan.create",
+        "kind": "command"
+      }
     },
     {
       "id": "story.lock_asset",
@@ -271,24 +515,45 @@
       "reviewPolicy": "manual_before_write",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId", "assetId"],
+        "required": [
+          "projectId",
+          "assetId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 },
-          "assetId": { "type": "string", "minLength": 1 }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "assetId": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": true
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success"],
+        "required": [
+          "success"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "asset": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "asset": {
+            "type": "object"
+          }
         }
       },
-      "artifacts": ["project.json"],
+      "artifacts": [
+        "project.json"
+      ],
       "timeoutMs": 60000,
-      "event": { "code": "GS-17", "eventId": "story.asset.lock", "kind": "command" }
+      "event": {
+        "code": "GS-20",
+        "eventId": "asset.reference.lock",
+        "kind": "command"
+      }
     },
     {
       "id": "scene.render",
@@ -299,25 +564,48 @@
       "reviewPolicy": "manual_before_write",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId", "sceneId"],
+        "required": [
+          "projectId",
+          "sceneId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 },
-          "sceneId": { "type": "string", "minLength": 1 },
-          "referenceAssets": { "type": "array" }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "referenceAssets": {
+            "type": "array"
+          }
         },
         "additionalProperties": true
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success"],
+        "required": [
+          "success"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "image": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "image": {
+            "type": "object"
+          }
         }
       },
-      "artifacts": ["assets/"],
+      "artifacts": [
+        "assets/"
+      ],
       "timeoutMs": 300000,
-      "event": { "code": "GS-18", "eventId": "scene.render", "kind": "command" }
+      "event": {
+        "code": "GS-22",
+        "eventId": "asset.scene.render",
+        "kind": "command"
+      }
     },
     {
       "id": "story.export",
@@ -328,30 +616,52 @@
       "reviewPolicy": "manual_before_export",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId"],
+        "required": [
+          "projectId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success", "evidence"],
+        "required": [
+          "success",
+          "evidence"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
+          "success": {
+            "type": "boolean"
+          },
           "evidence": {
             "type": "object",
             "properties": {
-              "distUrl": { "type": "string" },
-              "distPath": { "type": "string" },
-              "exportedAt": { "type": "string" }
+              "distUrl": {
+                "type": "string"
+              },
+              "distPath": {
+                "type": "string"
+              },
+              "exportedAt": {
+                "type": "string"
+              }
             }
           }
         }
       },
-      "artifacts": ["builds/"],
+      "artifacts": [
+        "builds/"
+      ],
       "timeoutMs": 60000,
-      "event": { "code": "GS-08", "eventId": "project.export", "kind": "command" }
+      "event": {
+        "code": "GS-08",
+        "eventId": "project.export",
+        "kind": "command"
+      }
     },
     {
       "id": "project.review",
@@ -362,23 +672,39 @@
       "reviewPolicy": "auto_allowed",
       "inputSchema": {
         "type": "object",
-        "required": ["projectId"],
+        "required": [
+          "projectId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
-        "required": ["success", "project"],
+        "required": [
+          "success",
+          "project"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "project": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "object"
+          }
         }
       },
       "artifacts": [],
       "timeoutMs": 10000,
-      "event": { "code": "GS-03", "eventId": "project.inspect", "kind": "query" }
+      "event": {
+        "code": "GS-03",
+        "eventId": "project.inspect",
+        "kind": "query"
+      }
     }
   ],
   "events": [
@@ -400,7 +726,9 @@
     "story_export"
   ],
   "boundaries": {
-    "allowedRoots": ["/Volumes/ovokit2t/aiwork/gamestudio/storage/projects"],
+    "allowedRoots": [
+      "/Volumes/ovokit2t/aiwork/gamestudio/storage/projects"
+    ],
     "disallowOutsideWorkspace": true
   }
 }
