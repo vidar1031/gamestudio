@@ -5732,18 +5732,44 @@ function shouldRequireHumanReviewForStep(step, session = null) {
   if (session?.submissionContext?.productionTest) return false
   const mode = getReasoningReviewMode(session)
   if (mode === 'full-auto') return false
-  if (mode === 'suggest') {
-    // In suggest mode, all write/invoke actions require review
-    return isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)
+
+  // 智能审核：根据 action 类型映射到 reviewPolicy
+  const action = String(step.action || '')
+  const reviewPolicy = inferReviewPolicyFromAction(action)
+
+  // auto_allowed：只读操作自动通过
+  if (reviewPolicy === 'auto_allowed') return false
+
+  // auto_with_versioning：自动执行但保留版本（不进入人工审核）
+  if (reviewPolicy === 'auto_with_versioning') return false
+
+  // manual_before_export：导出/发布前强制人工审核
+  if (reviewPolicy === 'manual_before_export') return true
+
+  // manual_before_write：写入前人工审核
+  if (reviewPolicy === 'manual_before_write') {
+    if (mode === 'suggest') return true
+    if (mode === 'auto-edit') return !isLowRiskAction(action)
+    return true // manual mode
   }
-  if (mode === 'auto-edit') {
-    // In auto-edit mode, low-risk actions skip review; medium/high-risk require review
-    if (isLowRiskAction(step.action)) return false
-    return isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)
-  }
-  // manual mode (legacy behavior)
+
+  // 默认：write/invoke 动作进入审核
   if (isReasoningWriteAction(step.action) || isReasoningInvokeAction(step.action)) return true
   return inferReasoningStepSkipReview(step) === false
+}
+
+// 根据 action 类型推断 reviewPolicy
+function inferReviewPolicyFromAction(action) {
+  // 导出/发布类
+  if (/export|publish|deploy/i.test(action)) return 'manual_before_export'
+  // 写入类
+  if (/create|write|update|delete|configure|generate|render|lock/i.test(action)) return 'manual_before_write'
+  // 编译/校验类（自动保留版本）
+  if (/compile|validate|check|analyze/i.test(action)) return 'auto_with_versioning'
+  // 只读类
+  if (/read|get|list|inspect|search|query/i.test(action)) return 'auto_allowed'
+  // 默认：写入前审核
+  return 'manual_before_write'
 }
 
 function canReasoningReviewAutoApprove(review) {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { ReasoningReview } from '../types/reasoning'
 import { extractEvidenceKeyParams } from '../lib/humanize'
 
@@ -24,8 +24,40 @@ const emit = defineEmits<{
 // 首屏关键参数（人话 chips）：从 outboundPreview 挑平铺字段，原始负载统一收进「技术细节」
 const keyParams = computed(() => extractEvidenceKeyParams(props.evidence))
 
+// 驳回输入框展开状态：默认收起，点击"驳回"时展开
+const rejectExpanded = ref(false)
+
+// 智能审核模式提示：根据 action 类型推断审核级别
+const reviewModeHint = computed(() => {
+  if (props.autoApprove) return '当前为自动直跑模式：运行任务图和步骤不会停在审核框。'
+  const action = String(props.review?.action || '')
+  if (/export|publish|deploy/i.test(action)) return '当前为强制人工审核：导出/发布前必须人工确认。'
+  if (/create|write|update|delete|configure|generate|render|lock/i.test(action)) return '当前为写入前人工审核：写入操作前需要人工确认。'
+  if (/compile|validate|check|analyze/i.test(action)) return '当前为自动审核（保留版本）：自动执行但保留版本记录。'
+  if (/read|get|list|inspect|search|query/i.test(action)) return '当前为自动审核：只读操作自动通过。'
+  return '当前为人工全审模式：运行任务图、执行步骤和最终回答都会进入审核。'
+})
+
 function onDraftInput(event: Event) {
   emit('update:draft', (event.target as HTMLTextAreaElement).value)
+}
+
+function onRejectClick() {
+  if (!rejectExpanded.value) {
+    rejectExpanded.value = true
+    return
+  }
+  emit('submit', 'reject')
+}
+
+function onApproveClick() {
+  rejectExpanded.value = false
+  emit('submit', 'approve')
+}
+
+function onBackClick() {
+  rejectExpanded.value = false
+  emit('submit', 'back')
 }
 </script>
 
@@ -39,7 +71,9 @@ function onDraftInput(event: Event) {
         {{ param.label }}: {{ param.value }}
       </span>
     </div>
-    <div class="review-card-mode-hint">{{ autoApprove ? '当前为自动直跑模式：运行任务图和步骤不会停在审核框。' : '当前为人工全审模式：运行任务图、执行步骤和最终回答都会进入审核。' }}</div>
+    <div class="review-card-mode-hint">{{ reviewModeHint }}</div>
+
+    <!-- 技术细节：默认收起 -->
     <details v-if="evidence?.outboundPreview || evidence?.rawResponsePreview || evidence?.structuredResult" class="review-card-tech">
       <summary>技术细节（原始负载）</summary>
       <div v-if="evidence?.outboundPreview" class="review-card-evidence">
@@ -55,19 +89,25 @@ function onDraftInput(event: Event) {
         <pre class="review-card-evidence-pre">{{ formatEvidence(evidence.structuredResult) }}</pre>
       </div>
     </details>
-    <textarea
-      :value="draft"
-      class="review-card-editor"
-      rows="4"
-      spellcheck="false"
-      placeholder="驳回时填写修正条件，例如：必须调用 project.listStories，不要猜数据库。"
-      :disabled="autoApprove || busy"
-      @input="onDraftInput"
-    />
+
+    <!-- 驳回修正条件：默认收起，点击"驳回"时展开 -->
+    <details v-if="rejectExpanded" class="review-card-reject-details" open>
+      <summary>驳回修正条件</summary>
+      <textarea
+        :value="draft"
+        class="review-card-editor"
+        rows="3"
+        spellcheck="false"
+        placeholder="请填写修正条件，例如：必须调用 project.listStories，不要猜数据库。"
+        :disabled="autoApprove || busy"
+        @input="onDraftInput"
+      />
+    </details>
+
     <div class="review-card-actions">
-      <button v-if="canStepBack" class="action-btn outline" :disabled="busy || autoApprove" @click="emit('submit', 'back')">{{ busy ? '提交中...' : '后退一步' }}</button>
-      <button class="action-btn outline" :disabled="busy || autoApprove" @click="emit('submit', 'reject')">{{ busy ? '提交中...' : rejectLabel }}</button>
-      <button class="action-btn" :disabled="busy || autoApprove" @click="emit('submit', 'approve')">{{ busy ? '提交中...' : approveLabel }}</button>
+      <button v-if="canStepBack" class="action-btn outline" :disabled="busy || autoApprove" @click="onBackClick">{{ busy ? '提交中...' : '后退一步' }}</button>
+      <button class="action-btn outline" :disabled="busy || autoApprove" @click="onRejectClick">{{ busy ? '提交中...' : rejectLabel }}</button>
+      <button class="action-btn" :disabled="busy || autoApprove" @click="onApproveClick">{{ busy ? '提交中...' : approveLabel }}</button>
     </div>
   </div>
 </template>
@@ -140,6 +180,12 @@ function onDraftInput(event: Event) {
   white-space: pre-wrap;
   word-break: break-all;
 }
+.review-card-reject-details {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--c-text-muted, rgba(255, 255, 255, 0.55));
+}
+.review-card-reject-details summary { cursor: pointer; user-select: none; }
 .review-card-editor {
   margin-top: 8px;
   width: 100%;
