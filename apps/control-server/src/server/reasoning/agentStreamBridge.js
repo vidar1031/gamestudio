@@ -37,6 +37,7 @@ const CANCEL_CHECK_INTERVAL_MS = 1500
 
 // 咨询只读模式的系统提示（随请求 ephemeral 注入；hermes 核心系统提示仍加载 GameStudio 契约文件）
 // 通过 buildAgentStreamSystemPrompt 动态拼接当前项目能力摘要，避免 agent 依赖大段通用上下文猜测。
+// 严格控制上下文大小，确保 OMLX 27B prefill 不失败。
 export function buildAgentStreamSystemPrompt(capabilitySummary = null) {
   const lines = [
     '你是 GameStudio 守护台的咨询答疑 agent，正在回答用户关于 GameStudio / control / 项目事实的问题。',
@@ -45,7 +46,9 @@ export function buildAgentStreamSystemPrompt(capabilitySummary = null) {
     '1. 你只能使用只读工具查证：read_file、search_files、session_search、skill_view、skills_list、web_search、web_extract。',
     '2. 禁止调用任何有副作用的工具（execute_code、terminal、process、write_file、patch、memory、skill_manage 等）。一旦发起越权工具调用，control 会立即中断本次回答并记录证据。',
     '3. 如果用户需求需要写文件 / 执行命令 / 触发故事生产，不要自己动手，在回答里说明这需要走 control 生产工作流，并给出建议操作。',
-    '4. 默认中文回答；先查证再下结论，不编造未观测到的事实；回答简洁、关键结论先行。'
+    '4. 默认中文回答；先查证再下结论，不编造未观测到的事实；回答简洁、关键结论先行。',
+    '5. 工具调用次数限制：最多只能调用 2 次工具。超过 2 次后，必须直接基于已有信息生成回答，不再调用工具。',
+    '6. 如果已有信息足够回答问题，不要调用工具，直接回答。'
   ]
 
   if (capabilitySummary && capabilitySummary.available === true) {
@@ -60,21 +63,22 @@ export function buildAgentStreamSystemPrompt(capabilitySummary = null) {
     lines.push(`- 项目名称：${binding.label || runtime.displayName || '未命名'}`)
     lines.push(`- 项目 ID：${binding.id || runtime.projectId || 'unknown'}`)
     lines.push(`- 服务地址：${binding.baseUrl || 'unknown'}`)
-    lines.push(`- 仓库路径：${binding.repoPath || runtime.rootDir || 'unknown'}`)
     lines.push(`- 能力总数：${caps.length}（只读 ${readCount} / 写入 ${writeCount} / 需人工审核 ${reviewCount}）`)
     if (caps.length) {
-      lines.push('- 能力清单：')
-      for (const cap of caps.slice(0, 20)) {
+      lines.push('- 能力清单（前 10 项）：')
+      for (const cap of caps.slice(0, 10)) {
         const reviewMark = cap.requiresReview ? '（需审核）' : ''
         lines.push(`  - ${cap.id}: ${cap.label || cap.id} [${cap.type}]${reviewMark}`)
       }
-      if (caps.length > 20) {
-        lines.push(`  - … 其余 ${caps.length - 20} 项略`)
+      if (caps.length > 10) {
+        lines.push(`  - … 其余 ${caps.length - 10} 项略`)
       }
     }
   }
 
-  return lines.join('\n')
+  const prompt = lines.join('\n')
+  // 严格控制系统提示大小：最多 2000 字符，确保 OMLX 27B prefill 不失败
+  return prompt.length > 2000 ? `${prompt.slice(0, 2000)}…` : prompt
 }
 
 export function truncateAgentStreamText(text, limit = THINKING_PREVIEW_LIMIT) {
@@ -267,10 +271,10 @@ function writeMappingFile(stateDir, agentId, hermesSessionId) {
 
 /**
  * 确保咨询桥使用的 hermes 会话存在。
- * 注意：agent 流式咨询每次强制创建新会话，避免旧会话历史消息累积导致本地模型上下文超限。
- * 失效（404）时重建并更新映射。
+ * 注意：agent 流式咨询默认复用现有会话，让 hermes 的上下文压缩机制有机会工作；
+ * 只有在会话失效（404）时才创建新会话。
  */
-export async function ensureAgentStreamHermesSession({ agentId, stateDir = DEFAULT_STATE_DIR, apiOrigin, apiKey, fetchImpl = fetch, forceNew = true }) {
+export async function ensureAgentStreamHermesSession({ agentId, stateDir = DEFAULT_STATE_DIR, apiOrigin, apiKey, fetchImpl = fetch, forceNew = false }) {
   const headers = { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) }
   if (!forceNew) {
     const existing = readMappingFile(stateDir, agentId)
@@ -323,6 +327,8 @@ export async function runAgentStreamChat({
   let blockedTool = null
   let sawTerminalError = null
   let lastCancelCheckAt = 0
+  let toolCallCount = 0
+  const MAX_TOOL_CALLS = 2 // 最多 2 次工具调用，防止上下文无限累积
 
   const { hermesSessionId } = await ensureAgentStreamHermesSession({
     agentId,
@@ -394,6 +400,16 @@ export async function runAgentStreamChat({
         await abortUpstream()
         return
       }
+      // 工具调用次数限制：防止上下文无限累积
+      toolCallCount += 1
+      if (toolCallCount > MAX_TOOL_CALLS) {
+        appendEvidence('agent_tool_limit', `已达到工具调用上限（${MAX_TOOL_CALLS} 次）`, '为防止上下文超限，已停止进一步工具调用，直接生成回答。', {
+          data: { tool, actionLabel: described.actionLabel, toolCallCount }
+        })
+        onStreamEvent({ type: 'tool_limit', tool, actionLabel: described.actionLabel, toolCallCount })
+        await abortUpstream()
+        return
+      }
       const evt = assembler.toolStarted(tool, described)
       onStreamEvent(evt)
       appendEvidence('agent_tool_call', `动作：${described.actionLabel}`, described.target ? `目标：${described.target}` : described.actionLabel, {
@@ -406,8 +422,11 @@ export async function runAgentStreamChat({
       const ok = name === 'tool.completed'
       const evt = assembler.toolFinished(tool, ok, ok ? null : String(data?.preview || '工具执行失败'))
       onStreamEvent(evt)
-      appendEvidence('agent_tool_result', ok ? `完成：${tool}` : `失败：${tool}`, ok ? '只读查证完成。' : '工具执行失败。', {
-        data: { stepIndex: evt.stepIndex, tool, ok }
+      // 工具结果压缩：只保留关键信息，丢弃冗余细节
+      const preview = String(data?.preview || '')
+      const compressed = preview.length > 500 ? `${preview.slice(0, 500)}…` : preview
+      appendEvidence('agent_tool_result', ok ? `完成：${tool}` : `失败：${tool}`, ok ? `只读查证完成。${compressed}` : '工具执行失败。', {
+        data: { stepIndex: evt.stepIndex, tool, ok, compressed: true }
       })
       return
     }
