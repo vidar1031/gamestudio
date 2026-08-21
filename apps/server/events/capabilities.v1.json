@@ -1,0 +1,324 @@
+{
+  "version": "1.0",
+  "generatedAt": "2026-08-21T00:00:00.000Z",
+  "provider": {
+    "id": "gamestudio",
+    "name": "GameStudio 互动故事生产能力层",
+    "baseUrl": "http://127.0.0.1:1999"
+  },
+  "capabilities": [
+    {
+      "id": "story.project.create_ai",
+      "type": "write",
+      "label": "AI 创建故事项目",
+      "description": "根据用户故事目标调用模型生成脚本与蓝图，创建完整互动故事项目。",
+      "endpoint": { "method": "POST", "path": "/api/projects/ai/create" },
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "llm",
+      "inputSchema": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": { "type": "string", "minLength": 1, "description": "故事内容描述" },
+          "title": { "type": "string", "description": "故事标题" },
+          "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3, "default": 2 },
+          "optionsPerChoice": { "type": "integer", "enum": [2, 3], "default": 2 },
+          "endings": { "type": "integer", "minimum": 1, "maximum": 3, "default": 2 },
+          "modelExecution": { "type": "object", "description": "受控模式模型执行上下文" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "project", "scripts"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "project": { "type": "object" },
+          "scripts": { "type": "object" },
+          "blueprint": { "type": "object" },
+          "gen": { "type": "object" }
+        }
+      },
+      "artifacts": ["meta.json", "project.json", "scripts.json", "blueprint.json"],
+      "timeoutMs": 120000
+    },
+    {
+      "id": "story.blueprint.compile",
+      "type": "write",
+      "label": "编译蓝图",
+      "description": "把 scripts.json 编译为 blueprint.json，返回编译报告与校验结果。",
+      "endpoint": { "method": "POST", "path": "/api/projects/:id/compile/blueprint" },
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "report": { "type": "object" },
+          "validation": { "type": "object" }
+        }
+      },
+      "artifacts": ["blueprint.json"],
+      "timeoutMs": 30000
+    },
+    {
+      "id": "story.compose.compile",
+      "type": "write",
+      "label": "编译合成层",
+      "description": "把 blueprint.json 编译为可运行故事（story.json + project.json 更新）。",
+      "endpoint": { "method": "POST", "path": "/api/projects/:id/compile/compose" },
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "story": { "type": "object" }
+        }
+      },
+      "artifacts": ["story.json", "project.json"],
+      "timeoutMs": 30000
+    },
+    {
+      "id": "story.project.validate",
+      "type": "read",
+      "label": "校验项目",
+      "description": "执行蓝图结构校验与资源引用校验，返回 validation 结果。",
+      "endpoint": { "method": "POST", "path": "/api/projects/:id/validate/blueprint" },
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "validation"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "validation": { "type": "object" }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 30000
+    },
+    {
+      "id": "story.project.export",
+      "type": "write",
+      "label": "导出项目",
+      "description": "导出可运行 H5 产物到 builds/，返回 distUrl 与本地产物路径。",
+      "endpoint": { "method": "POST", "path": "/api/projects/:id/export" },
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_export",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success", "evidence"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "evidence": { "type": "object" }
+        }
+      },
+      "artifacts": ["builds/"],
+      "timeoutMs": 60000
+    },
+    {
+      "id": "story.bible.generate",
+      "type": "write",
+      "label": "生成 Story Bible",
+      "description": "基于脚本生成角色/道具/地点设定集，持久化到 project.state.aiBackground.storyBible。",
+      "endpoint": { "method": "POST", "path": "/api/projects/:id/ai/story/bible" },
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "llm",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 },
+          "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 600000 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "bible": { "type": "object" }
+        }
+      },
+      "artifacts": ["project.json"],
+      "timeoutMs": 600000
+    },
+    {
+      "id": "story.asset.plan.generate",
+      "type": "write",
+      "label": "生成资产计划",
+      "description": "从 Story Bible 确定性构建资产计划并保存。",
+      "endpoint": { "method": "POST", "path": "/api/projects/:id/ai/story/assets/plan" },
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "plan": { "type": "object" }
+        }
+      },
+      "artifacts": ["project.json"],
+      "timeoutMs": 60000
+    },
+    {
+      "id": "story.scene.render_batch",
+      "type": "write",
+      "label": "批量渲染场景图",
+      "description": "异步批量渲染缺失场景（202 立即返回 taskId，进度轮询）。",
+      "endpoint": { "method": "POST", "path": "/api/projects/:id/ai/story/scenes/render-all" },
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 },
+          "onlyMissing": { "type": "boolean", "default": true },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "taskId": { "type": "string" }
+        }
+      },
+      "artifacts": ["assets/"],
+      "timeoutMs": 300000
+    },
+    {
+      "id": "story.completeness.check",
+      "type": "read",
+      "label": "完整度核实",
+      "description": "Puppeteer 真实浏览器走查导出 H5 + Kimi 视觉评审 + 截图留证。",
+      "endpoint": { "method": "POST", "path": "/api/projects/:id/ai/story/completeness-check" },
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "llm",
+      "inputSchema": {
+        "type": "object",
+        "required": ["projectId"],
+        "properties": {
+          "projectId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "report": { "type": "object" }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 180000
+    },
+    {
+      "id": "story.ai.prompt.generate",
+      "type": "write",
+      "label": "AI 生成提示文本",
+      "description": "根据标题和简介调用 AI 生成优化的故事提示词。",
+      "endpoint": { "method": "POST", "path": "/api/ai/prompt/templates/generate" },
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "llm",
+      "inputSchema": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "templateKey": { "type": "string" },
+          "fields": { "type": "object" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "prompt": { "type": "string" }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 60000
+    },
+    {
+      "id": "story.ai.prompt.review",
+      "type": "read",
+      "label": "提示词预检 / AI 分析",
+      "description": "故事提示词本地预检 + AI 评审，返回优化建议。",
+      "endpoint": { "method": "POST", "path": "/api/ai/prompt/review" },
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "llm",
+      "inputSchema": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": { "type": "string", "minLength": 1 },
+          "title": { "type": "string" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "review": { "type": "object" }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 60000
+    }
+  ]
+}

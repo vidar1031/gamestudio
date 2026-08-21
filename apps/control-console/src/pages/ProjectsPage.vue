@@ -21,6 +21,12 @@ const bindingBaseUrl = ref('')
 const bindingBusy = ref(false)
 const bindingError = ref('')
 
+// 能力管理状态
+const discoveredCapabilities = ref<any[]>([])
+const discoveryBusy = ref(false)
+const discoveryError = ref('')
+const capabilityBusyId = ref('')
+
 const capabilityStats = computed(() => {
   const total = capabilities.value.length
   const readCount = capabilities.value.filter((item) => item.type === 'read').length
@@ -87,8 +93,64 @@ async function unbind() {
   }
 }
 
+async function discoverCapabilities() {
+  if (discoveryBusy.value) return
+  discoveryBusy.value = true
+  discoveryError.value = ''
+  try {
+    const res = await fetch('/api/control/capabilities/discover')
+    const payload = await res.json().catch(() => null)
+    if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
+    discoveredCapabilities.value = Array.isArray(payload.capabilities) ? payload.capabilities : []
+  } catch (e) {
+    discoveryError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    discoveryBusy.value = false
+  }
+}
+
+async function registerCapability(cap: any) {
+  if (capabilityBusyId.value) return
+  capabilityBusyId.value = cap.id
+  try {
+    const res = await fetch('/api/control/capabilities/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capability: cap, actor: 'console' })
+    })
+    const payload = await res.json().catch(() => null)
+    if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
+    await loadBinding()
+    await discoverCapabilities()
+  } catch (e) {
+    discoveryError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    capabilityBusyId.value = ''
+  }
+}
+
+async function disableCapability(capabilityId: string) {
+  if (capabilityBusyId.value) return
+  capabilityBusyId.value = capabilityId
+  try {
+    const res = await fetch(`/api/control/capabilities/${encodeURIComponent(capabilityId)}/disable`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actor: 'console' })
+    })
+    const payload = await res.json().catch(() => null)
+    if (!res.ok || !payload?.ok) throw new Error(payload?.error || `http_${res.status}`)
+    await loadBinding()
+  } catch (e) {
+    discoveryError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    capabilityBusyId.value = ''
+  }
+}
+
 onMounted(() => {
   loadBinding()
+  discoverCapabilities()
 })
 </script>
 
@@ -166,9 +228,49 @@ onMounted(() => {
           </div>
           <div class="capability-id">{{ cap.id }}</div>
           <div v-if="cap.description" class="capability-desc">{{ cap.description }}</div>
+          <div class="capability-actions">
+            <button class="action-btn small danger" :disabled="capabilityBusyId === cap.id" @click="disableCapability(cap.id)">
+              禁用
+            </button>
+          </div>
         </div>
       </div>
       <div v-else class="empty-state">未从事件注册表中解析到能力。</div>
+    </section>
+
+    <section v-if="binding?.bound" class="page-section">
+      <div class="section-header">
+        <h2>能力管理</h2>
+        <button class="action-btn" :disabled="discoveryBusy" @click="discoverCapabilities">
+          {{ discoveryBusy ? '探测中…' : '重新探测' }}
+        </button>
+      </div>
+      <p class="section-hint">探测绑定项目的新能力，验证后注册为正式能力。只有验证通过的能力才能注册。</p>
+
+      <div v-if="discoveryError" class="error-banner">{{ discoveryError }}</div>
+
+      <div v-if="discoveredCapabilities.length" class="capability-list">
+        <div v-for="cap in discoveredCapabilities" :key="cap.id" class="capability-card">
+          <div class="capability-header">
+            <span class="capability-label">{{ cap.label }}</span>
+            <span class="capability-type" :data-type="cap.type">{{ cap.type === 'read' ? '只读' : '写入' }}</span>
+            <span v-if="cap.requiresReview" class="capability-review">需审核</span>
+            <span class="capability-verify" :data-ok="cap.verified">{{ cap.verified ? '已验证' : '未验证' }}</span>
+          </div>
+          <div class="capability-id">{{ cap.id }}</div>
+          <div v-if="cap.description" class="capability-desc">{{ cap.description }}</div>
+          <div class="capability-actions">
+            <button
+              class="action-btn small primary"
+              :disabled="capabilityBusyId === cap.id || !cap.verified"
+              @click="registerCapability(cap)"
+            >
+              注册
+            </button>
+          </div>
+        </div>
+      </div>
+      <div v-else class="empty-state">未发现新能力。点击"重新探测"扫描绑定项目。</div>
     </section>
 
     <section class="page-section">
@@ -472,5 +574,29 @@ onMounted(() => {
   font-size: 12px;
   color: var(--c-text-sub);
   line-height: 1.5;
+}
+
+.capability-verify {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(255, 183, 77, 0.14);
+  color: var(--c-warn);
+}
+
+.capability-verify[data-ok='true'] {
+  background: rgba(77, 214, 140, 0.15);
+  color: var(--c-success);
+}
+
+.capability-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.action-btn.small {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 </style>

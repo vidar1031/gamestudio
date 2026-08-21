@@ -120,6 +120,17 @@ app.get('/api/events/registry', async (c) => {
   }
 })
 
+// 能力发现：暴露 GameStudio 全部生产能力（apps/server/events/capabilities.v1.json）
+app.get('/api/capabilities', async (c) => {
+  try {
+    const capabilitiesPath = path.join(__dirname, '..', 'events', 'capabilities.v1.json')
+    const capabilities = await readJson(capabilitiesPath)
+    return c.json({ success: true, capabilities })
+  } catch (e) {
+    return c.json({ success: false, error: 'capabilities_not_available', message: e && e.message ? e.message : String(e) }, 500)
+  }
+})
+
 // 事件层：运行状态检查（server 是否运行中 + editor 是否可达）
 app.get('/api/runtime/status', async (c) => {
   const editorUrl = String(process.env.STUDIO_EDITOR_URL || 'http://localhost:8868').trim()
