@@ -202,23 +202,44 @@ export function registerReasoningRoutes(app, context) {
       return c.json({ ok: false, error: 'prompt_required' }, 400)
     }
 
-    // 会话恢复：用户输入"继续"时，恢复最近的未完成 session
-    const isContinueRequest = /^继续|^接着|^继续创建|^恢复|^接着之前/i.test(userPrompt)
-    if (isContinueRequest && !parentSessionId) {
-      const activeSessions = listReasoningSessions({ limit: 10, includeTerminal: false })
-      const resumable = activeSessions.find((s) => s.status === 'waiting_review' || s.status === 'running' || s.status === 'paused')
-      if (resumable) {
+    // 会话恢复：用户输入"继续/接着/恢复"时，如实回显最近未完成 session 的状态——
+    // waiting_review/running 无需任何动作即会继续，直接回显；
+    // orphaned/paused 是真正中断（对应"断开连接"场景），worker 不会自动推进，
+    // 必须走受控恢复端点（校验 checkpoint + 恢复次数），这里只提示不冒充"已恢复"。
+    const isContinueRequest = /^继续|^接着|^恢复/i.test(userPrompt) && !parentSessionId
+    if (isContinueRequest) {
+      const submitProjectId = String(body.projectId || body.submissionContext?.projectId || '').trim() || null
+      const candidates = listReasoningSessions({ limit: 10, includeTerminal: false })
+        .filter((s) => !submitProjectId || readReasoningSession(s.sessionId)?.submissionContext?.projectId === submitProjectId)
+      const inProgress = candidates.find((s) => s.status === 'waiting_review' || s.status === 'running')
+      if (inProgress) {
+        const full = readReasoningSession(inProgress.sessionId)
+        appendGovernanceAudit({ action: 'session_resume_probe', sessionId: full.sessionId, projectId: full.submissionContext?.projectId || null, result: 'ok', detail: `in_progress:${full.status}` })
         return c.json({
           ok: true,
           resumed: true,
           session: {
-            sessionId: resumable.sessionId,
-            status: resumable.status,
-            currentStepId: resumable.currentStepId,
-            title: resumable.title,
-            userPrompt: resumable.userPrompt
+            sessionId: full.sessionId,
+            runtimeSessionId: full.runtimeSessionId || full.sessionId,
+            status: full.status,
+            createdAt: full.createdAt,
+            currentStepId: full.currentStepId,
+            title: full.title,
+            userPrompt: full.userPrompt,
+            runtimeTaskGraph: full.runtimeTaskGraph || full.plan,
+            plan: full.plan
           },
-          message: `已恢复未完成任务：${resumable.title || resumable.userPrompt}（当前状态：${resumable.status}）`
+          message: `已找到进行中任务：${full.title || full.userPrompt}（当前状态：${full.status}）`
+        })
+      }
+      const stuck = candidates.find((s) => s.status === 'orphaned' || s.status === 'paused')
+      if (stuck) {
+        appendGovernanceAudit({ action: 'session_resume_probe', sessionId: stuck.sessionId, projectId: submitProjectId, result: 'blocked', detail: `stuck:${stuck.status}` })
+        return c.json({
+          ok: true,
+          resumed: false,
+          session: { sessionId: stuck.sessionId, status: stuck.status, title: stuck.title, userPrompt: stuck.userPrompt },
+          message: `任务「${stuck.title || stuck.userPrompt}」已中断（状态：${stuck.status}），需要受控恢复，请在任务面板对该会话点击"恢复"。`
         })
       }
       return c.json({

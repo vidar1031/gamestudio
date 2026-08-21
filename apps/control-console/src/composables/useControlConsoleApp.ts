@@ -2226,6 +2226,19 @@ export function useControlConsoleApp() {
         appendLocalChatEntry({ role: 'hermes', content: String(payload.message || '') })
         return
       }
+      // 会话恢复探测分支：无论是否找到可继续的任务，都不是新 session 创建——以 hermes 回复呈现说明，
+      // 命中进行中任务时再附着其真实状态（避免把"没有任务"误判成 reasoning_start_http_200 失败）
+      if (response.ok && payload?.ok && typeof payload?.resumed === 'boolean') {
+        reasoningBusy.value = false
+        pendingReasoningUserPrompt.value = ''
+        appendLocalChatEntry({ role: 'user', content: userText })
+        appendLocalChatEntry({ role: 'hermes', content: String(payload.message || '') })
+        if (payload.resumed && payload.session?.sessionId) {
+          const resumedSession = await loadReasoningSession(payload.session.sessionId)
+          if (isReasoningLiveStatus(resumedSession?.status)) scheduleReasoningPolling()
+        }
+        return
+      }
       if (!response.ok || !payload?.ok || !payload?.session) throw new Error(payload?.details || payload?.error || `reasoning_start_http_${response.status}`)
       pendingStoryRequirementConfirm.value = null
       syncReasoningSessionUi({ sessionId: payload.session.sessionId, runtimeSessionId: payload.session.runtimeSessionId ?? payload.session.sessionId, sessionKind: payload.session.sessionKind ?? 'agent_runtime', agentId: 'hermes-manager', userPrompt: userText, status: payload.session.status, createdAt: payload.session.createdAt, updatedAt: payload.session.createdAt, plan: payload.session.runtimeTaskGraph ?? payload.session.plan, runtimeTaskGraph: payload.session.runtimeTaskGraph ?? payload.session.plan, currentStepId: null, review: null, events: [], artifacts: {}, error: null })
