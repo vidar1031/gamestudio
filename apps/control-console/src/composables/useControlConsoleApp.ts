@@ -1851,9 +1851,15 @@ export function useControlConsoleApp() {
         throw new Error(readinessMessage || payload?.error || `runtime_action_http_${response.status}`)
       }
       if (payload?.ok) {
+        // 同步更新 runtimeState 和 leftBrainRunning，确保状态一致
         runtimeState.value = payload.runtimeStatus
         applyControlState(payload.state || null)
-        leftBrainRunning.value = payload.runtimeStatus?.state === 'running'
+        // 如果 payload.state 中有 runtime 状态，优先使用它
+        if (payload.state?.runtime?.state) {
+          leftBrainRunning.value = payload.state.runtime.state === 'running'
+        } else {
+          leftBrainRunning.value = payload.runtimeStatus?.state === 'running'
+        }
       }
       await fetchLogs()
     } catch (caught) {
