@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { cors } from 'hono/cors'
 import { mkdir, readFile, readdir, rename, stat, writeFile, rm, copyFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -1929,11 +1930,27 @@ async function saveStoryAssetPlan(id, plan, options = {}) {
           poseVariants: (x) => String(x && x.id || ''),
           latestReferenceBatch: (x) => String(x && x.assetPath || '')
         }
+        // 2026-09-12 终端字段保护（实测事故：编辑器陈旧整计划 persist 把已锁定/已出线稿的生产字段
+        // 重置回 missing/空，出图总账回退）。protectTerminalFields 仅在编辑器手工保存通道开启：
+        // 以下由生产流（锁定/线稿/姿势）写入的字段，磁盘非空时一律以磁盘为准，入站不得回退。
+        const TERMINAL_ASSET_KEYS = new Set([
+          'referenceStatus', 'primaryReferenceAssetId', 'primaryReferenceAssetUri', 'primaryReferenceSelectedAt',
+          'latestReferenceBatch', 'latestRecommendedReferenceAssetUri', 'latestReferenceReview',
+          'lineartHintAssetId', 'lineartHintAssetUri', 'lineartFinalAssetId', 'lineartFinalAssetUri',
+          'lineartStatus', 'lineartPrompt', 'lineartNegativePrompt', 'lineartMeta', 'lineartGeneratedAt',
+          'poseRequirements', 'poseDraft'
+        ])
+        const protectTerminal = options.protectTerminalFields === true
         const mergeAssetEntry = (diskEntry, incomingEntry) => {
           const disk = diskEntry && typeof diskEntry === 'object' ? diskEntry : {}
           const incoming = incomingEntry && typeof incomingEntry === 'object' ? incomingEntry : {}
           const merged = { ...disk }
           for (const [key, value] of Object.entries(incoming)) {
+            if (protectTerminal && TERMINAL_ASSET_KEYS.has(key)) {
+              const diskVal = disk[key]
+              const diskNonEmpty = diskVal != null && diskVal !== '' && !(Array.isArray(diskVal) && !diskVal.length)
+              if (diskNonEmpty) continue // 生产终态字段：磁盘为准，跳过入站回退
+            }
             const keyOf = RECORD_ARRAY_KEYS[key]
             if (keyOf && Array.isArray(value)) {
               const diskArr = Array.isArray(disk[key]) ? disk[key] : []
@@ -4410,7 +4427,25 @@ app.put('/api/projects/:id', async (c) => {
   let mergedProject = project ? { ...curr, ...project, id, updatedAt: nowIso() } : { ...curr, updatedAt: nowIso() }
   mergedProject = { ...mergedProject, _rev: currRev + 1 }
   if (project && Array.isArray(project.assets)) {
-    const incomingAssets = Array.isArray(project.assets) ? project.assets : []
+    const incomingAssets0 = Array.isArray(project.assets) ? project.assets : []
+    // 2026-09-12 陈旧 URI 守卫（实测事故：编辑器旧内存把已压缩/已迁移的 .png 旧路径整批回写，
+    // 覆盖磁盘上真实存在的 .webp 新路径，assets[] 出现 26 条悬挂引用）。规则：入站 uri 指向
+    // assets/ai/ 且文件不存在，而磁盘同 id 资产 uri 文件真实存在时，以磁盘 uri 为准。
+    const diskAssetUriById = new Map(
+      (Array.isArray(curr.assets) ? curr.assets : []).map((item) => [String(item && item.id || '').trim(), String(item && item.uri || '').trim()])
+    )
+    const incomingAssets = incomingAssets0.map((item) => {
+      if (!item || typeof item !== 'object') return item
+      const uri = String(item.uri || '').trim()
+      if (!uri.startsWith('assets/ai/')) return item
+      if (existsSync(path.join(dir, uri))) return item
+      const itemId = String(item.id || '').trim()
+      const diskUri = diskAssetUriById.get(itemId) || ''
+      if (diskUri && existsSync(path.join(dir, diskUri))) {
+        return { ...item, uri: diskUri }
+      }
+      return item
+    })
     const incomingKeys = new Set(incomingAssets.map((item) => `${String(item && item.id || '').trim()}::${normalizeStoryAssetUri(item && item.uri)}`))
     // 2026-09-01 修复资产重复：入站已有同 id 且 uri 非空的条目时，不再保留磁盘旧条目。
     // 旧逻辑按 id::uri 判重——同 id 换了 uri（如动作立绘覆盖托管立绘）会把旧条目追加回去，
@@ -6305,7 +6340,7 @@ app.post('/api/projects/:id/ai/story/assets/plan/persist', async (c) => {
   if (!plan) {
     return c.json({ success: false, error: 'missing_plan', message: '缺少要保存的资产计划。' }, 400)
   }
-  await saveStoryAssetPlan(id, plan)
+  await saveStoryAssetPlan(id, plan, { mergeAssetsById: true, protectTerminalFields: true })
   // 2026-09-03 返回最新 _rev：saveStoryAssetPlan 会递增 project.json 版本号，
   // 编辑器不采信的话，外部更新检测横幅会把"自己刚才的保存"误报成外部更新（实测假阳性）。
   let rev = 0
