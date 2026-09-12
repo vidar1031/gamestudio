@@ -35,6 +35,14 @@ function handleChatThreadScroll() {
   userScrolledUp.value = distanceFromBottom > 96
 }
 
+function formatSessionTime(value?: string | null) {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 watch(
   () => [app.chatHistory.value.length, eventCount.value, app.activeReasoningSession.value?.status, app.agentStreamSteps.value.length, app.agentStreamAnswerDraft.value.length],
   async () => {
@@ -70,6 +78,18 @@ watch(
       {{ app.reasoningError.value || app.activeReasoningSession.value?.error }}
     </div>
     <div v-if="app.reasoningClearMessage.value" class="chat-banner tip">{{ app.reasoningClearMessage.value }}</div>
+    <div v-if="app.chatWaterLevel.value && app.chatWaterLevel.value.level !== 'ok'" class="chat-banner warn">
+      <div class="water-text">
+        对话历史已约 {{ app.chatWaterLevel.value.estimatedTokens }} tokens（占上下文预算 {{ Math.round((app.chatWaterLevel.value.ratio || 0) * 100) }}%）。
+        建议压缩早期对话保持响应稳定：将丢弃最早若干轮的原文细节、保留要点摘要与最近 4 轮，当前话题方向不变，可继续提问。
+      </div>
+      <div class="water-actions">
+        <button class="chat-btn outline small" :disabled="app.chatCompactBusy.value" @click="app.compactChatHistory('compress')">
+          {{ app.chatCompactBusy.value ? '处理中…' : '压缩早期对话' }}
+        </button>
+        <button class="chat-btn outline small" :disabled="app.chatCompactBusy.value" @click="app.compactChatHistory('clear')">清空重开</button>
+      </div>
+    </div>
 
     <!-- 聊天线程（含任务卡片与审核卡片） -->
     <div ref="chatThreadRef" class="chat-thread" @scroll="handleChatThreadScroll">
@@ -171,6 +191,32 @@ watch(
       <div class="chat-composer-footer">
         <div class="chat-composer-hint">Enter 换行，Cmd/Ctrl + Enter 开始任务执行。所有模型调用统一提交给 Hermes。</div>
         <div class="chat-composer-actions">
+          <div class="chat-session-wrap">
+            <button
+              class="chat-btn outline"
+              :class="{ active: app.chatSessionsOpen.value }"
+              title="会话历史：每次新建会话会自动归档为一条记录；打开可继续，可删除"
+              @click="app.toggleChatSessions()"
+            >会话历史</button>
+            <div v-if="app.chatSessionsOpen.value" class="chat-session-panel">
+              <div class="chat-session-panel-head">
+                <span>会话记录（{{ app.chatSessions.value.length }}）</span>
+                <button class="chat-session-panel-close" type="button" title="关闭" @click="app.toggleChatSessions()">✕</button>
+              </div>
+              <div class="chat-session-panel-body">
+                <div v-if="app.chatSessionsBusy.value" class="chat-session-empty">处理中…</div>
+                <div v-else-if="app.chatSessions.value.length === 0" class="chat-session-empty">暂无历史会话</div>
+                <div v-for="s in app.chatSessions.value" :key="s.sessionId" class="chat-session-item">
+                  <button class="chat-session-open" type="button" title="打开该会话并继续" @click="app.openChatSessionById(s.sessionId)">
+                    <span class="chat-session-title">{{ s.title }}</span>
+                    <span class="chat-session-meta">{{ s.entryCount }} 条 · {{ formatSessionTime(s.updatedAt) }}</span>
+                    <span class="chat-session-preview">{{ s.preview }}</span>
+                  </button>
+                  <button class="chat-session-del" type="button" title="删除该会话记录" @click="app.deleteChatSessionById(s.sessionId)">✕</button>
+                </div>
+              </div>
+            </div>
+          </div>
           <button
             class="chat-btn outline"
             title="脱离当前执行链、清空输入与对话内容（聊天记录归档后清空），开始全新会话"
@@ -267,6 +313,153 @@ watch(
   color: var(--c-accent);
   border: 1px solid var(--c-accent-dim);
   background: rgba(94, 204, 255, 0.06);
+}
+.chat-banner.warn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--c-warn);
+  border: 1px solid rgba(246, 201, 78, 0.35);
+  background: rgba(246, 201, 78, 0.07);
+}
+.chat-banner.warn .water-text {
+  flex: 1;
+  min-width: 240px;
+}
+.chat-banner.warn .water-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.chat-session-wrap {
+  position: relative;
+}
+.chat-session-wrap > .chat-btn.active {
+  border-color: var(--c-accent-dim);
+  color: var(--c-accent);
+}
+.chat-session-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 360px;
+  max-height: 360px;
+  background: var(--c-bg-panel);
+  border: 1px solid var(--c-border-mid);
+  border-radius: 10px;
+  z-index: 30;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.chat-session-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--c-text-inv);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--c-border);
+}
+.chat-session-panel-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--c-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.chat-session-panel-close:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--c-text);
+  border-color: var(--c-border-mid);
+}
+.chat-session-panel-body {
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chat-session-empty {
+  font-size: 12px;
+  color: var(--c-text-muted);
+  padding: 10px 6px;
+}
+.chat-session-item {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.chat-session-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.chat-session-open:hover {
+  background: rgba(94, 204, 255, 0.08);
+  border-color: var(--c-accent-dim);
+}
+.chat-session-title {
+  font-size: 13px;
+  color: var(--c-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-session-meta {
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+.chat-session-preview {
+  font-size: 11px;
+  color: var(--c-text-sub);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-session-del {
+  flex: none;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--c-text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.chat-session-del:hover {
+  color: var(--c-error);
+  background: rgba(255, 107, 107, 0.12);
+  border-color: rgba(255, 107, 107, 0.35);
 }
 .chat-thread {
   flex: 1;

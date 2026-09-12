@@ -375,6 +375,7 @@ Step G: 资源回填与校验
 | P1-12 | **会话状态机模糊** | 21% 会话被归类为 `other`（既非成功也非失败），状态流转存在灰色地带 | 活跃 | 细化状态定义：取消/超时/系统中断/未知错误 |
 | P1-13 | **L1 自动判定字面词期望过苛** | 2026-07-22 删除生产代码关键词填充后，真实模型回答语义达标但逐字命中不了期望词（如要求中文回答含 `artifact`/`evaluator` 英文字面），L1 三题 FAIL；模型链路本身已被真实 e2e 证明可用 | 已知限制 | 重校准 L1 期望为语义等价子集（仅改测试脚本），或改用 `--manual-verdict` 人工判定 |
 | P1-14 | **OMLX 预填内存护栏阻塞** | 双模型常驻（约 18.9GB）时 131072 token 上下文预填峰值 21.6GB 超 20.1GB 安全上限，模型调用被 `prefill_memory_exceeded` 拒绝 | 已知限制 | OMLX 侧调 Memory Guard 为 aggressive / 提高上限 / 控制常驻模型数；文档化启动前内存检查 |
+| P1-15 | **规划阶段 prefill 峰值贴线导致 502 风暴** | 2026-09-06 实测：reasoning_plan 经 hermes-gateway 到 OMLX 的 prefill 峰值 ~22.66GB 贴 22.64GB 护栏，4 连 `model_task_http_502`，会话全部 orphan→blocked；同一形状请求时好时坏（机器内存压力浮动），且会话级 KV 残留（current 17.47GB）推高后续请求 | 活跃 | 降低 reasoning_plan 出站上下文与输出预留；plan 失败无 checkpoint 不可恢复，考虑在 plan 阶段前加轻量探针请求；按《运行时能力测试基准》单独治理 |
 
 ---
 

@@ -47,6 +47,8 @@ function inferToolForStoryAction(action) {
 export function extractStoryTitleFromPrompt(userPrompt) {
   const prompt = normalizePrompt(userPrompt)
   const patterns = [
+    // 2026-09-09：书名号直取（"创建互动故事《乌鸦喝水》"此前落到兜底'未命名互动故事'，实测事故）
+    /《([^》]{1,20})》/,
     /题目(?:为|是)\s*[“"]([^”"]+)[”"]/,
     /标题(?:为|是)\s*[“"]([^”"]+)[”"]/,
     /名为\s*[“"]([^”"]+)[”"]/,
@@ -108,7 +110,7 @@ function appendFullP0Steps(add, { projectId, title, config, prompt }) {
   add('step_story_configure_project', '写入故事生成配置', 'story_configure_project', { projectId, config })
   add('step_story_generate_scripts_candidate', '生成故事脚本候选', 'story_generate_scripts_candidate', { projectId, brief: prompt, title })
   add('step_story_write_scripts', '写入故事脚本到项目', 'story_write_scripts', { projectId })
-  add('step_story_create_bible', '生成 Story Bible', 'story_create_bible', { projectId, timeoutMs: 600000 })
+  add('step_story_create_bible', '生成 Story Bible', 'story_create_bible', { projectId, timeoutMs: 600000, stepTimeoutMs: 900000 })
   add('step_story_compile_blueprint', '编译脚本为蓝图', 'story_compile_blueprint', { projectId })
   add('step_story_review_blueprint_agent', '智能体评审交互蓝图', 'story_review_blueprint_agent', { projectId })
   add('step_story_repair_blueprint_if_needed', '按评审结果修复蓝图', 'story_repair_blueprint_if_needed', { projectId })
@@ -125,7 +127,7 @@ function appendAiStoryToComposeSteps(add, { projectId, title, prompt }) {
     choicePoints: 2,
     optionsPerChoice: 2,
     endings: 2,
-    timeoutMs: 600000
+    timeoutMs: 600000, stepTimeoutMs: 900000
   })
   add('step_story_analyze_scripts', '分析脚本并生成蓝图建议', 'story_analyze_scripts', { projectId })
   add('step_story_review_blueprint_agent', '智能体评审交互蓝图', 'story_review_blueprint_agent', { projectId })
@@ -169,7 +171,7 @@ function appendP1AssetSteps(add, { projectId }) {
     projectId,
     width: 768,
     height: 1024,
-    timeoutMs: 600000
+    timeoutMs: 600000, stepTimeoutMs: 900000
   })
   add('step_p1_validate_project', '校验锁定资产引用和项目结构', 'story_validate_project', { projectId })
   add('step_p1_export_project', '重新导出带资产的互动故事项目', 'story_export_project', { projectId })
@@ -200,7 +202,7 @@ function appendP1LayeredAssetSteps(add, { projectId }) {
     mode: 'background',
     width: 768,
     height: 1024,
-    timeoutMs: 600000,
+    timeoutMs: 600000, stepTimeoutMs: 900000,
     // E03 批量队列异步执行：control 提交后轮询批次直至终结；单场景分钟级、十余场景串行的
     // 合法预算给 60 分钟（B04 按 params.stepTimeoutMs 放宽本步 deadline）
     stepTimeoutMs: 3600000
@@ -357,7 +359,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsStoryBibleOnly && forbidsAssetPlan && forbidsLockTest) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 600000
+      timeoutMs: 600000, stepTimeoutMs: 900000
     })
     appendAnswerStep(steps, { skipReview: true })
     return {
@@ -371,7 +373,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsLockTest) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 600000
+      timeoutMs: 600000, stepTimeoutMs: 900000
     })
     add('step_story_create_asset_plan', '基于 Story Bible 创建资产计划', 'story_create_asset_plan', {
       projectId,
@@ -388,7 +390,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
       projectId,
       style: 'picture_book',
       maxAttempts: 3,
-      timeoutMs: 600000
+      timeoutMs: 600000, stepTimeoutMs: 900000
     })
     appendAnswerStep(steps)
     return {
@@ -402,7 +404,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsLockAssets) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 600000
+      timeoutMs: 600000, stepTimeoutMs: 900000
     })
     add('step_story_create_asset_plan', '锁定故事必须包括的事物', 'story_create_asset_plan', {
       projectId,
@@ -420,7 +422,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
       maxAssets: 8,
       batchSize: 1,
       style: 'picture_book',
-      timeoutMs: 600000,
+      timeoutMs: 600000, stepTimeoutMs: 900000,
       source: 'control_lock_object_stage'
     })
     add('step_story_validate_project', '校验锁定资产引用和项目结构', 'story_validate_project', { projectId })
@@ -436,7 +438,7 @@ export function buildStoryWorkflowPlan(userPrompt) {
   if (wantsAssets) {
     add('step_story_create_bible', '显式生成 Story Bible', 'story_create_bible', {
       projectId,
-      timeoutMs: 600000
+      timeoutMs: 600000, stepTimeoutMs: 900000
     })
     add('step_story_create_asset_plan', '创建故事资产计划', 'story_create_asset_plan', {
       projectId,

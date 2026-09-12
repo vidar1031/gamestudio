@@ -20,6 +20,12 @@ const routes = [
         meta: { title: '总览', icon: '□' }
       },
       {
+        path: 'help',
+        name: 'Help',
+        component: () => import('../pages/HelpPage.vue'),
+        meta: { title: '使用帮助', icon: '？' }
+      },
+      {
         path: 'generators',
         name: 'Generators',
         component: () => import('../pages/GeneratorsPage.vue'),

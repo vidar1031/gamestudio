@@ -96,6 +96,25 @@ export async function orchestrateProduction(plan, context = {}) {
     // 如果步骤失败且不可重试，终止整个计划
     if (!execResult.ok) {
       const finalAction = getAction(action.actionId)
+      const waitingForReview = execResult.error === 'review_required'
+        || finalAction?.state === ACTION_STATE.WAITING_REVIEW
+      if (waitingForReview) {
+        appendGovernanceAudit({
+          action: 'workflow_orchestration_waiting_review',
+          result: 'blocked',
+          detail: `生产计划在第 ${stepIndex} 步等待人工审核：${step.title}`,
+          actor,
+          data: { planId: plan.planId, stepIndex, stepId: step.stepId, actionId: action.actionId }
+        })
+        return {
+          ok: false,
+          plan,
+          results,
+          evidencePack: null,
+          failedStep: stepResult,
+          waitingForReview: true
+        }
+      }
       if (finalAction?.state === ACTION_STATE.FAILED || finalAction?.state === ACTION_STATE.ROLLED_BACK) {
         appendGovernanceAudit({
           action: 'workflow_orchestration_failed',

@@ -10,6 +10,7 @@ const app = useControlConsoleApp()
 const navItems = [
   { name: 'Chat', path: '/chat', icon: '◉', label: '聊天' },
   { name: 'Dashboard', path: '/dashboard', icon: '□', label: '总览' },
+  { name: 'Help', path: '/help', icon: '？', label: '使用帮助' },
   { name: 'Generators', path: '/generators', icon: '⚙', label: '生成工具' },
   { name: 'Agents', path: '/agents', icon: '◆', label: '本地 Agent' },
   { name: 'Projects', path: '/projects', icon: '▣', label: '项目' },

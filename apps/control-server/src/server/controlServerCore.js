@@ -253,7 +253,7 @@ import { createConfigService } from './services/configService.js'
 import { createContextService } from './services/contextService.js'
 import { gameStudioServerClient } from './services/gameStudioServerClient.js'
 import { waitForSceneBatchTerminal, evaluateSceneBackgroundsOutcome, evaluateScenePlacementsOutcome } from './services/storySceneLayeringSupport.js'
-import { dispatchGameStudioEventLegacy } from './events/eventDispatcher.js'
+import { dispatchGameStudioEvent, dispatchGameStudioEventLegacy } from './events/eventDispatcher.js'
 import { createReasoningService } from './services/reasoningService.js'
 import { createRuntimeService } from './services/runtimeService.js'
 import {
@@ -586,6 +586,25 @@ function clearHermesPid() {
   }
 }
 
+// pid 文件丢失时的兜底探测：按 gateway 脚本命令行特征找回仍在运行的受控进程。
+// 解决"进程活着但 control 失明"导致的无法停止/无法重启（2026-08-24 实测事故：pid 文件消失，
+// gateway 仍持有 8742 端口，control 判 stopped，启动新实例必然端口冲突）。
+function findRunningHermesGatewayPid() {
+  try {
+    const result = spawnSync('pgrep', ['-f', `${HERMES_GATEWAY_SCRIPT} run`], { encoding: 'utf8', timeout: 3000 })
+    const pids = String(result.stdout || '')
+      .split('\n')
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isFinite(pid) && pid > 0)
+    for (const pid of pids) {
+      if (pid !== process.pid && isPidRunning(pid)) return pid
+    }
+  } catch {
+    // 探测失败按未发现处理
+  }
+  return null
+}
+
 function readSimpleEnvFile(filePath) {
   try {
     const raw = fs.readFileSync(filePath, 'utf8')
@@ -679,6 +698,21 @@ function getModelMetadata(modelId) {
     recommendedMaxOutputTokens: lower.includes('qwen') || lower.includes('gpt-oss') ? 8192 : lower.includes('gemma') ? 4096 : null,
     tokenizer: inferTokenizer(modelId),
     metadataSource: lower.includes('qwen') || lower.includes('gpt-oss') || lower.includes('gemma') ? 'heuristic' : 'unavailable'
+  }
+}
+
+// 运行时预算硬顶（32G/16K 基准，见 docs/运行时能力测试基准.md）：
+// 模型元数据标称超出预算时压到预算内；未配置预算（<=0）时维持元数据原值
+function applyRuntimeTokenBudget(metadata, shortTerm) {
+  const maxContext = Number(shortTerm?.maxContextTokens) || 0
+  const maxOutput = Number(shortTerm?.maxOutputTokens) || 0
+  return {
+    contextLength: maxContext > 0
+      ? Math.min(Number(metadata?.contextLength) || maxContext, maxContext)
+      : (metadata?.contextLength ?? null),
+    recommendedMaxOutputTokens: maxOutput > 0
+      ? Math.min(Number(metadata?.recommendedMaxOutputTokens) || maxOutput, maxOutput)
+      : (metadata?.recommendedMaxOutputTokens ?? null)
   }
 }
 
@@ -1236,6 +1270,24 @@ function getHermesRuntimeState() {
     }
   }
 
+  // pid 文件丢失/失效时的兜底：找回仍在运行的 gateway 进程并重新接管，
+  // 让 停止/重启 恢复可用；探测不到才判定 stopped
+  const adoptedPid = findRunningHermesGatewayPid()
+  if (adoptedPid) {
+    writeHermesPid(adoptedPid)
+    appendHermesLog(`[RUNTIME][ADOPT] pid file missing/stale; re-adopted running gateway pid=${adoptedPid}`)
+    const gatewayFault = getHermesGatewayFaultSnapshot()
+    return {
+      state: 'running',
+      label: '运行中',
+      detail: 'pid 文件丢失，已重新接管运行中的 Hermes gateway 进程',
+      pid: adoptedPid,
+      logFile: HERMES_RUNTIME_LOG_FILE,
+      availableActions: ['all-restart', 'pause', 'exit'],
+      gatewayFault
+    }
+  }
+
   clearHermesPid()
   return {
     state: 'stopped',
@@ -1429,6 +1481,96 @@ wait "$HERMES_CHILD"
   }
 }
 
+// ============ OMLX prefill 内存闸自愈（2026-08-25，用户指令：把 iogpu 提限做进启动逻辑） ============
+// 背景：macOS 重启后 iogpu.wired_limit_mb 复位为 0（默认 cap ~22.8-23GB），27B 模型（权重 ~17.5GB
+// + KV 固定预留 ~5.5GB ≈ 23GB）会被 OMLX prefill guard 全部 400 拒答；且 omlx-server 缓存启动时的
+// cap，sysctl 提限后必须重启 omlx-server 才认新值。本函数把「检测→提限→重启→复测」做成启动自愈。
+const IOGPU_WIRED_LIMIT_TARGET_MB = Number(process.env.HERMES_IOGPU_WIRED_LIMIT_MB || 26624)
+const OMLX_CLI_BIN = process.env.OMLX_CLI_BIN || '/Volumes/ovokit2t/Applications/oMLX.app/Contents/MacOS/omlx-cli'
+
+function readIogpuWiredLimitMb() {
+  try {
+    const result = spawnSync('sysctl', ['-n', 'iogpu.wired_limit_mb'], { encoding: 'utf8', timeout: 5000 })
+    const value = Number(String(result.stdout || '').trim())
+    return Number.isFinite(value) ? value : 0
+  } catch {
+    return 0
+  }
+}
+
+async function ensureOmlxPrefillHealthy(binding, providerAccess) {
+  if (normalizeProviderName(binding?.provider) !== 'omlx') return { ok: true, skipped: 'not_omlx' }
+  const baseUrl = normalizeModelBaseUrl(binding?.baseUrl, binding?.provider)
+  const apiKey = String(providerAccess?.apiKey || '')
+  const model = String(binding?.model || '')
+  if (!baseUrl || !model) return { ok: false, detail: 'OMLX 绑定不完整（缺 baseUrl 或 model）' }
+
+  // 步骤 1：内核上限检查，低于目标时尝试免密提限（需一次性安装 sudoers 规则）
+  const currentLimit = readIogpuWiredLimitMb()
+  if (currentLimit < IOGPU_WIRED_LIMIT_TARGET_MB) {
+    const apply = spawnSync('sudo', ['-n', '/usr/sbin/sysctl', `iogpu.wired_limit_mb=${IOGPU_WIRED_LIMIT_TARGET_MB}`], { encoding: 'utf8', timeout: 8000 })
+    if (apply.status === 0) {
+      appendHermesLog(`[OMLX][GUARD] iogpu.wired_limit_mb ${currentLimit} → ${IOGPU_WIRED_LIMIT_TARGET_MB}（sudoers 免密规则生效）`)
+    } else {
+      appendHermesLog(`[OMLX][GUARD][WARN] iogpu.wired_limit_mb=${currentLimit} 低于目标 ${IOGPU_WIRED_LIMIT_TARGET_MB} 且无免密权限；一次性安装：sudo bash scripts/utils/install_iogpu_sudoers.sh`)
+    }
+  }
+
+  // 步骤 2：真实规模探测——1-token ping 太弱（OMLX 对微型 prompt 不触发闸值核算），
+  // 必须垫到 ~3K tokens 才能测出 prefill guard 的真实通过性（功能验证，不靠推断）
+  const probePadding = '垫'.repeat(3000)
+  const probe = async () => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 180000) // 冷加载给足时间：慢可以，断不行
+    try {
+      const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: `ping\n${probePadding}` }], max_tokens: 1 }),
+        signal: controller.signal
+      })
+      if (response.ok) return { ok: true }
+      const text = await response.text().catch(() => '')
+      if (response.status === 400 && /prefill_memory_exceeded|prefill|memory guard/i.test(text)) {
+        return { ok: false, memoryGuard: true, detail: text.slice(0, 300) }
+      }
+      return { ok: false, detail: `http_${response.status}: ${text.slice(0, 200)}` }
+    } catch (error) {
+      return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  let probeResult = await probe()
+  if (probeResult.ok) return { ok: true }
+
+  // 步骤 3：内存闸拒绝 → 重启 omlx-server（重读当前 cap）后复测一次
+  if (probeResult.memoryGuard && fs.existsSync(OMLX_CLI_BIN)) {
+    appendHermesLog(`[OMLX][GUARD] prefill 探测被拒（omlx-server 缓存了旧 cap），执行 omlx-cli restart 后复测`)
+    try {
+      spawnSync(OMLX_CLI_BIN, ['restart'], { encoding: 'utf8', timeout: 60000 })
+      const healthUrl = `${baseUrl.replace(/\/v1\/?$/, '')}/health`
+      for (let i = 0; i < 30; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        try {
+          const health = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) })
+          if (health.ok) break
+        } catch { /* 未就绪继续等 */ }
+      }
+      probeResult = await probe()
+      if (probeResult.ok) return { ok: true, recoveredBy: 'omlx_restart' }
+    } catch (error) {
+      appendHermesLog(`[OMLX][GUARD][ERROR] omlx-cli restart 失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  return {
+    ok: false,
+    detail: `OMLX prefill 内存闸未通过：${String(probeResult.detail || 'unknown').slice(0, 200)}。请执行 sudo sysctl iogpu.wired_limit_mb=${IOGPU_WIRED_LIMIT_TARGET_MB} 并重启 OMLX；或一次性安装免密规则 sudo bash scripts/utils/install_iogpu_sudoers.sh 后由启动逻辑自动处理。`
+  }
+}
+
 async function startHermesRuntime() {
   const startAt = Date.now()
   const current = getHermesRuntimeState()
@@ -1445,6 +1587,21 @@ async function startHermesRuntime() {
   const binding = buildHermesBinding()
   syncHermesRuntimeConfig(binding)
   const providerAccess = getProviderAccess(binding.provider, binding.baseUrl)
+
+  // 内存闸自愈：OMLX prefill 不健康时不启动 gateway（否则每轮问答都会被 400 拒答，表现为"启动了又失败"）
+  const omlxHealth = await ensureOmlxPrefillHealthy(binding, providerAccess)
+  if (!omlxHealth.ok) {
+    appendHermesLog(`[START][ERROR] OMLX prefill guard unhealthy, gateway launch aborted: ${omlxHealth.detail}`)
+    return {
+      state: 'stopped',
+      label: '已暂停',
+      detail: omlxHealth.detail,
+      pid: null,
+      logFile: HERMES_RUNTIME_LOG_FILE,
+      availableActions: ['all-restart', 'resume']
+    }
+  }
+
   const noProxyValue = buildHermesNoProxyValue(binding)
   const ephemeralSystemPrompt = buildHermesEphemeralSystemPrompt(binding)
   
@@ -1485,6 +1642,8 @@ async function startHermesRuntime() {
     GAMESTUDIO_SKILL_ROOT: binding.skills.skillRoot,
     GAMESTUDIO_SKILL_FILES: binding.skills.availableSkillFiles.join(path.delimiter),
     GAMESTUDIO_MIN_CONTEXT_TOKENS: String(binding.shortTerm.minContextTokens || 0),
+    // 8K 基准：gateway 侧上下文地板随 control 预算下发（hermes-agent 读取 HERMES_MINIMUM_CONTEXT_LENGTH）
+    HERMES_MINIMUM_CONTEXT_LENGTH: String(binding.shortTerm.maxContextTokens || 8192),
     HERMES_EPHEMERAL_SYSTEM_PROMPT: ephemeralSystemPrompt,
     NO_PROXY: noProxyValue,
     no_proxy: noProxyValue,
@@ -1875,14 +2034,19 @@ function getDefaultHermesControlConfig() {
     baseUrl: defaultBaseUrl,
     model: defaultModel,
     shortTerm: {
-      minContextTokens: 65536
+      minContextTokens: 8192,
+      // 运行时预算硬顶（32G 内存基准，测试期按 8K 跑，见 docs/运行时能力测试基准.md）：
+      // 模型元数据标称更大时，binding 一律压到该预算内，防止超长上下文拖垮本地推理
+      maxContextTokens: 8192,
+      maxOutputTokens: 2048
     },
     workflow: {
       // 默认 content-injection：references-only 只给路径不给正文，模型拿不到记忆事实
       // （gpt-oss 曾因此输出停在思考通道、正文为空）；有界注入见 buildBoundedProjectMemoryInjection。
       memoryOverlayMode: 'content-injection',
-      replayWindowMessages: 24,
-      reasoningReplayWindowMessages: 8,
+      // 运行时记忆超短化（16K 基准）：历史回放只保留最近数对，长记忆走外部存储检索
+      replayWindowMessages: 6,
+      reasoningReplayWindowMessages: 4,
       modelRouting: buildDefaultModelRoutingConfig({
         provider: defaultProvider,
         baseUrl: defaultBaseUrl,
@@ -2018,8 +2182,7 @@ function buildBindingForResolvedModelRoute(binding, route, access = null) {
     provider,
     baseUrl,
     model,
-    contextLength: metadata.contextLength,
-    recommendedMaxOutputTokens: metadata.recommendedMaxOutputTokens,
+    ...applyRuntimeTokenBudget(metadata, binding?.shortTerm),
     tokenizer: String(metadata.tokenizer || '') || null,
     metadataSource: String(metadata.metadataSource || 'unavailable')
   }
@@ -2124,10 +2287,18 @@ function buildPersistedHermesControlConfig(rawConfig = {}) {
     provider,
     baseUrl,
     model,
+    // 本地视觉评审模型（调度器 vision 槽位换入目标；空串视为未配置）
+    visionModel: String(rawConfig.visionModel || defaults.visionModel || '').trim() || null,
     shortTerm: {
       minContextTokens: Number.isFinite(Number(shortTerm.minContextTokens))
         ? Number(shortTerm.minContextTokens)
-        : defaults.shortTerm.minContextTokens
+        : defaults.shortTerm.minContextTokens,
+      maxContextTokens: Number.isFinite(Number(shortTerm.maxContextTokens))
+        ? Number(shortTerm.maxContextTokens)
+        : defaults.shortTerm.maxContextTokens,
+      maxOutputTokens: Number.isFinite(Number(shortTerm.maxOutputTokens))
+        ? Number(shortTerm.maxOutputTokens)
+        : defaults.shortTerm.maxOutputTokens
     },
     workflow: {
       memoryOverlayMode: String(workflow.memoryOverlayMode || defaults.workflow.memoryOverlayMode) === 'content-injection'
@@ -2305,8 +2476,9 @@ function buildHermesBindingFromConfig(cfg) {
     model,
     provider,
     baseUrl,
-    contextLength: metadata.contextLength,
-    recommendedMaxOutputTokens: metadata.recommendedMaxOutputTokens,
+    // 2026-09-08：本地视觉评审模型（姿势一致性评审用，调度器外来模型守卫放行名单数据源）
+    visionModel: String(cfg.visionModel || '').trim() || null,
+    ...applyRuntimeTokenBudget(metadata, cfg.shortTerm),
     tokenizer: String(metadata.tokenizer || '') || null,
     metadataSource: String(metadata.metadataSource || 'unavailable'),
     shortTerm: {
@@ -2794,7 +2966,7 @@ export function buildConfigValidation(config, binding, inspection = null) {
   items.push({
     key: 'short-term-context',
     label: '短期记忆窗口',
-    status: minContextTokens >= 65536 && contextLength >= minContextTokens ? 'ok' : 'error',
+    status: contextLength >= minContextTokens ? 'ok' : 'error',
     detail: `要求 >= ${minContextTokens || 'unknown'} tokens，当前 ${binding.contextLength ?? 'unknown'}`
   })
 
@@ -3561,6 +3733,8 @@ function createControlServerRouteContext() {
     getGatewaySupervisionState,
     getCronSchedulerState,
     getResourceSchedulerState,
+    acquireResourceLease,
+    releaseResourceLease,
     // 启动前资源守卫收敛入口：卸载外来模型 + 缺失时回载配置模型（runtime 路由模型加载失败重试用）
     reconcileResources: () => getResourceScheduler().reconcile({ trigger: 'prestart_load' }),
     isSupervisionEnabled: () => getEnvValue('SUPERVISION_ENABLED') === 'true',
@@ -3569,6 +3743,12 @@ function createControlServerRouteContext() {
     writeContextPoolEntry,
     writeHermesChatHistory,
     writeUtf8FileRecord,
+    buildHermesChatWaterLevel,
+    compactHermesChatHistory,
+    listHermesChatSessions,
+    archiveCurrentHermesChatSession,
+    openHermesChatSession,
+    deleteHermesChatSession,
   }
 
   return {
@@ -4941,12 +5121,12 @@ async function generateReasoningQualityCalibrationLesson(session, binding, revie
   ]
 
   try {
-    const data = await requestHermesChatCompletion({
+    const data = await withInlineLlmLease(`quality_calibration:${session?.sessionId || '-'}`, () => requestHermesChatCompletion({
       sessionId: session?.sessionId || null,
       phase: 'quality_calibration',
       messages,
       maxTokens: 360
-    })
+    }))
     return String(data.choices?.[0]?.message?.content || '').trim()
   } catch (error) {
     return JSON.stringify({
@@ -6501,20 +6681,29 @@ function buildStoryBibleGenerationInput(projectId) {
   const project = readStoryProjectFile(projectId, 'project.json')
   const scripts = readStoryProjectFile(projectId, 'scripts.json')
   const scenes = collectStorySceneEntries(projectId)
+  // 8K 上下文/内存闸实测约束：输入全文必须瘦身，否则 27B 大调用超时/空输出。
+  // 场景与脚本正文截断到 500 字符（bible 只需要情节要点，不需要全文）；
+  // 细则见 ai/memory/DECISIONS.md「单一 27B + 8K」条目。
+  const BIBLE_INPUT_TEXT_CAP = 500
+  const BIBLE_INPUT_BRIEF_CAP = 800
+  const clip = (value, cap) => {
+    const text = String(value || '').trim()
+    return text.length > cap ? `${text.slice(0, cap)}…` : text
+  }
   return {
     title: String(project?.title || derived.title || '互动故事').trim(),
-    brief: String(project?.brief || project?.description || project?.summary || '').trim(),
+    brief: clip(project?.brief || project?.description || project?.summary || '', BIBLE_INPUT_BRIEF_CAP),
     scenes: scenes.map((scene) => ({
       sceneId: String(scene?.key || '').trim(),
       name: String(scene?.name || '').trim(),
-      text: String(scene?.text || '').trim()
+      text: clip(scene?.text, BIBLE_INPUT_TEXT_CAP)
     })).filter((scene) => scene.sceneId && scene.text),
     scripts: Array.isArray(scripts?.cards)
       ? scripts.cards.map((card) => ({
         id: String(card?.id || '').trim(),
         name: String(card?.name || '').trim(),
         order: Number(card?.order || 0) || 0,
-        text: String(card?.text || '').trim()
+        text: clip(card?.text, BIBLE_INPUT_TEXT_CAP)
       })).filter((card) => card.id && card.text)
       : [],
     candidateWorldHints: {
@@ -7895,16 +8084,36 @@ async function executeStoryWorkflowStep(sessionId, step, userPrompt, stepIndex) 
   if (action === 'story_create_bible') {
     const projectId = resolveStoryProjectId(session, step, userPrompt)
     const timeoutMs = Math.max(10000, Number(step.params?.timeoutMs || 120000))
+    // 草稿模型机制默认关闭（用户 2026-08-25 明确：故事/任务只用 27B，不用 9B，不用云端）；
+    // 仅当步骤参数显式指定 draftModel 时才启用（保留给未来自动化守护监听等场景）
+    const draftModel = String(step.params?.draftModel || '').trim()
     const storyBibleInput = projectId ? buildStoryBibleGenerationInput(projectId) : null
-    const serverResult = projectId && storyBibleInput
-      ? await observeGameStudioOperation(sessionId, step, stepIndex, 'createStoryBible', {
-        endpoint: 'POST /api/projects/:id/ai/story/bible',
-        projectId
-      }, () => gameStudioServerClient.createStoryBible(projectId, {
-        input: storyBibleInput,
-        timeoutMs
-      }))
-      : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/bible', error: projectId ? 'missing_story_bible_input' : 'missing_project_id', message: projectId ? '无法构造 Story Bible 生成输入' : '无法定位要生成 Story Bible 的项目', retryable: false }
+    // LLM↔LLM 内存串行（AUTO-R01 同哲学）：用草稿模型时先卸载配置大模型，完成后回载
+    const bibleBinding = buildHermesBinding()
+    const needsModelSwap = Boolean(draftModel) && draftModel !== bibleBinding.model
+    if (needsModelSwap) {
+      appendReasoningEvent(sessionId, 'model_swap', '模型串行切换', `卸载 ${bibleBinding.model}，bible 起草改用 ${draftModel}（小内存快进，27B 评审兜底）`, { stepId: step.stepId })
+      await unloadProviderModel({ provider: bibleBinding.provider, baseUrl: bibleBinding.baseUrl, model: bibleBinding.model })
+    }
+    let serverResult
+    try {
+      serverResult = projectId && storyBibleInput
+        ? await observeGameStudioOperation(sessionId, step, stepIndex, 'createStoryBible', {
+          endpoint: 'POST /api/projects/:id/ai/story/bible',
+          projectId
+        }, () => gameStudioServerClient.createStoryBible(projectId, {
+          input: storyBibleInput,
+          timeoutMs,
+          ...(draftModel ? { draftModel } : {})
+        }))
+        : { ok: false, status: 0, endpoint: 'POST /api/projects/:id/ai/story/bible', error: projectId ? 'missing_story_bible_input' : 'missing_project_id', message: projectId ? '无法构造 Story Bible 生成输入' : '无法定位要生成 Story Bible 的项目', retryable: false }
+    } finally {
+      if (needsModelSwap) {
+        // 顺序关键：先卸草稿模型再回载大模型——双模型同时驻留会顶穿 prefill 内存闸（实测 23.6GB>24.2GB 被拒）
+        await unloadProviderModel({ provider: bibleBinding.provider, baseUrl: bibleBinding.baseUrl, model: draftModel })
+        await loadProviderModel({ provider: bibleBinding.provider, baseUrl: bibleBinding.baseUrl, model: bibleBinding.model })
+      }
+    }
     const storyBible = serverResult?.data?.result && typeof serverResult.data.result === 'object' ? serverResult.data.result : null
     const currentProjectResult = projectId && serverResult.ok && storyBible
       ? await observeGameStudioOperation(sessionId, step, stepIndex, 'getProjectBeforePersistStoryBible', {
@@ -8769,6 +8978,28 @@ async function stopComfyUi(baseUrl = 'http://127.0.0.1:8188') {
 
 async function openComfyUiInTerminal(comfyRoot) {
   const root = String(comfyRoot || process.env.COMFYUI_ROOT || '/Volumes/ovokit2t/ComfyUI').trim()
+  // 2026-09-08 修复：osascript 的 do script 需要「自动化」隐私授权，授权被拒后 -1743 静默失败
+  // （对话框只弹一次，拒绝后不再弹），且窗口/进程都没有任何迹象。
+  // 改用 LaunchServices 打开 .command 文件：Terminal.app 可见窗口照常出现，不需要 Apple Events 授权。
+  // osascript 保留为兜底（open 失败时仍尝试原路径）。
+  const wrapperPath = path.join(GAMESTUDIO_ROOT, '.run', 'comfyui-start.command')
+  const wrapperContent = `#!/bin/bash\ncd '${root.replace(/'/g, "'\\''")}' && sh ./start.sh\n`
+  try {
+    await fs.promises.writeFile(wrapperPath, wrapperContent, 'utf8')
+    await new Promise((resolve, reject) => {
+      const p = spawn('chmod', ['755', wrapperPath])
+      p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('chmod_exit_' + code))))
+      p.on('error', reject)
+    })
+    const openResult = await runLocalCommand('open', ['-a', 'Terminal', wrapperPath], {
+      cwd: process.cwd(),
+      timeoutMs: 8000
+    })
+    if (openResult.ok) return { ...openResult, mechanism: 'open_command_file', wrapperPath }
+    console.log(`[control] comfyui open_command_file failed, fallback osascript: ${openResult.error || openResult.stderr || 'unknown'}`)
+  } catch (e) {
+    console.log(`[control] comfyui open_command_file exception, fallback osascript: ${e && e.message ? e.message : e}`)
+  }
   const script = `
 tell application "Terminal"
     if not running then launch
@@ -8776,10 +9007,11 @@ tell application "Terminal"
     do script "cd '${root.replace(/'/g, "'\\''")}' && sh ./start.sh"
 end tell
 `
-  return runLocalCommand('osascript', ['-e', script], {
+  const result = await runLocalCommand('osascript', ['-e', script], {
     cwd: process.cwd(),
     timeoutMs: 8000
   })
+  return { ...result, mechanism: 'osascript' }
 }
 
 async function ensureComfyUiRunning(baseUrl = 'http://127.0.0.1:8188', options = {}) {
@@ -8984,7 +9216,9 @@ function updateGameStudioBootstrapArtifacts(sessionId, step, stepIndex, result) 
 }
 
 function buildLocalProductionStudioSettings(params = {}) {
-  const model = String(params.model || 'gpt-oss-20b-MXFP4-Q8').trim()
+  // 2026-09-09 修正：默认模型必须与 AGENTS.md 本地模型硬约束一致（全系统统一 Qwen3.6-27B-4bit，8K 变体），
+  // 此前默认 gpt-oss 会把 scripts/prompt/translation 全部写偏（实测乌鸦喝水 bible 起跑在 gpt-oss 上被发现）。
+  const model = String(params.model || 'Qwen3.6-27B-4bit').trim()
   const localModelBaseUrl = String(params.localModelBaseUrl || 'http://127.0.0.1:18888/v1').trim()
   const comfyuiBaseUrl = String(params.comfyuiBaseUrl || 'http://127.0.0.1:8188').trim()
   const comfyuiModelsRoot = String(params.comfyuiModelsRoot || process.env.COMFYUI_MODELS_ROOT || (process.env.COMFYUI_ROOT ? path.join(process.env.COMFYUI_ROOT, 'models') : '/Volumes/ovokit2t/ComfyUI/models')).trim()
@@ -9032,17 +9266,39 @@ async function executeGameStudioBootstrapStep(sessionId, step, userPrompt, stepI
       endpoint: 'GET /api/health'
     }, () => fetchOk(healthUrl, 3000))
     let startResult = null
-    if (!serverHealth.ok && step.params?.startIfNeeded !== false) {
-      startResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'startProjectDetached', {
-        endpoint: 'bash ./start_project.sh --detached'
-      }, () => runLocalCommand('bash', ['./start_project.sh', '--detached'], { cwd: GAMESTUDIO_ROOT, timeoutMs: 180000 }))
-      serverHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'waitForServerHealth', {
-        endpoint: 'GET /api/health'
-      }, () => waitForHttpOk(healthUrl, { timeoutMs: 60000, intervalMs: 1000 }))
-    }
-    const editorHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'waitForEditor', {
+    // 2026-08-26 修复：原先只在 server 不可达时才拉起 start_project.sh；
+    // editor 单独死亡（系统休眠回收等）而 server 存活时永远不会被拉起——"启动"指令空转报未就绪。
+    let editorHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'probeEditorInitial', {
       endpoint: 'GET editor root'
-    }, () => waitForHttpOk(editorUrl, { timeoutMs: serverHealth.ok ? 5000 : 1000, intervalMs: 1000 }))
+    }, () => fetchOk(editorUrl, 2000))
+    if ((!serverHealth.ok || !editorHealth.ok) && step.params?.startIfNeeded !== false) {
+      // 2026-08-28：改经注册事件 studio.lifecycle.start 执行（apps/server/events/registry.v1.json 单一真相源；
+      // transport.local 由 control 本地拉起，server 未启动时注册表走本地文件回退）
+      startResult = await observeGameStudioOperation(sessionId, step, stepIndex, 'startProjectDetached', {
+        endpoint: 'event studio.lifecycle.start → bash ./start_project.sh --detached'
+      }, async () => {
+        const res = await dispatchGameStudioEvent('studio.lifecycle.start', {}, { caller: 'workflow', confirmed: true, sessionId })
+        return {
+          ok: Boolean(res.ok),
+          exitCode: Number(res.result?.exitCode ?? (res.ok ? 0 : 1)),
+          stdout: '',
+          stderr: String(res.error || ''),
+          error: res.ok ? null : (res.error || 'event_failed'),
+          eventTraceId: res.traceId
+        }
+      })
+      if (!serverHealth.ok) {
+        serverHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'waitForServerHealth', {
+          endpoint: 'GET /api/health'
+        }, () => waitForHttpOk(healthUrl, { timeoutMs: 60000, intervalMs: 1000 }))
+      }
+    }
+    if (!editorHealth.ok) {
+      // vite 冷启动较慢：拉起过项目就给它 90s，没拉起保持原来的短等待语义
+      editorHealth = await observeGameStudioOperation(sessionId, step, stepIndex, 'waitForEditor', {
+        endpoint: 'GET editor root'
+      }, () => waitForHttpOk(editorUrl, { timeoutMs: startResult ? 90000 : (serverHealth.ok ? 5000 : 1000), intervalMs: 1500 }))
+    }
     let comfyUiResult = null
     if (step.params?.comfyuiCheck !== false && serverHealth.ok) {
       const settings = await observeGameStudioOperation(sessionId, step, stepIndex, 'getStudioSettingsForComfyUi', {
@@ -10049,9 +10305,10 @@ async function executeReasoningStep(sessionId, step, userPrompt, options = {}) {
       throw new Error(`vision_analyze_file_not_found: ${resolvedImagePath}`)
     }
     const config = getPersistedHermesControlConfig()
-    const visionCapableModels = ['qwen', 'gpt-oss', 'gemma-3', 'claude', 'gpt-4o', 'gemini']
     const modelLower = String(config.model || '').toLowerCase()
-    const isVisionCapable = visionCapableModels.some((m) => modelLower.includes(m))
+    // 2026-09-08 修正：视觉能力判定不能只看品牌名——Qwen3.6-27B 是纯文本模型（名字含 qwen 但无视觉编码器，
+    // 实测经 OMLX 发图会在模型层失败）。只认真正的多模态标记：VL 后缀、gemma-3/4 it 系、gpt-4o、claude、gemini、pixtral。
+    const isVisionCapable = /-vl\b|vl[-_]|gemma-[34]|gpt-4o|claude|gemini|pixtral|llava/i.test(modelLower)
     if (!isVisionCapable) {
       const result = {
         imagePath: resolvedImagePath,
@@ -10930,7 +11187,7 @@ export async function prepareReasoningSessionPlan(sessionId, binding, history, o
 
   markReasoningSessionActive(sessionId)
 
-  const planResult = await runManagedReasoningTask(sessionId, 'plan', binding, ({ signal }) => {
+  const planResult = await withInlineLlmLease(`plan:${sessionId}`, () => runManagedReasoningTask(sessionId, 'plan', binding, ({ signal }) => {
     return generateReasoningPlan(session.userPrompt, history, binding, {
       sessionId,
       signal,
@@ -10938,7 +11195,7 @@ export async function prepareReasoningSessionPlan(sessionId, binding, history, o
       contextSelection: session.submissionContext || {},
       priorArtifacts
     })
-  })
+  }))
   const plan = planResult.plan
   const loadedMemoryCount = planResult.recentContextArtifact.loadedMemorySources.length
   const replayedMessageCount = planResult.recentContextArtifact.replayedMessageCount
@@ -10978,6 +11235,15 @@ export async function prepareReasoningSessionPlan(sessionId, binding, history, o
       recentContext: planResult.recentContextArtifact
     }
   })
+
+  // 规划 JSON 解析失败被兜底替换时必须显式留痕（2026-09-06）：
+  // 静默替换会让模型原本规划的查证步骤（如 read_file_content）无声丢失，
+  // 最终回答退化为凭记忆作答，事件流里必须能看到这次替换发生。
+  if (planResult.parseFallbackReason) {
+    appendReasoningEvent(sessionId, 'plan_parse_fallback', '模型规划解析失败，已替换为兜底计划', `模型输出的 plan JSON 无法解析（${planResult.parseFallbackReason}），原规划的查证步骤可能已丢失；原始输出见 latestPlanReviewEvidence.rawResponsePreview。`, {
+      data: { reason: planResult.parseFallbackReason, source: planResult.source }
+    })
+  }
 
   appendHermesLog([
     `[REASONING][PLAN] sessionId=${sessionId} source=${planResult.source} steps=${Array.isArray(plan.steps) ? plan.steps.length : 0}`,
@@ -11164,6 +11430,15 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
         }
       )
       if (stepOutcome.kind === 'timeout') {
+        // bestEffort 辅助步骤（如记忆同步）：超时只留证据并继续，不得拖垮整个 session（2026-08-24 修复）
+        if (step?.bestEffort) {
+          appendReasoningEvent(sessionId, 'step_skipped_best_effort', step.title || step.stepId, `辅助步骤超时已跳过，不影响回答与 session 完成（上限 ${stepOutcome.timeoutMs}ms）。`, {
+            stepId: step.stepId,
+            data: { reason: 'timeout', timeoutMs: stepOutcome.timeoutMs, scope: stepOutcome.scope }
+          })
+          appendHermesLog(`[REASONING][BEST_EFFORT][SKIP] sessionId=${sessionId} stepId=${step.stepId} reason=timeout timeoutMs=${stepOutcome.timeoutMs}`)
+          continue
+        }
         const scopeLabel = stepOutcome.scope === 'task' ? 'task' : 'step'
         markReasoningSessionTimeout(
           sessionId,
@@ -11186,6 +11461,16 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
         return
       }
       if (stepOutcome.kind === 'rejected') {
+        // bestEffort 辅助步骤（如记忆同步）：失败只留证据并继续，不得拖垮整个 session（2026-08-24 修复）
+        if (step?.bestEffort) {
+          const bestEffortDetail = stepOutcome.error instanceof Error ? stepOutcome.error.message : String(stepOutcome.error)
+          appendReasoningEvent(sessionId, 'step_skipped_best_effort', step.title || step.stepId, `辅助步骤失败已跳过，不影响回答与 session 完成：${bestEffortDetail}`, {
+            stepId: step.stepId,
+            data: { reason: bestEffortDetail }
+          })
+          appendHermesLog(`[REASONING][BEST_EFFORT][SKIP] sessionId=${sessionId} stepId=${step.stepId} reason=${bestEffortDetail}`)
+          continue
+        }
         const recovered = await recoverReasoningStepFailure(sessionId, binding, history, step, i, stepOutcome.error)
         if (recovered) return readReasoningSession(sessionId)
         throw stepOutcome.error
@@ -11251,7 +11536,7 @@ async function runAllReasoningStepsFrom(sessionId, binding, history, startIndex 
     }
 
     // 全部步骤执行完毕 -> 进 quality gate（内部若重规划会递归调用 prepareReasoningSessionPlan -> runAllReasoningStepsFrom）
-    await finalizeReasoningSessionWithQualityGate(sessionId, binding, history)
+    await withInlineLlmLease(`quality_gate:${sessionId}`, () => finalizeReasoningSessionWithQualityGate(sessionId, binding, history))
   } catch (error) {
     markReasoningSessionFailed(sessionId, error)
   } finally {
@@ -11492,28 +11777,223 @@ function writeHermesChatHistory(history) {
   scheduleMemoryLifecycleMaintenance('chat_history_updated')
 }
 
+// ============ 会话历史管理（2026-08-26，文件存储——与 ai/chat/*.json 同哲学） ============
+// 选型：文件而非数据库——会话量级小（数十个）、可读可查可备份、与项目"文件即真相源"一致；
+// 深度检索已有 Hermes 历史会话 FTS5（session-search）承担，不重复建库。
+// 每个会话一个文件 ai/chat/sessions/<sessionId>.json：{sessionId,title,createdAt,updatedAt,entries}
+const HERMES_CHAT_SESSIONS_DIR = path.join(GAMESTUDIO_ROOT, 'ai', 'chat', 'sessions')
+
+// 当前工作区内容来源的会话文件 id（打开历史会话时设置）——用于归档时按 ID 核验去重：
+// 同一份会话不重复建档；在打开的会话上续聊（条目变多）则更新原会话文件而非新建
+let activeChatSessionFileId = ''
+
+function rotateHermesChatSessionId() {
+  currentHermesChatSessionId = createOpaqueId('chat')
+  return currentHermesChatSessionId
+}
+
+function normalizeChatSessionIdParam(sessionId) {
+  const id = String(sessionId || '').trim()
+  return /^[A-Za-z0-9_-]{6,80}$/.test(id) ? id : null
+}
+
+function getHermesChatSessionFilePath(sessionId) {
+  const id = normalizeChatSessionIdParam(sessionId)
+  if (!id) return null
+  return path.join(HERMES_CHAT_SESSIONS_DIR, `${id}.json`)
+}
+
+function buildChatSessionTitle(entries) {
+  const firstUser = (Array.isArray(entries) ? entries : []).find((entry) => String(entry?.role || '') === 'user')
+  const text = String(firstUser?.content || '').replace(/\s+/g, ' ').trim()
+  return text ? text.slice(0, 30) : '未命名会话'
+}
+
+function readHermesChatSessionFile(filePath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.entries)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function listHermesChatSessions() {
+  try {
+    if (!fs.existsSync(HERMES_CHAT_SESSIONS_DIR)) return []
+    return fs.readdirSync(HERMES_CHAT_SESSIONS_DIR)
+      .filter((name) => /^[A-Za-z0-9_-]+\.json$/.test(name))
+      .map((name) => {
+        const record = readHermesChatSessionFile(path.join(HERMES_CHAT_SESSIONS_DIR, name))
+        if (!record) return null
+        return {
+          sessionId: String(record.sessionId || name.replace(/\.json$/, '')),
+          title: String(record.title || '未命名会话'),
+          createdAt: record.createdAt || null,
+          updatedAt: record.updatedAt || null,
+          entryCount: record.entries.length,
+          preview: String(record.entries[record.entries.length - 1]?.content || '').replace(/\s+/g, ' ').slice(0, 60)
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+  } catch {
+    return []
+  }
+}
+
+// 归档当前工作会话：把当前（含跨天回填）历史写成一个会话文件，清空工作文件，轮换会话 id。
+// ID 核验去重（2026-08-26 用户指令）：工作区内容来自某个已归档会话时——
+// 未续聊（内容一致）不重复建档；已续聊（同前缀、条目变多）更新原会话文件。
+function archiveCurrentHermesChatSession(title) {
+  const entries = readStoredHermesChatHistory()
+  if (!entries.length) return null
+
+  if (activeChatSessionFileId) {
+    const existingPath = getHermesChatSessionFilePath(activeChatSessionFileId)
+    const existing = existingPath && fs.existsSync(existingPath) ? readHermesChatSessionFile(existingPath) : null
+    if (existing) {
+      const storedCount = existing.entries.length
+      const samePrefix = existing.entries.every((stored, index) => {
+        const working = entries[index]
+        return working
+          && String(working.role || '') === String(stored.role || '')
+          && String(working.content || '') === String(stored.content || '')
+      })
+      if (samePrefix && entries.length === storedCount) {
+        // 内容未变化：不重复建档，仅清空工作区
+        writeHermesChatHistory([])
+        rotateHermesChatSessionId()
+        appendHermesLog(`[CHAT][SESSION] archive skipped (deduplicated) session=${existing.sessionId}`)
+        activeChatSessionFileId = ''
+        return { sessionId: existing.sessionId, title: existing.title, entryCount: storedCount, createdAt: existing.createdAt, updatedAt: existing.updatedAt, deduplicated: true }
+      }
+      if (samePrefix && entries.length > storedCount) {
+        // 续聊了：更新原会话文件（同 id，不新建）
+        const now = new Date().toISOString()
+        const updated = { ...existing, updatedAt: now, entries }
+        fs.writeFileSync(existingPath, JSON.stringify(updated, null, 2), 'utf-8')
+        writeHermesChatHistory([])
+        rotateHermesChatSessionId()
+        appendHermesLog(`[CHAT][SESSION] updated session=${existing.sessionId} entries ${storedCount}→${entries.length}`)
+        activeChatSessionFileId = ''
+        return { sessionId: existing.sessionId, title: existing.title, entryCount: entries.length, createdAt: existing.createdAt, updatedAt: now, updated: true }
+      }
+      // 前缀不一致（工作区已换成别的内容）→ 落到下方按新会话归档
+    }
+  }
+
+  const sessionId = createOpaqueId('chat_session')
+  const now = new Date().toISOString()
+  fs.mkdirSync(HERMES_CHAT_SESSIONS_DIR, { recursive: true })
+  const record = {
+    sessionId,
+    title: String(title || '').trim() || buildChatSessionTitle(entries),
+    createdAt: entries[0]?.createdAt || now,
+    updatedAt: now,
+    entries
+  }
+  fs.writeFileSync(path.join(HERMES_CHAT_SESSIONS_DIR, `${sessionId}.json`), JSON.stringify(record, null, 2), 'utf-8')
+  writeHermesChatHistory([])
+  rotateHermesChatSessionId()
+  activeChatSessionFileId = ''
+  appendHermesLog(`[CHAT][SESSION] archived session=${sessionId} entries=${entries.length} title=${record.title}`)
+  return { sessionId, title: record.title, entryCount: entries.length, createdAt: record.createdAt, updatedAt: now }
+}
+
+// 打开历史会话继续：当前工作文件非空时先自动归档（防丢），再把目标会话内容写入工作文件
+function openHermesChatSession(sessionId) {
+  const filePath = getHermesChatSessionFilePath(sessionId)
+  if (!filePath || !fs.existsSync(filePath)) return null
+  const record = readHermesChatSessionFile(filePath)
+  if (!record) return null
+  const currentEntries = readStoredHermesChatHistory()
+  let autoArchived = null
+  if (currentEntries.length > 0) {
+    autoArchived = archiveCurrentHermesChatSession()
+  }
+  const stamped = record.entries.map((entry) => ({
+    ...entry,
+    chatSessionId: currentHermesChatSessionId
+  }))
+  writeHermesChatHistory(stamped)
+  // 标记工作区来源：后续"新建会话"归档时按此 ID 核验去重（不续聊不重复建档，续聊了更新原文件）
+  activeChatSessionFileId = record.sessionId
+  appendHermesLog(`[CHAT][SESSION] opened session=${sessionId} entries=${stamped.length} autoArchived=${autoArchived?.sessionId || 'none'}`)
+  return {
+    sessionId: record.sessionId,
+    title: record.title,
+    entries: stamped.length,
+    autoArchived
+  }
+}
+
+function deleteHermesChatSession(sessionId) {
+  const filePath = getHermesChatSessionFilePath(sessionId)
+  if (!filePath || !fs.existsSync(filePath)) return false
+  fs.unlinkSync(filePath)
+  // 删掉的若是当前工作区来源会话，清掉来源标记：后续归档不得再按已删文件做去重核验
+  if (activeChatSessionFileId === sessionId) activeChatSessionFileId = ''
+  appendHermesLog(`[CHAT][SESSION] deleted session=${sessionId}`)
+  return true
+}
+
 function readStoredHermesChatHistory() {
   const chatFile = getHermesChatFilePath()
-  if (!fs.existsSync(chatFile)) return []
-  const raw = fs.readFileSync(chatFile, 'utf-8')
-  if (!String(raw || '').trim()) {
-    writeHermesChatHistory([])
+  const readEntriesFrom = (file) => {
+    try {
+      if (!fs.existsSync(file)) return null
+      const raw = fs.readFileSync(file, 'utf-8')
+      if (!String(raw || '').trim()) return []
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return null
+    }
+  }
+
+  // 跨天延续（2026-08-26）：聊天文件按天落盘（ai/chat/YYYY-MM-DD.json），
+  // 过零点后今天文件不存在时回填最近几天，聊天不"失忆"；
+  // 但文件存在且为空 = 用户显式归档/清空过，必须尊重为空（不回填，否则"新建会话"失效）。
+  const todayEntries = readEntriesFrom(chatFile)
+  if (todayEntries !== null) {
+    return todayEntries
+  }
+
+  // 今日文件不存在（新的一天还没开始）：回填最近几天历史，聊天不"失忆"
+  if (!fs.existsSync(chatFile)) {
+    const chatDir = path.dirname(chatFile)
+    const todayName = path.basename(chatFile)
+    let dayFiles = []
+    try {
+      dayFiles = fs.readdirSync(chatDir)
+        .filter((name) => /^\d{4}-\d{2}-\d{2}\.json$/.test(name) && name !== todayName)
+        .sort()
+        .reverse()
+    } catch {
+      dayFiles = []
+    }
+    const merged = []
+    for (const name of dayFiles.slice(0, 3)) {
+      const prevEntries = readEntriesFrom(path.join(chatDir, name))
+      if (prevEntries && prevEntries.length > 0) merged.unshift(...prevEntries)
+      if (merged.length >= 200) break
+    }
+    if (merged.length > 0) return merged.slice(-200)
     return []
   }
 
+  // 今日文件损坏：按原逻辑备份并重建
   try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
+    const raw = fs.readFileSync(chatFile, 'utf-8')
+    const backupFile = `${chatFile}.corrupt-${Date.now()}`
+    fs.writeFileSync(backupFile, raw, 'utf-8')
+    writeHermesChatHistory([])
   } catch {
-    try {
-      const backupFile = `${chatFile}.corrupt-${Date.now()}`
-      fs.writeFileSync(backupFile, raw, 'utf-8')
-      writeHermesChatHistory([])
-    } catch {
-      // Ignore recovery failures and fall through to an empty history.
-    }
-    return []
+    // Ignore recovery failures and fall through to an empty history.
   }
+  return []
 }
 
 function isDiagnosticUserPrompt(content) {
@@ -11612,6 +12092,131 @@ function createHermesChatEntry(role, content, extra = {}) {
     content,
     createdAt: new Date().toISOString(),
     ...extra,
+  }
+}
+
+// 对话水位（ChatGPT 式长聊管理的度量基础）：估计全量落盘对话占上下文预算的比例。
+// 注入本身已有界（回放 ≤6 条/咨询 ≤4 对），水位用于提示用户"该压缩了"，不是硬闸。
+function buildHermesChatWaterLevel(history) {
+  const entries = Array.isArray(history) ? history : []
+  let chars = 0
+  let pairs = 0
+  let pendingUser = false
+  for (const entry of entries) {
+    const role = String(entry?.role || '').trim().toLowerCase()
+    chars += String(entry?.content || '').length
+    if (role === 'user') {
+      pendingUser = true
+    } else if (isAssistantHistoryRole(role) && pendingUser) {
+      pairs += 1
+      pendingUser = false
+    }
+  }
+  const estimatedTokens = Math.ceil(chars / 2)
+  const budgetTokens = Math.max(1, Number(getPersistedHermesControlConfig()?.shortTerm?.maxContextTokens) || 8192)
+  const ratio = estimatedTokens / budgetTokens
+  return {
+    entries: entries.length,
+    pairs,
+    estimatedTokens,
+    budgetTokens,
+    ratio: Math.round(ratio * 100) / 100,
+    level: ratio >= 0.85 ? 'high' : ratio >= 0.6 ? 'warn' : 'ok'
+  }
+}
+
+// 用户确认后的对话压缩/清空（2026-08-24 应需实现，ChatGPT 式机制）：
+// compress —— 最早若干轮压成一对有界摘要（细节丢弃、要点保留），最近 N 轮原文保留；
+// clear   —— 全量归档到 ai/chat/archive/ 后清空，开启全新对话。全程确定性，不调模型。
+function compactHermesChatHistory(options = {}) {
+  const action = String(options.action || 'compress')
+  const keepRecentPairs = Math.max(1, Number(options.keepRecentPairs) || 4)
+  const stored = readStoredHermesChatHistory()
+
+  if (action === 'clear') {
+    const chatFile = getHermesChatFilePath()
+    let archivedFile = null
+    if (stored.length > 0 && fs.existsSync(chatFile)) {
+      const archiveDir = path.join(GAMESTUDIO_ROOT, 'ai', 'chat', 'archive')
+      fs.mkdirSync(archiveDir, { recursive: true })
+      archivedFile = path.join(archiveDir, `${path.basename(chatFile, '.json')}-${Date.now()}.json`)
+      fs.copyFileSync(chatFile, archivedFile)
+    }
+    writeHermesChatHistory([])
+    appendHermesLog(`[CHAT][COMPACT] cleared entries=${stored.length} archived=${archivedFile || 'none'}`)
+    return {
+      action,
+      removedEntries: stored.length,
+      archivedFile,
+      history: [],
+      waterLevel: buildHermesChatWaterLevel([])
+    }
+  }
+
+  const pairs = []
+  let pending = null
+  for (const entry of stored) {
+    const role = String(entry?.role || '').trim().toLowerCase()
+    const content = String(entry?.content || '')
+    if (!content.trim()) continue
+    if (role === 'user') {
+      pending = entry
+      continue
+    }
+    if (isAssistantHistoryRole(role) && pending) {
+      pairs.push({ user: pending, hermes: entry })
+      pending = null
+    }
+  }
+  if (pairs.length <= keepRecentPairs) {
+    return {
+      action,
+      compressedPairs: 0,
+      keptPairs: pairs.length,
+      note: 'not_enough_pairs_to_compress',
+      history: stored,
+      waterLevel: buildHermesChatWaterLevel(stored)
+    }
+  }
+
+  const oldPairs = pairs.slice(0, pairs.length - keepRecentPairs)
+  const keptPairs = pairs.slice(-keepRecentPairs)
+  const digestLines = []
+  for (const pair of oldPairs) {
+    const userLine = String(pair.user.content || '').replace(/\s+/g, ' ').trim().slice(0, 90)
+    const hermesLine = String(pair.hermes.content || '').replace(/\s+/g, ' ').trim().slice(0, 90)
+    if (userLine) digestLines.push(`用户: ${userLine}`)
+    if (hermesLine) digestLines.push(`助手: ${hermesLine}`)
+  }
+  while (digestLines.length > 12) digestLines.shift()
+  let digestText = digestLines.join('\n')
+  if (digestText.length > 1200) {
+    digestText = digestText.slice(digestText.length - 1200)
+    const firstNewline = digestText.indexOf('\n')
+    if (firstNewline > 0) digestText = digestText.slice(firstNewline + 1)
+  }
+
+  const digestUser = createHermesChatEntry(
+    'user',
+    `[压缩摘要·系统生成] 以下是更早 ${oldPairs.length} 轮对话压缩后的要点，原文细节已按你的确认清理：\n${digestText}`,
+    { chatSessionId: currentHermesChatSessionId, compacted: true }
+  )
+  const digestHermes = createHermesChatEntry(
+    'hermes',
+    `已知悉：以上摘要已保留为对话上下文，更早 ${oldPairs.length} 轮原文已清理。当前话题方向不变，可继续提问。`,
+    { chatSessionId: currentHermesChatSessionId, compacted: true }
+  )
+  const nextHistory = [digestUser, digestHermes, ...keptPairs.flatMap((pair) => [pair.user, pair.hermes])]
+  writeHermesChatHistory(nextHistory)
+  appendHermesLog(`[CHAT][COMPACT] compressed ${oldPairs.length} pairs into digest chars=${digestText.length} keptPairs=${keptPairs.length} removedEntries=${stored.length - nextHistory.length}`)
+  return {
+    action,
+    compressedPairs: oldPairs.length,
+    digestChars: digestText.length,
+    keptPairs: keptPairs.length,
+    removedEntries: stored.length - nextHistory.length,
+    history: nextHistory,
+    waterLevel: buildHermesChatWaterLevel(nextHistory)
   }
 }
 
@@ -11735,8 +12340,9 @@ const PROJECT_MEMORY_SOURCE_CHAR_LIMITS = {
 
 // 记忆正文注入（content-injection）有界上限：每文件与总量均可 env 覆盖，防止提示词尺寸失控。
 // 0 = 该来源不注入正文（仅以路径引用列出）。
-const DEFAULT_MEMORY_OVERLAY_FILE_CHAR_LIMIT = 3000
-const DEFAULT_MEMORY_OVERLAY_TOTAL_CHAR_LIMIT = 12000
+// 8K 测试期配额（docs/运行时能力测试基准.md）：记忆注入总量压到 ~2250 tokens 内
+const DEFAULT_MEMORY_OVERLAY_FILE_CHAR_LIMIT = 1500
+const DEFAULT_MEMORY_OVERLAY_TOTAL_CHAR_LIMIT = 4500
 
 function resolveMemoryOverlayCharLimit(rawValue, fallback) {
   if (rawValue === undefined || rawValue === null || rawValue === '') return fallback
@@ -12106,17 +12712,39 @@ function compressChatMessages(messages, contextLength) {
   let tokens = estimateTokensFromMessages(messages)
   if (tokens <= threshold) return messages
 
-  // Keep system messages, compress history by removing oldest user-assistant pairs
   const systemMessages = messages.filter((m) => m.role === 'system')
   const historyMessages = messages.filter((m) => m.role !== 'system')
-  const lastUserIndex = historyMessages.map((m) => m.role).lastIndexOf('user')
+
+  // 滚动式压缩（8K 基准）：最旧消息不直接丢弃，压成有界摘要随系统消息驻留，
+  // 模型仍能感知"之前聊过什么"；摘要本身超限才丢弃更旧的摘要行。确定性处理，不产生额外模型调用。
+  const MAX_DIGEST_LINES = 12
+  const MAX_DIGEST_CHARS = 1200
+  const digestLines = []
 
   while (tokens > threshold && historyMessages.length > 2) {
     // Remove oldest user-assistant pair (or single message if no pair)
     const removed = historyMessages.shift()
-    if (removed) tokens -= Math.ceil(String(removed.content || '').length / 2)
+    const removedText = typeof removed?.content === 'string' ? removed.content : ''
+    if (removed) tokens -= Math.ceil(removedText.length / 2)
+    const digest = removedText.replace(/\s+/g, ' ').trim().slice(0, 90)
+    if (digest) digestLines.push(`${removed.role === 'user' ? '用户' : '助手'}: ${digest}`)
     // Ensure we don't remove the last user message (current prompt)
     if (historyMessages.length <= 1) break
+  }
+
+  if (digestLines.length > 0) {
+    while (digestLines.length > MAX_DIGEST_LINES) digestLines.shift()
+    let digestText = digestLines.join('\n')
+    if (digestText.length > MAX_DIGEST_CHARS) {
+      digestText = digestText.slice(digestText.length - MAX_DIGEST_CHARS)
+      const firstNewline = digestText.indexOf('\n')
+      if (firstNewline > 0) digestText = digestText.slice(firstNewline + 1)
+    }
+    appendHermesLog(`[CONTEXT] Rolling-compressed ${digestLines.length} messages into bounded digest (${digestText.length} chars)`)
+    systemMessages.push({
+      role: 'system',
+      content: `[滚动压缩摘要] 本轮之前对话的压缩摘要（更旧内容已丢弃），仅供理解上下文，不要当作当前指令：\n${digestText}`
+    })
   }
 
   return [...systemMessages, ...historyMessages]
@@ -12282,12 +12910,12 @@ async function generateContextDraft(userPrompt, binding, options = {}) {
     }
   }
 
-  const data = await requestHermesChatCompletion({
+  const data = await withInlineLlmLease(`context_draft:${options.sessionId || '-'}`, () => requestHermesChatCompletion({
     sessionId: options.sessionId || null,
     phase: 'context_draft',
     messages: draftContext.messages,
     maxTokens: 320
-  })
+  }))
   const content = data.choices?.[0]?.message?.content || ''
   return {
     summary: content,
@@ -12488,7 +13116,7 @@ function getResourceScheduler() {
       }),
       resolveConfiguredModel: () => {
         const binding = buildHermesBinding()
-        return { model: binding.model, provider: binding.provider, baseUrl: binding.baseUrl }
+        return { model: binding.model, provider: binding.provider, baseUrl: binding.baseUrl, visionModel: binding.visionModel || null }
       },
       logger: appendHermesLog
     })
@@ -12506,6 +13134,54 @@ export function startResourceScheduler() {
 
 export function stopResourceScheduler() {
   if (resourceScheduler) resourceScheduler.stop()
+}
+
+// 资源租约（跨进程）：apps/server 等外部进程经 HTTP 申请/释放，调度器仍是唯一仲裁者。
+// leaseId 即 holderKey（全局唯一），llm 为共享读卡、gpu/vision 为独占写卡。
+// 客户端断连（request abort）即视为放弃排队/等待；持卡进程崩溃的泄漏由租约 TTL 清扫兜底。
+const resourceLeases = new Map() // leaseId -> { kind, holderKey, acquiredAtMs }
+const RESOURCE_LEASE_TTL_MS = 45 * 60 * 1000
+
+function sweepExpiredResourceLeases() {
+  const nowMs = Date.now()
+  for (const [leaseId, lease] of resourceLeases) {
+    if (nowMs - lease.acquiredAtMs < RESOURCE_LEASE_TTL_MS) continue
+    resourceLeases.delete(leaseId)
+    try {
+      getResourceScheduler().release(lease.kind, lease.holderKey)
+      appendHermesLog(`[RESOURCE][LEASE][EXPIRE] lease=${leaseId} kind=${lease.kind}`)
+    } catch (error) {
+      appendHermesLog(`[RESOURCE][LEASE][EXPIRE][ERROR] lease=${leaseId} detail=${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+}
+
+async function acquireResourceLease({ kind, holder, signal } = {}) {
+  if (!isResourceSchedulerEnabled()) return { ok: false, error: 'resource_scheduler_disabled' }
+  const k = String(kind || '').trim()
+  if (!Object.values(RESOURCE_KIND).includes(k)) return { ok: false, error: 'invalid_kind' }
+  sweepExpiredResourceLeases()
+  const leaseId = `lease_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+  const holderKey = `${leaseId}:${String(holder || 'external').slice(0, 120)}`
+  const admission = await getResourceScheduler().acquire(k, holderKey, {
+    shouldAbort: () => (signal?.aborted ? { aborted: true, reason: 'client_aborted' } : { aborted: false })
+  })
+  if (!admission?.admitted) return { ok: false, error: `lease_not_admitted:${admission?.reason || 'aborted'}` }
+  resourceLeases.set(leaseId, { kind: k, holderKey, acquiredAtMs: Date.now() })
+  return { ok: true, leaseId, kind: k }
+}
+
+function releaseResourceLease(leaseId) {
+  const id = String(leaseId || '').trim()
+  const lease = resourceLeases.get(id)
+  if (!lease) return { ok: false, error: 'lease_not_found' }
+  resourceLeases.delete(id)
+  try {
+    getResourceScheduler().release(lease.kind, lease.holderKey)
+  } catch (error) {
+    appendHermesLog(`[RESOURCE][LEASE][RELEASE][ERROR] lease=${id} detail=${error instanceof Error ? error.message : String(error)}`)
+  }
+  return { ok: true }
 }
 
 // 资源状态只读视图（/api/control/resources/state）：含实时 probe，失败回落 reconcile 缓存
@@ -12533,9 +13209,9 @@ const resourceClaimGateEventAt = new Map()
 function evaluateResourceClaimGate(item) {
   if (!isResourceSchedulerEnabled()) return { ok: true }
   const snapshot = getResourceScheduler().getSnapshot()
-  // 出图占用 = gpu 持有中 / gpu 申请排队中 / 槽位仍在 gpu（含 settle 与回载窗口，模型尚未在线）
-  const gpuBusy = Boolean(snapshot.gpuHolder) || snapshot.gpuQueueLength > 0 || snapshot.state === 'gpu'
-  if (!gpuBusy) return { ok: true }
+  // 独占占用 = gpu/vision 持有中 / 独占申请排队中 / 槽位仍在 gpu/vision（含 settle 与回载窗口，模型尚未在线）
+  const exclusiveBusy = Boolean(snapshot.gpuHolder) || Boolean(snapshot.visionHolder) || (snapshot.exclusiveQueueLength || 0) > 0 || snapshot.state === 'gpu' || snapshot.state === 'vision'
+  if (!exclusiveBusy) return { ok: true }
   const kind = resolveQueueItemResourceKind(item)
   if (kind !== RESOURCE_KIND.LLM) return { ok: true } // gpu 类领取不阻断：交换在 step 边界发生
   const nowMs = Date.now()
@@ -12551,8 +13227,19 @@ function evaluateResourceClaimGate(item) {
 
 // step 边界准入：返回 { outcome: 'entered', kind, holder } 或 { outcome: 'cancelled' | 'task_timeout', reason }。
 // 交换失败抛 resource_swap_*（显式），由调用方按 step 失败语义收敛。
+// 2026-09-12 起 story_* 委派类 step 不在边界持卡：它们的实际模型/出图调用发生在 GameStudio
+// Server 进程内，由 apps/server 的租约客户端在调用点就近申请（choke point 语义更准、粒度更细）。
+// 边界持卡会导致死锁（control 持 llm/独占卡 -> apps/server 申请独占卡等 llm 收尾 -> 互相等待）。
+// 例外：story_review_blueprint_agent 的模型调用发生在 control 进程内（Hermes 侧评审），仍需边界 llm 卡。
+function isControlLocalModelStep(action) {
+  const a = String(action || '').trim()
+  if (a === 'story_review_blueprint_agent') return true
+  return !a.startsWith('story_')
+}
+
 async function admitReasoningStepResource({ sessionId, step, taskDeadlineAt }) {
   if (!isResourceSchedulerEnabled()) return { outcome: 'entered' }
+  if (!isControlLocalModelStep(step?.action)) return { outcome: 'entered' }
   const kind = resolveActionResourceKind(step?.action)
   const holder = `${sessionId}:${step?.stepId || 'step'}`
   let waitEventSent = false
@@ -12586,6 +13273,24 @@ function releaseReasoningStepResource(admission) {
     getResourceScheduler().release(admission.kind, admission.holder)
   } catch (error) {
     appendHermesLog(`[RESOURCE][RELEASE][ERROR] detail=${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+// control 进程内非 step 边界的本地模型调用（plan 阶段/质量门/上下文草稿/咨询流等）统一经此
+// 持有 llm 租约：与出图/视觉评审独占交换互斥，避免 32G 内存双模型撞护栏（2026-09-12 统一互斥）
+async function withInlineLlmLease(holder, fn) {
+  if (!isResourceSchedulerEnabled()) return fn()
+  const holderKey = `inline:${String(holder || 'misc')}`
+  const admission = await getResourceScheduler().acquire(RESOURCE_KIND.LLM, holderKey, {})
+  if (!admission?.admitted) throw new Error(`resource_lease_not_admitted:${admission?.reason || 'aborted'}`)
+  try {
+    return await fn()
+  } finally {
+    try {
+      getResourceScheduler().release(RESOURCE_KIND.LLM, holderKey)
+    } catch (error) {
+      appendHermesLog(`[RESOURCE][RELEASE][ERROR] detail=${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
 
@@ -12913,7 +13618,7 @@ export function cleanupOrphanedReasoningSessions() {
       appendEvent: appendReasoningEvent
     })
     if (queueSummary.scanned > 0 || queueSummary.errors.length > 0) {
-      console.log(`[control-server] [startup] queue recovery: scanned=${queueSummary.scanned} keptQueued=${queueSummary.keptQueued} requeued=${queueSummary.requeued} mirroredTerminal=${queueSummary.mirroredTerminal} waitingReview=${queueSummary.releasedWaitingReview} blocked=${queueSummary.blocked}`)
+      console.log(`[control-server] [startup] queue recovery: scanned=${queueSummary.scanned} keptQueued=${queueSummary.keptQueued} requeued=${queueSummary.requeued} mirroredTerminal=${queueSummary.mirroredTerminal} waitingReview=${queueSummary.releasedWaitingReview} expiredWaitingReview=${queueSummary.expiredWaitingReview} blocked=${queueSummary.blocked}`)
     }
     for (const item of queueSummary.errors) {
       console.error(`[control-server] [startup] queue recovery error: ${item.sessionId || item.file || '-'} detail=${item.error}`)

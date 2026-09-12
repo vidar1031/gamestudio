@@ -107,7 +107,7 @@ function buildNodeSummary(node) {
   return [title, main].filter(Boolean).join('：').slice(0, 500)
 }
 
-function matchSceneRef(sceneRefsMap, node, index) {
+export function matchSceneRef(sceneRefsMap, node, index) {
   const candidates = buildSceneCandidates(node, index)
   for (const candidate of candidates) {
     const hit = sceneRefsMap.get(normalizeLooseKey(candidate))
@@ -143,7 +143,7 @@ function inferCharacterSceneIdsFromPlacements(nodes, projectCharacterId) {
   return uniqStrings(out, 80)
 }
 
-function normalizeSceneRefs(storyBible) {
+export function normalizeSceneRefs(storyBible) {
   const sceneRefsIn = asObj(storyBible && storyBible.sceneRefs)
   const out = new Map()
   for (const [key, raw] of Object.entries(sceneRefsIn)) {
@@ -160,7 +160,7 @@ function normalizeSceneRefs(storyBible) {
   return out
 }
 
-function buildEntityIdResolver(items) {
+export function buildEntityIdResolver(items) {
   const lookup = new Map()
   for (const raw of asList(items)) {
     const item = asObj(raw)
@@ -726,7 +726,8 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
     baseParts.push(`style lock: ${asStr(style).trim() || 'picture_book'}`)
   } else if (category === 'prop') {
     baseParts.push(
-      'reference render style: neutral isolated design-sheet illustration',
+      // 2026-08-29 统一画风：卡通童话绘本（用户指令：杜绝写实/卡通混杂）
+      'reference render style: cartoon fairy tale picture book illustration, flat 2D cartoon, bold clean outlines, cel shading, warm soft colors',
       'object-lock workflow, not a story scene',
       'not a character illustration',
       'not a portrait'
@@ -737,9 +738,12 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
     : category === 'prop'
       ? cleanupPropReferenceAnchorText(safeAsset.anchorPrompt)
       : asStr(safeAsset.anchorPrompt).trim()
-  const protectedPropPrompt = useAssetPrompt || hintText || cleanedAnchorPrompt
+  // 2026-08-28 修复（P0）：保护道具原先"hint 压过 anchor 且只取其一"，主体直接丢失——
+  // 参考图拼装词只剩 single slender prop reference 这类通用约束而没有事物本身，道具图全崩。
+  // 主体必须始终在场：第 4 步 AI 英文稿优先，其次锚点描述；hint 降级为约束补充
   if (protectedPropPromptOnly) {
-    baseParts.push(protectedPropPrompt)
+    baseParts.push(useAssetPrompt || cleanedAnchorPrompt || hintText)
+    baseParts.push(hintText)
   } else {
     baseParts.push(cleanedAnchorPrompt)
     baseParts.push(hintText)
@@ -747,7 +751,8 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
   }
   if (lockProfile === 'character_core') {
     baseParts.push(
-      'picture book single adult character key art',
+      // 2026-08-29 统一画风：卡通童话绘本（用户指令：杜绝写实/卡通混杂）
+      'cartoon fairy tale picture book single character key art, flat 2D cartoon illustration, bold clean outlines, cel shading',
       'one adult character only',
       'single full-body front view',
       'one single pose',
@@ -927,6 +932,11 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
     ...uniqStrings(safeAsset.forbiddenSubstitutes, 20)
   ]
   const category = asStr(safeAsset.category).trim()
+  // 2026-08-29 全项目统一画风：卡通童话绘本；负向统一排除写实系（用户指令：杜绝写实/卡通混杂）
+  base.push(
+    'photorealistic', 'realistic', 'hyperrealistic', 'semi-realistic', 'photograph', 'photo',
+    '3d render', 'cgi', 'octane render', 'unreal engine', 'oil painting', 'thick impasto', 'acrylic painting'
+  )
   if (lockProfile === 'character_core') {
     base.push(
       'crowd', 'multiple characters', 'multiple views', 'turnaround sheet', 'reference sheet', 'multi-view sheet', 'collage',
@@ -963,6 +973,7 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
       'cropped object', 'cut-off tip', 'foreshortening', 'bent object', 'curved object', 'twisted object',
       'hand holding', 'holding pose', 'paws holding', 'person', 'character', 'animal', 'child', 'girl', 'boy',
       'environment', 'scene background', 'multiple objects', 'collage', 'multi view',
+      'multiple views', 'design sheet', 'multi-view layout', 'multiple houses', 'vertical layout', 'concept sheet',
       'water surface', 'shore', 'grass', 'soil', 'ground contact',
       'text', 'watermark', 'broken parts'
     )
@@ -970,6 +981,7 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
     base.push(
       'deformed structure', 'warped perspective', 'melted object', 'collapsed shape', 'extra attachments',
       'person', 'character', 'environment', 'clutter', 'multiple objects', 'collage', 'cut off',
+      'multiple views', 'design sheet', 'multi-view layout', 'concept sheet', 'trees', 'grass',
       'text', 'watermark'
     )
   } else if (lockProfile === 'soft_prop') {
@@ -980,7 +992,9 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
   } else if (lockProfile === 'ambient_prop') {
     base.push(
       'landscape', 'horizon', 'full sky scene', 'mountains', 'trees', 'buildings', 'character', 'person',
-      'multiple clouds', 'storm scene', 'rain scene', 'sunset landscape', 'text', 'watermark'
+      'multiple clouds', 'storm scene', 'rain scene', 'sunset landscape', 'text', 'watermark',
+      'multiple views', 'design sheet', 'multi-view layout', 'concept sheet',
+      'house', 'roof', 'room interior', 'bushes', 'shrubs', 'ground', 'floor', 'shadows'
     )
   } else if (lockProfile === 'organic_prop') {
     base.push(
@@ -989,7 +1003,9 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
     )
   } else if (category === 'prop') {
     base.push(
-      'person', 'character', 'environment', 'multiple objects', 'collage', 'text', 'watermark'
+      'person', 'character', 'environment', 'multiple objects', 'collage', 'text', 'watermark',
+      'multiple views', 'design sheet', 'multi-view layout', 'concept sheet', 'trees', 'grass',
+      'bushes', 'shrubs', 'ground', 'floor', 'shadows'
     )
   } else if (category === 'location') {
     base.push('character close-up', 'crowd', 'text', 'watermark')
@@ -999,19 +1015,16 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
 
 // 背景-only 模式（背景+立绘分层合成方向）：人物/事物由独立透明立绘经运行时 placements 合成，
 // 场景图只出背景。以下为背景图负提示词的通用人物/事物排除词（不含具体故事专有词）。
+// 2026-08-30：补 animal/pig/wolf（角色是动物形态）与 open book/pages（"绘本风"反复画出字面书本的穿帮）。
 const BACKGROUND_ONLY_SUBJECT_EXCLUSIONS = [
   'person', 'people', 'human', 'character', 'portrait', 'face',
-  'man', 'woman', 'boy', 'girl', 'child', 'kid', 'crowd', 'figure'
+  'man', 'woman', 'boy', 'girl', 'child', 'kid', 'crowd', 'figure',
+  'animal', 'pig', 'piglet', 'wolf', 'open book', 'book', 'pages', 'readable text'
 ]
-
-function isSceneSubjectAsset(asset) {
-  const category = asStr(asset && asset.category).trim()
-  return category === 'character' || category === 'prop'
-}
 
 // 从场景描述文本中剥离出场角色/道具的名字与别名（立绘层承担人物事物，背景图不再描述）。
 // 长名优先替换，避免短名先删造成的残留碎片；只做确定性字符串剔除，不做语义改写。
-function stripSubjectMentionsFromSceneText(text, subjects) {
+export function stripSubjectMentionsFromSceneText(text, subjects) {
   let out = asStr(text)
   const names = []
   for (const subject of asList(subjects)) {
@@ -1030,21 +1043,41 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
   if (!scene) return null
   const backgroundOnly = asStr(mode).trim() === 'background'
   const assetsById = new Map(asList(safePlan.assets).map((item) => [asStr(item && item.id).trim(), asObj(item)]))
-  const allPromptAssets = asList(scene.promptAssets)
+  // 场景→资产关联双源：优先 scene.promptAssets；为空时从资产侧 sceneIds 反推
+  // （2026-08-30 缺陷修复：计划生成器只写了资产侧 sceneIds，scene.promptAssets 全空，
+  //  导致场景渲染 prompt 只剩 worldAnchor，出图同质跑题）
+  const sceneAssetRefs = asList(scene.promptAssets)
+  const derivedFromAssets = sceneAssetRefs.length
+    ? []
+    : asList(safePlan.assets).filter((asset) => asList(asset && asset.sceneIds).some((sid) => asStr(sid) === asStr(sceneId).trim()))
+  const allPromptAssets = [...sceneAssetRefs, ...derivedFromAssets]
     .map((item) => {
       const live = assetsById.get(asStr(item && item.id).trim())
       return live || asObj(item)
     })
     .filter(Boolean)
-  // 背景-only：人物/事物资产不进背景图（提示词、参考图、ref_required 门禁均剔除）
-  const excludedSubjects = backgroundOnly ? allPromptAssets.filter(isSceneSubjectAsset) : []
-  const promptAssets = backgroundOnly ? allPromptAssets.filter((asset) => !isSceneSubjectAsset(asset)) : allPromptAssets
-  const referenceAssets = promptAssets.filter((asset) => asStr(asset.primaryReferenceAssetUri).trim())
+  // 背景-only（2026-08-30 修正）：只剔除「角色」——角色由立绘 placements 合成（placements 仅 character，
+  // prop 不合成属已知限制），道具（房屋/锅/烟囱/壁炉等）必须画进背景图，其锚点进 promptLocks、
+  // 已锁定参考图进 referenceAssets 指导画面。此前连道具一起剔除，导致场景图丢房屋等关键内容。
+  // 2026-09-09 分层合成工艺接管：scene.layeredComposition=true 时道具改为透明立绘分层摆入（同角色），
+  // 背景只画环境——道具从 promptLocks 与叙事剥离对象中一并剔除，禁止锚点把道具烘进背景
+  // （乌鸦喝水实测：玻璃瓶锚点经 promptLocks+worldAnchor 烘进全部 11 张背景，分层失效的根因）。
+  const isCharacterAsset = (asset) => asStr(asset && asset.category).trim() === 'character'
+  const layeredComposition = asObj(scene).layeredComposition === true
+  const excludedSubjects = backgroundOnly
+    ? (layeredComposition ? allPromptAssets : allPromptAssets.filter(isCharacterAsset))
+    : []
+  const promptAssets = backgroundOnly
+    ? (layeredComposition ? [] : allPromptAssets.filter((asset) => !isCharacterAsset(asset)))
+    : allPromptAssets
+  // 2026-08-30 实测：背景-only 喂透明抠图作图像参考会把整图洗白（4 张参考压过 prompt），
+  // 背景图只用文字锚点（promptLocks）保证一致性，不喂图像参考、不做 ref_required 硬门禁。
+  const referenceAssets = backgroundOnly ? [] : promptAssets.filter((asset) => asStr(asset.primaryReferenceAssetUri).trim())
   // S4-02：必须参考图的资产（ref_required）按当前计划状态实时判定。
   // 场景条目里存量的 missingRequiredAssetIds 是建计划时的快照，锁定写回后不会更新，
   // 因此这里以 live 资产记录为准，避免「已锁定仍误判缺失」或「引用被清空仍误判就绪」。
-  // 背景-only 模式下 promptAssets 已剔除人物/事物，门禁只剩真正属于背景的 ref_required 项（通常无）。
-  const requiredAssets = promptAssets.filter((asset) => asStr(asset.renderStrategy).trim() === 'ref_required')
+  // 背景-only 模式不喂图像参考（见上注释），ref_required 门禁也随之不适用于背景图。
+  const requiredAssets = backgroundOnly ? [] : promptAssets.filter((asset) => asStr(asset.renderStrategy).trim() === 'ref_required')
   const missingRequiredAssets = requiredAssets
     .filter((asset) => asStr(asset.referenceStatus).trim() !== 'ready' || !asStr(asset.primaryReferenceAssetUri).trim())
     .map((asset) => ({
@@ -1058,8 +1091,26 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
     .map((asset) => `${asStr(asset.name).trim()}: ${asStr(asset.anchorPrompt).trim()}`)
     .filter((line) => !/: $/.test(line))
     .slice(0, 30)
+  // 2026-08-30 缺陷修复：全局 forbiddenSubstitutes 里含 wood_house/brick_house/straw_house 等资产词条，
+  // 原样塞进 negative 会把本场景需要的房子全部禁掉（出图没有任何房屋的直接原因）。
+  // 这里剔除与「本场景所需资产」的 id 末段/名称/别名精确匹配的条目（替代品如 wooden_door 仍保留）。
+  const neededTokens = new Set()
+  for (const asset of promptAssets) {
+    const rawId = asStr(asset && asset.id)
+    const idTail = rawId.includes('.') ? rawId.split('.').pop() : rawId
+    for (const tok of [rawId, idTail, asStr(asset && asset.name), ...asList(asset && asset.aliases).map((x) => asStr(x))]) {
+      const t = asStr(tok).toLowerCase()
+      if (t) {
+        neededTokens.add(t)
+        neededTokens.add(t.replace(/\s+/g, '_'))
+        neededTokens.add(t.replace(/_+/g, ' '))
+      }
+    }
+  }
+  const globalForbidden = uniqStrings(safePlan.forbiddenSubstitutes, 40)
+    .filter((entry) => !neededTokens.has(asStr(entry).toLowerCase()))
   const negativeParts = uniqStrings([
-    ...uniqStrings(safePlan.forbiddenSubstitutes, 40),
+    ...globalForbidden,
     ...promptAssets.flatMap((asset) => uniqStrings(asset.forbiddenSubstitutes, 12)),
     ...(backgroundOnly ? BACKGROUND_ONLY_SUBJECT_EXCLUSIONS : [])
   ], 120)
@@ -1081,6 +1132,9 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
     })),
     promptLocks,
     negativePrompt: negativeParts.join(', '),
+    // 2026-09-09 分层场景：worldAnchor 同样剥离道具/角色提及（乌鸦喝水实测 worldAnchor 含"玻璃瓶内水面倒影"
+    // 导致瓶子烘进全部背景）；非分层场景保持原锚点不动
+    worldAnchor: layeredComposition ? stripSubjectMentionsFromSceneText(safePlan.worldAnchor, allPromptAssets) : String(safePlan.worldAnchor || '').trim(),
     referenceAssets: referenceAssets.flatMap((asset) => {
       const primary = {
         id: asStr(asset.id).trim(),
@@ -1105,4 +1159,55 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
 
 export function defaultStoryAssetPlanFilename(projectId) {
   return `story_asset_plan_${slugify(projectId, 'project')}.json`
+}
+
+// 确定性场景↦资产关联修复：用资产名称/别名（+调用方提供的证据别名 aliasOverrides）在场景文本
+//（sceneName + summary）中做子串匹配，重建 scene.promptAssets 与 asset.sceneIds/sceneCount。
+// 不做语义猜测：匹配不到就为空；幂等，可重复执行。
+export function repairStoryAssetPlanSceneLinks(plan, { aliasOverrides = {} } = {}) {
+  const safePlan = asObj(plan)
+  const scenes = asList(safePlan.scenes)
+  const assets = asList(safePlan.assets)
+  const overrides = asObj(aliasOverrides)
+  const sceneIdsByAsset = new Map(assets.map((asset) => [asStr(asset && asset.id), []]))
+  const changes = []
+
+  const nextScenes = scenes.map((scene) => {
+    const sceneId = asStr(scene && scene.sceneId)
+    const text = `${asStr(scene && scene.sceneName)} ${asStr(scene && scene.summary)}`
+    // 2026-09-09 分层合成工艺：layeredComposition=true 的场景，道具由立绘分层摆入、不进背景图，
+    // promptAssets 只保留角色（背景-only 渲染会按 promptAssets 组成锚点，道具锚点会把房子画进背景）；
+    // 道具的 sceneIds 关联仍照常记录（姿势场景选项等消费它）。
+    const layered = asObj(scene).layeredComposition === true
+    const matched = []
+    for (const asset of assets) {
+      const assetId = asStr(asset && asset.id)
+      if (!assetId) continue
+      const tokens = uniqStrings([
+        asStr(asset && asset.name),
+        ...asList(asset && asset.aliases).map((x) => asStr(x)),
+        ...asList(overrides[assetId]).map((x) => asStr(x))
+      ], 40).filter(Boolean)
+      if (tokens.some((tok) => text.includes(tok))) {
+        const category = asStr(asset && asset.category)
+        if (!layered || category === 'character') {
+          matched.push({ id: assetId, name: asStr(asset && asset.name), category })
+        }
+        const list = sceneIdsByAsset.get(assetId)
+        if (list && sceneId) list.push(sceneId)
+      }
+    }
+    const before = asList(scene && scene.promptAssets).map((x) => asStr(x && x.id)).filter(Boolean)
+    const after = matched.map((x) => x.id)
+    if (before.join(',') !== after.join(',')) changes.push({ sceneId, before, after })
+    return { ...asObj(scene), promptAssets: matched }
+  })
+
+  const nextAssets = assets.map((asset) => {
+    const assetId = asStr(asset && asset.id)
+    const sceneIds = sceneIdsByAsset.get(assetId) || []
+    return { ...asObj(asset), sceneIds, sceneCount: sceneIds.length }
+  })
+
+  return { plan: { ...safePlan, scenes: nextScenes, assets: nextAssets }, changes }
 }

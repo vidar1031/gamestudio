@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "id": "d597a289-dfdd-4865-9a8c-5af18eb954bc",
+  "title": "未命名互动故事",
+  "stage": "script",
+  "createdAt": "2026-09-09T04:03:25.755Z",
+  "updatedAt": "2026-09-09T04:03:25.755Z",
+  "aiFormula": {
+    "schemaVersion": "1.0",
+    "format": "numeric",
+    "choicePoints": 2,
+    "optionsPerChoice": 2,
+    "endings": 2
+  }
+}

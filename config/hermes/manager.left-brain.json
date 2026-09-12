@@ -1,21 +1,23 @@
 {
   "provider": "omlx",
   "baseUrl": "http://127.0.0.1:18888/v1",
-  "model": "Qwen3.6-27B-MLX-4bit",
+  "model": "Qwen3.6-27B-4bit",
   "shortTerm": {
-    "minContextTokens": 65536
+    "minContextTokens": 8192,
+    "maxContextTokens": 8192,
+    "maxOutputTokens": 2048
   },
   "workflow": {
     "memoryOverlayMode": "content-injection",
-    "replayWindowMessages": 24,
-    "reasoningReplayWindowMessages": 8,
+    "replayWindowMessages": 6,
+    "reasoningReplayWindowMessages": 4,
     "modelRouting": {
       "defaultRoute": {
         "provider": "omlx",
         "baseUrl": "http://127.0.0.1:18888/v1",
-        "model": "Qwen3.6-27B-MLX-4bit",
-        "transport": "direct",
-        "requestedTransport": "direct",
+        "model": "Qwen3.6-27B-4bit",
+        "transport": "hermes",
+        "requestedTransport": "hermes",
         "strict": false,
         "unavailableReason": "",
         "degradedFrom": ""
@@ -24,7 +26,7 @@
         "story_blueprint_review": {
           "provider": "omlx",
           "baseUrl": "http://127.0.0.1:18888/v1",
-          "model": "Qwen3.6-27B-MLX-4bit",
+          "model": "Qwen3.6-27B-4bit",
           "transport": "direct",
           "requestedTransport": "direct",
           "strict": true,
@@ -84,5 +86,6 @@
       "model": "kimi-for-coding",
       "apiKey": ""
     }
-  }
+  },
+  "visionModel": "gemma-4-26b-a4b-it-4bit"
 }

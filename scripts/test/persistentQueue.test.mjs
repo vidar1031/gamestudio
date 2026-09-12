@@ -11,6 +11,7 @@ import {
   resolveQueueMaxConcurrency,
   resolveQueueTickMs,
   resolveQueueHeartbeatScanIntervalMs,
+  resolveWaitingReviewTtlMs,
   getQueueItemFilePath,
   resolveQueueProjectKey,
   mapSessionStatusToQueueItemStatus,
@@ -141,6 +142,16 @@ test('配置解析：默认并发 2 / tick 1000ms / 心跳扫描 60000ms，env �
   assert.equal(resolveQueueTickMs(-1), 1000)
   assert.equal(resolveQueueHeartbeatScanIntervalMs(0), 0) // <=0 关闭
   assert.equal(resolveQueueHeartbeatScanIntervalMs('xyz'), 60000)
+  assert.equal(resolveWaitingReviewTtlMs(), 86400000) // waiting_review 过期阈值默认 24h
+  process.env.HERMES_REASONING_WAITING_REVIEW_TTL_MS = '3600000'
+  try {
+    assert.equal(resolveWaitingReviewTtlMs(), 3600000)
+    assert.equal(resolveWaitingReviewTtlMs(7200000), 7200000)
+  } finally {
+    delete process.env.HERMES_REASONING_WAITING_REVIEW_TTL_MS
+  }
+  assert.equal(resolveWaitingReviewTtlMs(0), 0) // <=0 关闭过期收敛
+  assert.equal(resolveWaitingReviewTtlMs('abc'), 86400000)
 })
 
 test('mapSessionStatusToQueueItemStatus 与终态/释放判定', () => {
@@ -427,6 +438,33 @@ test('S2-10：重启恢复——按 B03 orphan 语义收敛后重排队，不重
   enqueueQueueItem({ sessionId: d })
   claimQueueItem(d, { workerId: deadWorker })
   updateQueueItem(d, (current) => ({ ...current, status: 'running' }))
+  // f：waiting_review 超龄（25h 无人处理）-> 启动恢复收敛为 cancelled（防僵尸审核面板永久驻留）
+  const f = nextId('s210f')
+  const staleReviewSince = new Date(Date.now() - 25 * 3600000).toISOString()
+  writeSessionFile(makeSession(f, {
+    status: 'waiting_review',
+    review: { status: 'pending', title: '审核运行任务图' },
+    stateTransitions: [
+      { from: 'queued', to: 'running', reason: 'plan created, execution started', timestamp: staleReviewSince },
+      { from: 'running', to: 'waiting_review', reason: 'review requested: 审核运行任务图', timestamp: staleReviewSince }
+    ]
+  }))
+  enqueueQueueItem({ sessionId: f })
+  claimQueueItem(f, { workerId: deadWorker })
+  updateQueueItem(f, (current) => ({ ...current, status: 'running' }))
+  // i：waiting_review 未超龄（1h 前进入等待）-> 仍释放为 waiting_review，不误伤在审任务
+  const i = nextId('s210i')
+  const freshReviewSince = new Date(Date.now() - 3600000).toISOString()
+  writeSessionFile(makeSession(i, {
+    status: 'waiting_review',
+    review: { status: 'pending', title: '审核运行任务图' },
+    stateTransitions: [
+      { from: 'running', to: 'waiting_review', reason: 'review requested: 审核运行任务图', timestamp: freshReviewSince }
+    ]
+  }))
+  enqueueQueueItem({ sessionId: i })
+  claimQueueItem(i, { workerId: deadWorker })
+  updateQueueItem(i, (current) => ({ ...current, status: 'running' }))
   // g：running item + session 缺失 -> item blocked（明确阻断，不猜测）
   const g = nextId('s210g')
   enqueueQueueItem({ sessionId: g })
@@ -471,9 +509,10 @@ test('S2-10：重启恢复——按 B03 orphan 语义收敛后重排队，不重
   assert.equal(summary.requeued, 1) // 仅 b
   assert.equal(summary.keptQueued, 1) // a
   assert.equal(summary.mirroredTerminal, 1) // e
-  assert.equal(summary.releasedWaitingReview, 1) // d
+  assert.equal(summary.releasedWaitingReview, 2) // d（无时间戳）+ i（未超龄）
+  assert.equal(summary.expiredWaitingReview, 1) // f（超龄收敛 cancelled）
   assert.equal(summary.blocked, 2) // c + g
-  for (const id of [a, b, c, d, e, g]) {
+  for (const id of [a, b, c, d, e, f, i, g]) {
     assert.ok(summary.managedSessionIds.has(id), `managedSessionIds 应包含 ${id}`)
   }
 
@@ -495,6 +534,18 @@ test('S2-10：重启恢复——按 B03 orphan 语义收敛后重排队，不重
   // d：人工审核等待不自动重排队
   assert.equal(readSessionFile(d).status, 'waiting_review')
   assert.equal(readQueueItem(d).status, 'waiting_review')
+  // f：超龄未审 -> session cancelled（review 清空、留 error 证据），item 镜像 cancelled
+  const sessionF = readSessionFile(f)
+  assert.equal(sessionF.status, 'cancelled')
+  assert.equal(sessionF.review, null)
+  assert.equal(sessionF.error, 'queue_waiting_review_expired')
+  const itemF = readQueueItem(f)
+  assert.equal(itemF.status, 'cancelled')
+  assert.equal(itemF.lastError, 'queue_waiting_review_expired')
+  assert.ok(store.events.some((ev) => ev.sessionId === f && ev.type === 'session_cancelled' && ev.data.reason === 'queue_waiting_review_expired'))
+  // i：未超龄的在审任务不误伤
+  assert.equal(readSessionFile(i).status, 'waiting_review')
+  assert.equal(readQueueItem(i).status, 'waiting_review')
   // e：镜像终态，不重复领取
   assert.equal(readQueueItem(e).status, 'cancelled')
   // g：session 缺失明确阻断
@@ -540,6 +591,8 @@ test('S2-10：重启恢复——按 B03 orphan 语义收敛后重排队，不重
   assert.equal(executions.filter((x) => x.sessionId === c).length, 0)
   assert.equal(executions.filter((x) => x.sessionId === d).length, 0)
   assert.equal(executions.filter((x) => x.sessionId === e).length, 0)
+  assert.equal(executions.filter((x) => x.sessionId === f).length, 0)
+  assert.equal(executions.filter((x) => x.sessionId === i).length, 0)
   assert.equal(readQueueItem(a).claim.claimGeneration, 1)
   assert.equal(readQueueItem(b).claim.claimGeneration, 2) // 重排队后领取代数单调递增
   process.env.HERMES_REASONING_QUEUE_DIR = previousQueueDir

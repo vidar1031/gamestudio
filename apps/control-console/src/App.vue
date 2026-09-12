@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { provideControlConsoleApp } from './composables/useControlConsoleAppContext'
 import { useControlConsoleApp } from './composables/useControlConsoleApp'
+import UiDialog from './components/UiDialog.vue'
 
 const controlConsoleApp = useControlConsoleApp()
 provideControlConsoleApp(controlConsoleApp)
@@ -8,6 +9,7 @@ provideControlConsoleApp(controlConsoleApp)
 
 <template>
   <router-view />
+  <UiDialog />
 </template>
 
 <style>
@@ -33,6 +35,29 @@ provideControlConsoleApp(controlConsoleApp)
 }
 
 * { box-sizing: border-box; }
+
+/* 全局统一细滚动条（暗色基底，hover 显强调色） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.13);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(94, 204, 255, 0.35);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
 
 body {
   margin: 0;

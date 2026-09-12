@@ -2,6 +2,7 @@ import dns from 'node:dns/promises'
 import { spawn } from 'node:child_process'
 import { getProxyInfo, getProxyUrl } from '../net/proxy.js'
 import { getStudioSecret } from '../studio/secrets.js'
+import { withResourceLease, isLocalOmlxUrl } from './resourceLease.js'
 
 const OFFICIAL_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
@@ -267,12 +268,23 @@ function buildChatCompletionsBodyFromResponsesBody(responsesBody) {
       }
     }
   }
-  // OMLX needs more output tokens for complex schemas
-  chatBody.max_tokens = 8192
+  // OMLX needs more output tokens for complex schemas; caller 可用 max_output_tokens 压预算（默认 8192）
+  const callerMax = Number(responsesBody.max_output_tokens)
+  chatBody.max_tokens = Number.isFinite(callerMax) && callerMax > 0 ? Math.floor(callerMax) : 8192
   return chatBody
 }
 
-async function openaiRequestJson({ method, path: apiPath, body, timeoutMs, provider, apiUrl, model, proxyUrl: proxyUrlOverride }) {
+// 本地 OMLX 调用统一经 control 资源调度器租约准入（llm 共享读卡），远程 provider 直连
+// GET 探测（diagnose /v1/models 等只读调用）不占租约，避免交换窗口期诊断被挂起
+async function openaiRequestJson(params) {
+  const cfg = getOpenAIConfig(params?.provider, { apiUrl: params?.apiUrl, model: params?.model })
+  const isLocal = cfg.provider === 'localoxml' || isLocalOmlxUrl(cfg.baseUrl)
+  const isReadOnlyProbe = String(params?.method || 'POST').toUpperCase() === 'GET'
+  if (!isLocal || isReadOnlyProbe) return openaiRequestJsonInner(params)
+  return withResourceLease('llm', `gs:omlx:${cfg.model || params?.model || '-'}`, () => openaiRequestJsonInner(params))
+}
+
+async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, provider, apiUrl, model, proxyUrl: proxyUrlOverride }) {
   const cfg = getOpenAIConfig(provider, { apiUrl, model })
   const { apiKey, baseUrl } = cfg
   const allowMissingKey = cfg.provider === 'localoxml'

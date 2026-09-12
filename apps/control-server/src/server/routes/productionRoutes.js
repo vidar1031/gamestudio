@@ -41,11 +41,12 @@ export function registerProductionRoutes(app) {
     if (!execResult.ok) {
       return c.json({
         ok: false,
-        error: 'production_failed',
+        error: execResult.waitingForReview ? 'review_required' : 'production_failed',
+        waitingForReview: execResult.waitingForReview === true,
         plan: execResult.plan,
         results: execResult.results,
         failedStep: execResult.failedStep || null
-      }, 502)
+      }, execResult.waitingForReview ? 409 : 502)
     }
 
     return c.json({

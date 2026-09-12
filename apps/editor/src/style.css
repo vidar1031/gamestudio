@@ -339,6 +339,143 @@ code {
   justify-content: center;
 }
 
+/* 场景编排器：素材条目拖拽态 + 画布放置目标高亮 */
+.stage-material-item {
+  cursor: grab;
+}
+.stage-material-item:hover {
+  border-color: rgba(94, 204, 255, 0.5);
+}
+.stage-material-item:active {
+  cursor: grabbing;
+}
+.canvas.canvas-drop-active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid #5eccff;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 30;
+}
+
+/* 场景编排器：画布顶部工具条（模式徽标 / 缩放 / 平移 / 选中操作 / 撤销） */
+.stage-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(8px);
+}
+.stage-mode-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid rgba(94, 204, 255, 0.55);
+  background: rgba(94, 204, 255, 0.14);
+  color: #5eccff;
+}
+.stage-mode-badge.preview {
+  /* 预览模式同样点亮（2026-08-31 用户反馈：切到预览时文字不应变灰） */
+  border-color: rgba(94, 204, 255, 0.55);
+  background: rgba(94, 204, 255, 0.14);
+  color: #5eccff;
+}
+.stage-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(148, 163, 184, 0.22);
+  flex: none;
+}
+.stage-toolbar-zoom {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+.stage-tool-btn {
+  padding: 3px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(148, 163, 184, 0.10);
+  color: #e5e7eb;
+  font-size: 12px;
+  cursor: pointer;
+}
+.stage-tool-btn:hover {
+  border-color: rgba(94, 204, 255, 0.5);
+}
+.stage-tool-btn.active {
+  border-color: #5eccff;
+  background: rgba(94, 204, 255, 0.16);
+  color: #5eccff;
+}
+.stage-tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 场景编排器：右栏元素层级列表 */
+.stage-layer-list {
+  display: grid;
+  gap: 6px;
+}
+.stage-layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+}
+.stage-layer-item.stage-layer-hidden {
+  opacity: 0.5;
+}
+.stage-layer-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: #0b1220;
+  flex: none;
+}
+.stage-layer-thumb-bg,
+.stage-layer-thumb-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #9ca3af;
+}
+.stage-layer-thumb-bg {
+  border-color: rgba(94, 204, 255, 0.3);
+  color: #5eccff;
+}
+.stage-layer-main {
+  flex: 1;
+  min-width: 0;
+}
+.stage-layer-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+.stage-layer-actions .icon-btn {
+  min-width: 24px;
+  padding: 2px 5px;
+  font-size: 11px;
+}
+
 .canvas-scroll {
   width: min(980px, calc(100vw - 24px));
   max-height: calc(100% - 24px);
@@ -566,7 +703,8 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 20;
+  /* 2026-09-01 修复：弹窗必须盖住画布工具条（.stage-toolbar z-index:40，此前 20 导致工具条浮在弹窗上） */
+  z-index: 60;
 }
 
 .ai-modal-card {
@@ -618,6 +756,921 @@ code {
 .ai-character-modal-card::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+/* 2026-09-01 动作立绘抽卡池弹窗（左参数栏 + 右候选池） */
+.pose-pool-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.pose-pool-field {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+/* ============ 2026-09-10 剧情姿势需求清单 ============ */
+.pose-req-block {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.pose-req-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pose-req-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #f1f5f9;
+  flex: 1;
+}
+
+.pose-req-list {
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.pose-req-row {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(2, 6, 23, 0.4);
+}
+
+.pose-req-row.done {
+  border-color: rgba(77, 214, 140, 0.3);
+}
+
+.pose-req-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pose-req-scene {
+  font-size: 12px;
+  font-weight: 700;
+  color: #cbd5e1;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pose-req-chips {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.pose-req-chip {
+  font-size: 11px;
+  color: #9fd8f2;
+  border: 1px solid rgba(94, 204, 255, 0.3);
+  border-radius: 999px;
+  padding: 0 8px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.pose-req-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pose-req-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(2, 6, 23, 0.55);
+  color: #e5e7eb;
+  font: inherit;
+  font-size: 12px;
+}
+
+/* 2026-09-10 填充保护确认弹窗的内容对照 */
+.pose-fill-preview {
+  display: grid;
+  gap: 8px;
+}
+.pose-fill-preview-block {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(148, 163, 184, 0.05);
+}
+.pose-fill-preview-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9daab8;
+  margin-bottom: 2px;
+}
+.pose-fill-preview-text {
+  font-size: 12px;
+  color: #e5e7eb;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+
+.pose-pool-field label {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.pose-pool-field input,
+.pose-pool-field textarea,
+.pose-pool-field select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(2, 6, 23, 0.55);
+  color: #e5e7eb;
+  font: inherit;
+}
+
+.pose-pool-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.pose-pool-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.pose-pool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.pose-pool-card {
+  position: relative;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.34);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.pose-pool-card.selected {
+  border-color: #5eccff;
+  box-shadow: 0 0 0 1px #5eccff;
+}
+
+.pose-pool-card img {
+  width: 100%;
+  border-radius: 8px;
+  display: block;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.pose-pool-score {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.pose-pool-card-ops {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+}
+
+.pose-pool-empty {
+  padding: 24px;
+  text-align: center;
+  opacity: 0.7;
+  border: 1px dashed rgba(148, 163, 184, 0.25);
+  border-radius: 12px;
+}
+
+/* 2026-09-01 锁定向导姿势变体管理区（出图统一管理在锁定向导） */
+.pose-variant-section {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.3);
+}
+
+.pose-variant-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.pose-variant-body {
+  padding: 0 12px 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.pose-variant-advanced {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.pose-variant-lock-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.pose-variant-lock-row input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(2, 6, 23, 0.55);
+  color: #e5e7eb;
+  font: inherit;
+  font-size: 12px;
+}
+
+.pose-variant-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.pose-variant-item {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.pose-variant-item img {
+  width: 100%;
+  border-radius: 8px;
+  display: block;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.pose-variant-block-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 2026-09-01 修复：阻断弹窗可从姿势画廊（z-index 130）内触发，必须压在其上 */
+  z-index: 140;
+}
+
+.pose-variant-block-card {
+  width: min(440px, calc(100vw - 48px));
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #e5e7eb;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+/* ============ 2026-09-10 公共提示词库弹层 ============ */
+/* 库弹层从锁定向导（含画廊 z-index 130）内触发，层级压在其上 */
+.story-lock-lib-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 150;
+}
+
+.story-lock-lib-card {
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(72vh, 720px);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.97);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #e5e7eb;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+.story-lock-lib-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.story-lock-lib-tabs {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  padding: 2px;
+  align-self: flex-start;
+}
+
+.story-lock-lib-list {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.story-lock-lib-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.story-lock-lib-item-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.story-lock-lib-item-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f1f5f9;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.story-lock-lib-builtin {
+  font-size: 11px;
+  font-weight: 500;
+  color: #5eccff;
+  border: 1px solid rgba(94, 204, 255, 0.35);
+  border-radius: 999px;
+  padding: 0 8px;
+  line-height: 18px;
+}
+
+.story-lock-lib-item-text {
+  font-size: 12px;
+  color: #aab6c5;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.story-lock-lib-item-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.story-lock-lib-save {
+  border-top: 1px dashed rgba(148, 163, 184, 0.25);
+  padding-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.story-lock-lib-save-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #cbd5e1;
+}
+
+.story-lock-lib-save-row {
+  display: flex;
+  gap: 8px;
+}
+
+.story-lock-lib-save-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.story-lock-lib-hint {
+  color: #9fd8f2;
+}
+
+/* ============ 2026-09-02 锁定向导大改版：一级卡片墙 / 二级详情弹层 / 配置 drawer ============ */
+/* 视图切换与锚点导航共用的小按钮（状态仅 default/hover/active，强调色 #5eccff） */
+.story-lock-view-toggle {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  padding: 2px;
+}
+
+.story-lock-view-toggle-btn {
+  border: none;
+  background: transparent;
+  color: #cbd5e1;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.story-lock-view-toggle-btn:hover {
+  color: #f1f5f9;
+}
+
+.story-lock-view-toggle-btn.active {
+  background: rgba(94, 204, 255, 0.16);
+  color: #5eccff;
+}
+
+.story-lock-gridview {
+  display: grid;
+  gap: 12px;
+}
+
+.story-lock-grid-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.34);
+  padding: 10px 12px;
+}
+
+.story-lock-grid-suggestion {
+  overflow-wrap: anywhere;
+}
+
+.story-lock-review-badge {
+  border: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.story-lock-grid-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.story-lock-grid-filter-group {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 999px;
+  padding: 2px;
+}
+
+.story-lock-cardwall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.story-lock-thing-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.74);
+  cursor: pointer;
+  align-content: start;
+}
+
+.story-lock-thing-card:hover {
+  border-color: rgba(94, 204, 255, 0.55);
+}
+
+.story-lock-thing-img {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 透明 PNG 垫深色棋盘格（与抠图预览同款语义） */
+  background:
+    linear-gradient(45deg, rgba(148, 163, 184, 0.16) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(148, 163, 184, 0.16) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.16) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.16) 75%),
+    rgba(2, 6, 23, 0.6);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+}
+
+.story-lock-thing-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.story-lock-thing-img.missing {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.story-lock-thing-name {
+  font-weight: 700;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-lock-thing-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.story-lock-thing-cat {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #cbd5e1;
+}
+
+.story-lock-thing-status {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.story-lock-thing-status.locked {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.4);
+}
+
+.story-lock-thing-status.lineart {
+  color: #facc15;
+  border-color: rgba(250, 204, 21, 0.4);
+}
+
+.story-lock-thing-status.draw {
+  color: #fb923c;
+  border-color: rgba(251, 146, 60, 0.4);
+}
+
+.story-lock-thing-status.draft {
+  color: rgba(148, 163, 184, 0.9);
+}
+
+/* 二级资产详情弹层：压在向导（120）上、姿势画廊（130）下 */
+.story-lock-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 125;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 20px 28px;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.story-lock-detail-card {
+  width: min(1400px, 100%);
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.14), transparent 30%),
+    rgba(2, 6, 23, 0.97);
+  padding: 14px 18px 18px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.story-lock-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  position: sticky;
+  top: -14px;
+  z-index: 5;
+  margin: -14px -18px 0;
+  padding: 12px 18px;
+  background: rgba(2, 6, 23, 0.97);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.story-lock-detail-nav {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  padding-bottom: 8px;
+}
+
+.story-lock-detail-body {
+  display: grid;
+  gap: 18px;
+}
+
+.story-lock-detail-sec {
+  display: grid;
+  gap: 10px;
+  scroll-margin-top: 64px;
+}
+
+.story-lock-detail-sec-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #e5e7eb;
+  border-left: 3px solid #5eccff;
+  padding-left: 8px;
+}
+
+/* 右侧配置 drawer：detail 弹层（125）之上、姿势画廊（130）之下 */
+.story-lock-drawer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 126;
+  background: rgba(2, 6, 23, 0.55);
+}
+
+.story-lock-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(400px, calc(100vw - 24px));
+  background: rgba(2, 6, 23, 0.98);
+  border-left: 1px solid rgba(148, 163, 184, 0.25);
+  box-shadow: -16px 0 48px rgba(2, 6, 23, 0.5);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  color: #e5e7eb;
+}
+
+.story-lock-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.story-lock-drawer-body {
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.story-lock-drawer-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.12);
+}
+
+.story-lock-drawer-kv span:first-child {
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.story-lock-drawer-kv span:last-child {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+/* ============ 2026-09-02 姿势区四件套：最近评分条 / 配方弹层 / 负向 chips / 槽位组装 ============ */
+.pose-review-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.34);
+  padding: 6px 10px;
+}
+
+.pose-review-strip-reason {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pose-recipe-anchor {
+  position: relative;
+  display: inline-block;
+}
+
+.pose-recipe-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 220px;
+  max-height: 260px;
+  overflow-y: auto;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(2, 6, 23, 0.97);
+  box-shadow: 0 12px 32px rgba(2, 6, 23, 0.5);
+}
+
+.pose-recipe-item {
+  border: none;
+  background: transparent;
+  color: #e5e7eb;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.pose-recipe-item:hover {
+  background: rgba(94, 204, 255, 0.12);
+  color: #5eccff;
+}
+
+.pose-neg-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pose-neg-chip {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(2, 6, 23, 0.55);
+  color: #cbd5e1;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.pose-neg-chip:hover {
+  border-color: rgba(94, 204, 255, 0.55);
+  color: #5eccff;
+}
+
+.pose-neg-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pose-assemble-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.pose-assemble-row input,
+.pose-assemble-row select {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(2, 6, 23, 0.55);
+  color: #e5e7eb;
+  font: inherit;
+  font-size: 12px;
+}
+
+.pose-recipe-name-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(2, 6, 23, 0.55);
+  color: #e5e7eb;
+  font: inherit;
+}
+
+/* 2026-09-02 配置 drawer：LoRA 挂载管理 + 提示词预设 */
+.story-lock-drawer-preset-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.story-lock-drawer-err {
+  font-size: 12px;
+  color: #fca5a5;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: rgba(127, 29, 29, 0.2);
+  overflow-wrap: anywhere;
+}
+
+.story-lock-lora-list {
+  display: grid;
+  gap: 6px;
+}
+
+.story-lock-lora-item {
+  display: grid;
+  grid-template-columns: 1fr 76px auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.story-lock-lora-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-lock-lora-item input,
+.story-lock-lora-add input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(2, 6, 23, 0.55);
+  color: #e5e7eb;
+  font: inherit;
+  font-size: 12px;
+}
+
+.story-lock-lora-add {
+  display: grid;
+  grid-template-columns: 1fr 76px auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .ai-modal-title {
@@ -822,6 +1875,18 @@ code {
   border-color: rgba(248, 113, 113, 0.35);
   background: rgba(248, 113, 113, 0.10);
   color: rgba(254, 202, 202, 0.95);
+}
+
+.ai-storyboard-status.warn {
+  border-color: rgba(250, 204, 21, 0.35);
+  background: rgba(250, 204, 21, 0.10);
+  color: rgba(253, 230, 138, 0.95);
+}
+
+.ai-storyboard-status.pending {
+  border-color: rgba(94, 204, 255, 0.30);
+  background: rgba(94, 204, 255, 0.08);
+  color: rgba(186, 230, 253, 0.95);
 }
 
 .ai-storyboard-body {
@@ -1097,6 +2162,194 @@ code {
   color: #cbd5e1;
 }
 
+.ai-storyboard-scene-source pre.ai-storyboard-scene-source-collapsed {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* AI 分镜：场景管理卡片（缩略图 + 绑定信息 + 提示词编辑） */
+.ai-storyboard-scene-card-main {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.ai-storyboard-scene-side {
+  width: 168px;
+  flex: none;
+  display: grid;
+  gap: 6px;
+}
+.ai-storyboard-scene-thumb {
+  width: 168px;
+  height: 108px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid #1f2937;
+  background: #0b1220;
+  cursor: zoom-in;
+  display: block;
+}
+.ai-storyboard-scene-thumb-empty {
+  width: 168px;
+  height: 108px;
+  border-radius: 8px;
+  border: 1px dashed #1f2937;
+  background: #0b1220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  font-size: 12px;
+}
+.ai-storyboard-scene-bind-info {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.5;
+}
+
+/* ===== AI 分镜弹窗：场景管理区紧凑模式（仅 .ai-storyboard-modal-card 作用域，不动全局共享类） ===== */
+.ai-storyboard-modal-card .ai-storyboard-scene-assets {
+  font-size: 11.5px;
+  color: #9ca3af;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 出场事物 chip：点击跳转锁定事物向导（状态仅 default/hover/active，强调色 #5eccff） */
+.ai-storyboard-modal-card .ai-storyboard-scene-asset-link {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-asset-link:hover {
+  color: #5eccff;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-asset-link:active {
+  color: #5eccff;
+  opacity: 0.8;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card {
+  gap: 8px;
+  padding: 10px 12px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-global-head {
+  gap: 8px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-workspace-log-title {
+  font-size: 12.5px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .ai-storyboard-status {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  gap: 4px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-global-subtitle {
+  font-size: 12px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-prompt-stack {
+  gap: 8px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-prompt-section {
+  gap: 6px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-prompt-grid {
+  gap: 8px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-prompt-field {
+  font-size: 11px;
+  gap: 4px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-textarea {
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-textarea.compact-rows {
+  min-height: 3.5em;
+  max-height: 3.5em;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .story-lock-workspace-log-box {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .btn {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-prompt-card .hint {
+  font-size: 11px;
+}
+
+/* 场景图版本图库：缩略图横排 + 横向滚动，当前绑定高亮描边 */
+.ai-storyboard-modal-card .ai-storyboard-scene-gallery {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  max-width: 168px;
+  padding-bottom: 2px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-version {
+  position: relative;
+  flex: none;
+  width: 76px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  background: #0b1220;
+  overflow: hidden;
+  cursor: pointer;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-version img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-version:hover {
+  border-color: rgba(94, 204, 255, 0.45);
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-version.active {
+  border-color: #5eccff;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-version.bound {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.4);
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-version-badge {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.85);
+  color: #052e16;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-version-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-version-actions .btn {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.ai-storyboard-modal-card .ai-storyboard-scene-gallery-hint {
+  color: #fca5a5;
+}
+
 .ai-storyboard-kv {
   display: grid;
   gap: 8px;
@@ -1367,9 +2620,15 @@ code {
   height: 100vh;
   max-height: none;
   display: grid;
-  grid-template-rows: auto auto auto auto auto 1fr;
+  /* 2026-08-30 修复：原为固定 6 行模板 grid-template-rows: auto×5 + minmax(0, max-content)，
+     子元素多于 6 个（如出图总账条）时全局提示词行被压成 0 高、内容溢出重叠（第 4 步样式错乱）。
+     改为行数不限、逐行内容自适应；整卡滚动行为不变。 */
+  grid-auto-rows: max-content;
   gap: 12px;
-  overflow: hidden;
+  /* 2026-08-25 修复：原为 overflow:hidden，内容超高时无法向下滚动查看（日志/全局提示词/资产区被裁）。
+     改为整卡纵向滚动，内部 1fr 区改为内容自适应。 */
+  overflow-x: hidden;
+  overflow-y: auto;
   border-radius: 0;
   border: none;
   background:
@@ -1386,6 +2645,37 @@ code {
   justify-content: space-between;
   gap: 12px;
   color: #f8fafc;
+  /* 顶部吸附：负 margin 抵消卡片 padding 让背景通栏覆盖，sticky 不脱离文档流；
+     卡片是 grid（grid-auto-rows: max-content）+ overflow-y:auto，sticky 对 grid item 有效 */
+  position: sticky;
+  /* margin-top:-18 让背景通栏覆盖卡片 padding；sticky 约束按 margin box 计算，故 top 取 -18 使边框盒吸附后贴住可视顶 */
+  top: -18px;
+  z-index: 20;
+  margin: -18px -20px 0;
+  padding: 18px 20px 12px;
+  background: linear-gradient(180deg, rgba(2, 6, 23, 0.995), rgba(8, 15, 32, 0.985));
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+/* 保存成功内联提示条：吸附头部内，约 3s 自动淡出（配合 React 定时移除） */
+.story-lock-save-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid rgba(34, 197, 94, 0.45);
+  background: rgba(20, 83, 45, 0.35);
+  color: #bbf7d0;
+  animation: storyLockSaveHint 3s ease forwards;
+}
+@keyframes storyLockSaveHint {
+  0% { opacity: 0; transform: translateY(-4px); }
+  8% { opacity: 1; transform: translateY(0); }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .story-lock-workspace-head-main {
@@ -1419,6 +2709,18 @@ code {
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+
+/* 操作失败横幅（如主参考被审核门禁拒绝）：常显于向导顶部，不进折叠日志 */
+.story-lock-error-banner {
+  padding: 8px 12px;
+  border: 1px solid #7f1d1d;
+  border-radius: 8px;
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
 }
 
 .story-lock-workspace-chip-row {
@@ -1589,6 +2891,7 @@ code {
   min-height: 94px;
   resize: vertical;
   padding: 12px 14px;
+  box-sizing: border-box; /* 2026-08-30 修复：width:100%+padding 无双倍计算会溢出 grid 列，相邻中/英文列重叠 18px */
   border-radius: 14px;
   border: 1px solid rgba(96, 165, 250, 0.22);
   background: rgba(2, 6, 23, 0.82);
@@ -2631,6 +3934,30 @@ code {
   transition: width 0.4s ease;
 }
 
+/* 出图总账：全局出图进度摘要行（锁定工作台顶部，随任务轮询刷新） */
+.ai-coverage-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 0;
+  padding: 6px 12px;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  background: #0b1220;
+  font-size: 12px;
+}
+.ai-coverage-summary-label {
+  color: #5eccff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ai-coverage-summary-text {
+  color: #9ca3af;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 图片生成审核：待审核卡片 */
 .ai-review-pending-list {
   display: flex;
@@ -2697,3 +4024,154 @@ code {
   display: flex;
   gap: 8px;
 }
+
+/* ============ 锁定事物分步向导（2026-08-26 界面优化） ============ */
+.story-lock-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 2px;
+  border-bottom: 1px solid var(--c-border, rgba(148, 163, 184, 0.16));
+  margin-bottom: 4px;
+}
+.story-lock-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--c-border, rgba(148, 163, 184, 0.18));
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--c-text-sub, #cbd5e1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.story-lock-step.locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.story-lock-step.unlocked:hover {
+  background: rgba(94, 204, 255, 0.08);
+  border-color: var(--c-accent-dim, rgba(94, 204, 255, 0.35));
+}
+.story-lock-step.active {
+  background: var(--c-accent-dim, rgba(94, 204, 255, 0.14));
+  border-color: var(--c-accent, #5eccff);
+  color: var(--c-text-inv, #f8fafc);
+}
+.story-lock-step.ready .story-lock-step-icon {
+  color: var(--c-success-dim, #4ade80);
+}
+.story-lock-step-panel {
+  padding: 10px 2px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.story-lock-step-panel-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--c-text-inv, #f8fafc);
+}
+.story-lock-step-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.story-lock-wizard-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  margin-top: 6px;
+  border-top: 1px solid var(--c-border, rgba(148, 163, 184, 0.16));
+}
+.story-lock-wizard-hint {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  color: var(--c-warn, #f6c94e);
+}
+.story-lock-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.story-lock-plan-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--c-border, rgba(148, 163, 184, 0.14));
+}
+.story-lock-plan-name {
+  font-weight: 700;
+  color: var(--c-text, #e2e8f0);
+  min-width: 120px;
+}
+.story-lock-plan-row .hint {
+  flex: 1;
+}
+.story-lock-check-result {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--c-border, rgba(148, 163, 184, 0.18));
+}
+.story-lock-check-result.ok {
+  border-color: rgba(74, 222, 128, 0.4);
+}
+.story-lock-check-result.bad {
+  border-color: rgba(255, 107, 107, 0.4);
+}
+.story-lock-check-issues {
+  font-size: 12px;
+  color: var(--c-warn, #f6c94e);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.story-lock-check-issues-title {
+  font-weight: 700;
+}
+
+/* 2026-09-01 选中即属性：摆放属性卡片高亮脉冲（画布点选后引导视线） */
+@keyframes placementPropsPulse {
+  0% { box-shadow: 0 0 0 0 rgba(94, 204, 255, 0.55); }
+  100% { box-shadow: 0 0 0 14px rgba(94, 204, 255, 0); }
+}
+.placement-props-card {
+  animation: placementPropsPulse 0.9s ease-out 2;
+}
+
+/* 2026-09-03 外部更新横幅：项目在别处更新时提示刷新。
+   2026-09-10 修复：.app 是 auto/1fr 两行网格，横幅作为第三个网格子项会挤占 1fr 行把主区推出视口；
+   改为右下角悬浮卡片，不参与网格流，不挤压任何布局，且不遮挡顶部工具栏。 */
+.external-update-banner {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 440px;
+  padding: 12px 14px;
+  background: rgba(10, 18, 30, 0.96);
+  border: 1px solid rgba(94, 204, 255, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  line-height: 1.6;
+  color: #dbe7f3;
+}
+.external-update-banner .banner-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.external-update-banner .btn { padding: 4px 14px; font-size: 12px; }

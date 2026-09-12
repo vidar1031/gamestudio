@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useControlConsoleApp } from '../composables/useControlConsoleApp'
 import { runMemoryLifecycleMaintenance, getMemoryLifecycleReport } from '../services/controlApi'
+import { alertDialog, confirmDialog } from '../lib/uiDialog'
 
 const app = useControlConsoleApp()
 
@@ -29,11 +30,11 @@ function saveApiKeys() {
   sessionStorage.setItem('gs_api_key_moonshot', apiKeys.value.moonshot)
   sessionStorage.setItem('gs_api_key_openai', apiKeys.value.openai)
   sessionStorage.setItem('gs_api_key_doubao', apiKeys.value.doubao)
-  alert('API Key 已保存到当前会话（sessionStorage）')
+  void alertDialog('API Key 已保存到当前会话（sessionStorage）')
 }
 
-function restartControl() {
-  if (!confirm('确定要重启 Control Server 吗？页面会短暂断开并自动恢复。')) return
+async function restartControl() {
+  if (!(await confirmDialog({ title: '重启 Control Server', message: '确定要重启 Control Server 吗？页面会短暂断开并自动恢复。', confirmText: '确认重启' }))) return
   app.restartGlobalRuntime()
 }
 

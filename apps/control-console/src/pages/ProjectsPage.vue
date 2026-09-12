@@ -8,6 +8,7 @@ import {
   type ProjectCapability,
   type ProjectRuntimeDescriptor
 } from '../services/bindingApi'
+import { confirmDialog } from '../lib/uiDialog'
 
 // 当前绑定项目卡片状态
 const binding = ref<ProjectBinding | null>(null)
@@ -77,7 +78,7 @@ async function saveBinding() {
 
 async function unbind() {
   if (bindingBusy.value) return
-  if (!confirm('确定要解除当前项目绑定吗？')) return
+  if (!(await confirmDialog({ title: '解除项目绑定', message: '确定要解除当前项目绑定吗？', confirmText: '解除绑定', danger: true }))) return
   bindingBusy.value = true
   bindingError.value = ''
   try {

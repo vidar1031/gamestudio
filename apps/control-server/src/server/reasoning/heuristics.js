@@ -40,6 +40,10 @@ export function isProjectListingPrompt(userPrompt) {
   const prompt = String(userPrompt || '').trim()
   if (!prompt) return false
   if (isProjectStructureInspectionPrompt(prompt)) return false
+  // 2026-09-06 修正：给出项目内具体文件路径（storage/projects/<id>/.../x.json）的请求是读文件查证，
+  // 不是项目列表盘点；storage/projects 关键字命中但附带文件路径时不应被列表兜底计划截胡
+  // （实测：读取 scene3_brief_source.json 的咨询被误判为项目列表，模型规划的 read_file 步骤被丢弃）。
+  if (/storage\/projects\//i.test(prompt) && /[A-Za-z0-9_-]+\.[A-Za-z]{2,5}/.test(prompt)) return false
   if (REASONING_PROJECT_LISTING_KEYWORDS.test(prompt)) return true
   return /项目/i.test(prompt) && /当前|已有|现有|哪些|列表|列出|找出|盘点/i.test(prompt)
 }

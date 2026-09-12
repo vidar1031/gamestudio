@@ -1,6 +1,6 @@
 {
   "registryVersion": "1.0.0",
-  "generatedAt": "2026-08-05T14:52:35.268Z",
+  "generatedAt": "2026-09-09T04:35:00.000Z",
   "provider": {
     "id": "gamestudio",
     "name": "GameStudio 互动故事生产能力层",
@@ -888,7 +888,7 @@
       ],
       "idempotent": false,
       "reviewRequired": true,
-      "timeoutMs": 600000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
@@ -1191,7 +1191,7 @@
       ],
       "idempotent": false,
       "reviewRequired": true,
-      "timeoutMs": 60000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
@@ -1248,7 +1248,7 @@
       ],
       "idempotent": false,
       "reviewRequired": true,
-      "timeoutMs": 600000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
@@ -1304,7 +1304,7 @@
       ],
       "idempotent": false,
       "reviewRequired": true,
-      "timeoutMs": 60000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
@@ -1367,7 +1367,7 @@
       ],
       "idempotent": false,
       "reviewRequired": true,
-      "timeoutMs": 600000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
@@ -1874,7 +1874,7 @@
       ],
       "idempotent": false,
       "reviewRequired": true,
-      "timeoutMs": 600000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
@@ -2151,7 +2151,7 @@
       ],
       "idempotent": false,
       "reviewRequired": true,
-      "timeoutMs": 120000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
@@ -2431,24 +2431,65 @@
       "description": "根据用户故事目标调用模型生成脚本与蓝图，创建完整互动故事项目。受控模式必须携带 modelExecution.leaseId。",
       "payloadSchema": {
         "type": "object",
-        "required": ["prompt"],
+        "required": [
+          "prompt"
+        ],
         "properties": {
-          "prompt": { "type": "string", "minLength": 1 },
-          "title": { "type": "string" },
-          "choicePoints": { "type": "integer", "minimum": 1, "maximum": 3 },
-          "optionsPerChoice": { "type": "integer", "enum": [2, 3] },
-          "endings": { "type": "integer", "minimum": 1, "maximum": 3 },
-          "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 600000 },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "choicePoints": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "optionsPerChoice": {
+            "type": "integer",
+            "enum": [
+              2,
+              3
+            ]
+          },
+          "endings": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          },
           "modelExecution": {
             "type": "object",
-            "required": ["provider", "model", "leaseId"],
+            "required": [
+              "provider",
+              "model",
+              "leaseId"
+            ],
             "properties": {
-              "provider": { "type": "string" },
-              "model": { "type": "string" },
-              "apiUrl": { "type": "string" },
-              "leaseId": { "type": "string" },
-              "requestId": { "type": "string" },
-              "timeoutMs": { "type": "integer" }
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "apiUrl": {
+                "type": "string"
+              },
+              "leaseId": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "timeoutMs": {
+                "type": "integer"
+              }
             },
             "additionalProperties": false
           }
@@ -2457,13 +2498,27 @@
       },
       "resultSchema": {
         "type": "object",
-        "required": ["success", "project", "scripts"],
+        "required": [
+          "success",
+          "project",
+          "scripts"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "project": { "type": "object" },
-          "scripts": { "type": "object" },
-          "blueprint": { "type": "object" },
-          "gen": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "object"
+          },
+          "scripts": {
+            "type": "object"
+          },
+          "blueprint": {
+            "type": "object"
+          },
+          "gen": {
+            "type": "object"
+          }
         }
       },
       "sideEffects": [
@@ -2507,37 +2562,65 @@
       "description": "批量场景队列（per-scene checkpoint 落盘 scene-batch-queue.json，成功保护跳过、失败退避重试、断点恢复；单项目单批次守卫）。",
       "payloadSchema": {
         "type": "object",
-        "required": ["projectId"],
+        "required": [
+          "projectId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 },
-          "sceneIds": { "type": "array" },
-          "regenerate": { "type": "boolean" },
-          "mode": { "type": "string" },
-          "backgroundOnly": { "type": "boolean" },
-          "width": { "type": "integer" },
-          "height": { "type": "integer" }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneIds": {
+            "type": "array"
+          },
+          "regenerate": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "backgroundOnly": {
+            "type": "boolean"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
         },
         "additionalProperties": true
       },
       "resultSchema": {
         "type": "object",
-        "required": ["success"],
+        "required": [
+          "success"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "taskId": { "type": "string" }
+          "success": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "type": "string"
+          }
         }
       },
-      "sideEffects": ["fs:write:storage/projects/{projectId}/assets"],
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets"
+      ],
       "idempotent": false,
       "reviewRequired": true,
-      "timeoutMs": 300000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
           "path": "/api/projects/:id/ai/story/scenes/batch"
         }
       },
-      "aliases": ["批量渲染场景", "批量场景渲染"],
+      "aliases": [
+        "批量渲染场景",
+        "批量场景渲染"
+      ],
       "chatArgs": [
         {
           "name": "projectId",
@@ -2556,32 +2639,50 @@
       "description": "立绘 placements 确定性生成：写 story.json visuals.placements + project.json characters[].imageAssetId（幂等，保留人工站位）。",
       "payloadSchema": {
         "type": "object",
-        "required": ["projectId"],
+        "required": [
+          "projectId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 },
-          "sceneIds": { "type": "array" }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneIds": {
+            "type": "array"
+          }
         },
         "additionalProperties": true
       },
       "resultSchema": {
         "type": "object",
-        "required": ["success"],
+        "required": [
+          "success"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "placements": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "placements": {
+            "type": "object"
+          }
         }
       },
-      "sideEffects": ["fs:write:storage/projects/{projectId}/story.json"],
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/story.json"
+      ],
       "idempotent": true,
       "reviewRequired": false,
-      "timeoutMs": 30000,
+      "timeoutMs": 1800000,
       "transport": {
         "http": {
           "method": "POST",
           "path": "/api/projects/:id/ai/story/scenes/placements"
         }
       },
-      "aliases": ["立绘站位", "场景站位"],
+      "aliases": [
+        "立绘站位",
+        "场景站位"
+      ],
       "chatArgs": [
         {
           "name": "projectId",
@@ -2600,18 +2701,29 @@
       "description": "脚本结构分析（蓝图前置分析，只读）。",
       "payloadSchema": {
         "type": "object",
-        "required": ["projectId"],
+        "required": [
+          "projectId"
+        ],
         "properties": {
-          "projectId": { "type": "string", "minLength": 1 }
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": false
       },
       "resultSchema": {
         "type": "object",
-        "required": ["success"],
+        "required": [
+          "success"
+        ],
         "properties": {
-          "success": { "type": "boolean" },
-          "analysis": { "type": "object" }
+          "success": {
+            "type": "boolean"
+          },
+          "analysis": {
+            "type": "object"
+          }
         }
       },
       "sideEffects": [],
@@ -2624,7 +2736,10 @@
           "path": "/api/projects/:id/analyze/scripts"
         }
       },
-      "aliases": ["分析脚本", "脚本分析"],
+      "aliases": [
+        "分析脚本",
+        "脚本分析"
+      ],
       "chatArgs": [
         {
           "name": "projectId",
@@ -2632,6 +2747,181 @@
           "description": "项目 ID"
         }
       ]
+    },
+    {
+      "code": "GS-43",
+      "eventId": "studio.lifecycle.start",
+      "version": 1,
+      "category": "studio",
+      "kind": "command",
+      "title": "启动 GameStudio 项目服务",
+      "description": "本地拉起 GameStudio Server(1999) 与 Editor(8868)：bash ./start_project.sh --detached，随后等待 server/editor 健康检查通过。目标服务可能尚未启动，故由 Control 经 transport.local 本地执行，不走 HTTP。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health": {
+            "type": "array"
+          }
+        }
+      },
+      "sideEffects": [
+        "启动本地进程（GameStudio server/editor）"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 240000,
+      "transport": {
+        "local": {
+          "command": "bash",
+          "args": [
+            "./start_project.sh",
+            "--detached"
+          ],
+          "cwd": "${GAMESTUDIO_ROOT}",
+          "waitHealth": [
+            {
+              "name": "server",
+              "url": "http://127.0.0.1:1999/api/health",
+              "timeoutMs": 60000
+            },
+            {
+              "name": "editor",
+              "url": "http://localhost:8868",
+              "timeoutMs": 90000
+            }
+          ]
+        }
+      },
+      "aliases": [
+        "启动项目",
+        "启动工作室",
+        "启动GameStudio",
+        "启动gamestudio",
+        "拉起项目"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-44",
+      "eventId": "asset.scene.layeredProduce",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "场景分层出图（背景+姿势+摆位）",
+      "description": "单场景分层出图编排：背景-only 重画 + 姿势变体生成/复用 + 道具精灵 + 分层摆位写入，串行执行，进度经 /api/projects/:id/ai/tasks 暴露。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "sceneId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "specPath": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets/ai",
+        "fs:write:storage/projects/{projectId}/story.json",
+        "fs:write:storage/projects/{projectId}/story-assets/plan.json",
+        "image:call:comfyui"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 1800000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/scenes/:sceneId/layered-produce"
+        }
+      },
+      "aliases": [
+        "分层出图",
+        "场景分层"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-45",
+      "eventId": "asset.compress",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "压缩项目素材（存量批压）",
+      "description": "扫描 assets/ai 全部大图按用途分层压缩：立绘无损 WebP、背景 JPEG q90、候选 WebP q92；同步改写引用。幂等可复跑。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "resultSchema": {
+        "type": "object"
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/assets/ai",
+        "fs:write:storage/projects/{projectId}/project.json",
+        "fs:write:storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "idempotent": true,
+      "reviewRequired": true,
+      "timeoutMs": 1800000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/assets/compress"
+        }
+      },
+      "aliases": [
+        "压缩素材",
+        "素材批压"
+      ],
+      "chatArgs": []
     }
   ]
 }

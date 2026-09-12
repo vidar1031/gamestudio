@@ -1,5 +1,7 @@
 import { mkdir, readFile, readdir, stat, writeFile, copyFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 
 function isoNow() {
   try { return new Date().toISOString() } catch (_) { return String(Date.now()) }
@@ -16,6 +18,99 @@ async function copyDir(srcDir, dstDir) {
     else await copyFile(src, dst)
   }
 }
+
+// 2026-09-09 导出瘦身（实测 397MB → 目标 ≤5MB）：
+// 原实现 copyDir 整棵 assets/ 树（几百张抽卡候选/线稿/锁定测试图全部进包）。
+// 现在只导出 story.json 真实引用的资产（背景 + 摆位立绘），并做有损压缩：
+// - 背景图（story_scenes，无透明需求）：JPEG q82，尺寸不变；
+// - 立绘/道具（需透明通道）：WebP q85 + 宽 ≤512px（典型显示 ~216px，512 留 2x 余量）；
+// - 其他被引用文件原样复制。uri 改写为压缩后文件名（运行时按 project.json 相对路径加载）。
+const DIST_SPRITE_MAX_WIDTH = 512
+const DIST_BG_JPEG_QUALITY = 82
+const DIST_WEBP_QUALITY = 85
+
+function collectReferencedAssetUris(story) {
+  const uris = new Set()
+  const nodes = Array.isArray(story?.nodes) ? story.nodes : []
+  for (const node of nodes) {
+    const visuals = node?.visuals || {}
+    if (visuals.backgroundAssetId) uris.add(`id:${String(visuals.backgroundAssetId)}`)
+    for (const pl of Array.isArray(visuals.placements) ? visuals.placements : []) {
+      if (pl?.imageAssetId) uris.add(`id:${String(pl.imageAssetId)}`)
+    }
+  }
+  return uris
+}
+
+async function exportReferencedAssets({ projectDir, outDir, project, story }) {
+  const assets = Array.isArray(project?.assets) ? project.assets : []
+  const referenced = collectReferencedAssetUris(story)
+  const jobs = []
+  const uriRewrites = new Map() // 原 uri（项目内相对）→ 导出后相对 uri
+  const copied = []
+  for (const asset of assets) {
+    const assetId = String(asset?.id || '')
+    if (!referenced.has(`id:${assetId}`)) continue
+    const uri = String(asset?.uri || '').trim()
+    if (!uri.startsWith('assets/')) continue
+    const abs = path.join(projectDir, uri)
+    const st = await stat(abs).catch(() => null)
+    if (!st || !st.isFile()) continue
+    const isScene = /story_scenes/i.test(uri)
+    const isImage = /\.(png|jpe?g|webp)$/i.test(uri)
+    let outUri = uri
+    if (isImage && isScene) outUri = uri.replace(/\.(png|jpe?g|webp)$/i, '.jpg')
+    else if (isImage) outUri = uri.replace(/\.(png|jpe?g|webp)$/i, '.webp')
+    const outAbs = path.join(outDir, outUri)
+    if (isImage) {
+      jobs.push({ src: abs, dst: outAbs, kind: isScene ? 'bg' : 'sprite', srcBytes: st.size })
+      uriRewrites.set(uri, outUri)
+    } else {
+      await mkdir(path.dirname(outAbs), { recursive: true })
+      await copyFile(abs, outAbs)
+      copied.push({ uri, bytes: st.size })
+      uriRewrites.set(uri, outUri)
+    }
+  }
+  // 批量压缩：单次 python3+PIL 进程处理全部图片（PIL 为项目既有依赖，与 ch.sprite 白底合成同款）
+  let originalBytes = 0
+  let finalBytes = copied.reduce((acc, x) => acc + x.bytes, 0)
+  if (jobs.length) {
+    const manifestPath = path.join(outDir, '.export_compress_jobs.json')
+    await mkdir(path.dirname(manifestPath), { recursive: true })
+    await writeFile(manifestPath, JSON.stringify(jobs.map(({ src, dst, kind }) => ({ src, dst, kind }))), 'utf-8')
+    await new Promise((resolve, reject) => {
+      const py = spawn('python3', ['-c', `
+import json, os, sys
+from PIL import Image
+jobs = json.load(open(sys.argv[1]))
+sprite_max = ${DIST_SPRITE_MAX_WIDTH}
+for j in jobs:
+    os.makedirs(os.path.dirname(j['dst']), exist_ok=True)
+    im = Image.open(j['src'])
+    if j['kind'] == 'bg':
+        im.convert('RGB').save(j['dst'], 'JPEG', quality=${DIST_BG_JPEG_QUALITY}, optimize=True)
+    else:
+        im = im.convert('RGBA')
+        if im.width > sprite_max:
+            im = im.resize((sprite_max, int(im.height * sprite_max / im.width)), Image.LANCZOS)
+        im.save(j['dst'], 'WEBP', quality=${DIST_WEBP_QUALITY}, method=4)
+`, manifestPath])
+      let err = ''
+      py.stderr.on('data', (c) => { err += c })
+      py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`export_compress_exit_${code}:${err.slice(0, 300)}`))))
+      py.on('error', reject)
+    })
+    for (const job of jobs) {
+      originalBytes += job.srcBytes
+      const st = await stat(job.dst).catch(() => null)
+      finalBytes += st ? st.size : 0
+    }
+    try { await writeFile(manifestPath, '{}', 'utf-8') } catch (_) {}
+  }
+  return { uriRewrites, stats: { referencedCount: jobs.length + copied.length, originalBytes, finalBytes } }
+}
+
 
 function renderIndexHtml({ title }) {
   // P0：最小运行时（ESM + Pixi CDN）+ Timeline/Event/State/EndingCard
@@ -83,7 +178,7 @@ function renderIndexHtml({ title }) {
       </div>
     </div>
     <script type="module">
-      import { Application, Container, Sprite, Texture, Graphics, Text, TextStyle } from 'https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.mjs'
+      import { Application, Container, Sprite, Texture, Graphics, Text, TextStyle } from './vendor/pixi.mjs'
 
       const rootEl = document.getElementById('app')
       const metaEl = document.getElementById('nodeMeta')
@@ -229,6 +324,15 @@ function renderIndexHtml({ title }) {
           if (!dialogWrapEl || !dialogNodeNameEl) return
           const d = node && node.visuals && node.visuals.ui && node.visuals.ui.dialog ? node.visuals.ui.dialog : {}
           const preset = normalizeDialogPreset(d && d.preset)
+
+          // 2026-08-31：对话框底板透明度（节点 visuals.ui.dialog.opacity，0-1，缺省 1）
+          try {
+            const op = Math.max(0, Math.min(1, Number(d && d.opacity != null ? d.opacity : 1)))
+            const cardEl = dialogEl && dialogEl.classList && dialogEl.classList.contains('card') ? dialogEl : (dialogEl && dialogEl.querySelector ? dialogEl.querySelector('.card') : null)
+            if (cardEl && cardEl.style) cardEl.style.background = 'rgba(2,6,23,' + (0.74 * op).toFixed(3) + ')'
+            const textBoxEl = dialogTextEl && dialogTextEl.closest ? (dialogTextEl.closest('.textBox') || dialogTextEl) : dialogTextEl
+            if (textBoxEl && textBoxEl.style) textBoxEl.style.background = 'rgba(2,6,23,' + (0.35 * op).toFixed(3) + ')'
+          } catch (_) {}
 
           // reset
           dialogWrapEl.style.display = 'flex'
@@ -595,9 +699,12 @@ function renderIndexHtml({ title }) {
             const y = Number.isFinite(Number(p.transform?.y)) ? Number(p.transform.y) : 1
             const scale = Number.isFinite(Number(p.transform?.scale)) ? Number(p.transform.scale) : 1
             const rot = Number.isFinite(Number(p.transform?.rotationDeg)) ? Number(p.transform.rotationDeg) : 0
+            const flipX = p.transform && p.transform.flipX ? -1 : 1
+            const flipY = p.transform && p.transform.flipY ? -1 : 1
             sp.x = stageW * Math.max(0, Math.min(1, x))
             sp.y = stageH * Math.max(0, Math.min(1, y))
-            sp.scale.set(scale)
+            // anchor (0.5,1) 底中：水平反转围绕中心稳定（与编辑器 renderStage 同一语义）
+            sp.scale.set(scale * flipX, scale * flipY)
             sp.rotation = (rot * Math.PI) / 180
             root.addChild(sp)
           }
@@ -899,21 +1006,36 @@ export default {
     // 输出 story.json
     await writeFile(path.join(outDir, 'story.json'), JSON.stringify(story, null, 2), 'utf-8')
 
+    // 2026-09-09 导出瘦身：只导出 story.json 真实引用的资产（背景+摆位立绘）并压缩
+    // （背景 JPEG q82 / 立绘 WebP≤512px），uri 改写为压缩后文件名；不再整树复制 assets/。
+    const { uriRewrites, stats } = await exportReferencedAssets({ projectDir, outDir, project, story })
+
     // 输出 project.json（包含 assets/characters 等对象信息）
     // 导出包内统一改写为相对路径，避免依赖 /project-assets 动态路由。
-    const projectForDist = rewriteProjectAssetUrisForDist(project, projectId)
+    const projectWithCompressedUris = (() => {
+      const p = project && typeof project === 'object' ? JSON.parse(JSON.stringify(project)) : {}
+      const list = Array.isArray(p.assets) ? p.assets : []
+      p.assets = list.map((a) => {
+        if (!a || typeof a !== 'object') return a
+        const next = { ...a }
+        const rewritten = uriRewrites.get(String(next.uri || '').trim())
+        if (rewritten) next.uri = rewritten
+        return next
+      })
+      return p
+    })()
+    const projectForDist = rewriteProjectAssetUrisForDist(projectWithCompressedUris, projectId)
     await writeFile(path.join(outDir, 'project.json'), JSON.stringify(projectForDist, null, 2), 'utf-8')
-
-    // 输出 assets（若存在）
-    const assetsSrc = path.join(projectDir, 'assets')
-    const assetsDst = path.join(outDir, 'assets')
-    try {
-      const st = await stat(assetsSrc)
-      if (st.isDirectory()) await copyDir(assetsSrc, assetsDst)
-    } catch (_) {}
 
     const title = project?.title || `Story ${projectId}`
     await writeFile(path.join(outDir, 'index.html'), renderIndexHtml({ title }), 'utf-8')
+
+    // 自包含导出：随包携带 Pixi 运行时，避免播放器依赖 CDN（网络慢/断网时画布无法初始化）
+    const require = createRequire(import.meta.url)
+    const pixiEntry = require.resolve('pixi.js')
+    const pixiBundleSrc = path.join(path.dirname(pixiEntry), '..', 'dist', 'pixi.mjs')
+    await mkdir(path.join(outDir, 'vendor'), { recursive: true })
+    await copyFile(pixiBundleSrc, path.join(outDir, 'vendor', 'pixi.mjs'))
 
     const manifest = {
       schemaVersion: '1.0',
@@ -931,7 +1053,8 @@ export default {
       files: {
         story: 'story.json',
         assetsDir: 'assets'
-      }
+      },
+      exportStats: stats
     }
     await writeFile(path.join(outDir, 'game.manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8')
 

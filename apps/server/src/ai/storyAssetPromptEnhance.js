@@ -63,6 +63,7 @@ function buildInstructions(input) {
   return (
     '你是“故事事物锁定提示词增强器”。\n' +
     '任务：针对当前单个事物，基于 Story Bible、全文事件链、事物锚点和使用场景，重写一版更适合“锁定参考图抽卡”的增强提示词。\n' +
+    '统一画风（全项目硬性锁定，用户指令）：卡通童话绘本——扁平 2D 卡通插画、粗净轮廓线、赛璐璐上色、暖色柔和配色。任何事物的正向稿都必须以这个画风收尾；禁止出现写实、照片级真实、3D 渲染、CGI、油画、厚涂、超写实、摄影感等风格词或语义；反向稿必须包含：写实，照片级真实，3D渲染，CGI，油画，厚涂，超写实，摄影感。\n' +
     '要求：\n' +
     '- 必须围绕“当前单个事物”重写，不要给通用模板，不要偷懒返回固定句子。\n' +
     '- 输出 JSON，不要解释。\n' +
@@ -86,6 +87,8 @@ function buildInstructions(input) {
     '- 如果 lockProfile=ambient_prop：必须强调“单个氛围元素”而非完整大场景，例如单朵白云、单团雾气、单个光团，不得带地平线、建筑、树木或角色。\n' +
     '- 如果 lockProfile=organic_prop：必须强调单个自然标本或单个自然物，不要带栖息地大背景。\n' +
     '- 如果 category=location：必须生成“地点锚点图”式提示词，强调环境结构、地形、水体、植被、建筑、光线和统一世界观。\n' +
+    // 2026-08-28：H5 互动故事的文本叠加在场景图上，画面下部必须留低细节低对比的安静区，保证文本可读
+    '- 对于 location（以及任何会作为场景底图的画面）：必须额外要求“画面下部约三分之一为低细节、低对比的安静区域，便于 H5 文本叠加阅读”，不能只写满高细节内容。\n' +
     '- 不要照抄 currentPromptZh/currentPromptEn；应基于故事信息重写和增强。\n' +
     '- 不要引入故事中不存在的新角色、新道具、新时代元素。\n' +
     '- 对于角色参考图，禁止把完整故事场景当背景直接画进去。\n' +
@@ -100,7 +103,8 @@ function buildInput(input) {
   const asset = input?.asset && typeof input.asset === 'object' ? input.asset : {}
   const plan = input?.plan && typeof input.plan === 'object' ? input.plan : {}
   const usageContext = input?.assetUsageContext && typeof input.assetUsageContext === 'object' ? input.assetUsageContext : {}
-  const storyBibleJson = safeJsonText(input?.storyBibleJson, 5000)
+  // 2026-08-26 瘦身：32G/16K 环境下 prefill 受 oMLX 内存护栏约束，Bible 只取关键前段
+  const storyBibleJson = safeJsonText(input?.storyBibleJson, 1800)
   const lines = [
     `projectTitle: ${asStr(input?.projectTitle).trim() || '(empty)'}`,
     `asset.id: ${asStr(asset.id).trim() || '(empty)'}`,
@@ -115,19 +119,20 @@ function buildInput(input) {
     `asset.forbiddenSubstitutes: ${uniq(asList(asset.forbiddenSubstitutes)).join(', ') || '(empty)'}`,
     `asset.sceneIds: ${uniq(asList(asset.sceneIds)).join(', ') || '(empty)'}`,
     `plan.worldAnchor: ${asStr(plan.worldAnchor).trim() || '(empty)'}`,
-    `plan.eventChain: ${uniq(asList(plan.eventChain), 20).join(' | ') || '(empty)'}`,
+    `plan.eventChain: ${uniq(asList(plan.eventChain), 10).join(' | ') || '(empty)'}`,
     `assetUsageContext.roleLineZh: ${asStr(usageContext.roleLineZh).trim() || '(empty)'}`,
     `assetUsageContext.plotCueLineZh: ${asStr(usageContext.plotCueLineZh).trim() || '(empty)'}`,
     `assetUsageContext.structureLineZh: ${asStr(usageContext.structureLineZh).trim() || '(empty)'}`,
     `assetUsageContext.sceneLineZh: ${asStr(usageContext.sceneLineZh).trim() || '(empty)'}`,
     `assetUsageContext.coAssetLineZh: ${asStr(usageContext.coAssetLineZh).trim() || '(empty)'}`,
     `assetUsageContext.sceneNames: ${uniq(asList(usageContext.sceneNames)).join(' | ') || '(empty)'}`,
-    `assetUsageContext.sceneSummaries: ${uniq(asList(usageContext.sceneSummaries), 10).join(' | ') || '(empty)'}`,
-    `assetUsageContext.eventMentions: ${uniq(asList(usageContext.eventMentions), 10).join(' | ') || '(empty)'}`,
-    `assetUsageContext.coAssetNames: ${uniq(asList(usageContext.coAssetNames), 12).join(', ') || '(empty)'}`,
-    `assetUsageContext.roleHints: ${uniq(asList(usageContext.roleHints), 12).join(' | ') || '(empty)'}`,
-    `assetUsageContext.plotCueHints: ${uniq(asList(usageContext.plotCueHints), 12).join(' | ') || '(empty)'}`,
-    `assetUsageContext.structureHints: ${uniq(asList(usageContext.structureHints), 12).join(' | ') || '(empty)'}`,
+    // 2026-08-26 瘦身：上下文列表限量下调，把 prefill 压进 32G/16K 内存预算
+    `assetUsageContext.sceneSummaries: ${uniq(asList(usageContext.sceneSummaries), 6).join(' | ') || '(empty)'}`,
+    `assetUsageContext.eventMentions: ${uniq(asList(usageContext.eventMentions), 6).join(' | ') || '(empty)'}`,
+    `assetUsageContext.coAssetNames: ${uniq(asList(usageContext.coAssetNames), 8).join(', ') || '(empty)'}`,
+    `assetUsageContext.roleHints: ${uniq(asList(usageContext.roleHints), 6).join(' | ') || '(empty)'}`,
+    `assetUsageContext.plotCueHints: ${uniq(asList(usageContext.plotCueHints), 6).join(' | ') || '(empty)'}`,
+    `assetUsageContext.structureHints: ${uniq(asList(usageContext.structureHints), 6).join(' | ') || '(empty)'}`,
     `promptReviewFeedbackZh: ${asStr(input?.promptReviewFeedbackZh).trim() || '(empty)'}`,
     `globalPromptZh: ${asStr(input?.globalPromptZh).trim() || '(empty)'}`,
     `globalNegativePromptZh: ${asStr(input?.globalNegativePromptZh).trim() || '(empty)'}`,
@@ -141,7 +146,10 @@ function buildInput(input) {
 }
 
 async function enhanceViaOpenAICompatible({ input, provider, model, apiUrl, proxyUrl }) {
+  // 2026-08-26：输出预算封顶 2048（schema 上限 ~2700 字符）；OMLX 按 max_tokens 预留 KV，
+  // 默认 8192 会让 27B 在 32G 机器上撞上 prefill 内存护栏（实测 400 拒答）
   const body = {
+    max_output_tokens: 2048,
     text: {
       format: {
         type: 'json_schema',
@@ -154,7 +162,7 @@ async function enhanceViaOpenAICompatible({ input, provider, model, apiUrl, prox
     input: buildInput(input),
     ...(model ? { model: asStr(model).trim() } : {})
   }
-  const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl, proxyUrl, timeoutMs: 60_000, model })
+  const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl, proxyUrl, timeoutMs: ['localoxml', 'ollama'].includes(asStr(provider).trim().toLowerCase()) ? 300_000 : 60_000, model })
   const parsed = JSON.parse(extractResponseOutputText(json) || '{}')
   if (!validatePromptEnhanceResult(parsed)) throw new Error('invalid_story_asset_prompt_enhance_output')
   return { result: parsed, meta }

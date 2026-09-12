@@ -30,11 +30,41 @@ function inferToolForBootstrapAction(action) {
   return 'planner.default'
 }
 
+// 短编辑距离：容忍 gamestudio 的常见拼写错误（如 gamesutdio 两个相邻字母颠倒，2026-08-28 实测用户输入未命中路由）
+function editDistanceWithin(a, b, max) {
+  const al = a.length
+  const bl = b.length
+  if (Math.abs(al - bl) > max) return max + 1
+  let prev = Array.from({ length: bl + 1 }, (_, j) => j)
+  for (let i = 1; i <= al; i += 1) {
+    const cur = [i]
+    let rowMin = cur[0]
+    for (let j = 1; j <= bl; j += 1) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+      if (cur[j] < rowMin) rowMin = cur[j]
+    }
+    if (rowMin > max) return max + 1
+    prev = cur
+  }
+  return prev[bl]
+}
+
+function mentionsGameStudio(prompt) {
+  if (/gamestudio|game studio|游戏工作室|start_project\.sh/i.test(prompt)) return true
+  // 容错：gam 开头、长度相近的拉丁 token，与 gamestudio 编辑距离 ≤2 视为同一目标
+  const tokens = prompt.toLowerCase().split(/[^a-z]+/).filter(Boolean)
+  return tokens.some((t) => t.length >= 8 && t.length <= 12 && t.startsWith('gam') && editDistanceWithin(t, 'gamestudio', 2) <= 2)
+}
+
 export function isGameStudioBootstrapPrompt(userPrompt) {
   const prompt = normalizePrompt(userPrompt)
   if (!prompt) return false
-  if (!/gamestudio|game studio|游戏工作室/i.test(prompt)) return false
-  return /启动|打开|界面|工作台|editor|workbench|ai[-_\s]?create[-_\s]?story|自检|检查|配置|comfyui|本地模型|local model|diagnose|preflight|bootstrap|settings|open|launch/i.test(prompt)
+  // 2026-09-08：ComfyUI 单独启动请求直认 bootstrap 链——ensureComfyUiRunning 经 Terminal.app 可见窗口拉起
+  // 是项目规定的唯一正确启动方式。此前必须带 gamestudio 字样才命中，裸「启动 ComfyUI」/「sh start.sh」
+  // 会落到 shell_execute 并被只读判定静默剥光（2026-09-08 实测现场）。
+  if (/comfyui/i.test(prompt) && /启动|打开|拉起|运行|执行|launch|start/i.test(prompt)) return true
+  if (!mentionsGameStudio(prompt)) return false
+  return /启动|打开|界面|工作台|editor|workbench|ai[-_\s]?create[-_\s]?story|自检|检查|配置|comfyui|本地模型|local model|diagnose|preflight|bootstrap|settings|open|launch|start_project/i.test(prompt)
 }
 
 export function buildGameStudioBootstrapPlan(userPrompt) {

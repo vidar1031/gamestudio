@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 
 import { GAMESTUDIO_ROOT } from '../../config/paths.js'
 import { GAMESTUDIO_SERVER_BASE_URL } from '../services/gameStudioServerClient.js'
@@ -141,16 +142,126 @@ function summarizePayload(payload) {
   }
 }
 
+// ============ 2026-08-28 transport.local（生命周期类事件：目标服务未启动时不走 HTTP） ============
+
+// 注册表 HTTP 拉取失败（GameStudio server 未启动）时的本地文件回退。
+// 否则 studio.lifecycle.start 这类"启动服务"事件在恰恰需要它的场景里连注册表都加载不了。
+function readLocalRegistryFile() {
+  try {
+    const registryPath = path.join(GAMESTUDIO_ROOT, 'apps', 'server', 'events', 'registry.v1.json')
+    const parsed = JSON.parse(fs.readFileSync(registryPath, 'utf8'))
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+async function loadRegistryWithLocalFallback() {
+  try {
+    return await loadGameStudioEventRegistry()
+  } catch {
+    return readLocalRegistryFile()
+  }
+}
+
+function runCommandLocal(command, args, { cwd = GAMESTUDIO_ROOT, timeoutMs = 180000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const stdout = []
+    const stderr = []
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM')
+      resolve({ ok: false, exitCode: null, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), error: 'command_timeout' })
+    }, Math.max(1000, Number(timeoutMs || 180000)))
+    child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)))
+    child.stderr.on('data', (chunk) => stderr.push(Buffer.from(chunk)))
+    child.on('error', (error) => {
+      clearTimeout(timeout)
+      resolve({ ok: false, exitCode: null, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), error: error instanceof Error ? error.message : String(error) })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timeout)
+      resolve({ ok: code === 0, exitCode: code, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), error: code === 0 ? null : `exit_${code}` })
+    })
+  })
+}
+
+async function waitForUrlOk(url, { timeoutMs = 60000, intervalMs = 1500 } = {}) {
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs || 60000))
+  let lastError = ''
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(4000) })
+      if (res.ok) return { ok: true }
+      lastError = `http_${res.status}`
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e)
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+  return { ok: false, error: lastError || 'timeout' }
+}
+
+async function executeLocalTransport(event) {
+  const spec = event.transport.local
+  const command = String(spec.command || '').trim()
+  const args = (Array.isArray(spec.args) ? spec.args : []).map((x) => String(x))
+  const endpoint = [command, ...args].join(' ').trim()
+  const startedAt = Date.now()
+  if (!command) {
+    return { ok: false, durationMs: 0, endpoint, exitCode: null, error: 'local_command_missing', data: {} }
+  }
+  const cwd = String(spec.cwd || '').replace('${GAMESTUDIO_ROOT}', GAMESTUDIO_ROOT).trim() || GAMESTUDIO_ROOT
+  const timeoutMs = Math.max(1000, Number(spec.timeoutMs || event.timeoutMs || 180000))
+  const run = await runCommandLocal(command, args, { cwd, timeoutMs })
+  const health = []
+  if (run.ok && Array.isArray(spec.waitHealth)) {
+    for (const item of spec.waitHealth) {
+      const url = String(item?.url || '').trim()
+      if (!url) continue
+      const r = await waitForUrlOk(url, { timeoutMs: Number(item?.timeoutMs || 60000) })
+      health.push({ name: String(item?.name || url), url, ok: r.ok, ...(r.error ? { error: r.error } : {}) })
+    }
+  }
+  const healthOk = health.every((x) => x.ok)
+  const ok = Boolean(run.ok && healthOk)
+  return {
+    ok,
+    durationMs: Date.now() - startedAt,
+    endpoint,
+    exitCode: run.exitCode,
+    error: ok ? null : (run.error || 'health_not_ready'),
+    data: {
+      exitCode: run.exitCode,
+      health,
+      stdoutTail: String(run.stdout || '').slice(-600),
+      stderrTail: String(run.stderr || '').slice(-600)
+    }
+  }
+}
+
 // 高阶 dispatch：返回归一化 EventResult 信封。
 // options.caller: 'chat' | 'testcase' | 'cron' | 'workflow'
 // options.confirmed: command + reviewRequired 事件必须显式 confirmed=true 才执行
 // options.sessionId: 关联的 reasoning session（可选，用于溯源）
 export async function dispatchGameStudioEvent(eventRef, payload = {}, options = {}) {
-  const registry = await loadGameStudioEventRegistry()
-  const index = indexGameStudioEventRegistry(registry)
-  const event = resolveGameStudioEventRef(index, eventRef)
+  const registry = await loadRegistryWithLocalFallback()
   const caller = String(options.caller || 'unknown')
   const traceId = crypto.randomUUID()
+  if (!registry) {
+    return {
+      ok: false,
+      provider: 'gamestudio',
+      eventId: null,
+      code: null,
+      traceId,
+      durationMs: 0,
+      error: 'registry_unavailable',
+      caller
+    }
+  }
+  const index = indexGameStudioEventRegistry(registry)
+  const event = resolveGameStudioEventRef(index, eventRef)
 
   if (!event) {
     return {
@@ -193,6 +304,46 @@ export async function dispatchGameStudioEvent(eventRef, payload = {}, options = 
       caller,
       event
     }
+  }
+
+  // transport.local：本地命令执行（生命周期类事件，目标服务可能尚未启动，不走 HTTP）
+  if (event.transport && typeof event.transport === 'object' && event.transport.local && typeof event.transport.local === 'object') {
+    const localOutcome = await executeLocalTransport(event)
+    const result = {
+      ok: localOutcome.ok,
+      provider: 'gamestudio',
+      eventId: event.eventId,
+      code: event.code || null,
+      kind: event.kind,
+      reviewRequired: Boolean(event.reviewRequired),
+      traceId,
+      durationMs: localOutcome.durationMs,
+      transport: {
+        method: 'local',
+        endpoint: localOutcome.endpoint,
+        status: localOutcome.exitCode
+      },
+      result: { success: localOutcome.ok, ...localOutcome.data },
+      error: localOutcome.ok ? null : (localOutcome.error || 'local_command_failed'),
+      caller
+    }
+    appendEventRecord({
+      traceId,
+      ts: new Date().toISOString(),
+      provider: result.provider,
+      eventId: result.eventId,
+      code: result.code,
+      kind: result.kind,
+      caller,
+      sessionId: options.sessionId || null,
+      caseId: options.caseId || null,
+      ok: result.ok,
+      durationMs: result.durationMs,
+      transport: result.transport,
+      payloadSummary: summarizePayload(payload),
+      error: result.error
+    })
+    return result
   }
 
   const request = buildHttpRequest(event, payload)

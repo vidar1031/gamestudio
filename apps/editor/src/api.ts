@@ -368,6 +368,44 @@ export async function generateStoryPromptTemplateWithAi(input: {
   }
 }
 
+// ============ 公共提示词库（跨项目共享，出图提示词片段） ============
+export type PromptLibraryEntry = {
+  id: string
+  name: string
+  kind: 'positive' | 'negative'
+  textZh: string
+  textEn: string
+  builtin?: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+export async function listPromptLibrary(): Promise<PromptLibraryEntry[]> {
+  const json = await j(`${base()}/api/ai/prompt-library`, { method: 'GET' })
+  return Array.isArray(json.entries) ? (json.entries as PromptLibraryEntry[]) : []
+}
+
+export async function savePromptLibraryEntry(input: {
+  name: string
+  kind: 'positive' | 'negative'
+  textZh?: string
+  textEn?: string
+}): Promise<PromptLibraryEntry> {
+  const json = await j(`${base()}/api/ai/prompt-library`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  })
+  return json.entry as PromptLibraryEntry
+}
+
+export async function deletePromptLibraryEntryById(id: string): Promise<{ removed: boolean; entries: PromptLibraryEntry[] }> {
+  const json = await j(`${base()}/api/ai/prompt-library/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  return {
+    removed: Boolean(json.removed),
+    entries: Array.isArray(json.entries) ? (json.entries as PromptLibraryEntry[]) : []
+  }
+}
+
 /**
  * 获取全局 AI 规则
  * @returns 全局 AI 规则配置或 null
@@ -403,7 +441,7 @@ export async function getProject(id: string): Promise<{ project: ProjectV1; stor
  * @param payload - 包含项目或故事的更新数据
  * @returns 更新后的项目对象
  */
-export async function saveProject(id: string, payload: { project?: Partial<ProjectV1>; story?: StoryV1 }): Promise<ProjectV1> {
+export async function saveProject(id: string, payload: { project?: Partial<ProjectV1>; story?: StoryV1; _rev?: number }): Promise<ProjectV1> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) })
   return normalizeProjectV1(json.project)
 }
@@ -725,6 +763,28 @@ export async function generateStoryBibleAi(
   return { result: (json.result as any) || null, meta: (json.meta as any) || null }
 }
 
+// ============ 剧情姿势状态提取（2026-09-10，候选制） ============
+export type StoryPoseStateItem = { characterId: string; pose: string; view: string; action: string; expression: string }
+export type StoryPoseStateScene = { sceneId: string; sceneName: string; characterStates: StoryPoseStateItem[] }
+
+export async function extractStoryPoseStatesAi(
+  projectId: string
+): Promise<{ poseStates: { scenes: StoryPoseStateScene[] }; assetByCharacterId: Record<string, { assetId: string; assetName: string }> }> {
+  const resp = await fetch(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/pose-states`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  })
+  const json = (await resp.json().catch(() => null)) as any
+  if (!resp.ok || !json || json.success !== true) {
+    throw new Error(json && (json.message || json.error) ? String(json.message || json.error) : `HTTP ${resp.status}`)
+  }
+  return {
+    poseStates: (json.poseStates || { scenes: [] }) as { scenes: StoryPoseStateScene[] },
+    assetByCharacterId: (json.assetByCharacterId || {}) as Record<string, { assetId: string; assetName: string }>
+  }
+}
+
 export type StoryAssetPlan = {
   schemaVersion: string
   generatedAt: string
@@ -791,12 +851,13 @@ export async function buildStoryAssetPlanAi(
 export async function persistStoryAssetPlanAi(
   projectId: string,
   payload: { plan: StoryAssetPlan }
-): Promise<StoryAssetPlan> {
+): Promise<StoryAssetPlan & { _rev?: number }> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/plan/persist`, {
     method: 'POST',
     body: JSON.stringify(payload)
   })
-  return json.plan as StoryAssetPlan
+  // 2026-09-03 透传服务端最新 _rev（保存即版本递增，编辑器采信以免误报外部更新）
+  return { ...(json.plan as StoryAssetPlan), _rev: Number(json._rev) || 0 } as StoryAssetPlan & { _rev?: number }
 }
 
 export async function generateStoryAssetReferenceAi(
@@ -841,7 +902,7 @@ export async function generateStoryAssetReferenceAi(
 
 export async function selectStoryAssetReferenceAi(
   projectId: string,
-  payload: { assetId: string; assetPath: string }
+  payload: { assetId: string; assetPath: string; manualOverride?: boolean }
 ): Promise<{ asset: any; plan: StoryAssetPlan }> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/reference/select`, {
     method: 'POST',
@@ -918,6 +979,64 @@ export type AiTaskProgress = {
 export async function listProjectAiTasks(projectId: string): Promise<AiTaskProgress[]> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/tasks`)
   return Array.isArray(json.tasks) ? (json.tasks as AiTaskProgress[]) : []
+}
+
+// 出图总账：服务端只读聚合（资产锁定/场景绑定/总进度），用于全局出图进度展示
+export type AiCoverageAssetItem = {
+  id: string
+  name: string
+  category: string
+  sceneCount: number
+  referenceCount: number
+  primaryReferenceAssetUri: string
+  primaryExists: boolean
+  lockConfirmed: boolean
+  lockConfirmedAt: string
+  status: string // missing / candidates / selected / locked
+}
+
+export type AiCoverageSceneItem = {
+  id: string
+  name: string
+  backgroundAssetId: string
+  backgroundUri: string
+  backgroundExists: boolean
+  bindApproved: boolean
+  bindApprovedAt: string
+  status: string // pending / rendered / bound
+}
+
+export type AiCoverage = {
+  schemaVersion: string
+  generatedAt: string
+  hasPlan: boolean
+  assets: {
+    total: number
+    locked: number
+    selected: number
+    candidates: number
+    missing: number
+    items: AiCoverageAssetItem[]
+  }
+  scenes: {
+    total: number
+    bound: number
+    rendered: number
+    pending: number
+    items: AiCoverageSceneItem[]
+  }
+  overall: {
+    required: number
+    done: number
+    remaining: number
+    percent: number
+    pendingReviews: number
+  }
+}
+
+export async function listProjectAiCoverage(projectId: string): Promise<AiCoverage | null> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/coverage`)
+  return (json.coverage as AiCoverage) || null
 }
 
 export async function renderAllStoryScenesAi(
@@ -1231,9 +1350,10 @@ export async function renderStorySceneAi(
     prompt?: string
     scenePrompt?: string
     negativePrompt?: string
+    backgroundOnly?: boolean
     timeoutMs?: number
   }
-): Promise<{ projectAsset: any; renderSpec: any; assetPath: string; url: string; provider: string; remoteUrl?: string; prompt: string; negativePrompt: string }> {
+): Promise<{ projectAsset: any; renderSpec: any; assetPath: string; url: string; provider: string; remoteUrl?: string; prompt: string; negativePrompt: string; pendingReview?: ImageReviewRecord | null; taskId?: string }> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/render`, {
     method: 'POST',
     body: JSON.stringify(payload || {})
@@ -1246,8 +1366,43 @@ export async function renderStorySceneAi(
     provider: String(json.provider || ''),
     remoteUrl: String(json.remoteUrl || '').trim() || undefined,
     prompt: String(json.prompt || ''),
-    negativePrompt: String(json.negativePrompt || '')
+    negativePrompt: String(json.negativePrompt || ''),
+    // manual 审核模式 202：出图前审核或场景绑定审核挂起，批准后服务端自动继续
+    pendingReview: (json.pendingReview as ImageReviewRecord) || null,
+    taskId: json.taskId ? String(json.taskId) : undefined
   }
+}
+
+// 场景图版本管理：文件真相源 assets/ai/story_scenes/<sceneId>_<ts>.png（新在前）
+export type StorySceneImageItem = {
+  assetPath: string
+  url: string
+  createdAt: string
+  isBound: boolean
+}
+
+export async function listStorySceneImagesAi(projectId: string, sceneId: string): Promise<{ items: StorySceneImageItem[]; boundUri: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/images`)
+  return {
+    items: Array.isArray(json.items) ? (json.items as StorySceneImageItem[]) : [],
+    boundUri: String(json.boundUri || '')
+  }
+}
+
+export async function bindStorySceneImageAi(projectId: string, sceneId: string, assetPath: string): Promise<{ ok: boolean; projectAsset: any }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/bind`, {
+    method: 'POST',
+    body: JSON.stringify({ assetPath })
+  })
+  return { ok: Boolean(json.success), projectAsset: (json.projectAsset as any) || null }
+}
+
+export async function deleteStorySceneImageAi(projectId: string, sceneId: string, assetPath: string): Promise<{ ok: boolean }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/images/delete`, {
+    method: 'POST',
+    body: JSON.stringify({ assetPath })
+  })
+  return { ok: Boolean(json.success) }
 }
 
 // ===== AI 图像生成 - 角色 (AI Character) =====
@@ -1288,6 +1443,7 @@ export async function analyzeCharacterFingerprintAi(
 }
 
 export type AiCharacterSpriteRequest = {
+  characterId?: string
   globalPrompt?: string
   fingerprintPrompt?: string
   posePrompt?: string
@@ -1299,6 +1455,8 @@ export type AiCharacterSpriteRequest = {
   cfgScale?: number
   guidanceScale?: number
   sequentialImageGeneration?: string
+  // 2026-09-01 姿势变体高级参数：enabled=true 强制走主参考 IPAdapter 链并覆盖 env 默认档位
+  ipadapter?: { enabled?: boolean; weight?: number; startAt?: number; endAt?: number }
 }
 
 export async function generateCharacterSpriteAi(
@@ -1317,6 +1475,42 @@ export async function generateCharacterSpriteAi(
     prompt: typeof json.prompt === 'string' ? json.prompt : undefined,
     negativePrompt: typeof json.negativePrompt === 'string' ? json.negativePrompt : undefined
   }
+}
+
+// 2026-09-01 RMBG 语义分割抠图（替代前端 chroma key：衣服撞色/渐变底会挖穿，实测）
+export async function cutoutCharacterSpriteAi(
+  projectId: string,
+  assetPath: string
+): Promise<{ assetPath: string; url: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/character/cutout`, {
+    method: 'POST',
+    body: JSON.stringify({ assetPath })
+  })
+  return { assetPath: String(json.assetPath || ''), url: String(json.url || '') }
+}
+
+// 2026-09-01 动作立绘抽卡池：候选图与角色锁定主参考的一致性评分（服务端 Kimi 视觉评审，姿势差异不扣分）
+export async function reviewCharacterPoseAi(
+  projectId: string,
+  payload: { characterId: string; assetPath: string }
+): Promise<{ score: number; reason: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/character/pose-review`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return { score: Number(json.score || 0), reason: String(json.reason || '') }
+}
+
+// 2026-09-01 姿势变体：AI 生成姿势提示词（中文稿+英文稿双稿，与主流程「中文稿→翻译→英文稿」一致）
+export async function generateCharacterPosePromptAi(
+  projectId: string,
+  payload: { characterName: string; fingerprintPrompt?: string; sceneText?: string; userHint?: string; reviewFeedback?: string }
+): Promise<{ promptZh: string; promptEn: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/character/pose-prompt`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return { promptZh: String(json.result?.promptZh || ''), promptEn: String(json.result?.promptEn || '') }
 }
 
 export type AiCharacterReferenceRequest = {
@@ -1374,6 +1568,15 @@ export async function openProjectAssetFolder(projectId: string, uri: string): Pr
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/assets/open-folder`, {
     method: 'POST',
     body: JSON.stringify({ uri })
+  })
+  return { folder: String(json.folder || '') }
+}
+
+// 2026-09-09 顶栏「素材目录」：不传 uri，服务端打开项目 AI 素材根目录（assets/ai）
+export async function openProjectAiAssetsFolder(projectId: string): Promise<{ folder: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/assets/open-folder`, {
+    method: 'POST',
+    body: JSON.stringify({})
   })
   return { folder: String(json.folder || '') }
 }

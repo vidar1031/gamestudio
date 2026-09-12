@@ -2,7 +2,6 @@ import path from 'node:path'
 
 import { GAMESTUDIO_ROOT } from '../../config/paths.js'
 import {
-  isReasoningAnswerAction,
   isReasoningInvokeAction,
   isReasoningWriteAction,
   REASONING_ACTIONS,
@@ -120,7 +119,7 @@ export function shouldAppendReasoningMemorySync(steps, userPrompt, options = {})
   const readOnlyCapabilityQuestion = /包含哪些|有哪些|是什么|是否|当前|说明|分析|解释|列出|查看|检查/i.test(normalizedPrompt)
     && /workflow|工作流|能力链条|目标能力|evaluator|评估器|registry|intent|状态机|自动化|Hermes|GameStudio Server|关键词|打标签|可靠性/i.test(normalizedPrompt)
   if (readOnlyCapabilityQuestion) return false
-  const asksForWorkflowClosure = /修复|fix|更新|rewrite|重写|整理|补全|闭环|同步|写回|写入|落盘|维护|清理|迁移|删除|创建|生成|配置|执行|运行|run|create|write|edit|delete|rename/i.test(normalizedPrompt)
+  const asksForWorkflowClosure = /修复|fix|更新|rewrite|重写|整理|补全|闭环|同步|写回|写入|落盘|维护|清理|迁移|删除|配置/i.test(normalizedPrompt)
   return hasMutatingWork || asksForWorkflowClosure
 }
 
@@ -195,32 +194,19 @@ export function appendReasoningMemorySyncSteps(steps, userPrompt, binding, optio
 
   if (syncSteps.length === 0) return steps
 
-  let answerIndex = -1
-  for (let index = 0; index < steps.length; index += 1) {
-    if (isReasoningAnswerAction(steps[index].action)) {
-      answerIndex = index
-      break
-    }
-  }
-
-  const beforeAnswer = answerIndex >= 0 ? steps.slice(0, answerIndex) : [...steps]
-  const answerAndAfter = answerIndex >= 0 ? steps.slice(answerIndex) : []
-  let previousStepId = beforeAnswer.length > 0 ? beforeAnswer[beforeAnswer.length - 1].stepId : ''
-  const chainedSyncSteps = syncSteps.map((step) => {
-    const nextStep = {
+  // 2026-08-24 修复（多轮交互"卡住"根因）：记忆同步是辅助簿记，不得作为回答的前置闸门。
+  // 旧实现把同步步骤插在回答之前，模型重写挂起/失败会让用户连回答都拿不到；
+  // 现改为追加在回答之后执行，并标记 bestEffort——超时/失败只留证据，session 仍以回答正常完成。
+  const nextSteps = [...steps]
+  let previousStepId = nextSteps.length > 0 ? nextSteps[nextSteps.length - 1].stepId : ''
+  for (const step of syncSteps) {
+    const chained = {
       ...step,
+      bestEffort: true,
       dependsOn: previousStepId ? [previousStepId] : []
     }
-    previousStepId = nextStep.stepId
-    return nextStep
-  })
-
-  if (answerAndAfter.length > 0) {
-    answerAndAfter[0] = {
-      ...answerAndAfter[0],
-      dependsOn: previousStepId ? [previousStepId] : answerAndAfter[0].dependsOn
-    }
+    nextSteps.push(chained)
+    previousStepId = chained.stepId
   }
-
-  return [...beforeAnswer, ...chainedSyncSteps, ...answerAndAfter]
+  return nextSteps
 }

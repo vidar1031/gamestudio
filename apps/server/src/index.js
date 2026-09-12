@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { cors } from 'hono/cors'
-import { mkdir, readFile, readdir, rename, stat, writeFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, stat, writeFile, rm, copyFile } from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -10,24 +10,31 @@ import pluginStoryPixi from './plugins/storyPixi.js'
 import { genId, generateScriptDraft, guessTitleFromPrompt, repairScriptDraft } from './ai/scripts.js'
 import { getAiStatusSnapshot, runAiDiagnostics } from './ai/diagnostics.js'
 import { analyzeScriptsForBlueprint } from './ai/analyze.js'
+import { optimizeGeneratedImage, optimizeDirectoryTree, IMAGE_KIND } from './ai/imageOptimize.js'
 import { readGlobalRules, writeGlobalRules } from './ai/globalRules.js'
 import { generateBackgroundImage, generateComfyuiLineartFromReference, generateComfyuiCutoutFromReference, mapComfySampler, mapComfyScheduler, normalizeComfyCheckpointName, parseComfyTimeoutMs, runComfyuiPromptWorkflow } from './ai/background.js'
 import { generateBackgroundPrompt } from './ai/imagePrompt.js'
 import { reviewStoryPromptLocally, reviewStoryPromptWithAi } from './ai/promptReview.js'
 import { normalizeStoryboardPromptReviewInput, reviewStoryboardPromptLocally, reviewStoryboardPromptWithAi } from './ai/storyboardPromptReview.js'
 import { deletePromptTemplate, generateStoryPromptTemplate, listPromptTemplates, savePromptTemplate } from './ai/promptTemplates.js'
+import { addPromptLibraryEntry, deletePromptLibraryEntry, listPromptLibraryEntries, updatePromptLibraryEntry } from './ai/promptLibrary.js'
 import { enhanceStoryAssetPromptWithAi } from './ai/storyAssetPromptEnhance.js'
-import { generateCharacterFingerprint } from './ai/characterPrompt.js'
+import { generateCharacterFingerprint, generateCharacterPosePrompt } from './ai/characterPrompt.js'
 import { generateStoryBible } from './ai/storyBible.js'
+import { buildPoseStateExtractionInput, extractStoryPoseStates } from './ai/storyPoseStates.js'
 import { translatePromptText } from './ai/translate.js'
-import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, buildStorySceneRenderSpec, getStoryAssetRenderProfile, summarizeStoryAssetPlan } from './ai/storyAssets.js'
+import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, buildStorySceneRenderSpec, getStoryAssetRenderProfile, repairStoryAssetPlanSceneLinks, summarizeStoryAssetPlan } from './ai/storyAssets.js'
 import { buildStoryboardLockTestNegativePrompt, buildStoryboardLockTestPrompt, buildStoryboardLockTestWorkflow, pickStoryboardLockTestAsset, reviewStoryboardLockImageWithAi } from './ai/storyLock.js'
 import { evaluateStoryAssetReferenceReview, sniffImageMetaFromBytes, verifyStoryAssetReferenceFile } from './ai/storyAssetReferenceGate.js'
+import { reviewCharacterPoseConsistencyWithAi, reviewCharacterPoseConsistencyWithLocalVl } from './ai/characterPoseReview.js'
 import { createAiTask, getAiTask, listAiTasks, loadAiTasksFromDisk, updateAiTask } from './ai/taskProgress.js'
 import { checkSceneSuccess, createSceneBatch, findInterruptedSceneBatches, loadSceneBatch, resumeSceneBatch, runSceneBatch } from './ai/sceneBatchQueue.js'
 import { COMPLETENESS_TASK_KIND, createNodeVisualReviewer, createPuppeteerBrowserLauncher, loadLatestCompletenessReport, resolveChromeExecutablePath, resolveReviewConfig, runStoryCompletenessCheck } from './ai/storyCompleteness.js'
+import { withResourceLease } from './ai/resourceLease.js'
 import { checkComfyuiCapability } from './ai/comfyuiCapability.js'
 import { attachImageReviewResult, createImageReview, decideImageReview, findPendingReview, getImageReview, listImageReviews } from './review/imageReviewStore.js'
+import { getStoryImageCoverage } from './ai/storyCoverage.js'
+import { recordCreationEvent, snapshotCreationState } from './creationBuffer.js'
 import { getDoubaoImagesConfigSnapshot } from './ai/doubao.js'
 import { diagnoseOllamaText } from './ai/ollama.js'
 import { classifyAiError, createTraceId, logStage } from './ai/runtime.js'
@@ -1766,6 +1773,41 @@ app.delete('/api/ai/prompt/templates/:id', async (c) => {
   return c.json({ success: true, removed: Boolean(result.removed), items: result.items || [] })
 })
 
+// ============ 公共提示词库（跨项目共享，storage/_config/prompt_library.json） ============
+app.get('/api/ai/prompt-library', async (c) => {
+  const entries = await listPromptLibraryEntries(ROOT)
+  return c.json({ success: true, entries })
+})
+
+app.post('/api/ai/prompt-library', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  try {
+    const entry = await addPromptLibraryEntry(ROOT, body)
+    return c.json({ success: true, entry })
+  } catch (e) {
+    return c.json({ success: false, error: e instanceof Error ? e.message : String(e), message: '中文/英文提示词至少填一项' }, 400)
+  }
+})
+
+app.put('/api/ai/prompt-library/:id', async (c) => {
+  const id = String(c.req.param('id') || '').trim()
+  const body = await c.req.json().catch(() => ({}))
+  try {
+    const entry = await updatePromptLibraryEntry(ROOT, id, body)
+    if (!entry) return c.json({ success: false, error: 'not_found', message: '条目不存在' }, 404)
+    return c.json({ success: true, entry })
+  } catch (e) {
+    return c.json({ success: false, error: e instanceof Error ? e.message : String(e) }, 400)
+  }
+})
+
+app.delete('/api/ai/prompt-library/:id', async (c) => {
+  const id = String(c.req.param('id') || '').trim()
+  if (!id) return c.json({ success: false, error: 'missing_id', message: '条目 ID 不能为空' }, 400)
+  const result = await deletePromptLibraryEntry(ROOT, id)
+  return c.json({ success: true, removed: Boolean(result.removed), entries: result.entries || [] })
+})
+
 async function ensureDirs() {
   await mkdir(PROJECTS_DIR, { recursive: true })
   await mkdir(DEMO_LIBRARY_DIR, { recursive: true })
@@ -1813,7 +1855,11 @@ async function probeHttpOk(url, timeoutMs = 3000) {
 
 async function writeJson(p, obj) {
   await mkdir(path.dirname(p), { recursive: true })
-  await writeFile(p, JSON.stringify(obj, null, 2), 'utf-8')
+  // 2026-08-29 修复：改为临时文件 + 原子重命名。原先直接覆写目标路径，
+  // 并发写入（自动保存/批量任务/外部修补）会把两个版本拼接成坏档（实测 project.json 损毁、批量中断）。
+  const tmp = `${p}.tmp-${process.pid}-${Date.now()}`
+  await writeFile(tmp, JSON.stringify(obj, null, 2), 'utf-8')
+  await rename(tmp, p)
 }
 
 async function readProjectBundle(id) {
@@ -1857,8 +1903,82 @@ async function readStoryAssetPlanIfExists(id) {
   }
 }
 
-async function saveStoryAssetPlan(id, plan) {
-  await writeJson(projectStoryAssetsPlanPath(id), plan)
+// 2026-09-09 计划写盘竞态治理（实测事故：乌鸦喝水参考图生成期间，瓶子步骤的整计划回写把小石子
+// 的 generatedRefs/latestReferenceBatch 反复冲掉，refs 读数在 0/4/8 间翻转，锁定门禁拿不到评审记录）。
+// 两板斧：
+// 1) 项目级写串行：同一 projectId 的 saveStoryAssetPlan 全部进入进程内 promise 链，写与写不再交错；
+// 2) mergeAssetsById 合并写：保存时重读磁盘计划，按资产 id 合并（入站资产条目优先、磁盘独有条目保留），
+//    解决"读-改-写"长窗口期内陈旧整计划覆盖他人新数据的问题（生成类写盘点启用；整计划重建/删除类不用）。
+const storyAssetPlanWriteChains = new Map()
+
+async function saveStoryAssetPlan(id, plan, options = {}) {
+  const prev = storyAssetPlanWriteChains.get(id) || Promise.resolve()
+  const run = prev.catch(() => {}).then(async () => {
+    let nextPlan = plan
+    if (options.mergeAssetsById) {
+      const diskPlan = await readStoryAssetPlanIfExists(id).catch(() => null)
+      if (diskPlan && Array.isArray(diskPlan.assets) && plan && Array.isArray(plan.assets)) {
+        // 字段级合并（2026-09-09 二轮修正：纯按 id 合并仍会被"陈旧空字段"覆盖新数据——
+        // 锁定测试携带锁前快照把 primaryReferenceAssetUri 清空回写。规则：
+        // - 标量：入站非空覆盖，入站为空（null/''/undefined）保留磁盘值；
+        // - 记录数组（generatedRefs/poseCandidates/poseVariants/latestReferenceBatch）：按唯一键并集去重，入站新记录追加、磁盘记录不丢；
+        // - 其他数组以入站为准；磁盘独有条目/字段一律保留。
+        const RECORD_ARRAY_KEYS = {
+          generatedRefs: (x) => String(x && (x.projectAssetUri || x.assetPath) || ''),
+          poseCandidates: (x) => String(x && x.assetPath || ''),
+          poseVariants: (x) => String(x && x.id || ''),
+          latestReferenceBatch: (x) => String(x && x.assetPath || '')
+        }
+        const mergeAssetEntry = (diskEntry, incomingEntry) => {
+          const disk = diskEntry && typeof diskEntry === 'object' ? diskEntry : {}
+          const incoming = incomingEntry && typeof incomingEntry === 'object' ? incomingEntry : {}
+          const merged = { ...disk }
+          for (const [key, value] of Object.entries(incoming)) {
+            const keyOf = RECORD_ARRAY_KEYS[key]
+            if (keyOf && Array.isArray(value)) {
+              const diskArr = Array.isArray(disk[key]) ? disk[key] : []
+              const seen = new Set(diskArr.map((x) => keyOf(x)).filter(Boolean))
+              const appended = value.filter((x) => { const k = keyOf(x); return k && !seen.has(k) })
+              if (appended.length || value.length) merged[key] = [...diskArr, ...appended]
+              continue
+            }
+            const isEmpty = value == null || value === ''
+            if (!isEmpty) merged[key] = value
+          }
+          return merged
+        }
+        const diskIds = new Set(diskPlan.assets.map((a) => String(a && a.id || '')))
+        const incomingById = new Map(plan.assets.map((a) => [String(a && a.id || ''), a]))
+        const mergedAssets = diskPlan.assets.map((da) => {
+          const inc = incomingById.get(String(da && da.id || ''))
+          return inc ? mergeAssetEntry(da, inc) : da
+        })
+        for (const a of plan.assets) {
+          if (!diskIds.has(String(a && a.id || ''))) mergedAssets.push(a)
+        }
+        nextPlan = { ...diskPlan, ...plan, assets: mergedAssets }
+      }
+    }
+    await snapshotCreationState(projectDir(id), { reason: 'plan_save' })
+    await writeJson(projectStoryAssetsPlanPath(id), nextPlan)
+    // 2026-08-30 修复：同步 project.json 的 aiBackground.storyAssetPlan 副本——编辑器部分读路径走 project.json，
+    // 不同步会出现 plan.json 与编辑器看到的不一致（如人工补充的猪妈妈/工具包、repair-links 的场景关联丢失）。
+    try {
+      const dir = projectDir(id)
+      const projectPath = path.join(dir, 'project.json')
+      const projectDoc = await readJson(projectPath).catch(() => null)
+      if (projectDoc && typeof projectDoc === 'object') {
+        if (!projectDoc.state || typeof projectDoc.state !== 'object') projectDoc.state = {}
+        if (!projectDoc.state.aiBackground || typeof projectDoc.state.aiBackground !== 'object') projectDoc.state.aiBackground = {}
+        projectDoc.state.aiBackground.storyAssetPlan = nextPlan
+        projectDoc.updatedAt = nowIso()
+        projectDoc._rev = Number(projectDoc._rev || 0) + 1
+        await writeJson(projectPath, projectDoc)
+      }
+    } catch (_) { /* 同步失败不阻断计划保存 */ }
+  })
+  storyAssetPlanWriteChains.set(id, run)
+  return run
 }
 
 function storyAssetStr(v) {
@@ -2478,7 +2598,7 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
         '纯白无缝背景，无地面线，无投影，无场景环境',
         '双手自然下垂且空手，不拿任何道具，不戴帽子',
         '重点锁定脸型、耳朵、眼睛颜色、毛色花纹、服装版型、腰带、鞋子和整体比例',
-        '儿童绘本插画，线条干净，配色柔和，细节清晰，不能画成真人小孩或拟人猫娘'
+        '卡通童话绘本风格，扁平 2D 卡通插画，粗净轮廓线，赛璐璐上色，配色温暖柔和，不能画成真人小孩或拟人猫娘，不能写实'
       ].join('，')
     } else if (lockProfile === 'wearable_prop') {
       promptZh = [
@@ -2487,7 +2607,7 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
         '纯白背景，无手持，无人物，无头部，无模特，无佩戴展示，无场景，无头模',
         '清楚表现材质、结构、尺寸比例、开口、边缘轮廓和独立摆放关系',
         '强调这是可穿戴但未佩戴的独立物件，必要时开口或内部结构可见',
-        '中性商品参考插画，设计图表达，轮廓清晰，便于后续连续场景复用'
+        '卡通童话绘本风格设计参考插画，扁平 2D 卡通，粗净轮廓线，便于后续连续场景复用'
       ].filter(Boolean).join('，')
     } else if (lockProfile === 'slender_prop') {
       promptZh = [
@@ -2495,7 +2615,7 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
         usageLines.join('，'),
         '纯白背景，无人物，无手持，无场景，不允许两端裁切，不允许透视缩短',
         '清楚表现长度比例、端头结构、孔位或节点细节，轮廓笔直可读',
-        '中性设计参考图，线条干净，便于后续连续场景复用'
+        '卡通童话绘本风格设计参考图，扁平 2D 卡通，粗净轮廓线，便于后续连续场景复用'
       ].filter(Boolean).join('，')
     } else if (lockProfile === 'rigid_prop') {
       promptZh = [
@@ -2503,7 +2623,7 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
         usageLines.join('，'),
         '纯白背景，无人物，无场景，无额外杂物，不把共现角色或地点画进去',
         '清楚表现主要结构部件、体块关系、材质和比例，不能塌陷变形',
-        '中性商品参考插画，轮廓清晰，便于后续连续场景复用'
+        '卡通童话绘本风格设计参考插画，扁平 2D 卡通，粗净轮廓线，便于后续连续场景复用'
       ].filter(Boolean).join('，')
     } else if (lockProfile === 'ambient_prop') {
       promptZh = [
@@ -2511,7 +2631,7 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
         usageContext.sceneLineZh,
         '干净浅色背景，不要整张大场景，不要地平线，不要树木建筑人物',
         '清楚表现该元素自身轮廓、体积和内部层次，便于在不同场景中稳定复用',
-        '中性参考插画，轮廓清晰，便于后续连续场景复用'
+        '卡通童话绘本风格参考插画，扁平 2D 卡通，粗净轮廓线，便于后续连续场景复用'
       ].filter(Boolean).join('，')
     } else if (lockProfile === 'organic_prop') {
       if (isStoryAssetButterflyLike(asset)) {
@@ -2521,7 +2641,7 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
           '纯白背景，无人物，无手持，无场景，无花枝，无草地，无栖息地，不把共现角色或地点画进去',
           '清楚表现左右双翅轮廓、翅脉、尾突、细长身体、成对触角和配色分区',
           '必须是单只独立蝴蝶，不要飞蛾，不要蜻蜓，不要小鸟，不要昆虫标本针插展示',
-          '中性设计参考图，轮廓清晰，便于后续连续场景复用'
+          '卡通童话绘本风格设计参考图，扁平 2D 卡通，粗净轮廓线，便于后续连续场景复用'
         ].filter(Boolean).join('，')
       } else {
         promptZh = [
@@ -2530,7 +2650,7 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
           '纯白背景，无人物，无手持，无场景，无水面，无栖息地，不把共现角色或地点画进去',
           '清楚表现整体轮廓、头尾比例、眼睛、鳍、表面纹理和尺寸关系',
           '必须是单个自然标本或单个小鱼，不要夸张表情，不要观赏鱼摆拍，不要生态展示缸',
-          '中性设计参考图，轮廓清晰，便于后续连续场景复用'
+          '卡通童话绘本风格设计参考图，扁平 2D 卡通，粗净轮廓线，便于后续连续场景复用'
         ].filter(Boolean).join('，')
       }
     } else if (category === 'prop') {
@@ -2539,13 +2659,15 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
         usageLines.join('，'),
         '纯白背景，无手持，无人物，无头部，无模特，无佩戴展示，无场景，不把共现角色或地点画进去',
         '清楚表现材质、结构、尺寸比例、开口、边缘轮廓和正反面造型关系',
-        '中性商品参考插画，轮廓清晰，便于后续连续场景复用'
+        '卡通童话绘本风格设计参考插画，扁平 2D 卡通，粗净轮廓线，便于后续连续场景复用'
       ].filter(Boolean).join('，')
     } else {
       promptZh = [
         `${name}地点参考图，稳定构图，统一环境语言`,
         '突出建筑、地形、植被、水体和光线关系',
-        '儿童绘本风格，适合作为连续场景统一地点锚点'
+        // 2026-08-28：H5 文本叠加在场景图上，下部留安静区保证可读
+        '画面下部约三分之一保持低细节低对比的安静区域，便于 H5 文本叠加阅读',
+        '卡通童话绘本风格，扁平 2D 卡通插画，适合作为连续场景统一地点锚点'
       ].join('，')
     }
   }
@@ -2565,12 +2687,15 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
       ? `已强化为道具锁定参考图提示词：补入故事职责、结构关注点和共现场景约束，同时保持单物件白底。`
       : `已强化为地点锁定提示词：突出环境构图和统一世界观。`
 
+  // 2026-08-26 去跨故事污染：角色默认反向词删掉钓鱼故事专属的"鱼竿/水桶/水面/桥"，保持故事中立
+  // 2026-08-29 统一画风负向：全类别追加反写实排除（用户指令：杜绝写实/卡通混杂）
+  const antiRealismZh = '写实，照片级真实，3D渲染，CGI，油画，厚涂，超写实，摄影感'
   const defaultNegativePromptZh = (
     category === 'character'
-      ? '多人，多主体，人物脸，真人小孩，拟人猫娘，帽子，鱼竿，水桶，场景背景，树木，草地，水面，桥，侧面，背面，三分之二侧面，投影，地面线，文字，水印'
+      ? `多人，多主体，人物脸，真人小孩，拟人猫娘，帽子，场景背景，树木，草地，侧面，背面，三分之二侧面，投影，地面线，文字，水印，${antiRealismZh}`
       : category === 'prop'
-        ? ['人物', '角色', '儿童', '女孩', '男孩', '头部', '脸部', '半身像', '上半身', '手持', '佩戴展示', '戴在头上', '模特', '人体穿戴关系', '场景背景', '树木', '草地', '水面', '文字', '水印', ...propExclusionNames].join('，')
-        : '人物特写，人群，文字，水印'
+        ? ['人物', '角色', '儿童', '女孩', '男孩', '头部', '脸部', '半身像', '上半身', '手持', '佩戴展示', '戴在头上', '模特', '人体穿戴关系', '场景背景', '树木', '草地', '水面', '文字', '水印', '写实', '照片级真实', '3D渲染', 'CGI', '油画', '厚涂', '超写实', '摄影感', ...propExclusionNames].join('，')
+        : `人物特写，人群，文字，水印，${antiRealismZh}`
   )
   const negativePromptZh = (
     zhNegBase && category === 'prop'
@@ -2857,30 +2982,29 @@ async function translateStoryAssetPromptPair({ studio, promptZh, negativePromptZ
   let lastError = null
   for (const candidate of providers) {
     try {
-      ;[promptRes, negativeRes] = await Promise.all([
-        translatePromptText({
-          provider: candidate.provider,
-          model: candidate.model,
-          apiUrl: candidate.apiUrl,
-          proxyUrl,
-          timeoutMs,
-          text: storyAssetStr(promptZh).trim(),
-          sourceLang: 'zh',
-          targetLang: 'en',
-          mode: 'prompt'
-        }),
-        translatePromptText({
-          provider: candidate.provider,
-          model: candidate.model,
-          apiUrl: candidate.apiUrl,
-          proxyUrl,
-          timeoutMs,
-          text: storyAssetStr(negativePromptZh).trim(),
-          sourceLang: 'zh',
-          targetLang: 'en',
-          mode: 'prompt'
-        })
-      ])
+      // 2026-08-26 修复：串行执行两次翻译；本地 27B 并发 prefill 会把 KV 峰值翻倍，实测触发 oMLX 内存护栏
+      promptRes = await translatePromptText({
+        provider: candidate.provider,
+        model: candidate.model,
+        apiUrl: candidate.apiUrl,
+        proxyUrl,
+        timeoutMs,
+        text: storyAssetStr(promptZh).trim(),
+        sourceLang: 'zh',
+        targetLang: 'en',
+        mode: 'prompt'
+      })
+      negativeRes = await translatePromptText({
+        provider: candidate.provider,
+        model: candidate.model,
+        apiUrl: candidate.apiUrl,
+        proxyUrl,
+        timeoutMs,
+        text: storyAssetStr(negativePromptZh).trim(),
+        sourceLang: 'zh',
+        targetLang: 'en',
+        mode: 'prompt'
+      })
       providerMeta = {
         provider: promptRes?.meta?.provider || candidate.provider,
         model: promptRes?.meta?.model || candidate.model || null,
@@ -4276,10 +4400,26 @@ app.put('/api/projects/:id', async (c) => {
 
   const curr0 = await readJson(path.join(dir, 'project.json'))
   const { project: curr } = normalizeProjectAndDetectChanges(curr0)
+  // 乐观锁（2026-08-31）：所有项目更新必须携带当前 _rev；缺失或版本不符一律拒绝并返回最新文档。
+  // 旧内存态整体覆盖服务端状态（提示词/计划被回滚）的根修——与创作缓冲快照互补。
+  const currRev = Number(curr && curr._rev) || 0
+  const bodyRev = body && body._rev != null ? Number(body._rev) : null
+  if (bodyRev == null || bodyRev !== currRev) {
+    return c.json({ success: false, error: 'rev_conflict', message: '项目在其他地方已更新，请刷新后重试。', project: curr, _rev: currRev }, 409)
+  }
   let mergedProject = project ? { ...curr, ...project, id, updatedAt: nowIso() } : { ...curr, updatedAt: nowIso() }
+  mergedProject = { ...mergedProject, _rev: currRev + 1 }
   if (project && Array.isArray(project.assets)) {
     const incomingAssets = Array.isArray(project.assets) ? project.assets : []
     const incomingKeys = new Set(incomingAssets.map((item) => `${String(item && item.id || '').trim()}::${normalizeStoryAssetUri(item && item.uri)}`))
+    // 2026-09-01 修复资产重复：入站已有同 id 且 uri 非空的条目时，不再保留磁盘旧条目。
+    // 旧逻辑按 id::uri 判重——同 id 换了 uri（如动作立绘覆盖托管立绘）会把旧条目追加回去，
+    // 每次保存多一条同 id 副本，project.json 资产数组无限膨胀。
+    const incomingIdsWithUri = new Set(
+      incomingAssets
+        .filter((item) => normalizeStoryAssetUri(item && item.uri))
+        .map((item) => String(item && item.id || '').trim())
+    )
     const preservedManagedAssets = Array.isArray(curr.assets)
       ? curr.assets.filter((item) => {
           const uri = normalizeStoryAssetUri(item && item.uri)
@@ -4290,19 +4430,177 @@ app.put('/api/projects/:id', async (c) => {
             uri.startsWith('assets/ai/story_lock_tests/')
           )
           if (!managed) return false
-          const key = `${String(item && item.id || '').trim()}::${uri}`
+          const itemId = String(item && item.id || '').trim()
+          if (incomingIdsWithUri.has(itemId)) return false
+          const key = `${itemId}::${uri}`
           return !incomingKeys.has(key)
         })
       : []
+    // 2026-09-03 引用保护（用户实测数据丢失类根因）：旧会话保存把"它没见过的新资产"从 assets 里顶掉，
+    // 摆放引用落空画布变白。凡被当前磁盘真相引用的资产（摆放/角色默认/主参考/计划主参考/姿势变体），
+    // 入站缺失时一律保留，不论 uri 前缀。
+    const referencedIds = new Set()
+    try {
+      for (const ch of (Array.isArray(curr.characters) ? curr.characters : [])) {
+        const a1 = String(ch && ch.imageAssetId || '').trim()
+        const a2 = String(ch && ch.ai && ch.ai.referenceAssetId || '').trim()
+        if (a1) referencedIds.add(a1)
+        if (a2) referencedIds.add(a2)
+      }
+      const diskStory = await readJson(path.join(dir, 'story.json')).catch(() => null)
+      for (const n of (diskStory && Array.isArray(diskStory.nodes) ? diskStory.nodes : [])) {
+        const pls = Array.isArray(n && n.visuals && n.visuals.placements) ? n.visuals.placements : []
+        for (const p of pls) {
+          const a1 = String(p && p.imageAssetId || '').trim()
+          if (a1) referencedIds.add(a1)
+        }
+        const bg = String(n && n.visuals && n.visuals.backgroundAssetId || '').trim()
+        if (bg) referencedIds.add(bg)
+      }
+      const curPlan = curr.state && curr.state.aiBackground && curr.state.aiBackground.storyAssetPlan
+      for (const pa of (curPlan && Array.isArray(curPlan.assets) ? curPlan.assets : [])) {
+        const p1 = String(pa && pa.primaryReferenceAssetId || '').trim()
+        if (p1) referencedIds.add(p1)
+        for (const v of (pa && Array.isArray(pa.poseVariants) ? pa.poseVariants : [])) {
+          const pv = String(v && v.projectAssetId || '').trim()
+          if (pv) referencedIds.add(pv)
+        }
+      }
+    } catch (_) { /* 引用扫描失败不阻断保存 */ }
+    const preservedReferencedAssets = Array.isArray(curr.assets)
+      ? curr.assets.filter((item) => {
+          const itemId = String(item && item.id || '').trim()
+          if (!itemId || !referencedIds.has(itemId)) return false
+          return !incomingIdsWithUri.has(itemId)
+        })
+      : []
+    // 同 id 去重（保留先出现者 = 入站最新版本），清理历史遗留的重复条目
+    const seenAssetIds = new Set()
+    const dedupedAssets = [...incomingAssets, ...preservedManagedAssets, ...preservedReferencedAssets].filter((item) => {
+      const itemId = String(item && item.id || '').trim()
+      if (!itemId) return true
+      if (seenAssetIds.has(itemId)) return false
+      seenAssetIds.add(itemId)
+      return true
+    })
     mergedProject = {
       ...mergedProject,
-      assets: [...incomingAssets, ...preservedManagedAssets]
+      assets: dedupedAssets
     }
   }
   const next0 = mergedProject
+  // 2026-09-01 防污染守卫（服务端，以磁盘真相为准）：弱/空的提示词字段不得覆盖磁盘上更完整的值。
+  // 背景：编辑器 sbReq 种子链会把占位垃圾（"故事名：《xx》"、"text, watermark…"）反复写回，清空辛苦恢复的提示词。
+  try {
+    const weak = (v) => {
+      const s = String(v || '').trim()
+      return !s || /^story title\s*:/i.test(s) || /^故事名：《.*》$/.test(s) || s.length < 80
+    }
+    // 2026-09-10 占位垃圾清洗（最后防线，配合编辑器断源与存量清洗脚本）：
+    // 匹配"故事名：《…》"/"story title: …"模式的值永远不落盘，入站即置空。
+    const junkPlaceholder = (v) => {
+      const s = String(v || '').trim()
+      return !!s && (/^story title\s*:/i.test(s) || /^故事名：《.*》$/.test(s))
+    }
+    const inAiBg = next0.state && typeof next0.state === 'object' ? next0.state.aiBackground : null
+    const curAiBg = curr.state && typeof curr.state === 'object' ? curr.state.aiBackground : null
+    if (inAiBg && typeof inAiBg === 'object') {
+      for (const k of ['globalPrompt', 'globalNegativePrompt', 'storyboardGlobalPromptZh', 'storyboardGlobalNegativePromptZh']) {
+        if (junkPlaceholder(inAiBg[k])) inAiBg[k] = ''
+      }
+      const inGlobalJunk = typeof inAiBg.global === 'object' && inAiBg.global ? inAiBg.global : null
+      if (inGlobalJunk) {
+        if (junkPlaceholder(inGlobalJunk.prompt)) inGlobalJunk.prompt = ''
+        if (junkPlaceholder(inGlobalJunk.negativePrompt)) inGlobalJunk.negativePrompt = ''
+      }
+    }
+    if (inAiBg && curAiBg && typeof inAiBg === 'object' && typeof curAiBg === 'object') {
+      const inGlobal = typeof inAiBg.global === 'object' && inAiBg.global ? inAiBg.global : null
+      const curGlobal = typeof curAiBg.global === 'object' && curAiBg.global ? curAiBg.global : null
+      // 顶层与嵌套 global.prompt 是双写分裂位（normalize 时嵌套优先），两列都要守
+      const pairs = [
+        ['globalPrompt', inAiBg, curAiBg],
+        ['globalNegativePrompt', inAiBg, curAiBg],
+        ['storyboardGlobalPromptZh', inAiBg, curAiBg],
+        ['storyboardGlobalNegativePromptZh', inAiBg, curAiBg],
+        ...(inGlobal && curGlobal ? [['prompt', inGlobal, curGlobal], ['negativePrompt', inGlobal, curGlobal]] : [])
+      ]
+      for (const [k, inObj, curObj] of pairs) {
+        if (weak(inObj[k]) && !weak(curObj[k])) inObj[k] = curObj[k]
+      }
+
+      const inMap = inAiBg.storyboardLockAssetPrompts
+      const curMap = curAiBg.storyboardLockAssetPrompts
+      if (curMap && typeof curMap === 'object') {
+        if (!inMap || typeof inMap !== 'object' || Object.keys(inMap).length === 0) {
+          // 入站整表为空而磁盘有内容：保留磁盘整表
+          inAiBg.storyboardLockAssetPrompts = curMap
+        } else {
+          // 2026-09-01 扩展为并集合并：旧会话内存缺条目（如后加的猪妈妈/工具包）时，整表覆盖会把磁盘条目抹掉。
+          // 磁盘条目在入站缺失时保留；入站存在的条目按字段级补齐空值。
+          const mergedMap = { ...inMap }
+          for (const [aid, entry] of Object.entries(inMap)) {
+            const curE = curMap[aid]
+            if (!curE || typeof curE !== 'object' || !entry || typeof entry !== 'object') continue
+            const filled = { ...entry }
+            for (const f of ['promptZh', 'promptEn', 'negativePromptZh', 'negativePrompt']) {
+              const iv = String(entry[f] || '').trim()
+              const cv = String(curE[f] || '').trim()
+              if (!iv && cv) filled[f] = curE[f]
+            }
+            mergedMap[aid] = filled
+          }
+          for (const [aid, curE] of Object.entries(curMap)) {
+            if (!(aid in mergedMap)) mergedMap[aid] = curE
+          }
+          inAiBg.storyboardLockAssetPrompts = mergedMap
+        }
+      }
+      // storyboardScenes 同样并集合并：旧会话缺场景条目时不得抹掉磁盘上已写好的场景提示词
+      const inScenes = inAiBg.storyboardScenes
+      const curScenes = curAiBg.storyboardScenes
+      if (curScenes && typeof curScenes === 'object') {
+        if (!inScenes || typeof inScenes !== 'object' || Object.keys(inScenes).length === 0) {
+          inAiBg.storyboardScenes = curScenes
+        } else {
+          const mergedScenes = { ...inScenes }
+          for (const [nid, entry] of Object.entries(inScenes)) {
+            const curE = curScenes[nid]
+            if (!curE || typeof curE !== 'object' || !entry || typeof entry !== 'object') continue
+            const filled = { ...entry }
+            for (const f of ['prompt', 'promptZh', 'negativePrompt', 'negativePromptZh']) {
+              const iv = String(entry[f] || '').trim()
+              const cv = String(curE[f] || '').trim()
+              if (!iv && cv) filled[f] = curE[f]
+            }
+            mergedScenes[nid] = filled
+          }
+          for (const [nid, curE] of Object.entries(curScenes)) {
+            if (!(nid in mergedScenes)) mergedScenes[nid] = curE
+          }
+          inAiBg.storyboardScenes = mergedScenes
+        }
+      }
+      // 2026-09-01 资产计划与确认时间戳同样以磁盘为准：编辑器内存缺值时（整表 delete 语义）不得抹掉磁盘真相。
+      // 根因：buildStoryboardLockProjectSnapshot 在内存无值时 delete 这两个字段，浅合并后磁盘字段随之丢失，向导被打回「待确认」。
+      if (!inAiBg.storyAssetPlan && curAiBg.storyAssetPlan && typeof curAiBg.storyAssetPlan === 'object') {
+        inAiBg.storyAssetPlan = curAiBg.storyAssetPlan
+      }
+      if (!String(inAiBg.storyAssetPlanConfirmedAt || '').trim() && String(curAiBg.storyAssetPlanConfirmedAt || '').trim()) {
+        inAiBg.storyAssetPlanConfirmedAt = curAiBg.storyAssetPlanConfirmedAt
+      }
+    }
+  } catch (_) { /* 守卫失败不阻断保存 */ }
   const next = normalizeProjectDoc(next0)
+  // 写前快照（创作缓冲）：PUT 是提示词/文档被覆盖的主要通道，先留快照再写
+  await snapshotCreationState(dir, { reason: 'project_put' })
   await writeJson(path.join(dir, 'project.json'), next)
   if (story) await writeJson(path.join(dir, 'story.json'), story)
+  recordCreationEvent(dir, {
+    type: 'project_update',
+    summary: `项目文档更新（project${story ? ' + story' : ''}）`,
+    actor: 'editor'
+  })
 
   // Keep meta.json title in sync for Hub list display.
   try {
@@ -4657,21 +4955,45 @@ app.post('/api/projects/:id/compile/compose', storyInputGate('story.compose.comp
       const mergedVisuals = prevVisuals ? { ...out.visuals, ...prevVisuals } : out.visuals
 
       // Ensure placements reflect desired actor ids (keep existing transforms when possible)
+      // 2026-09-08 事故修复：分层合成工艺后 placements 是人工/工具编排的产物（道具层 characterId 为空、
+      // 角色层 imageAssetId 指向姿势变体）。原逻辑用 blueprint.actorIds 重建摆位：actorIds 为空时
+      // nextPlacements=[] 清空全部摆位；prop 摆位（characterId=''）被 prevByActor 的 truthy 过滤丢弃。
+      // 新策略：prev 已有摆位则保留——desiredActorIds 非空时仅剔除「不再出场且仍指向角色默认图」的条目、
+      // 为新增 actor 补默认摆位；actorIds 为空时 prev 摆位原样保留（结构归 blueprint，呈现归既有 story）。
       try {
         const prevPlacements = Array.isArray(prevVisuals && prevVisuals.placements) ? prevVisuals.placements : []
-        const prevByActor = new Map(prevPlacements.map((p) => [String(p && p.characterId || ''), p]).filter(([id]) => id))
-        const nextPlacements = desiredActorIds.map((actorId) => {
-          const keep = prevByActor.get(actorId) || null
-          if (keep) return keep
-          return {
+        if (prevPlacements.length && desiredActorIds.length === 0) {
+          mergedVisuals.placements = prevPlacements
+        } else if (prevPlacements.length) {
+          const desired = new Set(desiredActorIds)
+          const kept = prevPlacements.filter((p) => {
+            const cid = String(p && p.characterId || '')
+            if (!cid) return true // 道具层永远保留
+            if (desired.has(cid)) return true
+            // 蓝图移除该角色时，仅当摆位仍指角色默认图（未绑姿势变体）才剔除；绑了姿势变体的视为人工编排，保留
+            return Boolean(String(p && p.imageAssetId || '').trim())
+          })
+          const existingActorIds = new Set(kept.map((p) => String(p && p.characterId || '')).filter(Boolean))
+          for (const actorId of desiredActorIds) {
+            if (existingActorIds.has(actorId)) continue
+            kept.push({
+              id: `pl_${nodeId}_${actorId}`,
+              characterId: actorId,
+              transform: { x: 0.5, y: 1, scale: 1, rotationDeg: 0 },
+              visible: true,
+              zIndex: 0
+            })
+          }
+          mergedVisuals.placements = kept
+        } else {
+          mergedVisuals.placements = desiredActorIds.map((actorId) => ({
             id: `pl_${nodeId}_${actorId}`,
             characterId: actorId,
             transform: { x: 0.5, y: 1, scale: 1, rotationDeg: 0 },
             visible: true,
             zIndex: 0
-          }
-        })
-        mergedVisuals.placements = nextPlacements
+          }))
+        }
       } catch (_) {}
 
       // Background: keep existing if set, else use blueprint backgroundId
@@ -4915,7 +5237,7 @@ app.get('/demos/:projectId/:buildId/:rest{.*}', async (c) => {
     const ct =
       ext === '.html' ? 'text/html; charset=utf-8' :
       ext === '.json' ? 'application/json; charset=utf-8' :
-      ext === '.js' ? 'application/javascript; charset=utf-8' :
+      ext === '.js' || ext === '.mjs' ? 'application/javascript; charset=utf-8' :
       ext === '.css' ? 'text/css; charset=utf-8' :
       ext === '.zip' ? 'application/zip' :
       'application/octet-stream'
@@ -5201,7 +5523,18 @@ app.post('/api/projects/:id/assets/open-folder', async (c) => {
 
   const body = await c.req.json().catch(() => ({}))
   const uri = String(body?.uri || '').trim()
-  if (!uri) return c.json({ success: false, error: 'missing_uri' }, 400)
+  // 2026-09-09：不传 uri 时打开项目 AI 素材根目录（assets/ai，不存在退回 assets）——
+  // 编辑器顶栏「素材目录」入口，直接管理全部 AI 生成图
+  if (!uri) {
+    const aiDir = path.join(dir, 'assets', 'ai')
+    const target = (await existsDir(aiDir)) ? aiDir : path.join(dir, 'assets')
+    try {
+      await openFolderOnHost(target)
+      return c.json({ success: true, folder: target })
+    } catch (e) {
+      return c.json({ success: false, error: 'open_folder_failed', message: e && e.message ? e.message : String(e), folder: target }, 500)
+    }
+  }
   const abs = resolveAssetPathFromUri(id, uri)
   if (!abs) return c.json({ success: false, error: 'invalid_uri', message: '无法从 URI 解析到项目资源路径' }, 400)
   const folder = path.dirname(abs)
@@ -5261,6 +5594,145 @@ app.post('/api/projects/:id/assets/upload', async (c) => {
     return c.json({ success: false, error: 'save_failed', message: e && e.message ? e.message : String(e) }, 500)
   }
 })
+
+// 2026-09-09 素材复用：跨项目素材库（只读聚合，扫描 storage/projects 各项目的图片资产）。
+// 用途：故事多了以后，已生成的角色/道具/背景可以直接导入新项目复用，不必重复抽卡。
+app.get('/api/assets-library', async (c) => {
+  await ensureDirs()
+  const excludeProjectId = String(c.req.query('excludeProjectId') || '').trim()
+  const items = []
+  const projects = await readdir(PROJECTS_DIR).catch(() => [])
+  for (const pid of projects) {
+    if (pid === excludeProjectId) continue
+    const pdir = path.join(PROJECTS_DIR, pid)
+    if (!(await existsDir(pdir))) continue
+    let proj = null
+    try { proj = await readJson(path.join(pdir, 'project.json')) } catch (_) { continue }
+    const title = String(proj?.title || pid)
+    const list = Array.isArray(proj?.assets) ? proj.assets : []
+    for (const a of list) {
+      if (!a || String(a.kind || '') !== 'image') continue
+      const uri = String(a.uri || '').trim()
+      if (!uri.startsWith('assets/')) continue
+      const abs = path.join(pdir, uri)
+      if (!(await existsFile(abs))) continue
+      items.push({ projectId: pid, projectTitle: title, assetId: String(a.id || ''), name: String(a.name || ''), uri, source: a.source ? { type: a.source.type, prompt: String(a.source.prompt || '').slice(0, 160) } : null })
+    }
+  }
+  return c.json({ success: true, count: items.length, items })
+})
+
+// 2026-09-09 存量素材批压（用户指令：故事多了图片爆涨，大图必须全部压缩）。
+// 扫描 assets/ai 全部 PNG/JPG：场景背景→JPEG q90；立绘/cutout/主参考→无损 WebP（零质量损失）；
+// 候选/绿幕/线稿/测试图→WebP q92。扩展名变化同步改写 project.json 与 story-assets/plan.json 的 uri 引用
+// （文本级替换，文件路径唯一不会误伤；reviews 等历史记录不改）。幂等，可复跑。
+app.post('/api/projects/:id/assets/compress', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const aiDir = path.join(dir, 'assets', 'ai')
+  if (!(await existsDir(aiDir))) return c.json({ success: true, stats: null, message: '无 assets/ai 目录' })
+
+  const stats = await optimizeDirectoryTree(aiDir)
+  // uri 重写：绝对路径 → 项目内相对路径对
+  const uriPairs = (stats.rewrites || [])
+    .filter((r) => r && r.from && r.to && !r.error)
+    .map((r) => ({
+      from: path.relative(dir, r.from).replace(/\\/g, '/'),
+      to: path.relative(dir, r.to).replace(/\\/g, '/')
+    }))
+    .filter((p) => p.from !== p.to)
+  let refsRewritten = 0
+  if (uriPairs.length) {
+    for (const rel of ['project.json', path.join('story-assets', 'plan.json')]) {
+      const abs = path.join(dir, rel)
+      if (!(await existsFile(abs))) continue
+      let text = await readFile(abs, 'utf8')
+      let changed = 0
+      for (const p of uriPairs) {
+        if (text.includes(p.from)) {
+          text = text.split(p.from).join(p.to)
+          changed += 1
+        }
+      }
+      if (changed > 0) {
+        await writeFile(abs, text, 'utf8')
+        refsRewritten += changed
+      }
+    }
+  }
+  return c.json({
+    success: stats.failed === 0,
+    stats: {
+      total: stats.total,
+      compressed: stats.compressed,
+      skipped: stats.skipped,
+      failed: stats.failed,
+      srcMB: Math.round((stats.srcBytes / 1e6) * 10) / 10,
+      dstMB: Math.round((stats.dstBytes / 1e6) * 10) / 10,
+      refsRewritten,
+      failures: (stats.rewrites || []).filter((r) => r.error).slice(0, 10)
+    }
+  })
+})
+
+// 2026-09-09 素材导入：把其他项目（或本项目历史）的图片资产复制进当前项目并登记为新资产。
+// 复制到 assets/ai/imported/，source 留痕 {type:'import', fromProject, fromAssetId}。
+app.post('/api/projects/:id/assets/import', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const body = await c.req.json().catch(() => ({}))
+  const sourceProjectId = String(body?.sourceProjectId || '').trim()
+  const assetIds = Array.isArray(body?.assetIds) ? body.assetIds.map((x) => String(x || '').trim()).filter(Boolean) : []
+  if (!sourceProjectId || !assetIds.length) {
+    return c.json({ success: false, error: 'missing_params', message: 'sourceProjectId 与 assetIds 必填' }, 400)
+  }
+  const srcDir = projectDir(sourceProjectId)
+  if (!(await existsDir(srcDir))) return c.json({ success: false, error: 'source_not_found' }, 404)
+  const srcProj = await readJson(path.join(srcDir, 'project.json')).catch(() => null)
+  if (!srcProj) return c.json({ success: false, error: 'source_project_invalid' }, 400)
+  const dstProj = await readJson(path.join(dir, 'project.json'))
+  const dstAssets = Array.isArray(dstProj.assets) ? dstProj.assets : []
+  const imported = []
+  const errors = []
+  for (const aid of assetIds) {
+    const srcAsset = (Array.isArray(srcProj.assets) ? srcProj.assets : []).find((a) => String(a?.id || '') === aid)
+    const uri = String(srcAsset?.uri || '').trim()
+    if (!srcAsset || !uri.startsWith('assets/')) { errors.push({ assetId: aid, error: 'asset_not_found' }); continue }
+    const srcAbs = path.join(srcDir, uri)
+    if (!srcAbs.startsWith(srcDir) || !(await existsFile(srcAbs))) { errors.push({ assetId: aid, error: 'file_not_found' }); continue }
+    try {
+      const ext = path.extname(uri) || '.png'
+      const relDir = path.join('assets', 'ai', 'imported')
+      await mkdir(path.join(dir, relDir), { recursive: true })
+      const fname = `${path.basename(uri, ext)}_${Date.now()}${ext}`
+      const dstAbs = path.join(dir, relDir, fname)
+      await copyFile(srcAbs, dstAbs)
+      const rel = `${relDir}/${fname}`.replace(/\\/g, '/')
+      const newAsset = {
+        id: `asset_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+        kind: 'image',
+        name: String(srcAsset.name || '导入素材'),
+        uri: rel,
+        source: { type: 'import', fromProject: sourceProjectId, fromAssetId: aid, prompt: String(srcAsset?.source?.prompt || '').slice(0, 1800) }
+      }
+      dstAssets.push(newAsset)
+      imported.push(newAsset)
+    } catch (e) {
+      errors.push({ assetId: aid, error: String(e && e.message ? e.message : e) })
+    }
+  }
+  if (imported.length) {
+    dstProj.assets = dstAssets
+    dstProj.updatedAt = new Date().toISOString()
+    await writeJson(path.join(dir, 'project.json'), dstProj)
+  }
+  return c.json({ success: errors.length === 0, imported, errors })
+})
+
 
 // AI 生成背景图（P0：默认对接 SDWebUI txt2img；ComfyUI 预留）
 // 说明：此功能只用于制作阶段生成素材，最终产物仍需通过 app_system 导入。
@@ -5415,6 +5887,10 @@ app.post('/api/projects/:id/ai/background', storyInputGate('story.background.gen
         await writeFile(abs, buf)
         assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
       }
+      { // 2026-09-09 出图即压：背景 JPEG q90（用户指令：源头治理大图爆涨）
+        const opt = await optimizeGeneratedImage(abs, IMAGE_KIND.SCENE_BG).catch(() => null)
+        if (opt && opt.outPath && opt.outPath !== abs) assetPath = String(assetPathFromAbsolute(id, opt.outPath) || assetPath)
+      }
 		    const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : String(process.env.STUDIO_BG_PROVIDER || 'sdwebui')
 		    const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
         logStage({
@@ -5560,8 +6036,8 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
     : clampInt(
         body?.timeoutMs,
         5_000,
-        180_000,
-        clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 180_000, 90_000)
+        600_000,
+        clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 600_000, 90_000)
       )
 
   const studio = await getEffectiveStudioConfig(ROOT)
@@ -5583,9 +6059,12 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
     model: studio.effective.prompt.model || '-'
   })
   try {
+    // draftModel：本地小模型起草（8K 内存机实测 27B 单次大结构生成 12 分钟仍空输出），
+    // 质量由下游 27B 评审/修复环节兜底（用户确认的"小模型执行、27B 验证"单链设计）
+    const draftModel = String(body?.draftModel || '').trim()
     const { result, meta } = await generateStoryBible({
       provider: studio.effective.prompt.provider,
-      model: studio.effective.prompt.model,
+      model: draftModel || studio.effective.prompt.model,
       apiUrl: studio.effective.prompt.apiUrl,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs,
@@ -5623,6 +6102,7 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
         delete projectDoc.state.aiBackground[staleKey]
       }
       projectDoc.updatedAt = nowIso()
+      projectDoc._rev = Number(projectDoc._rev || 0) + 1
       await writeJson(projectPath, projectDoc)
       // 新 bible 生成后旧资产计划作废（避免按 id 合并旧故事的锁定状态与提示词）
       await rm(projectStoryAssetsPlanPath(id), { force: true }).catch(() => {})
@@ -5664,6 +6144,58 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
       },
       mapped.httpStatus
     )
+  }
+})
+
+// AI：提取剧情姿势状态（2026-09-10，候选制不写盘）——逐场景×出场角色输出 姿势/朝向/动作/神态，
+// 供锁定向导姿势变体区构建"剧情姿势需求清单"；模型输出只是候选，持久化由编辑器确认后走 plan 保存链。
+app.post('/api/projects/:id/ai/story/pose-states', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.prompt) {
+    return c.json({ success: false, error: 'disabled', message: '“提示词生成”已在设置中关闭' }, 503)
+  }
+  if (!studio.effective.prompt.provider || studio.effective.prompt.provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“提示词生成”并选择 Provider/Model' }, 400)
+  }
+
+  try {
+    const bundle = await readProjectBundle(id)
+    const storyBible = readStoryBibleFromProjectDoc(bundle.project)
+    if (!storyBible || typeof storyBible !== 'object') {
+      return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible。' }, 400)
+    }
+    const input = buildPoseStateExtractionInput({ project: bundle.project, story: bundle.story, storyBible })
+    if (!input.scenes.length) {
+      return c.json({ success: false, error: 'no_character_scenes', message: '没有角色出场的场景可提取。' }, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    const timeoutMs = clampInt(body?.timeoutMs, 5_000, 600_000, clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 600_000, 90_000))
+    const { result, meta } = await extractStoryPoseStates({
+      provider: studio.effective.prompt.provider,
+      model: studio.effective.prompt.model,
+      apiUrl: studio.effective.prompt.apiUrl,
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs,
+      input
+    })
+    // 附带角色→计划资产映射（同 id 直接对应），编辑器按资产挂载需求清单
+    const plan = await readStoryAssetPlanIfExists(id).catch(() => null)
+    const assetByCharacterId = {}
+    for (const asset of (plan && Array.isArray(plan.assets) ? plan.assets : [])) {
+      if (String(asset?.category || '') === 'character' && String(asset?.id || '').trim()) {
+        assetByCharacterId[String(asset.id).trim()] = { assetId: String(asset.id).trim(), assetName: String(asset.name || asset.id).trim() }
+      }
+    }
+    return c.json({ success: true, poseStates: result, assetByCharacterId, meta })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
 })
 
@@ -5751,6 +6283,11 @@ app.post('/api/projects/:id/ai/story/assets/plan', storyInputGate('story.assets.
   }
 
   const prevManifest = body && body.rebuild ? null : await readStoryAssetPlanIfExists(id)
+  // 2026-08-30 修复：rebuild:false 且已有持久化计划时直接返回磁盘真相，不再 rebuild 派生——
+  // 派生会把人工补充的资产（如猪妈妈）与 repair-links 的场景关联丢掉，编辑器看到并与真相不一致。
+  if (!body?.rebuild && prevManifest) {
+    return c.json({ success: true, plan: prevManifest })
+  }
   const plan = buildStoryAssetPlan({
     project: bundle.project,
     story: bundle.story,
@@ -5769,7 +6306,30 @@ app.post('/api/projects/:id/ai/story/assets/plan/persist', async (c) => {
     return c.json({ success: false, error: 'missing_plan', message: '缺少要保存的资产计划。' }, 400)
   }
   await saveStoryAssetPlan(id, plan)
-  return c.json({ success: true, plan })
+  // 2026-09-03 返回最新 _rev：saveStoryAssetPlan 会递增 project.json 版本号，
+  // 编辑器不采信的话，外部更新检测横幅会把"自己刚才的保存"误报成外部更新（实测假阳性）。
+  let rev = 0
+  try {
+    const doc = await readJson(path.join(projectDir(id), 'project.json'))
+    rev = Number(doc && doc._rev) || 0
+  } catch (_) {}
+  return c.json({ success: true, plan, _rev: rev })
+})
+
+// 场景↦资产关联确定性修复：按计划资产的名称/别名（+调用方证据别名 aliasOverrides）在场景文本中
+// 子串匹配，重建 scene.promptAssets 与 asset.sceneIds/sceneCount。用于修复计划生成器漏写关联的缺陷
+//（关联缺失会导致场景渲染 prompt 只剩 worldAnchor，出图同质跑题）。
+app.post('/api/projects/:id/ai/story/assets/plan/repair-links', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+  const body = await c.req.json().catch(() => ({}))
+  const aliasOverrides = body && typeof body.aliasOverrides === 'object' && body.aliasOverrides ? body.aliasOverrides : {}
+  const { plan: nextPlan, changes } = repairStoryAssetPlanSceneLinks(plan, { aliasOverrides })
+  await saveStoryAssetPlan(id, nextPlan)
+  return c.json({ success: true, changes, plan: nextPlan })
 })
 
 async function generateAndPersistStoryAssetReference({
@@ -5889,7 +6449,7 @@ async function generateAndPersistStoryAssetReference({
     }) : plan.assets
   }
   nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
-  await saveStoryAssetPlan(id, nextPlan)
+  await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
 
   return {
     asset: (Array.isArray(nextPlan.assets) ? nextPlan.assets.find((item) => String(item && item.id || '').trim() === String(asset.id || '').trim()) : null) || null,
@@ -5961,7 +6521,11 @@ async function applyCutoutToStoryAssetReference({
     })
     await mkdir(target.outDir, { recursive: true })
     await writeFile(target.absPath, post.bytes)
-    const relPath = target.assetPath
+    // 2026-09-09 出图即压：选定立绘无损 WebP（真相源零质量损失）
+    const optSel = await optimizeGeneratedImage(target.absPath, IMAGE_KIND.SPRITE_LOSSLESS).catch(() => null)
+    const relPath = optSel && optSel.outPath && optSel.outPath !== target.absPath
+      ? String(assetPathFromAbsolute(id, optSel.outPath) || target.assetPath)
+      : target.assetPath
 
     const projectAssetId = genId('asset')
     const projectAsset = {
@@ -6018,7 +6582,7 @@ async function applyCutoutToStoryAssetReference({
       }) : plan.assets
     }
     nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
-    await saveStoryAssetPlan(id, nextPlan)
+    await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
     return { plan: nextPlan, primaryReferenceAssetId: projectAssetId, primaryReferenceAssetUri: relPath }
   } catch (_) {
     return {
@@ -6062,7 +6626,7 @@ async function persistStoryAssetReferenceBatch({
     }) : plan.assets
   }
   nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
-  await saveStoryAssetPlan(id, nextPlan)
+  await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
   return nextPlan
 }
 
@@ -6183,7 +6747,7 @@ async function persistStoryAssetLineartResult({
     }) : plan.assets
   }
   nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
-  await saveStoryAssetPlan(id, nextPlan)
+  await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
   return {
     plan: nextPlan,
     asset: (Array.isArray(nextPlan.assets) ? nextPlan.assets.find((item) => String(item && item.id || '').trim() === String(asset?.id || '').trim()) : null) || null,
@@ -6250,7 +6814,7 @@ async function reviewAndPersistStoryAssetReference({
     }) : plan.assets
   }
   nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
-  await saveStoryAssetPlan(id, nextPlan)
+  await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
 
   return {
     asset: (Array.isArray(nextPlan.assets) ? nextPlan.assets.find((item) => String(item && item.id || '').trim() === String(asset.id || '').trim()) : null) || null,
@@ -6332,7 +6896,7 @@ async function setPrimaryStoryAssetReference({
     }) : plan.assets
   }
   nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
-  await saveStoryAssetPlan(id, nextPlan)
+  await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
   return nextPlan
 }
 
@@ -6409,6 +6973,11 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
 
   try {
     logStage({ stage: 'asset.reference.batch', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'generate_candidates_only' })
+    // 2026-08-29 出图可观测（AGENTS.md 强制规则）：参考图抽卡批次必须在 UI 暴露真实进度，禁止黑盒
+    const refTask = createAiTask(id, 'story.asset.reference_batch', {
+      total: batchSize,
+      message: `参考图抽卡：${String(asset.name || assetId).trim()}`
+    })
     let currentPlan = await persistStoryAssetReferenceBatch({
       id,
       plan,
@@ -6426,6 +6995,7 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
     const maxAttempts = Math.max(batchSize, Math.min(12, batchSize + 4))
     for (let i = 0; i < maxAttempts && rawCandidates.length < batchSize; i += 1) {
       const seed = (baseSeed + i * 9973) % 4_294_967_295
+      updateAiTask(refTask.taskId, { stage: 'generating', current: i + 1, message: `第 ${i + 1}/${batchSize} 张生成中…（${String(asset.name || assetId).trim()}）` })
       const result = await generateAndPersistStoryAssetReference({
         id,
         dir,
@@ -6450,6 +7020,7 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
       })
       currentPlan = result.plan
       currentBundle = await readProjectBundle(id)
+      updateAiTask(refTask.taskId, { stage: 'reviewing', current: i + 1, message: `第 ${i + 1}/${batchSize} 张 AI 评审中…` })
       const reviewed = await reviewAndPersistStoryAssetReference({
         id,
         dir,
@@ -6506,11 +7077,13 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
       recommendedReferenceAssetUri: recommendedAssetPath
     })
     const currentAsset = (Array.isArray(currentPlan.assets) ? currentPlan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || null
+    updateAiTask(refTask.taskId, { stage: 'done', done: true, current: candidates.length, message: `抽卡完成：${candidates.length} 张候选（${String(asset.name || assetId).trim()}）` })
     logStage({ stage: 'asset.reference.batch', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'generate_candidates_only', count: candidates.length })
     return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, candidates, model: effectiveModel || undefined, modelSource: modelResolution.source, ...(bestResult || {}), plan: currentPlan })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
+    if (typeof refTask !== 'undefined' && refTask) updateAiTask(refTask.taskId, { stage: 'error', done: true, error: msg, message: msg })
     logStage({ stage: 'asset.reference.batch', event: 'fail', traceId, project: id, item: assetId, status: mapped.httpStatus, ok: false, err: msg })
     return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
@@ -6840,13 +7413,13 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
       if (forceRegenerate && feedbackZh) {
         feedbackZh = `${feedbackZh}。这是一次显式重新生成，必须优先根据这些问题重写，不要沿用原先措辞。`
       }
-      let bestCandidate = { ...result }
-      let bestReview = fallbackReview
-      const priorReviewScore = Number(body?.promptReview?.score)
+      // 2026-08-26 重构：循环内只让本地模型写中文稿并打分选优，胜出后才翻译一次。
+      // 旧实现每轮 2 次并行翻译 + 增强，27B 在 32G/16K 环境下 KV 峰值翻倍（实测触发 oMLX prefill 内存护栏 400）。
+      let aiWinner = null
       for (let attempt = 1; attempt <= maxRegenerateAttempts; attempt += 1) {
         const aiInput = {
           projectTitle: String(bundle?.project?.title || '').trim(),
-          storyBibleJson: JSON.stringify(readStoryBibleFromProjectDoc(bundle.project) || {}, null, 2),
+          storyBibleJson: JSON.stringify(readStoryBibleFromProjectDoc(bundle.project) || {}),
           asset,
           plan,
           assetUsageContext: usageContext,
@@ -6858,64 +7431,52 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
           currentNegativePromptZh: rewriteFromScratch ? '' : body?.negativePromptZh,
           currentNegativePrompt: rewriteFromScratch ? '' : body?.negativePrompt
         }
-        const enhanced = await Promise.race([
-          enhanceStoryAssetPromptWithAi({
-            input: aiInput,
-            provider,
-            model,
-            apiUrl,
-            proxyUrl
-          }),
-          new Promise((_, reject) => setTimeout(() => {
-            const e = new Error('asset_prompt_enhance_timeout')
-            e.status = 504
-            reject(e)
-          }, 15_000))
-        ])
+        let enhanced = null
+        try {
+          enhanced = await Promise.race([
+            enhanceStoryAssetPromptWithAi({
+              input: aiInput,
+              provider,
+              model,
+              apiUrl,
+              proxyUrl
+            }),
+            new Promise((_, reject) => setTimeout(() => {
+              const e = new Error('asset_prompt_enhance_timeout')
+              e.status = 504
+              reject(e)
+            }, ['localoxml', 'ollama'].includes(provider) ? 300_000 : 60_000))
+            // 2026-08-26 修复：本地模型原 15s 掐表必超时（27B 需 1-5 分钟），兜底模板横行；
+            // 放宽后 AI 真正写完，模板只在 AI 失败时才上桌
+          ])
+        } catch (e) {
+          const emsg = e instanceof Error ? e.message : String(e)
+          // 2026-08-26：oMLX 内存护栏拒绝是瞬态（天花板随系统负载波动，实测差 0.03GB 也被拒），
+          // 等待 25s 后重试而非直接兜底——慢可以，掉模板不行
+          if (/prefill memory guard|prefill_memory_exceeded/i.test(emsg) && attempt < maxRegenerateAttempts) {
+            logStage({ stage: 'asset.prompt_enhance', event: 'retry', traceId, project: id, item: assetId, attempt, err: 'omlx_memory_guard' })
+            await new Promise((resolve) => setTimeout(resolve, 25_000))
+            continue
+          }
+          throw e
+        }
         if (!enhanced || !enhanced.result) continue
         const nextPromptZh = sanitizeStoryAssetPromptZh({ asset, promptZh: enhanced.result.promptZh }) || fallback.promptZh
         const nextNegativePromptZh = storyAssetStr(enhanced.result.negativePromptZh).trim() || fallback.negativePromptZh
-        const translated = await translateStoryAssetPromptPair({
-          studio,
+        // 评分阶段英文沿用兜底件（仅供关键词评分参考），中文稿胜出后才翻译
+        const review = scoreCandidate({
           promptZh: nextPromptZh,
-          negativePromptZh: nextNegativePromptZh,
-          fallbackPromptEn: fallback.promptEn,
-          fallbackNegativePrompt: fallback.negativePrompt,
-          timeoutMs: 60_000
-        }).catch(() => ({
           promptEn: fallback.promptEn,
-          negativePrompt: fallback.negativePrompt,
-          meta: { provider: 'fallback', model: null, api: null, note: 'translation_fallback' }
-        }))
-        const sanitizedTranslated = sanitizeProtectedAssetPrompt({
-          asset,
-          promptEn: translated.promptEn,
-          negativePrompt: translated.negativePrompt
-        })
-        const candidate = {
-          promptZh: nextPromptZh,
-          promptEn: sanitizedTranslated.promptEn || fallback.promptEn,
           negativePromptZh: nextNegativePromptZh,
-          negativePrompt: sanitizedTranslated.negativePrompt || fallback.negativePrompt,
-          summary: storyAssetStr(enhanced.result.summary).trim() || fallback.summary,
-          context: {
-            ...(fallback.context || {}),
-            aiGenerated: true,
-            translatedBy: translated.meta || null
+          negativePrompt: fallback.negativePrompt
+        }, 'ai', attempt)
+        if (!aiWinner || review.score > aiWinner.review.score) {
+          aiWinner = {
+            promptZh: nextPromptZh,
+            negativePromptZh: nextNegativePromptZh,
+            summary: storyAssetStr(enhanced.result.summary).trim() || fallback.summary,
+            review
           }
-        }
-        const review = scoreCandidate(candidate, 'ai', attempt)
-        const shouldPreferCandidate = !bestReview ||
-          review.score > bestReview.score ||
-          (
-            forceRegenerate &&
-            Number.isFinite(priorReviewScore) &&
-            review.score >= priorReviewScore &&
-            review.score >= bestReview.score
-          )
-        if (shouldPreferCandidate) {
-          bestCandidate = candidate
-          bestReview = review
         }
         meta = {
           ...(enhanced.meta || {}),
@@ -6924,14 +7485,55 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
           api: enhanced.meta?.api || apiUrl || null,
           durationMs: Math.max(0, Date.now() - startedAt)
         }
-        if (!forceRegenerate && (review.passed || review.score >= minAcceptScore)) {
-          result = candidate
-          break
-        }
+        if (!forceRegenerate && (review.passed || review.score >= minAcceptScore)) break
         feedbackZh = `${buildPromptReviewFeedbackZh(review)}。请根据这些问题完全重写，不要保留泛化模板。`
-        result = bestCandidate
       }
-      if (!result || !storyAssetStr(result.promptZh).trim()) result = bestCandidate
+      // 2026-08-26 修复：AI 中文稿有效即上桌。评分器只认固定字面关键词（纯白背景/无场景/单一物件），
+      // 模板恰好自带这些词（实测 34 分），27B 语义正确的稿子实测仅 26-34 分，旧规则要求严格超过模板导致 AI 稿永不上桌。
+      // 提示词终审是人的审核闸（第 4 步：确认中文稿 → 翻译 → 批准），此处评分仅作顾问；
+      // 仅当 AI 稿遭硬性污染罚分（跨道具语义混入等，分数崩到阈值以下）时才保留模板兜底。
+      if (aiWinner) {
+        const fallbackScore = fallbackReview && Number.isFinite(fallbackReview.score) ? fallbackReview.score : 0
+        const aiAcceptFloor = Math.max(20, fallbackScore - 15)
+        if (aiWinner.review.score >= aiAcceptFloor) {
+          const translated = await translateStoryAssetPromptPair({
+            studio,
+            promptZh: aiWinner.promptZh,
+            negativePromptZh: aiWinner.negativePromptZh,
+            fallbackPromptEn: fallback.promptEn,
+            fallbackNegativePrompt: fallback.negativePrompt,
+            timeoutMs: ['localoxml', 'ollama'].includes(provider) ? 300_000 : 60_000
+          }).catch(() => ({
+            promptEn: fallback.promptEn,
+            negativePrompt: fallback.negativePrompt,
+            meta: { provider: 'fallback', model: null, api: null, note: 'translation_fallback' }
+          }))
+          const sanitizedTranslated = sanitizeProtectedAssetPrompt({
+            asset,
+            promptEn: translated.promptEn,
+            negativePrompt: translated.negativePrompt
+          })
+          result = {
+            promptZh: aiWinner.promptZh,
+            promptEn: sanitizedTranslated.promptEn || fallback.promptEn,
+            negativePromptZh: aiWinner.negativePromptZh,
+            negativePrompt: sanitizedTranslated.negativePrompt || fallback.negativePrompt,
+            summary: aiWinner.summary,
+            context: {
+              ...(fallback.context || {}),
+              aiGenerated: true,
+              translatedBy: translated.meta || null
+            }
+          }
+        }
+      }
+      if (!result || !storyAssetStr(result.promptZh).trim()) {
+        result = {
+          ...fallback,
+          promptEn: fallbackSanitized.promptEn || fallback.promptEn,
+          negativePrompt: fallbackSanitized.negativePrompt || fallback.negativePrompt
+        }
+      }
       if (meta.provider || meta.model || meta.api) {
         logStage({ stage: 'asset.prompt_enhance', event: 'ok', traceId, project: id, provider: meta.provider || provider || 'local', model: meta.model || model || '-', item: assetId, ok: true, durationMs: meta.durationMs })
       }
@@ -6967,6 +7569,12 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
       promptReview: finalReview
     }
   }
+  recordCreationEvent(dir, {
+    type: 'prompt_drafted',
+    summary: `资产提示词起草：${assetId}（${meta.provider || 'local'}${finalReview && finalReview.score != null ? `，评分 ${finalReview.score}` : ''}）`,
+    actor: 'prompt_flow',
+    data: { assetId, provider: String(meta.provider || ''), score: finalReview && finalReview.score != null ? Number(finalReview.score) : null }
+  })
   return c.json({ success: true, asset, result, meta, aiError, traceId, promptReview: finalReview, promptReviewAttempts: promptReviews, promptReviewThreshold: minAcceptScore })
 })
 
@@ -7047,9 +7655,15 @@ app.post('/api/projects/:id/ai/story/assets/reference/select', storyInputGate('s
           : null
       )
   const reviewGate = evaluateStoryAssetReferenceReview(candidateReview)
-  if (!reviewGate.passed) {
+  // 人工特批（2026-08-30 用户指令）：AI 评审只是候选意见，人工可点击确认越过门禁；
+  // 越权必须显式 manualOverride=true，且全程留痕（locked 记录带 manual_override 与被越过的评审结论）。
+  const manualOverride = body?.manualOverride === true
+  if (!reviewGate.passed && !manualOverride) {
     logStage({ stage: 'asset.reference.select', event: 'blocked', traceId, project: id, item: assetId, ok: false, err: reviewGate.code })
     return c.json({ success: false, error: reviewGate.code, message: reviewGate.message, review: candidateReview }, 409)
+  }
+  if (!reviewGate.passed && manualOverride) {
+    logStage({ stage: 'asset.reference.select', event: 'manual_override', traceId, project: id, item: assetId, ok: true, err: reviewGate.code, detail: 'human_override_review_gate' })
   }
   const fileGate = await verifyStoryAssetReferenceFile({ dir, assetPath: targetAssetPath })
   if (!fileGate.ok) {
@@ -7095,6 +7709,35 @@ app.post('/api/projects/:id/ai/story/assets/reference/select', storyInputGate('s
     })
     const nextAsset = (Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || asset
     await writeStoryAssetPrimaryToProject({ id, dir, asset: nextAsset, primaryReferenceAssetId })
+    // 结论留痕：选定即补写 lock_confirm（approved）。control 旁路链路（x-image-review-mode: off）同样落审核事实，
+    // 否则出图总账的 locked 状态永远缺这部分资产。
+    try {
+      const lockTargetKey = `lock_confirm:${assetId}:${primaryReferenceAssetUri}`
+      const decidedBy = resolveImageReviewMode(c, body) === 'off' ? 'control' : 'user'
+      const pendingLock = await findPendingReview(dir, { phase: 'lock_confirm', targetKey: lockTargetKey })
+      if (pendingLock) {
+        await decideImageReview(dir, pendingLock.reviewId, { approved: true, decidedBy })
+      } else {
+        const lockRecord = await createImageReview(dir, {
+          phase: 'lock_confirm',
+          targetKey: lockTargetKey,
+          assetId,
+          prompt: String(nextAsset.anchorPrompt || '').trim(),
+          resultImagePath: primaryReferenceAssetUri,
+          aiReview: pickedCandidate?.analysis || asset.latestReferenceReview || null,
+          params: manualOverride
+            ? { manual_override: true, overriddenGateCode: reviewGate.code, overriddenGateMessage: reviewGate.message }
+            : {}
+        })
+        await decideImageReview(dir, lockRecord.reviewId, { approved: true, decidedBy })
+      }
+    } catch (_) { /* 留痕失败不阻断选定结果 */ }
+    recordCreationEvent(dir, {
+      type: 'asset_locked',
+      summary: `资产主参考锁定：${assetId} -> ${primaryReferenceAssetUri}${manualOverride ? '（人工特批）' : ''}`,
+      actor: 'select_flow',
+      data: { assetId, manualOverride }
+    })
     logStage({ stage: 'asset.reference.select', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'transparent_cutout' })
     return c.json({ success: true, asset: nextAsset, plan })
   } catch (e) {
@@ -7197,6 +7840,12 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
       negativePrompt: lineartNegative
     })
     logStage({ stage: 'asset.lineart', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'controlnet_lineart_only' })
+    recordCreationEvent(dir, {
+      type: 'lineart_done',
+      summary: `线稿生成完成：${assetId}`,
+      actor: 'lineart_flow',
+      data: { assetId, finalAssetPath: persisted.finalAssetPath }
+    })
     // 同步到 project.json 的 aiBackground.storyAssetPlan，保证工作区线稿门卡立即可见
     try {
       const projectPath = path.join(dir, 'project.json')
@@ -7205,6 +7854,7 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
       if (!projectDoc.state.aiBackground || typeof projectDoc.state.aiBackground !== 'object') projectDoc.state.aiBackground = {}
       projectDoc.state.aiBackground.storyAssetPlan = persisted.plan
       projectDoc.updatedAt = nowIso()
+      projectDoc._rev = Number(projectDoc._rev || 0) + 1
       await writeJson(projectPath, projectDoc)
     } catch (_) { /* 同步失败不阻断线稿结果 */ }
     return c.json({ success: true, asset: persisted.asset, plan: persisted.plan, hintAssetPath: persisted.hintAssetPath, finalAssetPath: persisted.finalAssetPath, hintUrl: persisted.hintUrl, finalUrl: persisted.finalUrl, meta: result.meta, prompt: lineartPrompt, negativePrompt: lineartNegative })
@@ -7279,7 +7929,7 @@ async function persistPrimaryReferenceLock(id, dir, assetId, assetPath) {
   }
   target.primaryReferenceAssetUri = assetPath
   target.primaryReferenceSelectedAt = new Date().toISOString()
-  await saveStoryAssetPlan(id, plan)
+  await saveStoryAssetPlan(id, plan, { mergeAssetsById: true })
   // 同步到 project.json 的 aiBackground.storyAssetPlan，保证编辑器锁定工作区立即可见
   try {
     const projectPath = path.join(dir, 'project.json')
@@ -7288,6 +7938,7 @@ async function persistPrimaryReferenceLock(id, dir, assetId, assetPath) {
     if (!projectDoc.state.aiBackground || typeof projectDoc.state.aiBackground !== 'object') projectDoc.state.aiBackground = {}
     projectDoc.state.aiBackground.storyAssetPlan = plan
     projectDoc.updatedAt = nowIso()
+    projectDoc._rev = Number(projectDoc._rev || 0) + 1
     await writeJson(projectPath, projectDoc)
   } catch (_) { /* 同步失败不阻断锁定写入 */ }
   return plan
@@ -7321,10 +7972,17 @@ async function persistSceneBackgroundBinding({ dir, rawProject, story, sceneId, 
   const nextProject = {
     ...rawProject,
     assets: [...(Array.isArray(rawProject.assets) ? rawProject.assets : []), projectAsset],
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    _rev: Number((rawProject && rawProject._rev) || 0) + 1
   }
   await writeJson(path.join(dir, 'project.json'), nextProject)
   await writeJson(path.join(dir, 'story.json'), nextStory)
+  recordCreationEvent(dir, {
+    type: 'scene_bound',
+    summary: `场景图绑定：${sceneName || sceneId} -> ${assetPath}`,
+    actor: 'render_flow',
+    data: { sceneId: String(sceneId || ''), assetPath: String(assetPath || '') }
+  })
   return projectAsset
 }
 
@@ -7470,6 +8128,33 @@ app.get('/api/projects/:id/ai/tasks/:taskId', async (c) => {
   return c.json({ success: true, task })
 })
 
+// 出图总账：需要多少图/完成多少/缺哪些，从 plan/story/project/reviews+磁盘确定性聚合（只读）
+app.get('/api/projects/:id/ai/coverage', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const coverage = await getStoryImageCoverage(dir)
+  return c.json({ success: true, coverage })
+})
+
+// 创作过程缓冲查询（只读）：日志尾部 + 快照列表。恢复时手工把快照目录里的文件复制回项目根即可。
+app.get('/api/projects/:id/creation-buffer', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const bufDir = path.join(dir, 'creation-buffer')
+  const journalFile = path.join(bufDir, 'journal.jsonl')
+  let journal = []
+  try {
+    const raw = await readFile(journalFile, 'utf-8')
+    journal = raw.split('\n').map((l) => l.trim()).filter(Boolean).slice(-50).map((l) => { try { return JSON.parse(l) } catch (_) { return null } }).filter(Boolean).reverse()
+  } catch (_) { /* 尚无日志 */ }
+  const snapRoot = path.join(bufDir, 'snapshots')
+  const snapEntries = await readdir(snapRoot, { withFileTypes: true }).catch(() => [])
+  const snapshots = snapEntries.filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse().slice(0, 20)
+  return c.json({ success: true, journal, snapshots })
+})
+
 app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
@@ -7485,12 +8170,20 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
       return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible 并创建资产计划。' }, 400)
     }
     plan = buildStoryAssetPlan({ project: bundle.project, story: bundle.story, storyBible, prevManifest: null })
-    await saveStoryAssetPlan(id, plan)
+    await saveStoryAssetPlan(id, plan, { mergeAssetsById: true })
   }
 
-  const testTarget = pickStoryboardLockTestAsset(plan)
+  // 显式 assetId 优先（control/事件链路按资产锁定）；缺省时沿用自动挑选逻辑（第一个未锁定资产）
+  const requestedAssetId = String(body?.assetId || '').trim()
+  const testTarget = requestedAssetId
+    ? ((Array.isArray(plan.assets) ? plan.assets : []).find((a) => String(a && a.id || '').trim() === requestedAssetId) || null)
+    : pickStoryboardLockTestAsset(plan)
   if (!testTarget) {
-    return c.json({ success: false, error: 'missing_test_target', message: '资产计划为空，无法执行锁定测试。' }, 400)
+    return c.json({
+      success: false,
+      error: requestedAssetId ? 'asset_not_found' : 'missing_test_target',
+      message: requestedAssetId ? `未找到故事资产：${requestedAssetId}` : '资产计划为空，无法执行锁定测试。'
+    }, requestedAssetId ? 404 : 400)
   }
 
   const studio = await getEffectiveStudioConfig(ROOT)
@@ -7598,7 +8291,11 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
       const fname = `${safeAssetSlug}_attempt_${attempt}_${Date.now()}.${ext}`
       const abs = path.join(outDir, fname)
       await writeFile(abs, buf)
-      const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+      let assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+      { // 2026-09-09 出图即压：锁定测试候选 WebP q92
+        const opt = await optimizeGeneratedImage(abs, IMAGE_KIND.CANDIDATE).catch(() => null)
+        if (opt && opt.outPath && opt.outPath !== abs) assetPath = String(assetPathFromAbsolute(id, opt.outPath) || assetPath)
+      }
       const dataUrl = `data:${sniff?.contentType || (ext === 'jpg' ? 'image/jpeg' : 'image/png')};base64,${buf.toString('base64')}`
 
       updateAiTask(lockTask.taskId, { stage: 'reviewing', current: attempt, message: `第 ${attempt}/${maxAttempts} 次 AI 评审中…` })
@@ -7649,6 +8346,26 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
           try {
             await persistPrimaryReferenceLock(id, dir, String(testTarget.id || '').trim(), assetPath)
           } catch (_) { /* 持久化失败不阻断测试结果 */ }
+          // 结论留痕（off/ai_only 模式直接落锁时同样补写 lock_confirm approved 记录，否则出图总账 locked 缺这批资产）
+          try {
+            const offTargetKey = `lock_confirm:${String(testTarget.id || '').trim()}:${assetPath}`
+            const offDecidedBy = reviewMode === 'off' ? 'control' : 'system'
+            const pendingLock = await findPendingReview(dir, { phase: 'lock_confirm', targetKey: offTargetKey })
+            if (pendingLock) {
+              await decideImageReview(dir, pendingLock.reviewId, { approved: true, decidedBy: offDecidedBy })
+            } else {
+              const lockRec = await createImageReview(dir, {
+                phase: 'lock_confirm',
+                targetKey: offTargetKey,
+                assetId: String(testTarget.id || '').trim(),
+                prompt: positivePrompt,
+                negativePrompt,
+                resultImagePath: assetPath,
+                aiReview: analysis
+              })
+              await decideImageReview(dir, lockRec.reviewId, { approved: true, decidedBy: offDecidedBy })
+            }
+          } catch (_) { /* 留痕失败不阻断测试结果 */ }
         }
         break
       }
@@ -7728,7 +8445,7 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
       return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible 并创建资产计划。' }, 400)
     }
     plan = buildStoryAssetPlan({ project: bundle.project, story: bundle.story, storyBible, prevManifest: null })
-    await saveStoryAssetPlan(id, plan)
+    await saveStoryAssetPlan(id, plan, { mergeAssetsById: true })
   }
 
   // 背景-only 模式（背景+立绘分层合成）：mode='background' 或 backgroundOnly=true 时，
@@ -7839,11 +8556,50 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
   }
 
   const bodyPrompt = String(body?.scenePrompt || body?.prompt || '').trim()
+  // 2026-08-30 缺陷修复：剧情描述是中文，图像模型几乎读不懂，渲染前经翻译链转英文（失败保留原文不阻断）；
+  // prompt 顺序改为「场景内容 → 资产锚点 → 风格基调」，避免 worldAnchor 支配画面导致全场景同质跑题。
+  let sceneContentPrompt = bodyPrompt || ''
+  // 背景-only（2026-08-30 最终修正）：不再使用剧情叙事文本——人名剥离后残留的"三个孩子/三人"类叙事
+  // 翻译后仍会画出人物/狼（实测三轮）。背景内容只由「非角色资产的英文锚点」构成，无锚点时退回通用山谷村庄。
+  const anchorOnlyBackground = !bodyPrompt && backgroundOnly
+  if (anchorOnlyBackground) {
+    const anchorParts = (Array.isArray(renderSpec.promptLocks) ? renderSpec.promptLocks : [])
+      .map((line) => String(line || '').split(': ').slice(1).join(': ').trim())
+      .filter(Boolean)
+    sceneContentPrompt = anchorParts.length
+      ? `storybook scene background featuring ${anchorParts.join('; ')}`
+      : 'storybook rural valley village scene background'
+  } else if (!sceneContentPrompt) {
+    sceneContentPrompt = backgroundOnly ? String(renderSpec.backgroundPrompt || '').trim() : String(renderSpec.summary || '').trim()
+  }
+  if (!anchorOnlyBackground && sceneContentPrompt && /[\u4e00-\u9fff]/.test(sceneContentPrompt)) {
+    try {
+      const studioCfg = await getEffectiveStudioConfig(ROOT)
+      const tr = await translateStoryAssetPromptPair({
+        studio: studioCfg,
+        promptZh: sceneContentPrompt,
+        negativePromptZh: '',
+        fallbackPromptEn: '',
+        fallbackNegativePrompt: '',
+        timeoutMs: 60_000
+      })
+      const en = String(tr && tr.promptEn || '').trim()
+      if (en) sceneContentPrompt = en
+    } catch (_) { /* 翻译失败保留原文，不阻断渲染 */ }
+  }
+  // 背景-only：正向约束放 prompt 最前（权重最高位）
+  if (!bodyPrompt && backgroundOnly && sceneContentPrompt) {
+    sceneContentPrompt = `empty environment background illustration, scenery only without any characters, no people, no animals. Scene content: ${sceneContentPrompt}`
+  }
   const prompt = [
-    String(plan.worldAnchor || '').trim(),
+    sceneContentPrompt,
     ...((Array.isArray(renderSpec.promptLocks) ? renderSpec.promptLocks : []).slice(0, 20)),
-    // 背景-only：使用剥离人物/事物名称后的场景描述；显式 body prompt 优先且原样尊重
-    bodyPrompt || (backgroundOnly ? String(renderSpec.backgroundPrompt || '').trim() : String(renderSpec.summary || '').trim())
+    // 2026-09-08：显式自定义 prompt（body.scenePrompt/body.prompt）时不再拼 worldAnchor——
+    // 锚点里的村庄/建筑词会把背景-only 空景拉回出房子（场景4实测夜景+小屋）。
+    // 与下部安静区同规则：显式覆盖即全权生效。
+    ...(bodyPrompt ? [] : [String(renderSpec.worldAnchor || plan.worldAnchor || '').trim()]),
+    // 2026-08-28：H5 文本叠加在场景图上——拼装路径统一要求下部留安静区（显式自定义 prompt 原样尊重不追加）
+    ...(bodyPrompt ? [] : ['composition keeps a calm low-detail low-contrast quiet zone in the lower third for H5 text overlay readability'])
   ]
     .map((x) => String(x || '').trim())
     .filter(Boolean)
@@ -7918,7 +8674,11 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
     const fname = `${safeSceneSlug}_${Date.now()}.${ext}`
     const abs = path.join(outDir, fname)
     await writeFile(abs, buf)
-    const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+    let assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+    { // 2026-09-09 出图即压：场景背景 JPEG q90
+      const opt = await optimizeGeneratedImage(abs, IMAGE_KIND.SCENE_BG).catch(() => null)
+      if (opt && opt.outPath && opt.outPath !== abs) assetPath = String(assetPathFromAbsolute(id, opt.outPath) || assetPath)
+    }
 
     // manual 模式：生成图先挂 scene_bind 审核，人工 approve 后才绑定到故事节点
     if (reviewMode === 'manual') {
@@ -7966,6 +8726,28 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
       remoteUrl: String(gen?.meta?.url || '').trim() || undefined,
       references: referencesUsed
     })
+    // 结论留痕：非 manual 模式（control 旁路/全自动）绑定即补写 scene_bind approved 记录，
+    // 否则出图总账的 bound 状态永远缺这批场景。
+    try {
+      const bindSceneId = String(renderSpec.sceneId || sceneId).trim()
+      const bindTargetKey = `scene_bind:${bindSceneId}:${assetPath}`
+      const bindDecidedBy = reviewMode === 'off' ? 'control' : 'system'
+      const pendingBind = await findPendingReview(dir, { phase: 'scene_bind', targetKey: bindTargetKey })
+      if (pendingBind) {
+        await decideImageReview(dir, pendingBind.reviewId, { approved: true, decidedBy: bindDecidedBy })
+      } else {
+        const bindRecord = await createImageReview(dir, {
+          phase: 'scene_bind',
+          targetKey: bindTargetKey,
+          sceneId: bindSceneId,
+          prompt,
+          negativePrompt,
+          resultImagePath: assetPath,
+          params: { sceneName: String(renderSpec.sceneName || '').trim(), mode: String(renderSpec.mode || 'full') }
+        })
+        await decideImageReview(dir, bindRecord.reviewId, { approved: true, decidedBy: bindDecidedBy })
+      }
+    } catch (_) { /* 留痕失败不阻断绑定结果 */ }
 
     logStage({ stage: 'story.scene.render', event: 'ok', traceId, project: id, provider: imgProvider, item: `${sceneId} / refs:${referencesUsed.map((r) => r.assetId).join(',') || '-'} / ${assetPath}` })
     if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'done', done: true, current: 1, message: `场景已出图：${String(renderSpec.sceneName || sceneId).trim()}` })
@@ -8005,12 +8787,15 @@ app.post('/api/projects/:id/ai/story/scenes/render-all', async (c) => {
 
   const storyNodes = Array.isArray(bundle.story?.nodes) ? bundle.story.nodes : []
   const onlyMissing = body?.onlyMissing !== false
+  // 缺口以出图总账为准：status=pending（无背景或文件丢失）才算缺口；rendered 未过审不重渲
+  const coverageBefore = await getStoryImageCoverage(dir)
+  const gapSceneIds = new Set(coverageBefore.scenes.items.filter((s) => s.status === 'pending').map((s) => s.id))
   const targets = storyNodes
-    .filter((n) => !onlyMissing || !String(n?.visuals?.backgroundAssetId || '').trim())
+    .filter((n) => !onlyMissing || gapSceneIds.has(String(n && n.id || '').trim()))
     .map((n) => String(n && n.id || '').trim())
     .filter(Boolean)
   if (!targets.length) {
-    return c.json({ success: true, taskId: null, total: 0, message: '所有场景均已有图，无需渲染' })
+    return c.json({ success: true, taskId: null, total: 0, coverage: coverageBefore, message: '所有场景均已有图，无需渲染' })
   }
 
   const active = listAiTasks(id, { includeDone: false }).find((t) => t.kind === 'story.scenes.render_all')
@@ -8059,6 +8844,8 @@ app.post('/api/projects/:id/ai/story/scenes/render-all', async (c) => {
             width: body?.width,
             height: body?.height,
             timeoutMs: body?.timeoutMs,
+            backgroundOnly: body?.backgroundOnly === true,
+            reviewMode: body?.reviewMode,
             taskId: task.taskId
           })
         })
@@ -8073,18 +8860,124 @@ app.post('/api/projects/:id/ai/story/scenes/render-all', async (c) => {
         results.push({ sceneId, ok: false, error: e && e.message ? String(e.message) : String(e) })
       }
     }
+    // 批次结束后刷新出图总账，随任务结果返回（UI 可直接展示完成度）
+    let coverageAfter = null
+    try { coverageAfter = await getStoryImageCoverage(dir) } catch (_) { /* 总账失败不影响渲染结果 */ }
     updateAiTask(task.taskId, {
       stage: okCount === targets.length ? 'done' : 'partial',
       done: true,
       current: targets.length,
       message: `批量渲染完成 ${okCount}/${targets.length}`,
-      result: { okCount, results }
+      result: { okCount, results, coverage: coverageAfter }
     })
   })().catch((e) => {
     updateAiTask(task.taskId, { stage: 'error', done: true, error: e && e.message ? String(e.message) : String(e) })
   })
 
   return c.json({ success: true, taskId: task.taskId, total: targets.length }, 202)
+})
+
+// ---------------------------------------------------------------------------
+// 场景图版本管理（2026-08-30 用户指令：场景图需要可管理——历史版本查看/换绑/删除）
+// 文件真相源：assets/ai/story_scenes/<sceneId>_<时间戳>.<ext>
+// ---------------------------------------------------------------------------
+
+app.get('/api/projects/:id/ai/story/scenes/:sceneId/images', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  const bundle = await readProjectBundle(id)
+  const node = (Array.isArray(bundle.story?.nodes) ? bundle.story.nodes : []).find((n) => String(n && n.id || '').trim() === sceneId)
+  const boundAssetId = String(node?.visuals?.backgroundAssetId || '').trim()
+  const boundAsset = boundAssetId && Array.isArray(bundle.rawProject?.assets)
+    ? bundle.rawProject.assets.find((a) => String(a && a.id || '').trim() === boundAssetId)
+    : null
+  const boundUri = String(boundAsset?.uri || '').trim().replace(/^\/+/, '')
+
+  const scenesDir = path.join(dir, 'assets', 'ai', 'story_scenes')
+  const files = await readdir(scenesDir).catch(() => [])
+  const prefix = `${sceneId.replace(/[^a-z0-9_.-]+/gi, '_')}_`
+  const items = files
+    .filter((f) => f.startsWith(prefix) && /\.(png|jpe?g|webp)$/i.test(f))
+    .map((f) => {
+      const m = f.slice(prefix.length).match(/^(\d+)\./)
+      const ts = m ? Number(m[1]) : 0
+      const assetPath = `assets/ai/story_scenes/${f}`
+      return {
+        assetPath,
+        url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
+        createdAt: ts ? new Date(ts).toISOString() : '',
+        isBound: boundUri === assetPath
+      }
+    })
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+  return c.json({ success: true, sceneId, items, boundUri })
+})
+
+// 换绑：把该场景的某个历史版本设为背景（人工操作，落 scene_bind approved 记录，decidedBy=user）
+app.post('/api/projects/:id/ai/story/scenes/:sceneId/bind', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  const body = await c.req.json().catch(() => ({}))
+  const assetPath = String(body?.assetPath || '').trim().replace(/^\/+/, '')
+  if (!assetPath) return c.json({ success: false, error: 'missing_asset_path', message: 'assetPath 不能为空' }, 400)
+  const fileGate = await verifyStoryAssetReferenceFile({ dir, assetPath })
+  if (!fileGate.ok) return c.json({ success: false, error: fileGate.code, message: fileGate.message }, 400)
+
+  const bundle = await readProjectBundle(id)
+  const node = (Array.isArray(bundle.story?.nodes) ? bundle.story.nodes : []).find((n) => String(n && n.id || '').trim() === sceneId)
+  if (!node) return c.json({ success: false, error: 'scene_not_found', message: `未找到场景：${sceneId}` }, 404)
+  const sceneName = String(node.name || sceneId).trim()
+  const projectAsset = await persistSceneBackgroundBinding({
+    dir,
+    rawProject: bundle.rawProject,
+    story: bundle.story,
+    sceneId,
+    sceneName,
+    assetPath,
+    prompt: '',
+    provider: '',
+    references: []
+  })
+  try {
+    const bindRecord = await createImageReview(dir, {
+      phase: 'scene_bind',
+      targetKey: `scene_bind:${sceneId}:${assetPath}`,
+      sceneId,
+      resultImagePath: assetPath,
+      params: { sceneName, source: 'manual_rebind' }
+    })
+    await decideImageReview(dir, bindRecord.reviewId, { approved: true, decidedBy: 'user' })
+  } catch (_) { /* 留痕失败不阻断换绑 */ }
+  return c.json({ success: true, projectAsset, sceneId, assetPath })
+})
+
+// 删除某个历史版本（当前绑定中的图禁止删除）
+app.post('/api/projects/:id/ai/story/scenes/:sceneId/images/delete', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  const body = await c.req.json().catch(() => ({}))
+  const assetPath = String(body?.assetPath || '').trim().replace(/^\/+/, '')
+  if (!assetPath) return c.json({ success: false, error: 'missing_asset_path', message: 'assetPath 不能为空' }, 400)
+  const fileGate = await verifyStoryAssetReferenceFile({ dir, assetPath })
+  if (!fileGate.ok) return c.json({ success: false, error: fileGate.code, message: fileGate.message }, 400)
+
+  const bundle = await readProjectBundle(id)
+  const node = (Array.isArray(bundle.story?.nodes) ? bundle.story.nodes : []).find((n) => String(n && n.id || '').trim() === sceneId)
+  const boundAssetId = String(node?.visuals?.backgroundAssetId || '').trim()
+  const boundAsset = boundAssetId && Array.isArray(bundle.rawProject?.assets)
+    ? bundle.rawProject.assets.find((a) => String(a && a.id || '').trim() === boundAssetId)
+    : null
+  if (String(boundAsset?.uri || '').trim().replace(/^\/+/, '') === assetPath) {
+    return c.json({ success: false, error: 'bound_image', message: '该图是当前绑定背景，请先换绑其他版本再删除。' }, 409)
+  }
+  await rm(path.join(dir, assetPath))
+  return c.json({ success: true, deleted: assetPath })
 })
 
 // ---------------------------------------------------------------------------
@@ -8133,7 +9026,9 @@ app.post('/api/projects/:id/ai/story/completeness-check', async (c) => {
       apiUrl: reviewConfig.apiUrl,
       timeoutMs: Number(body?.reviewTimeoutMs) || undefined
     })
-    const { report, reportPath } = await runStoryCompletenessCheck({
+    // 本地视觉评审全程持 vision 独占租约（一次性换入 gemma，避免逐节点装卸抖动）；
+    // 走查浏览器阶段也在租约内——全程只有几分钟，且 llm 等待语义与出图互斥一致
+    const runCheck = () => runStoryCompletenessCheck({
       projectId: id,
       dir,
       story: bundle.story,
@@ -8146,6 +9041,9 @@ app.post('/api/projects/:id/ai/story/completeness-check', async (c) => {
         updateAiTask(task.taskId, { stage: 'walking', current: index, total, message: `走查节点 ${index}/${total}：${nodeId}` })
       }
     })
+    const { report, reportPath } = reviewConfig.provider === 'omlx'
+      ? await withResourceLease('vision', `gs:completeness:${id}`, runCheck)
+      : await runCheck()
     updateAiTask(task.taskId, {
       stage: report.verdict === 'pass' ? 'done' : 'failed',
       done: true,
@@ -8537,17 +9435,30 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         }
         if (!character) {
           // 项目缺少该角色条目：按真实计划数据补建最小角色记录，并回写计划链接
-          character = { id: genId('char'), name: assetName, imageAssetId }
+          // 2026-08-30 修复：同步补 ai.referenceAssetId——体检的连续性绑定检查依赖它（缺了会报"缺少角色参考图"）
+          character = { id: genId('char'), name: assetName, imageAssetId, ai: { referenceAssetId: imageAssetId } }
           characters.push(character)
           charactersChanged = true
           charactersCreated += 1
-        } else if (String(character.imageAssetId || '').trim() !== imageAssetId) {
-          const idx = characters.findIndex((ch) => String(ch && ch.id || '').trim() === String(character.id || '').trim())
-          if (idx >= 0) {
-            characters[idx] = { ...characters[idx], imageAssetId }
-            character = characters[idx]
-            charactersChanged = true
-            charactersUpdated += 1
+        } else {
+          const needsImage = String(character.imageAssetId || '').trim() !== imageAssetId
+          // 2026-08-30 修复：referenceAssetId 缺失时回填（锁定在角色建立前完成时，select 的写回找不到角色条目）
+          const needsRef = !String((character.ai && character.ai.referenceAssetId) || '').trim()
+          if (needsImage || needsRef) {
+            const idx = characters.findIndex((ch) => String(ch && ch.id || '').trim() === String(character.id || '').trim())
+            if (idx >= 0) {
+              characters[idx] = {
+                ...characters[idx],
+                ...(needsImage ? { imageAssetId } : {}),
+                ai: {
+                  ...((characters[idx].ai && typeof characters[idx].ai === 'object') ? characters[idx].ai : {}),
+                  referenceAssetId: imageAssetId
+                }
+              }
+              character = characters[idx]
+              charactersChanged = true
+              charactersUpdated += 1
+            }
           }
         }
         if (!String(asset.projectCharacterId || '').trim()) characterIdPatches.set(assetId, String(character.id || '').trim())
@@ -8606,7 +9517,7 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         })
       }
       nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
-      await saveStoryAssetPlan(id, nextPlan)
+      await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
     }
 
     const summary = {
@@ -8619,6 +9530,12 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
       skippedProps: skippedProps.length
     }
     logStage({ stage: 'story.scenes.placements', event: 'ok', traceId, project: id, item: `scenes:${targetSceneIds.length} / created:${placementsCreated} / updated:${placementsUpdated} / skipped:${skippedCharacters.length}` })
+    recordCreationEvent(dir, {
+      type: 'placements_updated',
+      summary: `立绘站位更新：${targetSceneIds.length} 场景，新增 ${placementsCreated} / 更新 ${placementsUpdated}`,
+      actor: 'placements_flow',
+      data: { scenes: targetSceneIds.length, placementsCreated, placementsUpdated }
+    })
     return c.json({ success: true, summary, scenes: sceneReports, skippedCharacters, skippedProps })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
@@ -8626,6 +9543,426 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
     logStage({ stage: 'story.scenes.placements', event: 'fail', traceId, project: id, item: msg })
     return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
+})
+
+// ---------------------------------------------------------------------------
+// 场景分层出图编排（asset.scene.layeredProduce，2026-09-08 新增）：
+// 单场景「背景-only 重画 + 姿势变体生成/复用 + 道具精灵 + 分层摆位写入」串行编排，
+// 供 control 事件链与控制台触发。全程经 /ai/tasks 暴露进度（createAiTask/updateAiTask，禁止黑盒）；
+// 生成动作经 app.request 内部转发既有端点（sprite/pose-review/cutout/render/bind，
+// 参考 makeSceneBatchRunner 的既有用法），统一带 x-image-review-mode: off（control 已有步骤级审核）；
+// 产物登记后补写 lock_confirm approved 审核留痕（decidedBy=control，与 select 链路同源写法）。
+// 任一步失败记 errors 并继续后续独立步骤，全部失败才 success:false。
+// ---------------------------------------------------------------------------
+app.post('/api/projects/:id/ai/story/scenes/:sceneId/layered-produce', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  if (!sceneId) return c.json({ success: false, error: 'missing_scene_id', message: 'sceneId 不能为空' }, 400)
+
+  // body 内联字段优先；specPath 规格文件（JSON，同结构，notes 等额外字段忽略）作为缺省补充。
+  // specPath 必须解析在项目目录内（防越界，与 verifyStoryAssetReferenceFile 同款路径守卫）。
+  const body = await c.req.json().catch(() => ({}))
+  let spec = {}
+  const specPath = String(body?.specPath || '').trim().replace(/^\/+/, '')
+  if (specPath) {
+    const rootAbs = path.resolve(dir)
+    const specAbs = path.resolve(rootAbs, specPath)
+    if (specAbs !== rootAbs && !specAbs.startsWith(rootAbs + path.sep)) {
+      return c.json({ success: false, error: 'spec_path_outside_project', message: `specPath 越出项目目录，已拒绝：${specPath}` }, 400)
+    }
+    if (!(await existsFile(specAbs))) {
+      return c.json({ success: false, error: 'spec_not_found', message: `规格文件不存在：${specPath}` }, 404)
+    }
+    try {
+      const parsed = JSON.parse(await readFile(specAbs, 'utf-8'))
+      spec = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch (_) {
+      return c.json({ success: false, error: 'spec_invalid_json', message: `规格文件不是有效 JSON：${specPath}` }, 400)
+    }
+  }
+  const asObj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null)
+  const background = asObj(body?.background) || asObj(spec?.background)
+  const poses = Array.isArray(body?.poses) ? body.poses : (Array.isArray(spec?.poses) ? spec.poses : [])
+  const propSprites = Array.isArray(body?.propSprites) ? body.propSprites : (Array.isArray(spec?.propSprites) ? spec.propSprites : [])
+  const placements = Array.isArray(body?.placements) ? body.placements : (Array.isArray(spec?.placements) ? spec.placements : [])
+  if (!background && !poses.length && !propSprites.length && !placements.length) {
+    return c.json({ success: false, error: 'empty_request', message: 'background/poses/propSprites/placements 至少提供一项' }, 400)
+  }
+
+  // 场景存在性前置校验（story.json 节点），保证非法 sceneId 得到干净 4xx 而非 500
+  const story = await readJson(path.join(dir, 'story.json')).catch(() => null)
+  const storyNodes = Array.isArray(story?.nodes) ? story.nodes : []
+  const sceneNode = storyNodes.find((n) => String(n && n.id || '').trim() === sceneId) || null
+  if (!sceneNode) return c.json({ success: false, error: 'scene_not_found', message: `未找到场景：${sceneId}` }, 404)
+  const sceneName = String(sceneNode.name || sceneId).trim()
+
+  const plan = await readStoryAssetPlanIfExists(id)
+  const planAssets = plan && Array.isArray(plan.assets) ? plan.assets : []
+  const findPlanAsset = (assetId) => planAssets.find((a) => String(a && a.id || '').trim() === String(assetId || '').trim()) || null
+
+  // 编排总任务：每步串行推进并 updateAiTask，进度经 /api/projects/:id/ai/tasks 可见
+  const total = poses.length + propSprites.length + (background ? 1 : 0) + (placements.length ? 1 : 0)
+  const task = createAiTask(id, 'story.scene.layered_produce', { total, message: `分层出图编排：${sceneName}` })
+  const traceId = createTraceId()
+  logStage({ stage: 'story.scene.layered_produce', event: 'start', traceId, project: id, item: `${sceneId} / poses:${poses.length} / props:${propSprites.length} / bg:${background ? 1 : 0} / placements:${placements.length}` })
+
+  const internalHeaders = { 'Content-Type': 'application/json', 'x-image-review-mode': 'off' }
+  const postInternal = async (urlPath, payload) => {
+    const resp = await app.request(urlPath, { method: 'POST', headers: internalHeaders, body: JSON.stringify(payload || {}) })
+    const json = await resp.json().catch(() => ({}))
+    if (!resp.ok || !json || json.success !== true) {
+      const err = new Error(String((json && (json.message || json.error)) || `http_${resp.status}`))
+      err.code = String((json && json.error) || `http_${resp.status}`)
+      throw err
+    }
+    return json
+  }
+  const readProjectAssets = async () => {
+    const proj = await readJson(path.join(dir, 'project.json')).catch(() => null)
+    return Array.isArray(proj?.assets) ? proj.assets : []
+  }
+  // 产物登记：project.json assets 追加（每次读最新盘再写回，避免覆盖编排期间的其他写入）
+  const appendProjectAsset = async (asset) => {
+    const proj = await readJson(path.join(dir, 'project.json'))
+    const next = {
+      ...proj,
+      assets: [...(Array.isArray(proj?.assets) ? proj.assets : []), asset],
+      updatedAt: nowIso(),
+      _rev: Number(proj?._rev || 0) + 1
+    }
+    await writeJson(path.join(dir, 'project.json'), next)
+  }
+  // lock_confirm 审核留痕（approved / decidedBy=control）；留痕失败不阻断登记结果
+  const traceLockConfirm = async ({ planAssetId, resultImagePath, prompt }) => {
+    try {
+      const targetKey = `lock_confirm:${planAssetId}:${resultImagePath}`
+      const pending = await findPendingReview(dir, { phase: 'lock_confirm', targetKey })
+      if (pending) {
+        await decideImageReview(dir, pending.reviewId, { approved: true, decidedBy: 'control' })
+      } else {
+        const record = await createImageReview(dir, {
+          phase: 'lock_confirm',
+          targetKey,
+          assetId: planAssetId,
+          resultImagePath,
+          prompt: String(prompt || '')
+        })
+        await decideImageReview(dir, record.reviewId, { approved: true, decidedBy: 'control' })
+      }
+    } catch (_) { /* 留痕失败不阻断登记结果 */ }
+  }
+
+  const POSE_GLOBAL_PROMPT = 'cartoon fairy tale picture book style, flat 2D illustration, bold clean outlines, cel shading, warm soft color palette'
+  const poseResults = []
+  const propResults = []
+  const errors = []
+  let backgroundResult = null
+  let placementsWritten = 0
+  let cursor = 0
+
+  // 1) 姿势变体：reuseAssetId 复用跳过生成；否则 sprite → pose-review（可选，失败记 reviewUnavailable）→ cutout → 登记 → 留痕
+  for (const poseRaw of poses) {
+    const pose = asObj(poseRaw) || {}
+    const lockName = String(pose.lockName || '').trim()
+    const planAssetId = String(pose.planAssetId || '').trim()
+    const characterId = String(pose.characterId || '').trim()
+    const reuseAssetId = String(pose.reuseAssetId || '').trim()
+    const posePrompt = String(pose.posePrompt || '').trim()
+    cursor += 1
+    const label = lockName || planAssetId || characterId || `pose_${cursor}`
+    try {
+      if (reuseAssetId) {
+        updateAiTask(task.taskId, { stage: 'pose_reuse', current: cursor - 1, message: `复用姿势资产：${label}` })
+        if (!(await readProjectAssets()).some((a) => String(a && a.id || '').trim() === reuseAssetId)) {
+          const err = new Error(`复用资产不存在于 project.json assets：${reuseAssetId}`)
+          err.code = 'reuse_asset_not_found'
+          throw err
+        }
+        poseResults.push({ lockName, planAssetId, projectAssetId: reuseAssetId, reused: true })
+        updateAiTask(task.taskId, { current: cursor, message: `姿势完成（复用）：${label}` })
+        continue
+      }
+      const planAsset = findPlanAsset(planAssetId)
+      if (!planAsset) {
+        const err = new Error(`未找到故事资产：${planAssetId || '(空)'}`)
+        err.code = 'asset_not_found'
+        throw err
+      }
+      if (!characterId) {
+        const err = new Error('characterId 不能为空')
+        err.code = 'missing_character_id'
+        throw err
+      }
+      if (!posePrompt) {
+        const err = new Error('posePrompt 不能为空')
+        err.code = 'missing_pose_prompt'
+        throw err
+      }
+
+      updateAiTask(task.taskId, { stage: 'pose_sprite', current: cursor - 1, message: `生成姿势绿幕图：${label}` })
+      const spriteJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/sprite`, {
+        characterId,
+        fingerprintPrompt: String(planAsset.anchorPrompt || '').trim(),
+        globalPrompt: POSE_GLOBAL_PROMPT,
+        posePrompt,
+        negativePrompt: [String(pose.negativePrompt || '').trim(), String(planAsset.negativePrompt || '').trim()].filter(Boolean).join(', '),
+        style: 'picture_book',
+        width: 720,
+        height: 1280,
+        steps: 20,
+        cfgScale: 7,
+        ipadapter: { enabled: true }
+      })
+      const assetPath = String(spriteJson.assetPath || '').trim()
+
+      let score
+      let reason = ''
+      let reviewUnavailable = ''
+      try {
+        const reviewJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/pose-review`, { characterId, assetPath })
+        if (Number.isFinite(Number(reviewJson.score))) score = Number(reviewJson.score)
+        reason = String(reviewJson.reason || '').trim()
+      } catch (e) {
+        reviewUnavailable = String((e && e.code) || 'review_unavailable')
+      }
+
+      updateAiTask(task.taskId, { stage: 'pose_cutout', current: cursor - 1, message: `姿势抠图：${label}` })
+      const cutoutJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/cutout`, { assetPath })
+      const cutoutPath = String(cutoutJson.assetPath || '').trim()
+
+      const projectAssetId = genId('asset')
+      await appendProjectAsset({
+        id: projectAssetId,
+        kind: 'image',
+        name: `AI 姿势 ${String(planAsset.name || planAssetId).trim()}·${lockName}`,
+        uri: cutoutPath,
+        source: { type: 'ai', prompt: posePrompt, provider: 'comfyui', postprocess: 'rmbg_alpha' }
+      })
+
+      // 计划资产 poseVariants 追加（读最新 plan 再写回，避免覆盖编排期间的其他变体写入）
+      const curPlan = await readStoryAssetPlanIfExists(id)
+      if (curPlan) {
+        const variant = {
+          id: genId('pose'),
+          name: lockName,
+          posePrompt,
+          promptZh: String(pose.promptZh || '').trim(),
+          promptEn: posePrompt,
+          greenPath: assetPath,
+          cutoutPath,
+          projectAssetId,
+          projectAssetUri: cutoutPath,
+          ...(score !== undefined ? { score } : {}),
+          ...(reason ? { reason } : {}),
+          createdAt: nowIso()
+        }
+        const nextPlan = {
+          ...curPlan,
+          generatedAt: nowIso(),
+          assets: (Array.isArray(curPlan.assets) ? curPlan.assets : []).map((a) =>
+            String(a && a.id || '').trim() === planAssetId
+              ? { ...a, poseVariants: [...(Array.isArray(a.poseVariants) ? a.poseVariants : []), variant] }
+              : a
+          )
+        }
+        nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+        await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+      }
+
+      await traceLockConfirm({ planAssetId, resultImagePath: cutoutPath, prompt: posePrompt })
+      poseResults.push({
+        lockName,
+        planAssetId,
+        projectAssetId,
+        reused: false,
+        ...(score !== undefined ? { score } : {}),
+        ...(reviewUnavailable ? { reviewUnavailable } : {})
+      })
+      updateAiTask(task.taskId, { current: cursor, message: `姿势完成：${label}` })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      errors.push({ step: 'pose', lockName, planAssetId, code: String((e && e.code) || ''), message: msg })
+      poseResults.push({ lockName, planAssetId, projectAssetId: '', reused: false, error: msg })
+      updateAiTask(task.taskId, { current: cursor, message: `姿势失败：${label}（${msg}）` })
+      logStage({ stage: 'story.scene.layered_produce', event: 'pose_fail', traceId, project: id, item: `${label} / ${msg}` })
+    }
+  }
+
+  // 2) 道具精灵：sprite(kind:'prop') → cutout → 登记 project.json（道具无姿势变体概念，不写 plan poseVariants）
+  for (const propRaw of propSprites) {
+    const prop = asObj(propRaw) || {}
+    const planAssetId = String(prop.planAssetId || '').trim()
+    const name = String(prop.name || '').trim()
+    const prompt = String(prop.prompt || '').trim()
+    cursor += 1
+    const label = name || planAssetId || `prop_${cursor}`
+    try {
+      if (!prompt) {
+        const err = new Error('prompt 不能为空')
+        err.code = 'missing_prompt'
+        throw err
+      }
+      const planAsset = findPlanAsset(planAssetId)
+      updateAiTask(task.taskId, { stage: 'prop_sprite', current: cursor - 1, message: `生成道具精灵：${label}` })
+      const spriteJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/sprite`, {
+        kind: 'prop',
+        fingerprintPrompt: String(planAsset?.anchorPrompt || '').trim(),
+        globalPrompt: POSE_GLOBAL_PROMPT,
+        posePrompt: prompt,
+        negativePrompt: [String(prop.negativePrompt || '').trim(), String(planAsset?.negativePrompt || '').trim()].filter(Boolean).join(', '),
+        style: 'picture_book',
+        width: 720,
+        height: 1280,
+        steps: 20,
+        cfgScale: 7
+      })
+      const assetPath = String(spriteJson.assetPath || '').trim()
+      updateAiTask(task.taskId, { stage: 'prop_cutout', current: cursor - 1, message: `道具抠图：${label}` })
+      const cutoutJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/cutout`, { assetPath })
+      const cutoutPath = String(cutoutJson.assetPath || '').trim()
+
+      const projectAssetId = genId('set')
+      await appendProjectAsset({
+        id: projectAssetId,
+        kind: 'image',
+        name: `道具立绘 ${name || planAssetId}`,
+        uri: cutoutPath,
+        source: { type: 'ai', prompt, provider: 'comfyui', postprocess: 'rmbg_alpha' }
+      })
+      await traceLockConfirm({ planAssetId, resultImagePath: cutoutPath, prompt })
+      propResults.push({ planAssetId, name, projectAssetId, cutoutPath })
+      updateAiTask(task.taskId, { current: cursor, message: `道具完成：${label}` })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      errors.push({ step: 'propSprite', planAssetId, name, code: String((e && e.code) || ''), message: msg })
+      propResults.push({ planAssetId, name, projectAssetId: '', error: msg })
+      updateAiTask(task.taskId, { current: cursor, message: `道具失败：${label}（${msg}）` })
+      logStage({ stage: 'story.scene.layered_produce', event: 'prop_fail', traceId, project: id, item: `${label} / ${msg}` })
+    }
+  }
+
+  // 3) 背景：render(mode:'background') → bind（bind 端点自带 scene_bind 审核留痕，不重复写）
+  if (background) {
+    cursor += 1
+    try {
+      const bgPrompt = String(background.prompt || '').trim()
+      if (!bgPrompt) {
+        const err = new Error('background.prompt 不能为空')
+        err.code = 'missing_background_prompt'
+        throw err
+      }
+      updateAiTask(task.taskId, { stage: 'background_render', current: cursor - 1, message: `重画场景背景：${sceneName}` })
+      const renderJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/story/scenes/${encodeURIComponent(sceneId)}/render`, {
+        mode: 'background',
+        prompt: bgPrompt,
+        negativePrompt: String(background.negativePrompt || '').trim(),
+        ...(Number.isFinite(Number(background.width)) ? { width: Number(background.width) } : {}),
+        ...(Number.isFinite(Number(background.height)) ? { height: Number(background.height) } : {})
+      })
+      const bgUri = String(renderJson?.projectAsset?.uri || renderJson?.assetPath || '').trim()
+      if (!bgUri) {
+        const err = new Error('背景渲染未返回产物路径')
+        err.code = 'background_render_empty'
+        throw err
+      }
+      updateAiTask(task.taskId, { stage: 'background_bind', current: cursor - 1, message: `绑定场景背景：${sceneName}` })
+      await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/story/scenes/${encodeURIComponent(sceneId)}/bind`, { assetPath: bgUri })
+      backgroundResult = { assetId: String(renderJson?.projectAsset?.id || '').trim(), uri: bgUri }
+      updateAiTask(task.taskId, { current: cursor, message: `背景完成：${sceneName}` })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      errors.push({ step: 'background', code: String((e && e.code) || ''), message: msg })
+      updateAiTask(task.taskId, { current: cursor, message: `背景失败：${sceneName}（${msg}）` })
+      logStage({ stage: 'story.scene.layered_produce', event: 'background_fail', traceId, project: id, item: `${sceneId} / ${msg}` })
+    }
+  }
+
+  // 4) 摆位：逐条校验 imageAssetId 存在于 project.json assets，全部通过才整体替换落盘（不部分写入）
+  if (placements.length) {
+    cursor += 1
+    try {
+      updateAiTask(task.taskId, { stage: 'placements', current: cursor - 1, message: `写入分层摆位（${placements.length} 条）…` })
+      const assetIds = new Set((await readProjectAssets()).map((a) => String(a && a.id || '').trim()))
+      const nextPlacements = []
+      const missing = []
+      placements.forEach((p, index) => {
+        const entry = asObj(p)
+        const imageAssetId = String(entry?.imageAssetId || '').trim()
+        if (!entry || !imageAssetId || !assetIds.has(imageAssetId)) {
+          missing.push({ index, id: String(entry?.id || '').trim(), imageAssetId })
+          return
+        }
+        nextPlacements.push(entry)
+      })
+      if (missing.length) {
+        const err = new Error(`摆位引用的图像资产不存在：${missing.map((m) => m.imageAssetId || m.id || `#${m.index}`).join('、')}`)
+        err.code = 'placement_asset_missing'
+        err.missing = missing
+        throw err
+      }
+      // 读最新 story.json 落盘（与 placements/render 链路同款 writeJson 原子写回）
+      const curStory = await readJson(path.join(dir, 'story.json')).catch(() => null)
+      const curNodes = Array.isArray(curStory?.nodes) ? curStory.nodes : []
+      if (!curNodes.some((n) => String(n && n.id || '').trim() === sceneId)) {
+        const err = new Error(`未找到场景：${sceneId}`)
+        err.code = 'scene_not_found'
+        throw err
+      }
+      const nextStory = {
+        ...curStory,
+        nodes: curNodes.map((node) => {
+          if (String(node && node.id || '').trim() !== sceneId) return node
+          const visuals = node.visuals && typeof node.visuals === 'object' ? node.visuals : {}
+          return { ...node, visuals: { ...visuals, placements: nextPlacements } }
+        })
+      }
+      await writeJson(path.join(dir, 'story.json'), nextStory)
+      placementsWritten = nextPlacements.length
+      recordCreationEvent(dir, {
+        type: 'placements_updated',
+        summary: `分层摆位写入：${sceneName}（${placementsWritten} 条）`,
+        actor: 'layered_produce_flow',
+        data: { sceneId, placements: placementsWritten }
+      })
+      updateAiTask(task.taskId, { current: cursor, message: `摆位完成：${placementsWritten} 条` })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      errors.push({ step: 'placements', code: String((e && e.code) || ''), message: msg, ...(Array.isArray(e && e.missing) ? { missing: e.missing } : {}) })
+      updateAiTask(task.taskId, { current: cursor, message: `摆位失败：${msg}` })
+      logStage({ stage: 'story.scene.layered_produce', event: 'placements_fail', traceId, project: id, item: `${sceneId} / ${msg}` })
+    }
+  }
+
+  const poseOk = poseResults.filter((p) => !p.error).length
+  const propOk = propResults.filter((p) => !p.error).length
+  const succeeded = poseOk + propOk + (backgroundResult ? 1 : 0) + (placementsWritten > 0 ? 1 : 0)
+  const success = succeeded > 0
+  const finalMessage = success
+    ? `分层出图完成：姿势 ${poseOk}/${poses.length}、道具 ${propOk}/${propSprites.length}、背景 ${backgroundResult ? '已绑定' : background ? '失败' : '未请求'}、摆位 ${placementsWritten} 条${errors.length ? `（${errors.length} 项失败）` : ''}`
+    : `分层出图全部失败：${(errors[0] && errors[0].message) || 'unknown'}`
+  updateAiTask(task.taskId, {
+    stage: success ? (errors.length ? 'done_with_errors' : 'done') : 'error',
+    done: true,
+    current: total,
+    error: errors.length ? errors.map((e) => `${e.step}:${e.message}`).join('；') : '',
+    message: finalMessage,
+    result: { sceneId, poses: poseResults, propSprites: propResults, background: backgroundResult, placements: { written: placementsWritten }, errors }
+  })
+  logStage({ stage: 'story.scene.layered_produce', event: success ? 'ok' : 'fail', traceId, project: id, item: `${sceneId} / ok:${succeeded} / errors:${errors.length}` })
+
+  return c.json({
+    success,
+    taskId: task.taskId,
+    sceneId,
+    poses: poseResults,
+    propSprites: propResults,
+    ...(backgroundResult ? { background: backgroundResult } : {}),
+    placements: { written: placementsWritten },
+    errors
+  }, success ? 200 : 502)
 })
 
 // 重启恢复：扫描所有项目的 per-scene checkpoint，未完成批次从断点继续（已成功场景由成功保护跳过）
@@ -8739,39 +10076,148 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
   }
   const imgProvider = String(studio.effective.image.provider || process.env.STUDIO_BG_PROVIDER || 'sdwebui').toLowerCase()
 
+  // 2026-09-01 身份锁定（IPAdapter）：characterId → 角色锁定主参考（ai.referenceAssetId，回退 imageAssetId）。
+  // 背景：纯文本指纹在动作词干扰下会丢角色（实测"大哥指着稻草堆"生成人类少年+宠物猪），
+  // 必须用锁定主参考图像锚定身份；ComfyUI 侧 ipadapter 能力已由 capability-check 确认可用。
+  const characterId = String(body?.characterId || '').trim()
+  // 2026-09-01 IPAdapter 默认关闭（A/B 实测定论）：IPAdapter 各权重/区间档都会锚死主参考的站姿，
+  // 动作词完全不生效；纯文本（指纹前置+去人类化+动物主语+动作强调）身份与动作双达标。
+  // 仅当纯文本身份不稳时才用 STUDIO_SPRITE_IPADAPTER=on 打开。
+  // 2026-09-01 档位入参：body.ipadapter={enabled,weight,startAt,endAt}——enabled=true 时强制走主参考
+  // IPAdapter 链（无视 env 默认 off），weight/startAt/endAt 覆盖 env 默认（姿势变体管理区高级参数）。
+  const ipaBody = body && typeof body.ipadapter === 'object' && body.ipadapter ? body.ipadapter : null
+  const ipadapterOn = ipaBody && ipaBody.enabled === true
+    ? true
+    : String(process.env.STUDIO_SPRITE_IPADAPTER || '').trim().toLowerCase() === 'on'
+  let referenceImages = []
+  if (characterId && ipadapterOn) {
+    try {
+      const proj = await readJson(path.join(dir, 'project.json'))
+      const ch = (proj && Array.isArray(proj.characters) ? proj.characters : []).find((x) => x && x.id === characterId) || null
+      const refId = String((ch && ch.ai && ch.ai.referenceAssetId) || (ch && ch.imageAssetId) || '').trim()
+      const asset = refId && proj && Array.isArray(proj.assets) ? proj.assets.find((a) => a && a.id === refId) || null : null
+      const uri = String((asset && asset.uri) || '').trim()
+      const rel = uri
+        .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+        .replace(/^\/project-assets\/[^/]+\//, '')
+      if (rel.startsWith('assets/')) {
+        // 2026-09-01 实测根因：锁定主参考是 RMBG 透明底 cutout，CLIP vision 对透明区的编码是脏的，
+        // IPAdapter 身份锚定完全失效（候选变成人类女性、评分 5/100）。喂给 IPAdapter 前一律合成白底
+        // （python3+PIL 本机可用；失败回退原图）。产物缓存为 <原名>_flatwhite.png，源文件较新才重算。
+        let refAbs = path.join(dir, rel)
+        if (/\.png$/i.test(refAbs)) {
+          try {
+            const flatAbs = refAbs.replace(/\.png$/i, '') + '_flatwhite.png'
+            const s0 = await stat(refAbs)
+            const s1 = await stat(flatAbs).catch(() => null)
+            if (!(s1 && s1.mtimeMs >= s0.mtimeMs)) {
+              await new Promise((resolve, reject) => {
+                const py = spawn('python3', ['-c',
+                  "import sys; from PIL import Image; im=Image.open(sys.argv[1]).convert('RGBA'); bg=Image.new('RGBA', im.size, (255,255,255,255)); bg.alpha_composite(im); bg.convert('RGB').save(sys.argv[2])",
+                  refAbs, flatAbs])
+                py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('flatten_exit_' + code))))
+                py.on('error', reject)
+              })
+            }
+            refAbs = flatAbs
+          } catch (e) {
+            try { console.log(`[gamestudio] ch.sprite:ipadapter_flatten_fail err=${e && e.message ? e.message : e}`) } catch (_) {}
+          }
+        }
+        const bytes = await readFile(refAbs)
+        // 权重/区间可调：全程 [0,1] + 0.85 会把主参考站姿锚死；start_at>0 放开早期构图步让动作词生效
+        const w = ipaBody && Number.isFinite(Number(ipaBody.weight)) ? Number(ipaBody.weight) : Number(process.env.STUDIO_SPRITE_IPADAPTER_WEIGHT || 0.7)
+        const startAt = ipaBody && Number.isFinite(Number(ipaBody.startAt)) ? Number(ipaBody.startAt) : Number(process.env.STUDIO_SPRITE_IPADAPTER_START_AT || 0.25)
+        const endAt = ipaBody && Number.isFinite(Number(ipaBody.endAt)) ? Number(ipaBody.endAt) : Number(process.env.STUDIO_SPRITE_IPADAPTER_END_AT || 0.9)
+        referenceImages = [{
+          bytes,
+          filename: `${characterId}_reference.png`,
+          characterId,
+          weight: Number.isFinite(w) ? w : 0.7,
+          startAt: Number.isFinite(startAt) ? startAt : 0.25,
+          endAt: Number.isFinite(endAt) ? endAt : 0.9
+        }]
+      }
+    } catch (e) {
+      try {
+        console.log(`[gamestudio] ch.sprite:ipadapter_ref_fail project=${id} ch=${characterId} err=${e && e.message ? e.message : e}`)
+      } catch (_) {}
+    }
+  }
+
   // Enforce chroma background for later client-side matting.
-  const chromaHint =
-    `纯色背景（RGB 0,255,0 纯绿，背景必须纯绿单色，无渐变无纹理），` +
-    `无场景无环境元素无地面，无遮挡，主体居中，单个角色/单个动物，清晰边缘`
+  // 2026-09-01 修复：绿幕提示改英文并放 prompt 前部（中文提示模型读不懂、位置靠后被世界锚点压掉，实测出橙底）
+  // 2026-09-01 道具模式（kind:'prop'）：角色版提示里的 "single character or single animal / no props"
+  // 会把道具生成带成人类少女（实测稻草堆/木柴堆/泥土地全变女孩），道具必须明确 "single object, no character"。
+  const spriteKind = String(body?.kind || '').trim().toLowerCase()
+  const isPropSprite = spriteKind === 'prop'
+  const chromaHint = isPropSprite
+    ? `solid pure green screen background (RGB 0,255,0 chroma key green), flat uniform green, no gradient, no texture, no scene, no environment, no ground, no shadow, single object centered, no character, no animal, no person, no face, clean sharp edges`
+    : `solid pure green screen background (RGB 0,255,0 chroma key green), flat uniform green, no gradient, no texture, no scene, no environment, no ground, no shadow, no props, single character or single animal centered, full body, clean sharp edges`
+
+  // 2026-09-01 动作描述为中文时先翻译成英文（生图模型读不懂中文，实测中文动作词完全不生效，出来全是站姿）
+  let poseUse = posePrompt
+  if (/[\u4e00-\u9fff]/.test(poseUse)) {
+    try {
+      const { result: tr } = await translatePromptText({
+        provider: studio.effective.prompt.provider,
+        model: studio.effective.prompt.model || undefined,
+        apiUrl: studio.effective.prompt.apiUrl || undefined,
+        proxyUrl: studio.effective.network.proxyUrl || undefined,
+        timeoutMs: 60_000,
+        text: poseUse,
+        sourceLang: 'zh',
+        targetLang: 'en',
+        mode: 'prompt'
+      })
+      const t = String(tr && tr.translatedText || '').trim()
+      if (t) poseUse = t
+    } catch (_) { /* 翻译失败保留原文，不阻断生成 */ }
+  }
+
+  // 2026-09-01 去人类化 + 动物主语包裹（拟人动物角色专用）。
+  // 实测根因：指纹/动作里的 "eldest brother" 等人类称谓 + 缺主语的动作句（"pointing at the haystack"），
+  // 会把组合构图拉向人类（生成人类少年+宠物猪）。称谓替换为动物角色，动作句补上动物主语。
+  const speciesHit = String(fingerprintPrompt || '').match(/pig|wolf|cat|dog|rabbit|fox|bear|duck|chicken|goat|mouse|lion|tiger|panda|monkey/i)
+  const species = speciesHit ? speciesHit[0].toLowerCase() : ''
+  const dehumanize = (s) =>
+    String(s || '')
+      .replace(/eldest\s+brother|oldest\s+brother|second\s+brother|third\s+brother|big\s+brother|little\s+brother|younger\s+brother/gi, species || 'character')
+      .replace(/\b(brother|sister|boy|girl|man|woman|kid|child|children)\b/gi, species ? `${species} character` : 'character')
+  const fpUse = isPropSprite ? fingerprintPrompt : dehumanize(fingerprintPrompt)
+  if (poseUse && !isPropSprite) {
+    poseUse = dehumanize(poseUse)
+    // 2026-09-01 动作强调：去掉 "pig:" 标签头，动作句加 (…:1.25) 权重（ComfyUI 支持权重语法）。
+    // 实测普通语序下动作词会被指纹/绿幕词压掉，出来全是站桩姿势。
+    poseUse = poseUse.replace(/^[^:：]{1,40}[:：]\s*/, '').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim()
+    if (poseUse) {
+      const subject = species ? `the ${species} character` : 'the character'
+      poseUse = `${subject} (${poseUse}:1.25)`
+    }
+  }
 
   const prompt = [
-    globalPrompt,
-    `风格：${styleNameZh(style)}（${style}）`,
-    fingerprintPrompt,
-    posePrompt,
-    chromaHint
+    // 2026-09-01 身份锚点放最前：SD 类模型前段 token 权重更高，实测指纹放第 4 位会丢角色（猪变人类少年）
+    fpUse,
+    chromaHint,
+    poseUse,
+    `style: ${style}`,
+    globalPrompt
   ]
     .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean)
     .join('，')
 
   const negBase = [
-    '无文字',
-    '无水印',
-    '非真人',
-    '低质量',
-    '模糊',
-    '变形',
-    '禁止复杂背景',
-    '禁止风景',
-    '禁止室内',
-    '禁止多人',
-    '禁止多只动物',
-    '禁止绿色衣物',
-    '禁止绿色帽子',
-    '禁止绿色配饰',
-    '避免阴影',
-    '避免地面'
+    'text', 'watermark', 'low quality', 'blurry', 'deformed',
+    'complex background', 'scenery', 'landscape', 'indoor',
+    'multiple people', 'multiple animals',
+    // 2026-09-01 修复：绿幕图必须排除人类与绿色元素（中文负向模型读不懂，实测出绿发绿衣人类少女）
+    'human', 'person', 'human girl', 'human boy', 'anime human', 'human face', 'human skin',
+    'green clothes', 'green hair', 'green hat', 'green accessories', 'green skin', 'green fur',
+    'shadow', 'ground', 'environment',
+    // 道具模式：角色版 chromaHint 的人类先验极强，负向必须补死（实测全出人类少女）
+    ...(isPropSprite ? ['character', 'animal', 'girl', 'boy', 'woman', 'man', 'face', 'fairy', 'wings', 'person sitting', 'holding book'] : [])
   ].join(', ')
 
   const negativePrompt = [negativePromptIn, negBase]
@@ -8782,7 +10228,7 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
   const startedAt = Date.now()
   try {
     console.log(
-      `[gamestudio] ch.sprite:start project=${id} provider=${imgProvider} model=${studio.effective.image.model || '-'} w=${Math.floor(width || 0)} h=${Math.floor(height || 0)} style=${style} promptChars=${prompt.length} negChars=${negativePrompt.length}`
+      `[gamestudio] ch.sprite:start project=${id} provider=${imgProvider} model=${studio.effective.image.model || '-'} w=${Math.floor(width || 0)} h=${Math.floor(height || 0)} style=${style} promptChars=${prompt.length} negChars=${negativePrompt.length} ipadapter=${referenceImages.length ? 'on' : 'off'}`
     )
   } catch (_) {}
 
@@ -8796,6 +10242,10 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
       cfgScale: body?.cfgScale,
       guidanceScale: body?.guidanceScale,
       sequentialImageGeneration: body?.sequentialImageGeneration,
+      continuity: referenceImages.length ? { ipadapterEnabled: true } : undefined,
+      referenceImages,
+      // 2026-09-01 动作立绘用通用 plus 模型（plus-face 人脸模型会把猪锚成人类少年，实测）
+      ipadapterModel: String(process.env.STUDIO_SPRITE_IPADAPTER_MODEL || 'ip-adapter-plus_sdxl_vit-h.safetensors').trim(),
       provider: imgProvider,
       sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
       comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
@@ -8817,7 +10267,11 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
     const abs = path.join(outDir, fname)
     await writeFile(abs, buf)
 
-    const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+    let assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+    { // 2026-09-09 出图即压：姿势候选绿幕图 WebP q92
+      const opt = await optimizeGeneratedImage(abs, IMAGE_KIND.CANDIDATE).catch(() => null)
+      if (opt && opt.outPath && opt.outPath !== abs) assetPath = String(assetPathFromAbsolute(id, opt.outPath) || assetPath)
+    }
     const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : imgProvider
     const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
     try {
@@ -8831,6 +10285,286 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
       console.log(`[gamestudio] ch.sprite:fail project=${id} provider=${imgProvider} status=${status == null ? '-' : status} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
     } catch (_) {}
     if (status === 501) return c.json({ success: false, error: 'provider_not_configured', message: msg }, 501)
+    return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
+  }
+})
+
+// AI：绿幕图抠图（RMBG 语义分割，透明 PNG）。
+// 2026-09-01:替代前端 chroma key——按颜色抠图对衣服撞色/渐变底完全不可控（实测衣服被挖穿），
+// RMBG 是项目故事资产立绘已在用的成熟路径（capability-check rmbg:ok）。
+app.post('/api/projects/:id/ai/character/cutout', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const relIn = String(body?.assetPath || '').trim().replace(/^\/+/, '')
+  if (!relIn || !relIn.startsWith('assets/')) {
+    return c.json({ success: false, error: 'missing_assetPath', message: 'assetPath 必须是项目内 assets/ 相对路径' }, 400)
+  }
+  const abs = path.join(dir, relIn)
+  if (!abs.startsWith(dir)) return c.json({ success: false, error: 'invalid_path' }, 400)
+  if (!(await existsFile(abs))) return c.json({ success: false, error: 'file_not_found' }, 404)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  const comfyuiBaseUrl = String(studio?.effective?.image?.comfyuiBaseUrl || '').trim()
+  if (!comfyuiBaseUrl) return c.json({ success: false, error: 'provider_not_configured', message: 'ComfyUI 未配置' }, 501)
+
+  const startedAt = Date.now()
+  try {
+    const bytes = await readFile(abs)
+    const post = await generateComfyuiCutoutFromReference({
+      referenceBytes: bytes,
+      referenceFilename: `ch_sprite_${Date.now()}.png`,
+      comfyuiBaseUrl,
+      processRes: 1024,
+      prefix: 'gamestudio_ch_sprite/cutout_alpha',
+      transparent: true
+    })
+    const ext = String(post.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
+    const relDir = path.join('assets', 'ai', 'characters')
+    const outDir = path.join(dir, relDir)
+    await mkdir(outDir, { recursive: true })
+    const fname = `ch_cut_${Date.now()}.${ext}`
+    await writeFile(path.join(outDir, fname), post.bytes)
+    let assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+    { // 2026-09-09 出图即压：抠图立绘无损 WebP（真相源零质量损失）
+      const absCut = path.join(outDir, fname)
+      const opt = await optimizeGeneratedImage(absCut, IMAGE_KIND.SPRITE_LOSSLESS).catch(() => null)
+      if (opt && opt.outPath && opt.outPath !== absCut) assetPath = String(assetPathFromAbsolute(id, opt.outPath) || assetPath)
+    }
+    try {
+      console.log(`[gamestudio] ch.cutout:ok project=${id} bytes=${post.bytes.length} ms=${Math.max(0, Date.now() - startedAt)}`)
+    } catch (_) {}
+    return c.json({ success: true, assetPath, url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}` })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    try {
+      console.log(`[gamestudio] ch.cutout:fail project=${id} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
+    } catch (_) {}
+    return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
+  }
+})
+
+// AI：动作立绘抽卡池——候选图与角色锁定主参考的一致性评分（Kimi 视觉评审）。
+// 2026-09-01 新增：抽卡池模式下每张候选图与主参考对比打分（身份/画风/服装），姿势差异不扣分。
+// 评审不可用（无 key/网络失败）返回明确错误，不伪造分数。
+app.post('/api/projects/:id/ai/character/pose-review', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const characterId = String(body?.characterId || '').trim()
+  const relIn = String(body?.assetPath || '').trim().replace(/^\/+/, '')
+  if (!characterId) return c.json({ success: false, error: 'missing_characterId', message: 'characterId 不能为空' }, 400)
+  if (!relIn || !relIn.startsWith('assets/')) {
+    return c.json({ success: false, error: 'missing_assetPath', message: 'assetPath 必须是项目内 assets/ 相对路径' }, 400)
+  }
+  const candAbs = path.join(dir, relIn)
+  if (!candAbs.startsWith(dir)) return c.json({ success: false, error: 'invalid_path', message: 'assetPath 越界' }, 400)
+  if (!(await existsFile(candAbs))) return c.json({ success: false, error: 'file_not_found', message: '候选图不存在' }, 404)
+
+  // 解析角色锁定主参考（与 ch.sprite 同款逻辑：characterId → ch.ai.referenceAssetId，回退 imageAssetId → uri 转项目内路径）
+  let refBytes = null
+  let refAbsPath = null
+  let characterName = ''
+  try {
+    const proj = await readJson(path.join(dir, 'project.json'))
+    const ch = (proj && Array.isArray(proj.characters) ? proj.characters : []).find((x) => x && x.id === characterId) || null
+    characterName = String((ch && ch.name) || '').trim()
+    const refId = String((ch && ch.ai && ch.ai.referenceAssetId) || (ch && ch.imageAssetId) || '').trim()
+    const asset = refId && proj && Array.isArray(proj.assets) ? proj.assets.find((a) => a && a.id === refId) || null : null
+    const uri = String((asset && asset.uri) || '').trim()
+    const rel = uri
+      .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+      .replace(/^\/project-assets\/[^/]+\//, '')
+    if (rel.startsWith('assets/')) {
+      const refAbs = path.join(dir, rel)
+      if (refAbs.startsWith(dir) && (await existsFile(refAbs))) {
+        refBytes = await readFile(refAbs)
+        refAbsPath = refAbs
+      }
+    }
+  } catch (e) {
+    try {
+      console.log(`[gamestudio] ch.pose_review:ref_fail project=${id} ch=${characterId} err=${e && e.message ? e.message : e}`)
+    } catch (_) {}
+  }
+  if (!refBytes) {
+    return c.json({ success: false, error: 'reference_not_found', message: '该角色没有可用的锁定主参考图，无法评分' }, 400)
+  }
+
+  const apiKey = String(process.env.MOONSHOT_API_KEY || '').trim()
+  // 2026-09-08 评审 provider 可切换：local_vl（默认，本地视觉模型 gemma 经 OMLX）/ kimi（云端，用户显式开启）/ auto（有 key 走 Kimi 否则本地）/ off。
+  // 背景：Kimi 周配额（7 天窗口）耗尽时评审全灭；gemma-4-26b-a4b-it-4bit 经 OMLX 实测多模态可用（2026-09-08 用户指令：默认本地优先，Kimi 留给用户自行切换）。
+  const studio = await getEffectiveStudioConfig(ROOT)
+  const reviewCfg = (studio && studio.effective && studio.effective.review && typeof studio.effective.review === 'object') ? studio.effective.review : {}
+  const providerSetting = String(process.env.STUDIO_POSE_REVIEW_PROVIDER || reviewCfg.poseReviewProvider || 'local_vl').trim().toLowerCase()
+  if (providerSetting === 'off') {
+    return c.json({ success: false, error: 'review_disabled', message: 'AI 评分已在设置中关闭（评审不阻断命名锁定，可人工目检后直接锁定）' }, 501)
+  }
+  const useKimi = providerSetting === 'kimi' || (providerSetting === 'auto' && Boolean(apiKey))
+  const useLocalVl = providerSetting === 'local_vl' || (providerSetting === 'auto' && !apiKey)
+  if (useKimi && !apiKey) {
+    return c.json({ success: false, error: 'review_unavailable', message: '未配置 MOONSHOT_API_KEY，Kimi 评审不可用；可改 local_vl 或 off' }, 501)
+  }
+
+  const startedAt = Date.now()
+  try {
+    const refSniff = sniffImageMetaFromBytes(refBytes)
+    const candBytes = await readFile(candAbs)
+    const candSniff = sniffImageMetaFromBytes(candBytes)
+    if (!refSniff || !candSniff) {
+      return c.json({ success: false, error: 'invalid_image', message: '图片格式不可识别' }, 400)
+    }
+    let out
+    if (useLocalVl) {
+      // 本地 VL 输入降采样（≤512px）：VL token 化随分辨率放大，原图会把 prefill 推过 OMLX 内存护栏；
+      // 身份/画风/服装评审不需要全分辨率（python3+PIL 本机可用，与 ch.sprite 白底合成同款依赖）
+      const shrink = async (absIn) => {
+        try {
+          const absOut = absIn.replace(/\.(png|jpe?g)$/i, '') + '_vl512.png'
+          const s0 = await stat(absIn)
+          const s1 = await stat(absOut).catch(() => null)
+          if (!(s1 && s1.mtimeMs >= s0.mtimeMs)) {
+            await new Promise((resolve, reject) => {
+              const py = spawn('python3', ['-c',
+                "import sys; from PIL import Image; im=Image.open(sys.argv[1]).convert('RGBA'); bg=Image.new('RGBA', im.size, (255,255,255,255)); bg.alpha_composite(im); im=bg.convert('RGB'); im.thumbnail((512,512)); im.save(sys.argv[2])",
+                absIn, absOut])
+              py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('shrink_exit_' + code))))
+              py.on('error', reject)
+            })
+          }
+          return await readFile(absOut)
+        } catch (_) { return null }
+      }
+      const refSmallBytes = (refAbsPath ? await shrink(refAbsPath) : null) || refBytes
+      const candSmallBytes = (await shrink(candAbs)) || candBytes
+      const localBaseUrl = String(reviewCfg.poseReviewBaseUrl || process.env.LOCALOXML_BASE_URL || 'http://127.0.0.1:18888/v1').trim()
+      const localModel = String(reviewCfg.poseReviewModel || process.env.STUDIO_POSE_REVIEW_MODEL || 'gemma-4-26b-a4b-it-4bit').trim()
+      const localKey = String(process.env.LOCALOXML_API_KEY || 'omlx123').trim()
+      out = await reviewCharacterPoseConsistencyWithLocalVl({
+        baseUrl: localBaseUrl,
+        apiKey: localKey,
+        model: localModel,
+        characterName,
+        referenceImageDataUrl: `data:image/png;base64,${refSmallBytes.toString('base64')}`,
+        candidateImageDataUrl: `data:image/png;base64,${candSmallBytes.toString('base64')}`
+      })
+    } else {
+      out = await reviewCharacterPoseConsistencyWithAi({
+        apiKey,
+        baseUrl: process.env.MOONSHOT_BASE_URL || 'https://api.kimi.com/coding/v1',
+        model: 'kimi-for-coding',
+        characterName,
+        referenceImageDataUrl: `data:${refSniff.contentType};base64,${refBytes.toString('base64')}`,
+        candidateImageDataUrl: `data:${candSniff.contentType};base64,${candBytes.toString('base64')}`
+      })
+    }
+    try {
+      console.log(`[gamestudio] ch.pose_review:ok project=${id} ch=${characterId} score=${out.score} provider=${out.meta?.provider || '?'} ms=${Math.max(0, Date.now() - startedAt)}`)
+    } catch (_) {}
+    return c.json({ success: true, score: out.score, reason: out.reason, provider: out.meta?.provider || null })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    try {
+      console.log(`[gamestudio] ch.pose_review:fail project=${id} ch=${characterId} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
+    } catch (_) {}
+    return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
+  }
+})
+
+// AI：姿势变体——AI 生成姿势提示词（中文稿 → 翻译英文稿，与主流程「中文稿→英文稿」双稿一致）。
+// 2026-09-01 新增：只写视角/动作/表情/手势 + 服装延续约束，严禁背景场景词；失败显式报错不伪造。
+// 中文稿生成与英文稿翻译串行执行（本地模型同模型多次调用禁止并行，OMLX KV 护栏）。
+app.post('/api/projects/:id/ai/character/pose-prompt', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const characterName = String(body?.characterName || '').trim()
+  if (!characterName) return c.json({ success: false, error: 'missing_characterName', message: 'characterName 不能为空' }, 400)
+  const fingerprintPrompt = String(body?.fingerprintPrompt || '').trim()
+  const sceneText = String(body?.sceneText || '').trim()
+  const userHint = String(body?.userHint || '').trim()
+  // 2026-09-02 评分反馈闭环：可选评审理由，生成指令里让模型针对性改进
+  const reviewFeedback = String(body?.reviewFeedback || '').trim()
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.prompt) {
+    return c.json({ success: false, error: 'disabled', message: '“提示词生成”已在设置中关闭' }, 503)
+  }
+
+  const startedAt = Date.now()
+  try {
+    console.log(
+      `[gamestudio] ch.pose_prompt:start project=${id} provider=${studio.effective.prompt.provider || 'localoxml'} model=${studio.effective.prompt.model || '-'} name=${characterName} sceneChars=${sceneText.length} hintChars=${userHint.length}`
+    )
+  } catch (_) {}
+
+  try {
+    // 2026-09-01 实测：OMLX 偶发把 token 烧进 reasoning 导致空输出（empty_ai_output），串行重试一次兜底（不并行，守 KV 护栏）
+    let gen = null
+    let lastErr = null
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        gen = await generateCharacterPosePrompt({
+          characterName,
+          fingerprintPrompt,
+          sceneText,
+          userHint,
+          reviewFeedback,
+          provider: studio.effective.prompt.provider,
+          model: studio.effective.prompt.model,
+          apiUrl: studio.effective.prompt.apiUrl,
+          proxyUrl: studio.effective.network.proxyUrl
+        })
+        break
+      } catch (e) {
+        lastErr = e
+        try {
+          console.log(`[gamestudio] ch.pose_prompt:retry project=${id} attempt=${attempt} err=${e && e.message ? String(e.message) : String(e)}`)
+        } catch (_) {}
+      }
+    }
+    if (!gen) throw lastErr || new Error('pose_prompt_failed')
+    const promptZhRaw = String(gen.result?.posePromptZh || '').trim()
+    if (!promptZhRaw) throw new Error('invalid_pose_prompt_response')
+    // 2026-09-01 轻量清洗：剥掉漏网的背景词（指令已禁背景，模型偶尔仍带「纯白背景」尾巴，会与绿幕提示词打架）
+    const promptZh = promptZhRaw
+      .replace(/[，,、；;\s]*(纯白|纯绿|纯色|单色|简洁|干净|简单)?背景[^，,、；;]*/g, '')
+      .replace(/[，,、；;]{2,}/g, '，')
+      .replace(/^[，,、；;\s]+|[，,、；;\s]+$/g, '')
+      .trim()
+    if (!promptZh) throw new Error('invalid_pose_prompt_response')
+    // 中文稿 → 英文稿（生图链路只认英文；与主流程同一翻译 helper）
+    const tr = await translatePromptText({
+      provider: studio.effective.prompt.provider,
+      model: studio.effective.prompt.model || undefined,
+      apiUrl: studio.effective.prompt.apiUrl || undefined,
+      proxyUrl: studio.effective.network.proxyUrl || undefined,
+      timeoutMs: 60_000,
+      text: promptZh,
+      sourceLang: 'zh',
+      targetLang: 'en',
+      mode: 'prompt'
+    })
+    const promptEn = String(tr.result?.translatedText || '').trim()
+    if (!promptEn) throw new Error('pose_prompt_translate_empty')
+    try {
+      console.log(`[gamestudio] ch.pose_prompt:ok project=${id} ms=${Math.max(0, Date.now() - startedAt)} zhChars=${promptZh.length} enChars=${promptEn.length}`)
+    } catch (_) {}
+    return c.json({ success: true, result: { promptZh, promptEn }, meta: gen.meta || null })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    try {
+      console.log(`[gamestudio] ch.pose_prompt:fail project=${id} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
+    } catch (_) {}
     return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
   }
 })
@@ -8935,7 +10669,11 @@ app.post('/api/projects/:id/ai/character/reference', async (c) => {
     const abs = path.join(outDir, fname)
     await writeFile(abs, buf)
 
-    const assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+    let assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+    { // 2026-09-09 出图即压：角色主参考无损 WebP（真相源零质量损失）
+      const opt = await optimizeGeneratedImage(abs, IMAGE_KIND.SPRITE_LOSSLESS).catch(() => null)
+      if (opt && opt.outPath && opt.outPath !== abs) assetPath = String(assetPathFromAbsolute(id, opt.outPath) || assetPath)
+    }
     const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : imgProvider
     const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
     try {

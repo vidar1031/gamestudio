@@ -439,15 +439,18 @@ export async function generateReasoningPlan(userPrompt, history, binding, option
     const content = data.choices?.[0]?.message?.content || ''
     let parsed = null
     let source = 'model'
+    let parseFallbackReason = ''
     try {
       parsed = JSON.parse(extractJsonObjectString(content))
     } catch {
       parsed = buildReasoningFallbackPlan(userPrompt, history, binding, options.contextSelection || {})
       source = 'fallback'
+      parseFallbackReason = 'plan_json_parse_failed'
     }
     return {
       plan: normalizeReasoningPlan(parsed, userPrompt, history, binding, normalizedPlanContextSelection),
       source,
+      parseFallbackReason,
       usage: data.usage || null,
       recentContextArtifact,
       outboundPreview: buildStructuredOutboundPreview({

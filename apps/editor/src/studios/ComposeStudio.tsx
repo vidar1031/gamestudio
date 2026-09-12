@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { Application, Container, Sprite, Texture } from 'pixi.js'
+import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import AiBackgroundModal from '../AiBackgroundModal'
 import AiStoryboardBatchModal, { type StoryboardBatchItem } from '../AiStoryboardBatchModal'
 import StoryboardLockWorkspace from '../StoryboardLockWorkspace'
 import { translateStoryboardPromptText } from '../storyboardPromptTranslate'
+import { markStartupReady } from '../startupReady'
 import AiCharacterSpriteModal, { type AiCharacterSpriteDraft } from '../AiCharacterSpriteModal'
 import { chromaKeyUrlToPng } from '../chromaKey'
 import {
@@ -21,12 +22,17 @@ import {
   selectStoryAssetReferenceAi,
   analyzeCharacterFingerprintAi,
   createProject,
+  extractStoryPoseStatesAi,
+  listPromptLibrary,
   exportProject,
   exportPublishPackage,
   listProjectExports,
   deleteProjectExport,
   generateBackgroundAi,
   generateCharacterSpriteAi,
+  cutoutCharacterSpriteAi,
+  reviewCharacterPoseAi,
+  generateCharacterPosePromptAi,
   generateCharacterReferenceAi,
   getBlueprint,
   getScripts,
@@ -35,6 +41,7 @@ import {
   getStudioSettings,
 	  listProjects,
   openProjectAssetFolder,
+  openProjectAiAssetsFolder,
   resolveUrl,
   renderStorySceneAi,
   reviewStoryboardPromptAi,
@@ -79,7 +86,7 @@ type Selection =
   | { type: 'character'; id: string }
   | { type: 'asset'; id: string }
 
-type LeftTab = 'nodes' | 'characters' | 'assets'
+type LeftTab = 'nodes' | 'characters' | 'assets' | 'materials'
 
 type StoryboardSceneAiBackgroundRequest = AiBackgroundRequest & {
   assetRefs?: Array<{
@@ -168,6 +175,8 @@ type StoryboardOpenCheckState = {
   promptModel: string
   imageProvider: string
   imageModel: string
+  // 2026-09-09：studio 生效 LoRA 列表——项目未配置 batch draft 时状态行应显示全局默认而非 (none)（乌鸦喝水实测显示缺陷）
+  imageLoras: string[]
   summary: string
   issues: string[]
   details: string[]
@@ -510,6 +519,59 @@ function resolveAsset(uri: string, assetBase: string) {
 
 const textureCache = new Map<string, Promise<Texture> | Texture>()
 
+// 场景编排器：像素级命中的 alpha 查找图（按 Texture 实例缓存，会话内复用；null 表示构建失败→回退矩形命中）
+type AlphaMap = { data: Uint8ClampedArray; width: number; height: number }
+const alphaMapCache = new WeakMap<Texture, AlphaMap | null>()
+
+function getAlphaMap(tex: Texture): AlphaMap | null {
+  if (alphaMapCache.has(tex)) return alphaMapCache.get(tex) || null
+  let result: AlphaMap | null = null
+  try {
+    const src: any = (tex as any).source?.resource || (tex as any).source?.resource?.source
+    const w = Math.floor(Number(src?.naturalWidth || src?.width || 0))
+    const h = Math.floor(Number(src?.naturalHeight || src?.height || 0))
+    if (src && w > 0 && h > 0) {
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (ctx) {
+        ctx.drawImage(src, 0, 0, w, h)
+        const img = ctx.getImageData(0, 0, w, h)
+        const data = new Uint8ClampedArray(w * h)
+        for (let i = 0; i < w * h; i += 1) data[i] = img.data[i * 4 + 3]
+        result = { data, width: w, height: h }
+      }
+    }
+  } catch {
+    result = null
+  }
+  alphaMapCache.set(tex, result)
+  return result
+}
+
+// 像素级命中：世界点 → worldTransform 逆变换得纹理局部点（翻转/缩放/旋转天然覆盖）→ alpha > 10 才算命中
+function hitPlacementSprite(sp: Sprite, gx: number, gy: number): boolean {
+  try {
+    const tex = sp.texture
+    const tw = Number(tex.width) || 0
+    const th = Number(tex.height) || 0
+    if (!tw || !th) return false
+    const local = sp.worldTransform.applyInverse({ x: gx, y: gy })
+    // anchor (0.5,1)：局部空间纹理范围 x∈[-tw/2, tw/2]，y∈[-th, 0]
+    const lx = local.x + tw * 0.5
+    const ly = local.y + th
+    if (lx < 0 || ly < 0 || lx >= tw || ly >= th) return false
+    const am = getAlphaMap(tex)
+    if (!am) return true // alpha 图不可用（跨域/未就绪）：回退矩形命中
+    const px = Math.min(am.width - 1, Math.max(0, Math.floor((lx / tw) * am.width)))
+    const py = Math.min(am.height - 1, Math.max(0, Math.floor((ly / th) * am.height)))
+    return am.data[py * am.width + px] > 10
+  } catch {
+    return false
+  }
+}
+
 async function loadTexture(url: string): Promise<Texture | null> {
   const key = String(url || '').trim()
   if (!key) return null
@@ -700,8 +762,22 @@ async function renderStage(args: {
   node: NodeV1 | null
   stageOverride?: StageOverride | null
   isStale?: () => boolean
+  // 场景编排器：画布内拖动/点选摆放（仅渲染真实节点 placements 时启用，stageOverride 只读）
+  interaction?: {
+    onSelect: (placementId: string) => void
+    onCommitTransform: (placementId: string, patch: { x?: number; y?: number }) => void
+  }
+  // 场景编排器：视图变换（缩放以画布中心为基准 + 平移）与编辑/预览模式
+  view?: {
+    zoom?: number
+    panX?: number
+    panY?: number
+    panTool?: boolean
+    editable?: boolean
+    onPanCommit?: (panX: number, panY: number) => void
+  }
 }) {
-  const { app, doc, node, stageOverride, isStale } = args
+  const { app, doc, node, stageOverride, isStale, interaction, view } = args
 
   if (isStale && isStale()) return
 
@@ -716,10 +792,54 @@ async function renderStage(args: {
   const vp = computeStageViewport(stageCfg, viewW, viewH)
 
   const root = new Container()
-  root.x = vp.offsetX
-  root.y = vp.offsetY
-  root.scale.set(vp.scale)
+  const zoom = Math.max(0.25, Math.min(4, Number(view?.zoom) || 1))
+  const effScale = vp.scale * zoom
+  const panX = Number(view?.panX) || 0
+  const panY = Number(view?.panY) || 0
+  const centerX = viewW / 2
+  const centerY = viewH / 2
+  // 缩放以画布中心为基准：rootPos = 中心 + (原 rootPos - 中心) × zoom + pan
+  root.x = centerX + (vp.offsetX - centerX) * zoom + panX
+  root.y = centerY + (vp.offsetY - centerY) * zoom + panY
+  root.scale.set(effScale)
   app.stage.addChild(root)
+
+  // 平移工具：开启后按住画布拖动平移舞台（移动中直接改 root，pointerup 一次性提交视图状态）
+  try {
+    const st: any = app.stage
+    if (st.__panDown) {
+      st.off('pointerdown', st.__panDown)
+      st.__panDown = null
+    }
+    if (view?.panTool) {
+      st.__panDown = (e: any) => {
+        const startGx = e.global.x
+        const startGy = e.global.y
+        const baseX = root.x
+        const baseY = root.y
+        let latest: { x: number; y: number } | null = null
+        const onMove = (ev: any) => {
+          latest = { x: baseX + (ev.global.x - startGx), y: baseY + (ev.global.y - startGy) }
+          root.x = latest.x
+          root.y = latest.y
+        }
+        const onUp = () => {
+          st.off('pointermove', onMove)
+          st.off('pointerup', onUp)
+          st.off('pointerupoutside', onUp)
+          if (latest && view?.onPanCommit) {
+            const baseRootX = centerX + (vp.offsetX - centerX) * zoom
+            const baseRootY = centerY + (vp.offsetY - centerY) * zoom
+            view.onPanCommit(latest.x - baseRootX, latest.y - baseRootY)
+          }
+        }
+        st.on('pointermove', onMove)
+        st.on('pointerup', onUp)
+        st.on('pointerupoutside', onUp)
+      }
+      st.on('pointerdown', st.__panDown)
+    }
+  } catch {}
 
   // background
   try {
@@ -753,7 +873,17 @@ async function renderStage(args: {
       : Array.isArray(node.visuals?.placements)
         ? node.visuals?.placements
         : []
+    const editable = view?.editable !== false
+    const interactive = editable && Boolean(interaction) && !Array.isArray(stageOverride?.placements) && !view?.panTool
+    if (interactive || view?.panTool) {
+      try {
+        app.stage.eventMode = 'static'
+        app.stage.hitArea = app.screen
+      } catch {}
+    }
     const ordered = placements.slice().sort((a, b) => numberOr(a.zIndex, 0) - numberOr(b.zIndex, 0))
+    // 像素级点选候选（渲染顺序 ascending，命中判定时从尾到头 = 从顶层到底层）
+    const hitSprites: Array<{ sprite: Sprite; pid: string; origX: number; origY: number }> = []
     for (const p of ordered) {
       if (p.visible === false) continue
       const ch = (doc.project.characters || []).find((c) => c.id === p.characterId)
@@ -773,14 +903,70 @@ async function renderStage(args: {
       const y = clamp01(numberOr(p.transform?.y, 1))
       const scale = numberOr(p.transform?.scale, 1)
       const rot = numberOr(p.transform?.rotationDeg, 0)
+      const flipX = Boolean((p.transform as any)?.flipX)
+      const flipY = Boolean((p.transform as any)?.flipY)
 
       sp.x = vp.stageW * x
       sp.y = vp.stageH * y
-      sp.scale.set(scale)
+      // anchor (0.5,1) 底中：水平反转围绕中心稳定（与导出运行时 storyPixi.js 同一语义）
+      sp.scale.set(scale * (flipX ? -1 : 1), scale * (flipY ? -1 : 1))
       sp.rotation = (rot * Math.PI) / 180
 
       root.addChild(sp)
+
+      // 选中高亮定位标记 + 像素级点选候选（标记不依赖交互开关，预览模式也可显示选中框）
+      const pid = String(p.id || '').trim()
+      if (pid && !Array.isArray(stageOverride?.placements)) {
+        try { (sp as any).__placementId = pid } catch {}
+        hitSprites.push({ sprite: sp, pid, origX: x, origY: y })
+      }
     }
+
+    // 像素级点选：stage 级 pointerdown 从顶到底逐摆放判定（透明像素穿透）；
+    // 命中的摆放走原有点选+拖动链；该点所有摆放像素都透明则视为点击空白并取消选中
+    try {
+      const st: any = app.stage
+      if (st.__pickDown) {
+        st.off('pointerdown', st.__pickDown)
+        st.__pickDown = null
+      }
+      if (interactive && interaction) {
+        st.__pickDown = (e: any) => {
+          const gx = e.global.x
+          const gy = e.global.y
+          for (let i = hitSprites.length - 1; i >= 0; i -= 1) {
+            const hit = hitSprites[i]
+            if (!hitPlacementSprite(hit.sprite, gx, gy)) continue
+            const sp = hit.sprite
+            interaction.onSelect(hit.pid)
+            const startGx = gx
+            const startGy = gy
+            const origX = hit.origX
+            const origY = hit.origY
+            let latest: { x: number; y: number } | null = null
+            const onMove = (ev: any) => {
+              const nx = clamp01(origX + (ev.global.x - startGx) / (effScale * vp.stageW))
+              const ny = clamp01(origY + (ev.global.y - startGy) / (effScale * vp.stageH))
+              latest = { x: nx, y: ny }
+              sp.x = vp.stageW * nx
+              sp.y = vp.stageH * ny
+            }
+            const onUp = () => {
+              st.off('pointermove', onMove)
+              st.off('pointerup', onUp)
+              st.off('pointerupoutside', onUp)
+              if (latest) interaction.onCommitTransform(hit.pid, latest)
+            }
+            st.on('pointermove', onMove)
+            st.on('pointerup', onUp)
+            st.on('pointerupoutside', onUp)
+            return
+          }
+          interaction.onSelect('')
+        }
+        st.on('pointerdown', st.__pickDown)
+      }
+    } catch {}
   } catch {}
 }
 
@@ -1063,6 +1249,33 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [selection, setSelection] = useState<Selection>({ type: 'none' })
   const [leftTab, setLeftTab] = useState<LeftTab>('nodes')
   const [dirty, setDirty] = useState(false)
+  // 2026-09-03 外部更新检测：服务端 _rev 高于本地时横幅提示刷新。
+  // 根因（用户实测"删除不掉/切换不了"）：旧会话内存态保存时 409 重试会把旧内容盖回磁盘，外部修正被回滚。
+  const [externalNewerRev, setExternalNewerRev] = useState(0)
+
+  // 20s 轮询 + 窗口聚焦时检查：服务端 _rev 高于本地 → 提示刷新（自己保存成功后 _rev 同步，不会误报）
+  useEffect(() => {
+    if (doc.mode !== 'project' || !doc.project) return
+    let cancelled = false
+    const check = async () => {
+      try {
+        const fresh = await getProject(doc.id)
+        const srvRev = Number((fresh && (fresh.project as any) && (fresh.project as any)._rev) || 0)
+        const localRev = Number((doc.project as any)._rev || 0)
+        if (!cancelled && srvRev > localRev) setExternalNewerRev(srvRev)
+      } catch {}
+    }
+    const t = window.setInterval(check, 20_000)
+    const onFocus = () => { void check() }
+    window.addEventListener('focus', onFocus)
+    void check()
+    return () => {
+      cancelled = true
+      window.clearInterval(t)
+      window.removeEventListener('focus', onFocus)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.mode, doc.id, doc.project && (doc.project as any)._rev])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [toast, setToast] = useState('')
@@ -1075,6 +1288,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     mode: 'preview'
   })
   const latestExportActionResolverRef = useRef<((action: LatestExportAction) => void) | null>(null)
+  // 主参考人工特批确认弹窗（div 弹窗，不用系统 confirm；2026-08-30 用户指令）
+  const [sbOverrideModal, setSbOverrideModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
+  const sbOverrideResolverRef = useRef<((ok: boolean) => void) | null>(null)
 
   // AUTO-E05：完整度核实（真实浏览器逐节点走查导出 H5 + AI 视觉评审）
   // 弹窗打开期间经 /ai/tasks 轮询进度，任务完成后拉取最近报告；全程无黑盒等待。
@@ -1110,6 +1326,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
   const [previewNodeId, setPreviewNodeId] = useState<string>('')
   const [activePlacementId, setActivePlacementId] = useState<string>('')
+  // 2026-09-01：动作立绘工作流——右侧属性里的「动作描述」草稿（切换摆放时按场景文本预填）
+  const [placementPoseDraft, setPlacementPoseDraft] = useState<string>('')
+  // 场景编排器：层级列表中「背景」行的选中态（仅用于展示背景信息）
+  const [bgRowSelected, setBgRowSelected] = useState(false)
 
   const showProjectManager = !props.onBack && !props.onBackToHub && !props.projectId
 
@@ -1275,23 +1495,6 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     return 'picture_book'
   }
 
-  const buildGlobalPromptFromTemplate = (
-    tpl: ReturnType<typeof readHubTemplateFields>,
-    projectTitle: string
-  ) => {
-    const lines: string[] = []
-    if (projectTitle) lines.push(`故事名：《${projectTitle}》`)
-    if (!tpl) return lines.join('\n').trim()
-    if (tpl.theme) lines.push(`故事主题：${tpl.theme}`)
-    if (tpl.moral) lines.push(`核心寓意：${tpl.moral}`)
-    if (tpl.world) lines.push(`世界观锚点：${tpl.world}`)
-    if (tpl.protagonist) lines.push(`主角设定：${tpl.protagonist}`)
-    if (tpl.style) lines.push(`视觉风格：${tpl.style}`)
-    if (tpl.tone) lines.push(`叙事语气：${tpl.tone}`)
-    if (tpl.extra) lines.push(`补充约束：${tpl.extra}`)
-    return lines.join('\n').trim()
-  }
-
   const buildGlobalNegativeFromTemplate = (tpl: ReturnType<typeof readHubTemplateFields>) => {
     const base = ['text', 'watermark', 'low quality', 'blurry', 'deformed']
     const c = String(tpl?.constraints || '')
@@ -1360,6 +1563,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     promptModel: '',
     imageProvider: '',
     imageModel: '',
+    imageLoras: [],
     summary: '',
     issues: [],
     details: []
@@ -1407,6 +1611,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     scheduler: 'Automatic'
   })
   const [sbAssetPromptDrafts, setSbAssetPromptDrafts] = useState<Record<string, StoryboardLockAssetPromptDraft>>({})
+  // 2026-08-26 修复批量串行覆盖：长任务闭包只能读到渲染时的状态快照，批量增强时每个资产的更新会互相覆盖
+  // （实测 14 个资产只剩最后一个落盘）。ref 镜像始终持最新草稿，更新函数一律从 ref 读取
+  const sbAssetPromptDraftsRef = useRef<Record<string, StoryboardLockAssetPromptDraft>>({})
+  useEffect(() => { sbAssetPromptDraftsRef.current = sbAssetPromptDrafts }, [sbAssetPromptDrafts])
   const [sbGlobalPromptReview, setSbGlobalPromptReview] = useState<StoryboardPromptQualityReview | null>(null)
   const [sbGlobalPromptReviewBusy, setSbGlobalPromptReviewBusy] = useState(false)
   const [sbPromptReviewingNodeId, setSbPromptReviewingNodeId] = useState('')
@@ -1420,6 +1628,32 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   useEffect(() => {
     setSbAssetPromptDrafts((prev) => normalizeStoryboardLockAssetPromptDrafts(sbAssetPlan, prev))
   }, [sbAssetPlan])
+
+  // ============ 2026-08-26 锁定事物工作区打开状态持久化与恢复（用户指令：刷新不能丢正在操作的流程） ============
+  const sbWsOpenStorageKey = 'gamestudio.lockWorkspace.openProject'
+  const sbWsRestoreDoneRef = useRef(false)
+  // 打开即记录（只记最后操作的项目）；清除只发生在用户主动关闭/离开工作区的路径（onClose / onOpenRender），
+  // 不能在 effect 里按 sbOpen=false 反推删除——挂载首轮 sbOpen 恒为 false，会先误删再导致恢复失败
+  useEffect(() => {
+    if (doc.mode !== 'project' || !doc.id || !sbOpen) return
+    try { localStorage.setItem(sbWsOpenStorageKey, doc.id) } catch { /* 存储不可用时忽略 */ }
+  }, [sbOpen, doc.mode, doc.id])
+  // 刷新后项目数据就绪时，若上次离开也开着锁定事物工作区，自动回到该工作区（沿用顶部按钮的打开序列）
+  useEffect(() => {
+    if (sbWsRestoreDoneRef.current || sbOpen) return
+    if (doc.mode !== 'project' || !doc.id || !doc.project || !doc.story) return
+    let shouldRestore = false
+    try { shouldRestore = localStorage.getItem(sbWsOpenStorageKey) === doc.id } catch {}
+    if (!shouldRestore) return
+    sbWsRestoreDoneRef.current = true
+    void (async () => {
+      await initStoryboardBatchFromDoc()
+      setSbRenderOpen(false)
+      setSbOpen(true)
+      void runStoryboardOpenChecks()
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.mode, doc.id, sbOpen])
 
   useEffect(() => {
     if (!sbItems.length) {
@@ -1472,6 +1706,18 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [chGreen, setChGreen] = useState<null | { url?: string; assetPath?: string; provider?: string; remoteUrl?: string }>(null)
   const [chTransparentPreviewUrl, setChTransparentPreviewUrl] = useState<string>('')
   const chTargetRef = useRef<null | { kind: 'character' | 'placement'; characterId: string; nodeId?: string; placementId?: string }>(null)
+
+  // 2026-09-01 姿势变体（出图统一管理在锁定向导）：busy 态 + 计划 ref 镜像（串行操作读 ref，避免闭包旧 plan）。
+  // 候选/已锁定变体持久化在 plan 资产 poseCandidates/poseVariants（plan.json + project.json 副本双写）。
+  const [sbPoseGeneratingId, setSbPoseGeneratingId] = useState('')
+  const [sbPoseDrawProgress, setSbPoseDrawProgress] = useState<{ done: number; total: number } | null>(null)
+  const [sbPoseReviewingId, setSbPoseReviewingId] = useState('')
+  const [sbPoseLockingKey, setSbPoseLockingKey] = useState('')
+  const [sbPosePromptBusyId, setSbPosePromptBusyId] = useState('')
+  const [sbPoseFocusAssetId, setSbPoseFocusAssetId] = useState('')
+  const [sbPoseGalleryAssetId, setSbPoseGalleryAssetId] = useState('')
+  const sbPosePlanRef = useRef<StoryAssetPlan | null>(null)
+  sbPosePlanRef.current = sbAssetPlan
 
   useEffect(() => {
     return () => {
@@ -1706,6 +1952,311 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     return computeStageViewport((doc.project as any).stage as StageConfigV1 | undefined, viewW, viewH)
   }, [canvasSize.h, canvasSize.w, doc.project])
 
+  // 场景编排器：编辑/预览模式、缩放（以画布中心为基准）与平移视图状态
+  const [editMode, setEditMode] = useState(true)
+  const [stageZoom, setStageZoom] = useState(1)
+  const [stagePan, setStagePan] = useState({ x: 0, y: 0 })
+  const [panToolActive, setPanToolActive] = useState(false)
+
+  // 场景编排器：会话内撤销栈——placement 变更的 doc.story JSON 快照（栈深 50）
+  const undoStackRef = useRef<string[]>([])
+  const [undoCount, setUndoCount] = useState(0)
+  const pushUndo = () => {
+    if (!doc.story) return
+    try {
+      undoStackRef.current.push(JSON.stringify(doc.story))
+      if (undoStackRef.current.length > 50) undoStackRef.current.shift()
+      setUndoCount(undoStackRef.current.length)
+    } catch {}
+  }
+  const undoPlacementChange = () => {
+    const prev = undoStackRef.current.pop()
+    setUndoCount(undoStackRef.current.length)
+    if (!prev) return
+    try {
+      const snap = JSON.parse(prev)
+      setDocStory(() => snap)
+    } catch {}
+  }
+  // 切换项目清空撤销栈
+  useEffect(() => {
+    undoStackRef.current = []
+    setUndoCount(0)
+  }, [doc.id])
+  // Ctrl/Cmd+Z 撤销（输入框/下拉内不拦截，保留原生文本撤销）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey) return
+      if (String(e.key || '').toLowerCase() !== 'z') return
+      const t = e.target as HTMLElement | null
+      const tag = t && t.tagName ? t.tagName : ''
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return
+      e.preventDefault()
+      const prevSnap = undoStackRef.current.pop()
+      setUndoCount(undoStackRef.current.length)
+      if (!prevSnap) return
+      try { setDocStory(() => JSON.parse(prevSnap)) } catch {}
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 场景编排器：写回当前预览节点某个摆放的 transform（拖动提交 / Shift+滚轮缩放共用）
+  const updatePreviewPlacementTransform = (placementId: string, patch: Partial<{ x: number; y: number; scale: number; rotationDeg: number }>) => {
+    const nodeId = effectivePreviewNode ? String(effectivePreviewNode.id || '') : ''
+    if (!nodeId || !placementId) return
+    pushUndo()
+    setDocStory((s) => ({
+      ...s,
+      nodes: s.nodes.map((x) => {
+        if (x.id !== nodeId) return x
+        const nn = ensureNode(x)
+        return {
+          ...nn,
+          visuals: {
+            ...nn.visuals,
+            placements: (nn.visuals?.placements || []).map((pp) =>
+              pp.id === placementId ? { ...pp, transform: { ...pp.transform, ...patch } } : pp
+            )
+          }
+        }
+      })
+    }))
+  }
+
+  // 场景编排器：Shift+滚轮缩放当前选中摆放（原生监听，passive:false 才能 preventDefault）
+  // 撤销快照按 700ms 合并，连续滚动只产生一条撤销记录
+  const lastWheelUndoAtRef = useRef(0)
+  useEffect(() => {
+    const host = canvasHostRef.current
+    const pid = activePlacementId
+    if (!host || !pid || !editMode) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.shiftKey) return
+      e.preventDefault()
+      const nodeId = effectivePreviewNode ? String(effectivePreviewNode.id || '') : ''
+      if (!nodeId) return
+      const now = Date.now()
+      if (now - lastWheelUndoAtRef.current > 700) {
+        pushUndo()
+        lastWheelUndoAtRef.current = now
+      }
+      const delta = e.deltaY < 0 ? 0.05 : -0.05
+      setDocStory((s) => ({
+        ...s,
+        nodes: s.nodes.map((x) => {
+          if (x.id !== nodeId) return x
+          const nn = ensureNode(x)
+          return {
+            ...nn,
+            visuals: {
+              ...nn.visuals,
+              placements: (nn.visuals?.placements || []).map((pp) => {
+                if (pp.id !== pid) return pp
+                const cur = numberOr(pp.transform?.scale, 1)
+                const next = Math.max(0.05, Math.min(4, Math.round((cur + delta) * 1000) / 1000))
+                return { ...pp, transform: { ...pp.transform, scale: next } }
+              })
+            }
+          }
+        })
+      }))
+    }
+    host.addEventListener('wheel', onWheel, { passive: false })
+    return () => host.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlacementId, effectivePreviewNode, editMode])
+
+  // 场景编排器：左栏「素材」列表（项目角色 + 已锁定计划资产，仅列可解析出项目图片资产的项）
+  const stageMaterials = useMemo(() => {
+    const list: Array<{ key: string; name: string; kind: string; characterId?: string; imageAssetId: string }> = []
+    for (const c of doc.project?.characters || []) {
+      const img = String((c as any).imageAssetId || '').trim()
+      if (!img) continue
+      if (!(doc.project?.assets || []).some((a) => a.id === img)) continue
+      list.push({ key: `ch:${c.id}`, name: String(c.name || c.id), kind: '角色', characterId: c.id, imageAssetId: img })
+    }
+    const planForMaterials = sbAssetPlan || readStoryboardAssetPlanFromProject(doc.project)
+    const planAssets = Array.isArray((planForMaterials as any)?.assets) ? (planForMaterials as any).assets : []
+    for (const asset of planAssets) {
+      const uri = String(asset?.primaryReferenceAssetUri || '').trim()
+      if (!uri) continue
+      let imageAssetId = String(asset?.primaryReferenceAssetId || '').trim()
+      if (!imageAssetId) {
+        const refs = Array.isArray(asset?.generatedRefs) ? asset.generatedRefs : []
+        const hit = refs.find((r: any) => String(r?.projectAssetId || '').trim() && String(r?.projectAssetUri || '').trim().replace(/^\/+/, '') === uri.replace(/^\/+/, ''))
+          || refs.find((r: any) => String(r?.projectAssetId || '').trim())
+        imageAssetId = String(hit?.projectAssetId || '').trim()
+      }
+      if (!imageAssetId) continue
+      if (!(doc.project?.assets || []).some((a) => a.id === imageAssetId)) continue
+      const cat = String(asset?.category || '').trim()
+      const kind = cat === 'character' ? '角色' : cat === 'prop' ? '道具' : cat === 'location' ? '地点' : '资产'
+      list.push({ key: `asset:${String(asset?.id || imageAssetId)}`, name: String(asset?.name || asset?.id || imageAssetId), kind, imageAssetId })
+    }
+    return list
+  }, [doc.project, sbAssetPlan])
+
+  // 场景编排器：素材拖入舞台 → 按落点追加摆放（同素材允许多实例）
+  const [canvasDropActive, setCanvasDropActive] = useState(false)
+  const handleDropMaterial = (raw: string, clientX: number, clientY: number) => {
+    if (doc.readonly || doc.mode !== 'project') return
+    if (!editMode) {
+      setToast('预览模式下不可编辑，请先在画布上方切换到编辑模式')
+      return
+    }
+    const node = effectivePreviewNode
+    if (!node) return
+    let payload: any = null
+    try { payload = JSON.parse(raw) } catch { payload = null }
+    const imageAssetId = String(payload?.imageAssetId || '').trim()
+    if (!imageAssetId) return
+    const characterId = String(payload?.characterId || '').trim()
+    const host = canvasHostRef.current
+    let nx = 0.5
+    let ny = 0.9
+    if (host && stageViewport) {
+      const rect = host.getBoundingClientRect()
+      const zoom = Math.max(0.25, Math.min(4, Number(stageZoom) || 1))
+      const cx0 = rect.width / 2
+      const cy0 = rect.height / 2
+      const rootX = cx0 + (stageViewport.offsetX - cx0) * zoom + stagePan.x
+      const rootY = cy0 + (stageViewport.offsetY - cy0) * zoom + stagePan.y
+      const eff = stageViewport.scale * zoom
+      nx = clamp01((clientX - rect.left - rootX) / eff / stageViewport.stageW)
+      ny = clamp01((clientY - rect.top - rootY) / eff / stageViewport.stageH)
+    }
+    const p: CharacterPlacementV1 = {
+      id: uid('pl'),
+      characterId,
+      imageAssetId,
+      transform: { x: nx, y: ny, scale: 0.62, rotationDeg: 0 },
+      visible: true,
+      zIndex: 0
+    }
+    const nodeId = String(node.id || '')
+    pushUndo()
+    setDocStory((s) => ({
+      ...s,
+      nodes: s.nodes.map((x) => {
+        if (x.id !== nodeId) return x
+        const nn = ensureNode(x)
+        return { ...nn, visuals: { ...nn.visuals, placements: [...(nn.visuals?.placements || []), p] } }
+      })
+    }))
+    setSelection({ type: 'node', id: nodeId })
+    setActivePlacementId(p.id)
+    setRightFold((prev) => ({ ...prev, placements: true }))
+  }
+
+  // 场景编排器：工具条操作（当前预览节点 + 选中摆放）
+  const previewPlacements = useMemo(() => {
+    const n = effectivePreviewNode ? ensureNode(effectivePreviewNode) : null
+    return (n?.visuals?.placements || []) as CharacterPlacementV1[]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectivePreviewNode])
+  const toolbarPlacement = previewPlacements.find((pp) => pp.id === activePlacementId) || null
+  // 动作立绘工作流：切换选中摆放时，按当前节点场景文本预填「动作描述」（用户可改后再生成）
+  useEffect(() => {
+    if (!activePlacementId) return
+    const n = effectivePreviewNode ? ensureNode(effectivePreviewNode) : null
+    const text = n ? String((n as any).body?.text || '').trim() : ''
+    setPlacementPoseDraft(buildNodeTextSummary(text))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlacementId, effectivePreviewNode && (effectivePreviewNode as any).id])
+  const mutatePreviewPlacement = (placementId: string, mutate: (pp: CharacterPlacementV1) => CharacterPlacementV1) => {
+    const nodeId = effectivePreviewNode ? String(effectivePreviewNode.id || '') : ''
+    if (!nodeId || !placementId) return
+    pushUndo()
+    setDocStory((s) => ({
+      ...s,
+      nodes: s.nodes.map((x) => {
+        if (x.id !== nodeId) return x
+        const nn = ensureNode(x)
+        return {
+          ...nn,
+          visuals: {
+            ...nn.visuals,
+            placements: (nn.visuals?.placements || []).map((pp) => (pp.id === placementId ? mutate(pp) : pp))
+          }
+        }
+      })
+    }))
+  }
+  const togglePlacementFlip = (axis: 'flipX' | 'flipY') => {
+    if (!toolbarPlacement) return
+    mutatePreviewPlacement(toolbarPlacement.id, (pp) => ({
+      ...pp,
+      transform: { ...pp.transform, [axis]: !Boolean((pp.transform as any)?.[axis]) } as any
+    }))
+  }
+  const bumpPlacementZ = (delta: number) => {
+    if (!toolbarPlacement) return
+    mutatePreviewPlacement(toolbarPlacement.id, (pp) => ({ ...pp, zIndex: numberOr(pp.zIndex, 0) + delta }))
+  }
+  const deleteToolbarPlacement = () => {
+    if (!toolbarPlacement) return
+    const pid = toolbarPlacement.id
+    const nodeId = effectivePreviewNode ? String(effectivePreviewNode.id || '') : ''
+    if (!nodeId) return
+    pushUndo()
+    setDocStory((s) => ({
+      ...s,
+      nodes: s.nodes.map((x) => {
+        if (x.id !== nodeId) return x
+        const nn = ensureNode(x)
+        return { ...nn, visuals: { ...nn.visuals, placements: (nn.visuals?.placements || []).filter((pp) => pp.id !== pid) } }
+      })
+    }))
+    setActivePlacementId('')
+  }
+
+  // 2026-09-01 选中即属性（A）：画布点选摆放 → 切节点上下文 + 左栏回节点页签 + 展开元素层级 + 右栏滚动到摆放属性。
+  // 此前 onSelect 只 setActivePlacementId，角色/资源页签下点图右栏毫无反应（用户实测"点击图无法打开属性"）。
+  // 双击（400ms 内同摆放两次点选）跳转锁定向导该角色资产的姿势变体区（2026-09-01 起出图统一在锁定向导管理）。
+  const stageLastSelectRef = useRef<{ id: string; at: number }>({ id: '', at: 0 })
+  const placementPropsRef = useRef<HTMLDivElement | null>(null)
+  function handleStageSelect(placementId: string) {
+    if (!editMode) return // D：预览态只读（renderStage 的 interactive 已有门控，此处双保险）
+    const pid = String(placementId || '').trim()
+    if (pid) {
+      const now = Date.now()
+      const last = stageLastSelectRef.current
+      stageLastSelectRef.current = { id: pid, at: now }
+      if (last.id === pid && now - last.at < 400) {
+        stageLastSelectRef.current = { id: '', at: 0 }
+        const n0 = effectivePreviewNode ? ensureNode(effectivePreviewNode) : null
+        const pl = n0 ? (n0.visuals?.placements || []).find((pp) => pp.id === pid) : null
+        if (n0 && pl) {
+          // 2026-09-01 出图统一管理在锁定向导：双击摆放改为跳转该角色资产的姿势变体区（不再开抽卡池弹窗）
+          void openPoseVariantManagerForCharacter(String(pl.characterId || ''))
+        }
+      }
+    }
+    setActivePlacementId(pid)
+    if (!pid) return
+    const n = effectivePreviewNode
+    if (n) setSelection({ type: 'node', id: String(n.id || '') })
+    setLeftTab('nodes')
+    setRightFold((prev) => ({ ...prev, placements: true }))
+    const nn = n ? ensureNode(n) : null
+    const pl = nn ? (nn.visuals?.placements || []).find((pp) => pp.id === pid) : null
+    const ch = pl && doc.project ? (doc.project.characters || []).find((c) => c.id === pl.characterId) || null : null
+    setToast(`已选中：${ch?.name || '摆放'}（右侧面板可调整属性）`)
+  }
+
+  // A：选中摆放后右栏自动滚动到「摆放属性」卡片（key 变化重挂载触发高亮脉冲）
+  useEffect(() => {
+    if (!activePlacementId) return
+    const t = window.setTimeout(() => {
+      try {
+        placementPropsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      } catch {}
+    }, 100)
+    return () => window.clearTimeout(t)
+  }, [activePlacementId])
+
   useEffect(() => {
     clearRuntimeTimers()
     if (!doc.project || !doc.story || !effectivePreviewNode) return
@@ -1725,10 +2276,97 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       doc,
       node,
       stageOverride: rt.stageOverride,
-      isStale: () => stageRenderSeqRef.current !== seq
+      isStale: () => stageRenderSeqRef.current !== seq,
+      interaction: {
+        onSelect: (placementId) => handleStageSelect(placementId),
+        onCommitTransform: (placementId, patch) => updatePreviewPlacementTransform(placementId, patch)
+      },
+      view: {
+        zoom: stageZoom,
+        panX: stagePan.x,
+        panY: stagePan.y,
+        panTool: panToolActive,
+        editable: editMode,
+        onPanCommit: (px, py) => setStagePan({ x: px, y: py })
+      }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, effectivePreviewNode, rt.stageOverride])
+  }, [doc, effectivePreviewNode, rt.stageOverride, stageZoom, stagePan, panToolActive, editMode])
+
+  // 场景编排器：选中摆放的画布高亮框（独立叠加层，选中变化不触发整棵舞台重建，避免打断拖动）
+  useEffect(() => {
+    const app = appRef.current
+    if (!app) return
+    const st: any = app.stage
+    const old = st.__selOverlay as Graphics | null | undefined
+    if (old) {
+      try { st.removeChild(old); old.destroy() } catch {}
+      st.__selOverlay = null
+    }
+    if (!editMode || !activePlacementId || !doc.project) return
+    const root: any = st.children && st.children[0]
+    if (!root || !Array.isArray(root.children)) return
+    const sp: any = root.children.find((c: any) => c && c.__placementId === activePlacementId)
+    if (!sp) return
+    const w = Math.abs(Number(sp.width) || 0)
+    const h = Math.abs(Number(sp.height) || 0)
+    if (!w || !h) return
+    const g = new Graphics()
+    const sw = Math.max(1.5 / Math.max(0.001, Number(root.scale?.x) || 1), 0.5)
+    g.rect(sp.x - w / 2, sp.y - h, w, h).stroke({ width: sw, color: 0x5eccff, alpha: 0.95 })
+    root.addChild(g)
+
+    // 2026-09-01 四角缩放手柄（C1）：拖拽手柄改缩放，替代必须记住的 Shift+滚轮。
+    // 以 sprite 锚点（底中）为缩放中心，按手柄到锚点的距离比实时改 scale，pointerup 一次性提交。
+    const handleSize = Math.max(10 / Math.max(0.001, Number(root.scale?.x) || 1), 4)
+    const corners: Array<[number, number]> = [
+      [sp.x - w / 2, sp.y - h],
+      [sp.x + w / 2, sp.y - h],
+      [sp.x - w / 2, sp.y],
+      [sp.x + w / 2, sp.y]
+    ]
+    const handles: Graphics[] = []
+    for (const [cx, cy] of corners) {
+      const hg = new Graphics()
+      hg.rect(-handleSize / 2, -handleSize / 2, handleSize, handleSize).fill({ color: 0x5eccff }).stroke({ width: sw, color: 0x0b1720 })
+      hg.x = cx
+      hg.y = cy
+      hg.eventMode = 'static'
+      hg.cursor = 'nwse-resize'
+      hg.on('pointerdown', (e: any) => {
+        e.stopPropagation()
+        const anchorGlobal = sp.toGlobal({ x: 0, y: 0 })
+        const startDist = Math.max(1, Math.hypot(e.global.x - anchorGlobal.x, e.global.y - anchorGlobal.y))
+        const baseScale = Math.abs(Number(sp.scale?.x) || 1)
+        const signX = Number(sp.scale?.x) < 0 ? -1 : 1
+        const signY = Number(sp.scale?.y) < 0 ? -1 : 1
+        let latest = 0
+        const onMove = (ev: any) => {
+          const dist = Math.hypot(ev.global.x - anchorGlobal.x, ev.global.y - anchorGlobal.y)
+          const next = Math.max(0.05, Math.min(4, (baseScale * dist) / startDist))
+          latest = next
+          sp.scale.set(signX * next, signY * next)
+        }
+        const onUp = () => {
+          st.off('pointermove', onMove)
+          st.off('pointerup', onUp)
+          st.off('pointerupoutside', onUp)
+          if (latest > 0) updatePreviewPlacementTransform(activePlacementId, { scale: Math.round(latest * 1000) / 1000 })
+        }
+        st.on('pointermove', onMove)
+        st.on('pointerup', onUp)
+        st.on('pointerupoutside', onUp)
+      })
+      root.addChild(hg)
+      handles.push(hg)
+    }
+    // 手柄作为高亮框子节点，随框一起销毁（g 无变换，子节点坐标即 root 坐标）
+    for (const hg of handles) {
+      try { root.removeChild(hg); g.addChild(hg) } catch {}
+    }
+    st.__selOverlay = g
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlacementId, doc, effectivePreviewNode, stageZoom, stagePan, editMode])
 
   useEffect(() => {
     if (!doc.project || !doc.story || !effectivePreviewNode) return
@@ -1856,6 +2494,22 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       }
       const project = normalizeProjectV1(data.project as any)
       const story = normalizeStoryV1(data.story as any)
+      // 场景编排器：补齐缺失的 placement id（服务端生成的旧摆放可能没有 id，画布拖动与属性面板都依赖 id 寻址）
+      let placementsBackfilled = false
+      const storyNodesWithIds = (story.nodes || []).map((n) => {
+        const pls = (n as any).visuals?.placements
+        if (!Array.isArray(pls) || !pls.length) return n
+        let changed = false
+        const nextPls = pls.map((p: any) => {
+          if (String(p?.id || '').trim()) return p
+          changed = true
+          return { ...p, id: uid('pl') }
+        })
+        if (!changed) return n
+        placementsBackfilled = true
+        return { ...n, visuals: { ...(n as any).visuals, placements: nextPls } }
+      })
+      const storyFinal = placementsBackfilled ? ({ ...story, nodes: storyNodesWithIds } as typeof story) : story
       setRt((prev) => ({ ...prev, vars: buildDefaultVars(project.state?.vars), eventMemory: {}, stageOverride: {}, nav: null }))
       setRuntimeStartNodeId(story.startNodeId)
       setBlueprintLoaded(bpLoaded)
@@ -1867,16 +2521,18 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         title: project.title,
         assetBase: resolveUrl(`/project-assets/${encodeURIComponent(project.id)}/`),
         project,
-        story
+        story: storyFinal
       })
       setSelection({ type: 'node', id: story.startNodeId })
       setLeftTab('nodes')
       setDirty(false)
+      if (placementsBackfilled) setDirty(true)
       setToast('项目已打开')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      markStartupReady() // 启动覆盖层按真实加载收尾（重复调用安全）
     }
   }
 
@@ -1897,19 +2553,41 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
-  async function saveCurrent() {
-    if (doc.mode !== 'project' || !doc.project || !doc.story) return
+  async function saveCurrent(): Promise<boolean> {
+    if (doc.mode !== 'project' || !doc.project || !doc.story) return false
     setBusy(true)
     setError('')
     try {
       const projectToSave = buildStoryboardLockProjectSnapshot(doc.project)
-      const p = await saveProject(doc.id, { project: projectToSave, story: doc.story })
+      // 乐观锁：携带当前 _rev；服务端版本不符返回 409（其他地方已更新）时刷新最新内容，避免旧内存态覆盖
+      const p = await saveProject(doc.id, { project: projectToSave, story: doc.story, _rev: Number((doc.project as any)._rev || 0) })
       setDoc((prev) => ({ ...prev, project: p, title: p.title }))
       setDirty(false)
       setToast('已保存')
       await refreshProjects()
+      return true
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/rev_conflict|已更新|409/.test(msg)) {
+        // 乐观锁冲突时取最新版本号重试一次（保住用户未保存的编辑，避免"刚拖入的元素突然消失"）；
+        // 重试仍冲突才刷新整页（真正的多会话竞争）。
+        try {
+          const cur = await getProject(doc.id)
+          const freshRev = Number((cur && (cur as any).project && (cur as any).project._rev) || 0)
+          const p2 = await saveProject(doc.id, { project: buildStoryboardLockProjectSnapshot(doc.project), story: doc.story, _rev: freshRev })
+          setDoc((prev) => ({ ...prev, project: p2, title: p2.title }))
+          setDirty(false)
+          setToast('已保存（已合并最新变更）')
+          await refreshProjects()
+          return true
+        } catch (_) {
+          setToast('项目在其他地方已更新，已刷新最新内容，请重试刚才的操作')
+          try { await openProject(doc.id) } catch (_) { /* 刷新失败仅提示 */ }
+        }
+      } else {
+        setError(msg)
+      }
+      return false
     } finally {
       setBusy(false)
     }
@@ -1918,7 +2596,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   async function persistCurrentForExport() {
     if (doc.mode !== 'project' || !doc.project || !doc.story) return
     const projectToSave = buildStoryboardLockProjectSnapshot(doc.project)
-    const p = await saveProject(doc.id, { project: projectToSave, story: doc.story })
+    const p = await saveProject(doc.id, { project: projectToSave, story: doc.story, _rev: Number((doc.project as any)._rev || 0) })
     setDoc((prev) => ({ ...prev, project: p, title: p.title }))
     setDirty(false)
   }
@@ -1970,7 +2648,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   }
 
   useEffect(() => {
-    if (!sbOpen && !sbRenderOpen) return
+    // 2026-08-31 修复：此前自动保存被 !sbOpen && !sbRenderOpen 门控——只在弹窗打开时才保存，
+    // 编排器画布的层级/拖动修改不落盘（用户刷新后层级回退的根因）。改为 dirty 即 1.2s 防抖保存，busy 守卫保留。
     if (busy || sbBusyGenerate || sbBusyApply || sbBusyEntity || sbContinuityBusy) return
     if (doc.mode !== 'project' || !dirty) return
     const t = window.setTimeout(() => {
@@ -2883,6 +3562,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     let promptModel = ''
     let imageProvider = ''
     let imageModel = ''
+    let imageLoras: string[] = []
 
     try {
       try {
@@ -2902,6 +3582,7 @@ function ensureNode(n: NodeV1): NodeV1 {
         promptModel = String(st.effective?.prompt?.model || '').trim()
         imageProvider = String(st.effective?.image?.provider || '').toLowerCase()
         imageModel = String(st.effective?.image?.model || '').trim()
+        imageLoras = Array.isArray(st.effective?.image?.loras) ? st.effective.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : []
         details.push(`prompt provider: ${promptProvider || 'none'}`)
         if (promptModel) details.push(`prompt model: ${promptModel}`)
         details.push(`image provider: ${imageProvider || 'none'}`)
@@ -2988,6 +3669,7 @@ function ensureNode(n: NodeV1): NodeV1 {
         promptModel,
         imageProvider,
         imageModel,
+        imageLoras,
         summary,
         issues,
         details
@@ -3240,6 +3922,15 @@ function ensureNode(n: NodeV1): NodeV1 {
     return String((aiBg as any).storyAssetPlanConfirmedAt || '').trim()
   }
 
+  // 2026-08-30 修复：202 审核挂起响应没有 plan，绝不能用空计划覆盖现有计划（会把向导打回第 3 步）
+  function applyStoryboardPlanResponse(res: any): boolean {
+    const nextPlan = normalizeStoryboardAssetPlan(res?.plan)
+    if (!nextPlan) return false
+    setSbAssetPlan(nextPlan)
+    persistStoryboardAssetPlan(nextPlan, '')
+    return true
+  }
+
   function persistStoryboardAssetPlan(plan: StoryAssetPlan | null, confirmedAt = '') {
     if (doc.mode !== 'project') return
     setDocProject((p) => {
@@ -3247,9 +3938,11 @@ function ensureNode(n: NodeV1): NodeV1 {
       const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
       const nextAiBg: any = { ...aiBgIn }
       if (plan) nextAiBg.storyAssetPlan = plan
-      else delete nextAiBg.storyAssetPlan
+      // 2026-09-01 修复：plan 为空时不得删除已有 storyAssetPlan 副本（反复被清空导致角色指纹回退失败）
+      else if (!nextAiBg.storyAssetPlan && aiBgIn.storyAssetPlan) nextAiBg.storyAssetPlan = aiBgIn.storyAssetPlan
       if (String(confirmedAt || '').trim()) nextAiBg.storyAssetPlanConfirmedAt = confirmedAt
-      else delete nextAiBg.storyAssetPlanConfirmedAt
+      // 2026-09-01 修复：confirmedAt 为空时保留展开继承的旧值，不得 delete（曾把向导打回「待确认」）
+      else if (!String(nextAiBg.storyAssetPlanConfirmedAt || '').trim()) delete nextAiBg.storyAssetPlanConfirmedAt
       const nextState = { ...stateIn, aiBackground: nextAiBg }
       return { ...p, state: nextState }
     })
@@ -3319,15 +4012,28 @@ function ensureNode(n: NodeV1): NodeV1 {
         prompt: String(sbReq.globalPrompt || '').trim(),
         negativePrompt: String(sbReq.globalNegativePrompt || '').trim()
       },
-      globalPrompt: String(sbReq.globalPrompt || '').trim(),
-      globalNegativePrompt: String(sbReq.globalNegativePrompt || '').trim(),
+      // 2026-08-31 修复：sbReq 里的标题种子/弱占位提示词不得覆盖文档里的好提示词
+      //（自 perpetuating 污染链：文档垃圾种子 → sbReq → 保存又写回文档；守卫后保存不再降级 globalPrompt）
+      globalPrompt: (() => {
+        const fromReq = String(sbReq.globalPrompt || '').trim()
+        const fromDoc = String((aiBgIn as any).globalPrompt || '').trim()
+        return isWeakStoryboardGlobalPrompt(fromReq) && fromDoc ? fromDoc : fromReq
+      })(),
+      globalNegativePrompt: (() => {
+        const fromReq = String(sbReq.globalNegativePrompt || '').trim()
+        const fromDoc = String((aiBgIn as any).globalNegativePrompt || '').trim()
+        return isWeakStoryboardGlobalPrompt(fromReq) && fromDoc ? fromDoc : fromReq
+      })(),
       storyboardGlobalPromptZh: String(sbReq.globalPromptZh || '').trim(),
       storyboardGlobalNegativePromptZh: String(sbReq.globalNegativePromptZh || '').trim(),
       storyboardLockAssetPrompts: nextPromptDrafts
     }
     if (nextAssetPlan) nextAiBg.storyAssetPlan = nextAssetPlan
-    else delete nextAiBg.storyAssetPlan
+    // 2026-09-01 修复：编辑器内存无计划时不得删除 project.json 里的 storyAssetPlan 副本（反复被清空导致角色指纹回退失败）
+    else if (!nextAiBg.storyAssetPlan && aiBgIn.storyAssetPlan) nextAiBg.storyAssetPlan = aiBgIn.storyAssetPlan
     if (nextConfirmedAt) nextAiBg.storyAssetPlanConfirmedAt = nextConfirmedAt
+    // 2026-09-01 修复：内存无确认时间戳时保留文档旧值，不得 delete（曾把向导打回「待确认」）
+    else if (String((aiBgIn as any).storyAssetPlanConfirmedAt || '').trim()) nextAiBg.storyAssetPlanConfirmedAt = String((aiBgIn as any).storyAssetPlanConfirmedAt).trim()
     else delete nextAiBg.storyAssetPlanConfirmedAt
     return {
       ...project,
@@ -3439,10 +4145,10 @@ function ensureNode(n: NodeV1): NodeV1 {
     const gpRaw = aiBg && typeof (aiBg as any).globalPrompt === 'string' ? String((aiBg as any).globalPrompt) : ''
     const gneg = aiBg && typeof (aiBg as any).globalNegativePrompt === 'string' ? String((aiBg as any).globalNegativePrompt) : ''
     const projectTitle = String((doc.project as any).title || '').trim()
-    const tpl = readHubTemplateFields()
-    const templateGp = buildGlobalPromptFromTemplate(tpl, projectTitle)
-    const templateGneg = buildGlobalNegativeFromTemplate(tpl)
-    const gp = gpRaw.trim() ? gpRaw : (templateGp || (projectTitle ? `故事名：《${projectTitle}》` : ''))
+    const templateGneg = buildGlobalNegativeFromTemplate(readHubTemplateFields())
+    // 2026-09-10 断源：不再用"故事名：《…》"/脚本模板复述种子化英文全局栏——空是合法初始态，
+    // 中文全局稿由 Story Bible 世界锚点译写产出（生成 Bible 后自动起草，或第 4 步手动起草）
+    const gp = gpRaw.trim()
     let imageProvider = ''
     let imageModel = ''
     try {
@@ -3519,24 +4225,34 @@ function ensureNode(n: NodeV1): NodeV1 {
       : {}
     const projectTitle = String((doc.project as any).title || '').trim()
     const tpl = readHubTemplateFields()
-    const templateGp = buildGlobalPromptFromTemplate(tpl, projectTitle)
+    // 2026-09-10 断源：英文全局栏不再回落到脚本模板复述（故事名/主题/寓意不是出图提示词）；空即是空
     const templateGneg = buildGlobalNegativeFromTemplate(tpl)
     const storyboardPromptSeed = buildStoryboardPromptSeed(projectTitle)
     const templateStyle = mapTemplateStyleToStoryboardStyle(String(tpl?.style || ''))
     const map = readStoryboardSceneMapFromProject(doc.project)
     const sceneNodes = (doc.story.nodes || []).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene' || n.kind === 'ending')
-    const items: StoryboardBatchItem[] = sceneNodes.map((n) => ({
-      nodeId: n.id,
-      nodeName: String((n as any).body?.title || n.name || n.id).trim(),
-      userInput: (map[n.id] && map[n.id].userInput) ? map[n.id].userInput : buildSceneUserInputForBatch(n, projectTitle),
-      promptZh: (map[n.id] && map[n.id].promptZh) ? map[n.id].promptZh : '',
-      prompt: (map[n.id] && map[n.id].prompt) ? map[n.id].prompt : '',
-      negativePromptZh: (map[n.id] && map[n.id].negativePromptZh) ? map[n.id].negativePromptZh : '',
-      negativePrompt: (map[n.id] && map[n.id].negativePrompt) ? map[n.id].negativePrompt : '',
-      promptReview: (map[n.id] && map[n.id].promptReview) ? map[n.id].promptReview : null,
-      status: 'idle',
-      note: ''
-    }))
+    const projectAssetList = Array.isArray(doc.project.assets) ? doc.project.assets : []
+    const projectAssetBase = doc.assetBase
+    const items: StoryboardBatchItem[] = sceneNodes.map((n) => {
+      const bgAssetId = String((n as any).visuals?.backgroundAssetId || '').trim()
+      const bgAsset = bgAssetId ? projectAssetList.find((a) => String((a as any)?.id || '').trim() === bgAssetId) : null
+      const bgUri = String((bgAsset as any)?.uri || '').trim()
+      return {
+        nodeId: n.id,
+        nodeName: String((n as any).body?.title || n.name || n.id).trim(),
+        userInput: (map[n.id] && map[n.id].userInput) ? map[n.id].userInput : buildSceneUserInputForBatch(n, projectTitle),
+        promptZh: (map[n.id] && map[n.id].promptZh) ? map[n.id].promptZh : '',
+        prompt: (map[n.id] && map[n.id].prompt) ? map[n.id].prompt : '',
+        negativePromptZh: (map[n.id] && map[n.id].negativePromptZh) ? map[n.id].negativePromptZh : '',
+        negativePrompt: (map[n.id] && map[n.id].negativePrompt) ? map[n.id].negativePrompt : '',
+        promptReview: (map[n.id] && map[n.id].promptReview) ? map[n.id].promptReview : null,
+        status: 'idle',
+        note: '',
+        backgroundAssetId: bgAssetId,
+        backgroundUri: bgUri,
+        backgroundUrl: bgUri ? resolveAsset(bgUri, projectAssetBase) : ''
+      }
+    })
     setSbItems(items)
     const meta = readStoryboardPromptMetaFromProject(doc.project)
     const draft0 = readStoryboardBatchDraftFromProject(doc.project)
@@ -3576,7 +4292,7 @@ function ensureNode(n: NodeV1): NodeV1 {
           }
         : { ipadapterEnabled: true, requireCharacterRefs: true, controlnetEnabled: false },
       globalPromptZh: String((aiBg0 as any).storyboardGlobalPromptZh || '').trim() || String(storyboardPromptSeed?.globalPromptZh || '').trim(),
-      globalPrompt: (isWeakStoryboardGlobalPrompt(String(aiBg0.globalPrompt || '').trim()) ? '' : String(aiBg0.globalPrompt || '').trim()) || String(storyboardPromptSeed?.globalPrompt || '').trim() || templateGp,
+      globalPrompt: (isWeakStoryboardGlobalPrompt(String(aiBg0.globalPrompt || '').trim()) ? '' : String(aiBg0.globalPrompt || '').trim()) || String(storyboardPromptSeed?.globalPrompt || '').trim(),
       globalNegativePromptZh: String((aiBg0 as any).storyboardGlobalNegativePromptZh || '').trim() || String(storyboardPromptSeed?.globalNegativePromptZh || '').trim(),
       globalNegativePrompt: String(aiBg0.globalNegativePrompt || '').trim() || String(storyboardPromptSeed?.globalNegativePrompt || '').trim() || templateGneg,
       style: ((draft0 && draft0.style) || templateStyle || aiReq.style || 'picture_book') as any,
@@ -3633,7 +4349,6 @@ function ensureNode(n: NodeV1): NodeV1 {
     }
     setSbError('')
     setSbLogs([])
-    if (!String(aiBg0.globalPrompt || '').trim() && templateGp) appendSbLog('已从“故事模板”注入全局正向提示词')
     if (!String(aiBg0.globalNegativePrompt || '').trim() && templateGneg) appendSbLog('已从“故事模板”注入全局负向提示词')
   }
 
@@ -3727,8 +4442,9 @@ function ensureNode(n: NodeV1): NodeV1 {
   ) {
     const key = String(assetId || '').trim()
     if (!key) return
-    const prevDraft = sbAssetPromptDrafts[key] && typeof sbAssetPromptDrafts[key] === 'object'
-      ? sbAssetPromptDrafts[key]
+    const currentDrafts = sbAssetPromptDraftsRef.current
+    const prevDraft = currentDrafts[key] && typeof currentDrafts[key] === 'object'
+      ? currentDrafts[key]
       : { promptZh: '', promptEn: '', negativePromptZh: '', negativePrompt: '', enhancedAt: '', enhanceMode: '' }
     const enhancedAt = options?.markEnhanced
       ? new Date().toISOString()
@@ -3741,7 +4457,7 @@ function ensureNode(n: NodeV1): NodeV1 {
         ? String(prevDraft.enhanceMode || '').trim()
         : String(patch.enhanceMode || '').trim()
     const nextDrafts = normalizeStoryboardLockAssetPromptDrafts(sbAssetPlan, {
-      ...sbAssetPromptDrafts,
+      ...currentDrafts,
       [key]: {
         promptZh: String(patch.promptZh ?? prevDraft.promptZh ?? ''),
         promptEn: String(patch.promptEn ?? prevDraft.promptEn ?? ''),
@@ -3752,6 +4468,7 @@ function ensureNode(n: NodeV1): NodeV1 {
         enhanceMode
       }
     })
+    sbAssetPromptDraftsRef.current = nextDrafts // 立即同步 ref，保证批量串行的下一次迭代读到最新值
     setSbAssetPromptDrafts(nextDrafts)
     const nextPlan = normalizeStoryboardAssetPlan(sbAssetPlan ? {
       ...sbAssetPlan,
@@ -3785,6 +4502,31 @@ function ensureNode(n: NodeV1): NodeV1 {
 
   function storyboardPromptOpsBusy() {
     return Boolean(sbOptimizingAssetId || sbTranslatingScope)
+  }
+
+  // ============ 2026-08-29 提示词审核闸状态：服务端项目数据持久化 ============
+  // 背景：原先闸状态只存浏览器 localStorage，刷新/重启/换浏览器即丢失，用户被门拦回第 4 步（"根本没有同步进度"）。
+  // 现在确认/批准写入 project.state.aiBackground.storyboardLockPromptGate，经既有自动保存链路落盘。
+  const sbPromptGate = useMemo(() => {
+    const g = doc.mode === 'project' ? (doc.project as any)?.state?.aiBackground?.storyboardLockPromptGate : null
+    return { zhConfirmed: Boolean(g?.zhConfirmed), enApproved: Boolean(g?.enApproved) }
+  }, [doc.mode, doc.project])
+  function updateStoryboardLockPromptGate(patch: { zhConfirmed?: boolean; enApproved?: boolean }) {
+    setDocProject((p) => {
+      const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+      const aiBgIn = stateIn.aiBackground && typeof stateIn.aiBackground === 'object' ? stateIn.aiBackground : {}
+      const cur = aiBgIn.storyboardLockPromptGate && typeof aiBgIn.storyboardLockPromptGate === 'object' ? aiBgIn.storyboardLockPromptGate : {}
+      return {
+        ...p,
+        state: {
+          ...stateIn,
+          aiBackground: {
+            ...aiBgIn,
+            storyboardLockPromptGate: { ...cur, ...patch, updatedAt: new Date().toISOString() }
+          }
+        }
+      }
+    })
   }
 
   async function removeStoryboardAssetFromPlan(assetId: string) {
@@ -3825,8 +4567,9 @@ function ensureNode(n: NodeV1): NodeV1 {
         }
       })
     })
-    const nextDrafts = { ...(sbAssetPromptDrafts || {}) }
+    const nextDrafts = { ...(sbAssetPromptDraftsRef.current || {}) }
     delete nextDrafts[key]
+    sbAssetPromptDraftsRef.current = nextDrafts
     setSbAssetPlan(nextPlan)
     setSbAssetsConfirmedAt('')
     setSbContinuityReady(false)
@@ -3843,7 +4586,7 @@ function ensureNode(n: NodeV1): NodeV1 {
       if (doc.story) {
         try {
           await persistStoryAssetPlanAi(doc.id, { plan: nextPlan as any })
-          const saved = await saveProject(doc.id, { project: nextProjectSnapshot, story: doc.story })
+          const saved = await saveProject(doc.id, { project: nextProjectSnapshot, story: doc.story, _rev: Number((doc.project as any)._rev || 0) })
           setDoc((prev) => ({ ...prev, project: saved, title: saved.title }))
           setDirty(false)
         } catch (e) {
@@ -4073,9 +4816,13 @@ function ensureNode(n: NodeV1): NodeV1 {
         assetPrompt: String(sbAssetPromptDrafts[String(assetId || '').trim()]?.promptEn || '').trim() || undefined,
         assetNegativePrompt: String(sbAssetPromptDrafts[String(assetId || '').trim()]?.negativePrompt || '').trim() || undefined
       })
-      const nextPlan = normalizeStoryboardAssetPlan(res.plan)
-      setSbAssetPlan(nextPlan)
-      persistStoryboardAssetPlan(nextPlan, '')
+      // manual 模式：出图前审核挂起（202 无 plan），保留现有计划并提示去待审核列表批准
+      if ((res as any)?.pendingReview) {
+        appendSbLog(`抽卡出图前审核待批准：${label}（在下方待审核列表批准后自动执行）`)
+        setToast(`抽卡待出图前审核批准：${label}`)
+        return
+      }
+      applyStoryboardPlanResponse(res)
       const score = Number(res.analysis?.score)
       const scoreText = Number.isFinite(score) ? `${Math.round(score)} / 100` : 'n/a'
       appendSbLog(`${batchSize} 张候选参考图已生成：${label}（${refSize.label}，AI 推荐=${scoreText}，请手动选择主参考）`)
@@ -4220,6 +4967,14 @@ function ensureNode(n: NodeV1): NodeV1 {
         globalPromptZh: String(sbReq.globalPromptZh || '').trim(),
         globalNegativePromptZh: String(sbReq.globalNegativePromptZh || '').trim()
       })
+      // 2026-08-26 防静默兜底覆盖：AI 调用失败（如 oMLX 内存护栏 400）时路由返回 200+模板兜底，
+      // 照样写回会把已有草稿洗成模板（实测批量 14 资产全中招）。只有 AI 稿真正上桌才允许落盘
+      if (res.aiError && !(res.result?.context && (res.result.context as any).aiGenerated === true)) {
+        const msg = String(res.aiError.message || 'AI 增强失败')
+        setSbError(msg)
+        appendSbLog(`资产提示词增强失败（已保留原稿）：${label} - ${msg}`)
+        return false
+      }
       updateStoryboardLockAssetPrompt(String(assetId || '').trim(), {
         promptZh: String(res.result?.promptZh || '').trim(),
         promptEn: String(res.result?.promptEn || '').trim(),
@@ -4234,12 +4989,94 @@ function ensureNode(n: NodeV1): NodeV1 {
       const reviewText = Number.isFinite(reviewScore) ? `${Math.round(reviewScore)}/100` : '未评分'
       appendSbLog(`资产提示词已增强：${label} / ${reviewText} / ${String(res.promptReview?.summary || res.result?.summary || 'ok')}`)
       setToast(`已增强提示词：${label}`)
+      return true
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setSbError(msg)
       appendSbLog(`资产提示词增强失败：${label} - ${msg}`)
+      return false
     } finally {
       setSbOptimizingAssetId('')
+    }
+  }
+
+  // ============ 2026-08-26 提示词流程修正（用户指令：中文优先 → 审核 → 翻译 → 批准 → 出图） ============
+  // AI 逐个为全部资产生成中文提示词（串行避开并发限流，进度可见；中文稿先出，再逐条微调确认后翻译）
+  const [sbEnhanceAllProgress, setSbEnhanceAllProgress] = useState({ current: 0, total: 0, busy: false })
+  async function runStoryboardEnhanceAllAssetPrompts() {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbEnhanceAllProgress.busy) return
+    const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
+    const assets = Array.isArray(plan?.assets) ? plan.assets : []
+    if (!assets.length) {
+      setSbError('请先生成必要事物资产计划')
+      return
+    }
+    setSbEnhanceAllProgress({ current: 0, total: assets.length, busy: true })
+    appendSbLog(`开始批量生成全部事物中文提示词（${assets.length} 个资产，逐个串行）`)
+    let done = 0
+    let failed = 0
+    for (const asset of assets) {
+      const assetId = String(asset?.id || '').trim()
+      if (!assetId) continue
+      try {
+        // 返回 false 表示 AI 失败已保留原稿（不计入成功）
+        const ok = await runStoryboardEnhanceAssetPrompt(assetId)
+        if (ok === false) failed += 1
+        else done += 1
+      } catch {
+        failed += 1
+      }
+      setSbEnhanceAllProgress((prev) => ({ ...prev, current: done + failed }))
+    }
+    setSbEnhanceAllProgress({ current: done + failed, total: assets.length, busy: false })
+    appendSbLog(`批量中文提示词完成：成功 ${done}，失败 ${failed}${failed ? '（失败资产可单独点"AI 生成提示词"重试）' : ''}。请逐条审阅微调，「确认中文稿」后再执行翻译。`)
+    setToast(done > 0 ? `已生成 ${done} 个事物的中文提示词` : '批量生成提示词失败')
+  }
+
+  // AI 起草中文全局稿：以 Story Bible 世界锚点译写为中文正向稿；负面清单译写为中文反向稿
+  const [sbGlobalDraftBusy, setSbGlobalDraftBusy] = useState(false)
+  async function runStoryboardDraftGlobalPromptZh() {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbGlobalDraftBusy) return
+    const aiBg = (doc.project as any)?.state?.aiBackground || {}
+    const worldAnchor = String(aiBg?.storyBible?.worldAnchor || aiBg?.storyBible?.world?.anchor || '').trim()
+    // 占位垃圾（"故事名：《xx》"/"story title: …"）不是有效锚点，不能作为译写原料（2026-09-10）
+    const isJunkPrompt = (s: string) => { const t = String(s || '').trim(); return !t || /^story title\s*:/i.test(t) || /^故事名：《.*》$/.test(t) }
+    const fallbackAnchor = String(sbReq.globalPrompt || '').trim()
+    const anchorSrc = worldAnchor || (isJunkPrompt(fallbackAnchor) ? '' : fallbackAnchor)
+    if (!anchorSrc) {
+      setSbError('未找到 Story Bible 世界锚点，请先生成 Story Bible')
+      return
+    }
+    setSbGlobalDraftBusy(true)
+    appendSbLog('开始起草中文全局提示词（由 Story Bible 世界锚点译写）')
+    try {
+      const posRes = await translateStoryboardPromptText(doc.id, { text: anchorSrc, sourceLang: 'en', targetLang: 'zh', mode: 'prompt', timeoutMs: 60_000 })
+      const posZh = String(posRes.result?.translatedText || '').trim()
+      const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
+      const forbidden = Array.isArray(plan?.forbiddenSubstitutes) ? plan.forbiddenSubstitutes.map((x: any) => String(x || '').trim()).filter(Boolean) : []
+      let negZh = ''
+      if (forbidden.length > 0) {
+        const negRes = await translateStoryboardPromptText(doc.id, { text: forbidden.join(', '), sourceLang: 'en', targetLang: 'zh', mode: 'prompt', timeoutMs: 60_000 })
+        negZh = String(negRes.result?.translatedText || '').trim()
+      }
+      // 起草中文稿的同时清掉英文栏历史占位垃圾（如"故事名：《xx》"），避免被误认为有效英文稿；
+      // 真正的英文稿由后续「中文转英文」产出。有效英文内容（如默认负向包）不受影响。
+      updateStoryboardLockGlobalPrompts({
+        globalPromptZh: posZh,
+        globalNegativePromptZh: negZh,
+        ...(isJunkPrompt(sbReq.globalPrompt) ? { globalPrompt: '' } : {}),
+        ...(isJunkPrompt(sbReq.globalNegativePrompt) ? { globalNegativePrompt: '' } : {})
+      })
+      appendSbLog('中文全局稿已起草：请审阅微调后「确认中文稿」，再执行中文转英文')
+      setToast('中文全局稿已起草')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`中文全局稿起草失败：${msg}`)
+    } finally {
+      setSbGlobalDraftBusy(false)
     }
   }
 
@@ -4274,6 +5111,31 @@ function ensureNode(n: NodeV1): NodeV1 {
       setToast(`已选择主参考：${label}`)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
+      // 人工特批（2026-08-30 用户指令）：AI 评审未通过时，允许人工确认后越过门禁设为主参考
+      if (/评审|禁止写入主参考/.test(msg)) {
+        const allow = await new Promise<boolean>((resolve) => {
+          sbOverrideResolverRef.current = resolve
+          setSbOverrideModal({ open: true, message: msg })
+        })
+        if (allow) {
+          appendSbLog(`人工特批设为主参考：${label}`)
+          try {
+            const res2 = await selectStoryAssetReferenceAi(doc.id, { assetId: String(assetId || '').trim(), assetPath: String(assetPath || '').trim(), manualOverride: true })
+            const nextPlan2 = normalizeStoryboardAssetPlan(res2.plan)
+            setSbAssetPlan(nextPlan2)
+            persistStoryboardAssetPlan(nextPlan2, '')
+            appendSbLog(`已设置主参考（人工特批）：${label}`)
+            setToast(`已选择主参考（人工特批）：${label}`)
+            setSbError('')
+            return
+          } catch (e2) {
+            const msg2 = e2 instanceof Error ? e2.message : String(e2)
+            setSbError(msg2)
+            appendSbLog(`人工特批设置主参考失败：${label} - ${msg2}`)
+            return
+          }
+        }
+      }
       setSbError(msg)
       appendSbLog(`设置主参考失败：${label} - ${msg}`)
     } finally {
@@ -4319,9 +5181,13 @@ function ensureNode(n: NodeV1): NodeV1 {
         cfgScale: 3.5,
         denoise: 0.55
       })
-      const nextPlan = normalizeStoryboardAssetPlan(res.plan)
-      setSbAssetPlan(nextPlan)
-      persistStoryboardAssetPlan(nextPlan, '')
+      // manual 模式：出图前审核挂起（202 无 plan），保留现有计划并提示去待审核列表批准
+      if ((res as any)?.pendingReview) {
+        appendSbLog(`线稿出图前审核待批准：${label}（在下方待审核列表批准后自动执行）`)
+        setToast(`线稿待出图前审核批准：${label}`)
+        return
+      }
+      applyStoryboardPlanResponse(res)
       appendSbLog(`线稿已生成：${label} / ${lineartSize.label}`)
       setToast(`已生成线稿：${label}`)
     } catch (e) {
@@ -4534,8 +5400,16 @@ function ensureNode(n: NodeV1): NodeV1 {
   }
 
   async function runStoryboardGenerateEntitySpec() {
-    if (doc.mode !== 'project' || !doc.project || !doc.story) return
-    if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    if (doc.mode !== 'project' || !doc.project || !doc.story) {
+      // 静默 return 会让用户以为按钮坏了——给出可见反馈
+      setSbError('无法生成 Story Bible：当前未打开有效的故事项目（请先在合成工作室打开项目）')
+      return
+    }
+    if (sbBusyGenerate || sbBusyApply || sbBusyEntity) {
+      // 忙碌守卫原本静默吞点击；bible 生成可能长达数分钟，必须让用户知道在忙
+      setSbError('有生成任务正在进行中（Story Bible 生成可能需几分钟），请等待完成后再点击')
+      return
+    }
     const projectTitle = String((doc.project as any).title || '').trim()
     const wholeStoryInput = buildWholeStoryUserInputForGlobal(projectTitle)
     if (!wholeStoryInput) {
@@ -4609,6 +5483,46 @@ function ensureNode(n: NodeV1): NodeV1 {
         const planMsg = planError instanceof Error ? planError.message : String(planError)
         setSbError(planMsg)
         appendSbLog(`必要事物资产计划未生成成功：${planMsg}`)
+      }
+      // 2026-09-10 自动填好：Bible 产出世界锚点后，若中文全局稿仍为空，自动译写一份——
+      // 新项目走到第 4 步时中文稿已就位，用户只做审阅→确认→翻译→批准。
+      // 用函数式更新读最新态：已有中文稿（用户手填/此前起草）不覆盖；失败不阻塞主流程。
+      try {
+        const worldAnchorAuto = String((result as any)?.worldAnchor || '').trim()
+        const zhAlready = String(sbReq.globalPromptZh || '').trim() || String((doc.project as any)?.state?.aiBackground?.storyboardGlobalPromptZh || '').trim()
+        if (worldAnchorAuto && !zhAlready) {
+          appendSbLog('自动起草中文全局提示词（世界锚点译写，可在第 4 步审阅修改）')
+          const posResAuto = await translateStoryboardPromptText(doc.id, { text: worldAnchorAuto, sourceLang: 'en', targetLang: 'zh', mode: 'prompt', timeoutMs: 60_000 })
+          const posZhAuto = String(posResAuto.result?.translatedText || '').trim()
+          const forbiddenAuto = Array.isArray((result as any)?.forbiddenSubstitutes) ? (result as any).forbiddenSubstitutes.map((x: any) => String(x || '').trim()).filter(Boolean) : []
+          let negZhAuto = ''
+          if (forbiddenAuto.length > 0) {
+            const negResAuto = await translateStoryboardPromptText(doc.id, { text: forbiddenAuto.join(', '), sourceLang: 'en', targetLang: 'zh', mode: 'prompt', timeoutMs: 60_000 })
+            negZhAuto = String(negResAuto.result?.translatedText || '').trim()
+          }
+          if (posZhAuto || negZhAuto) {
+            setSbReq((prev) => (String(prev.globalPromptZh || '').trim() ? prev : { ...prev, globalPromptZh: posZhAuto, globalNegativePromptZh: negZhAuto }))
+            setDocProject((p) => {
+              const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
+              const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+              if (String((aiBgIn as any).storyboardGlobalPromptZh || '').trim()) return p
+              return {
+                ...p,
+                state: {
+                  ...stateIn,
+                  aiBackground: {
+                    ...aiBgIn,
+                    storyboardGlobalPromptZh: posZhAuto,
+                    storyboardGlobalNegativePromptZh: negZhAuto
+                  }
+                }
+              }
+            })
+            appendSbLog('中文全局稿已自动起草（第 4 步审阅后确认→翻译→批准）')
+          }
+        }
+      } catch (draftAutoError) {
+        appendSbLog(`中文全局稿自动起草跳过（可在第 4 步手动点「AI 起草中文全局稿」）：${draftAutoError instanceof Error ? draftAutoError.message : String(draftAutoError)}`)
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -5243,9 +6157,8 @@ function ensureNode(n: NodeV1): NodeV1 {
     const st0 = (doc.project as any).state && typeof (doc.project as any).state === 'object' ? (doc.project as any).state : {}
     const aiBg0 = (st0 as any).aiBackground && typeof (st0 as any).aiBackground === 'object' ? (st0 as any).aiBackground : {}
     const gpSaved = typeof (aiBg0 as any).globalPrompt === 'string' ? String((aiBg0 as any).globalPrompt) : ''
-    const projectTitle = String((doc.project as any).title || '').trim()
-    const gpFallback = gpSaved.trim() ? gpSaved : (projectTitle ? `故事名：《${projectTitle}》` : '')
-    const gpUse = String(aiReq.globalPrompt || '').trim() || gpFallback
+    // 2026-09-10 断源：空就是空，不再种"故事名：《…》"占位垃圾
+    const gpUse = String(aiReq.globalPrompt || '').trim() || gpSaved.trim()
     chTargetRef.current = { kind: 'character', characterId }
     setChGreen(null)
     setChTransparentPreviewUrl('')
@@ -5263,45 +6176,39 @@ function ensureNode(n: NodeV1): NodeV1 {
     setChOpen(true)
   }
 
-  function openPlacementSpriteModal(args: { nodeId: string; placementId: string; characterId: string; posePrompt?: string }) {
+  // 2026-09-01 出图统一管理在锁定向导：摆放属性不再承担生成管理。
+  // 通用打开器：按 planAssetId 优先、name 兜底匹配 plan.assets（不限 category），打开锁定向导并定位到该资产的详情/姿势变体区。
+  async function openAssetLockInWizard(input: { planAssetId?: string; name?: string }) {
     if (!doc.project || !doc.story || doc.mode !== 'project') return
-    const ch = (doc.project.characters || []).find((x) => x.id === args.characterId) || null
+    const planAssetId = String(input?.planAssetId || '').trim()
+    const name = String(input?.name || '').trim()
+    await initStoryboardBatchFromDoc()
+    // init 内部异步回填 sbAssetPlan；此处以 project.json 副本兜底找资产 id（plan.json 权威数据向导打开后自会加载）
+    const plan = sbPosePlanRef.current || readStoryboardAssetPlanFromProject(doc.project)
+    const planAssets = Array.isArray((plan as any)?.assets) ? (plan as any).assets : []
+    const hit = (planAssetId ? planAssets.find((a: any) => String(a?.id || '').trim() === planAssetId) : null)
+      || (name ? planAssets.find((a: any) => String(a?.name || '').trim() === name) : null)
+      || null
+    setSbPoseFocusAssetId(hit ? String(hit.id || '').trim() : '')
+    setSbRenderOpen(false)
+    setSbOpen(true)
+    void runStoryboardOpenChecks()
+  }
+
+  // 摆放属性卡「管理姿势变体…」与画布双击都走这里——保持原匹配口径（category=character 且按 projectCharacterId / name 命中），解析出计划资产 id 后走通用打开器。
+  async function openPoseVariantManagerForCharacter(characterIdRaw: string) {
+    if (!doc.project || !doc.story || doc.mode !== 'project') return
+    const characterId = String(characterIdRaw || '').trim()
+    const ch = (doc.project.characters || []).find((x) => x.id === characterId) || null
     if (!ch) return
-    const fp = String(ch.ai?.fingerprintPrompt || '').trim()
-    const neg = String(ch.ai?.negativePrompt || '').trim()
-    const dims = stageDims()
-    const st0 = (doc.project as any).state && typeof (doc.project as any).state === 'object' ? (doc.project as any).state : {}
-    const aiBg0 = (st0 as any).aiBackground && typeof (st0 as any).aiBackground === 'object' ? (st0 as any).aiBackground : {}
-    const gpSaved = typeof (aiBg0 as any).globalPrompt === 'string' ? String((aiBg0 as any).globalPrompt) : ''
-    const projectTitle = String((doc.project as any).title || '').trim()
-    const gpFallback = gpSaved.trim() ? gpSaved : (projectTitle ? `故事名：《${projectTitle}》` : '')
-    const gpUse = String(aiReq.globalPrompt || '').trim() || gpFallback
-
-    let pose = String(args.posePrompt || '').trim()
-    if (!pose) {
-      const n0 = (doc.story.nodes || []).find((n) => n.id === args.nodeId) || null
-      const nn = n0 ? ensureNode(n0 as any) : null
-      const title = nn ? String((nn as any).body?.title || '').trim() : ''
-      const sum = nn ? buildNodeTextSummary(String((nn as any).body?.text || '').trim()) : ''
-      pose = [title, sum].filter(Boolean).join('，').slice(0, 400)
-    }
-    if (!pose) pose = '全身，站立，单人，居中'
-
-    chTargetRef.current = { kind: 'placement', characterId: args.characterId, nodeId: args.nodeId, placementId: args.placementId }
-    setChGreen(null)
-    setChTransparentPreviewUrl('')
-    setChError('')
-    setChDraft({
-      ...defaultChDraft,
-      globalPrompt: gpUse,
-      fingerprintPrompt: fp,
-      posePrompt: pose,
-      negativePrompt: neg,
-      style: (aiReq.style as any) || 'picture_book',
-      width: dims.w,
-      height: dims.h
-    })
-    setChOpen(true)
+    // 与通用打开器同源的计划数据（同一 tick 内 init 的异步回填尚未反映到 ref，此处语义与原实现一致）
+    const plan = sbPosePlanRef.current || readStoryboardAssetPlanFromProject(doc.project)
+    const planAssets = Array.isArray((plan as any)?.assets) ? (plan as any).assets : []
+    const hit = planAssets.find((a: any) =>
+      String(a?.category || '') === 'character' &&
+      (String(a?.projectCharacterId || '').trim() === characterId || String(a?.name || '').trim() === String(ch.name || '').trim())
+    ) || null
+    await openAssetLockInWizard({ planAssetId: hit ? String(hit.id || '').trim() : '' })
   }
 
   async function generateCharacterGreen() {
@@ -5310,6 +6217,8 @@ function ensureNode(n: NodeV1): NodeV1 {
     setChError('')
     try {
       const res = await generateCharacterSpriteAi(doc.id, {
+        // 2026-09-01 身份锁定：传 characterId，服务端取该角色锁定主参考走 IPAdapter（纯文本指纹实测会丢角色：猪变人类少年）
+        characterId: String(chTargetRef.current?.characterId || '').trim() || undefined,
         globalPrompt: String(chDraft.globalPrompt || '').trim(),
         fingerprintPrompt: String(chDraft.fingerprintPrompt || '').trim(),
         posePrompt: String(chDraft.posePrompt || '').trim(),
@@ -5330,6 +6239,132 @@ function ensureNode(n: NodeV1): NodeV1 {
     }
   }
 
+  // 2026-09-01 抽卡池共用核心：抠图（RMBG 优先，chroma key 回退）→ 建/覆盖资产 → 写回角色/摆放。
+  // sharedWithCharacter 保护语义必须保留：摆放与角色默认/锁定主参考共用资产时严禁覆盖，只能新建姿势资产。
+  async function applyTransparentCore(args: {
+    target: { kind: 'character' | 'placement'; characterId: string; nodeId?: string; placementId?: string }
+    greenAssetPath: string
+    greenUrl: string
+    provider: string
+    draft: AiCharacterSpriteDraft
+    onPreview?: (url: string) => void
+  }): Promise<'character' | 'placement' | null> {
+    if (doc.mode !== 'project' || !doc.project || !doc.story) return null
+    const { target, draft } = args
+    const ch = (doc.project.characters || []).find((x) => x.id === target.characterId) || null
+
+    // 2026-09-01 优先走服务端 RMBG 语义分割抠图（按颜色抠图对衣服撞色/渐变底完全不可控，实测衣服被挖穿）。
+    // 失败（如 ComfyUI 未配置 / RMBG 不可用）回退前端 chroma key。
+    let nextUri = ''
+    let previewUrl = ''
+    let blobPreviewUrl = ''
+    const greenAssetPath = String(args.greenAssetPath || '').trim()
+    if (greenAssetPath) {
+      try {
+        const cut = await cutoutCharacterSpriteAi(String(doc.project.id), greenAssetPath)
+        nextUri = cut.url ? resolveUrl(cut.url) : cut.assetPath
+        previewUrl = nextUri
+      } catch (_) {
+        nextUri = ''
+      }
+    }
+    if (!nextUri) {
+      const matte = await chromaKeyUrlToPng(args.greenUrl, {
+        threshold: Number(draft.keyThreshold || 80),
+        feather: Number(draft.keyFeather || 40),
+        crop: Boolean(draft.crop),
+        padding: Number(draft.padding || 12)
+      })
+      blobPreviewUrl = URL.createObjectURL(matte.blob)
+      const safeName = String(ch?.name || ch?.id || 'character').replace(/[^a-zA-Z0-9_\u4e00-\u9fa5-]+/g, '_').slice(0, 24) || 'character'
+      const fileName = `${safeName}_${Date.now()}.png`
+      const file = new File([matte.blob], fileName, { type: 'image/png' })
+      const uploaded = await uploadProjectImage(String(doc.project.id), file)
+      nextUri = uploaded.url ? resolveUrl(uploaded.url) : uploaded.assetPath
+      previewUrl = blobPreviewUrl
+    }
+
+    if (args.onPreview) args.onPreview(previewUrl)
+
+    const usedPrompt = [String(draft.globalPrompt || '').trim(), String(draft.fingerprintPrompt || '').trim(), String(draft.posePrompt || '').trim()]
+      .filter(Boolean)
+      .join('，')
+      .slice(0, 1800)
+    const provider = String(args.provider || '') as any
+
+    const applyToAsset = (assetId: string) => {
+      setDocProject((p) => ({
+        ...p,
+        assets: (p.assets || []).map((a) =>
+          a.id === assetId
+            ? { ...a, uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt, provider } }
+            : a
+        )
+      }))
+      return assetId
+    }
+
+    const createAsset = (name: string) => {
+      const assetId = uid('asset')
+      const asset: AssetV1 = {
+        id: assetId,
+        kind: 'image',
+        name,
+        uri: nextUri,
+        source: { type: 'ai' as const, prompt: usedPrompt, provider }
+      }
+      setDocProject((p) => ({ ...p, assets: [...(p.assets || []), asset] }))
+      return assetId
+    }
+
+    if (target.kind === 'character') {
+      const existingId = String(ch?.imageAssetId || '').trim()
+      const existing = existingId ? (doc.project.assets || []).find((a) => a.id === existingId) || null : null
+      const assetId = existing ? applyToAsset(existingId) : createAsset(`AI 角色 ${ch?.name || ch?.id || ''}`.trim() || 'AI 角色')
+      setDocProject((p) => ({
+        ...p,
+        characters: (p.characters || []).map((x) => (x.id === target.characterId ? { ...x, imageAssetId: assetId } : x))
+      }))
+      return 'character'
+    }
+
+    if (target.kind === 'placement') {
+      const nodeId = String(target.nodeId || '').trim()
+      const placementId = String(target.placementId || '').trim()
+      const node0 = (doc.story.nodes || []).find((n) => n.id === nodeId) || null
+      const nn = node0 ? ensureNode(node0 as any) : null
+      const placements = Array.isArray(nn?.visuals?.placements) ? (nn!.visuals!.placements as any[]) : []
+      const pl = placements.find((p) => String(p && p.id) === placementId) || null
+      const existingId = String(pl && pl.imageAssetId ? pl.imageAssetId : '').trim()
+      const existing = existingId ? (doc.project.assets || []).find((a) => a.id === existingId) || null : null
+      const nodeName = String((node0 as any)?.name || nodeId).trim()
+      // 2026-09-01 修复：摆放与角色默认/锁定主参考共用资产时严禁覆盖（此前把猪老大主参考覆盖成废图）。
+      // 只有摆放已持有独立的姿势资产时才原位覆盖，否则一律新建资产。
+      const sharedWithCharacter =
+        existingId &&
+        (existingId === String(ch?.imageAssetId || '').trim() ||
+          existingId === String((ch?.ai as any)?.referenceAssetId || '').trim())
+      const assetId =
+        existing && !sharedWithCharacter
+          ? applyToAsset(existingId)
+          : createAsset(`AI 姿势 ${nodeName} · ${ch?.name || ch?.id || ''}`.trim() || 'AI 姿势')
+
+      setDocStory((s) => ({
+        ...s,
+        nodes: (s.nodes || []).map((n) => {
+          if (n.id !== nodeId) return n
+          const n2 = ensureNode(n as any)
+          const v0 = n2.visuals || {}
+          const pls = Array.isArray(v0.placements) ? v0.placements : []
+          const next = pls.map((pp) => (pp.id === placementId ? { ...pp, imageAssetId: assetId } : pp))
+          return { ...n2, visuals: { ...v0, placements: next } }
+        })
+      }))
+      return 'placement'
+    }
+    return null
+  }
+
   async function applyCharacterTransparent() {
     if (doc.mode !== 'project' || !doc.project || !doc.story) return
     const target = chTargetRef.current
@@ -5346,102 +6381,855 @@ function ensureNode(n: NodeV1): NodeV1 {
     setChBusy(true)
     setChError('')
     try {
-      const matte = await chromaKeyUrlToPng(greenUrl, {
-        threshold: Number(chDraft.keyThreshold || 80),
-        feather: Number(chDraft.keyFeather || 40),
-        crop: Boolean(chDraft.crop),
-        padding: Number(chDraft.padding || 12)
-      })
-
-      try {
-        const u0 = String(chTransparentPreviewUrl || '').trim()
-        if (u0) URL.revokeObjectURL(u0)
-      } catch {}
-      const previewUrl = URL.createObjectURL(matte.blob)
-      setChTransparentPreviewUrl(previewUrl)
-
-      const ch = (doc.project.characters || []).find((x) => x.id === target.characterId) || null
-      const safeName = String(ch?.name || ch?.id || 'character').replace(/[^a-zA-Z0-9_\u4e00-\u9fa5-]+/g, '_').slice(0, 24) || 'character'
-      const fileName = `${safeName}_${Date.now()}.png`
-      const file = new File([matte.blob], fileName, { type: 'image/png' })
-      const uploaded = await uploadProjectImage(String(doc.project.id), file)
-      const nextUri = uploaded.url ? resolveUrl(uploaded.url) : uploaded.assetPath
-
-      const usedPrompt = [String(chDraft.globalPrompt || '').trim(), String(chDraft.fingerprintPrompt || '').trim(), String(chDraft.posePrompt || '').trim()]
-        .filter(Boolean)
-        .join('，')
-        .slice(0, 1800)
-      const provider = (chGreen && chGreen.provider ? String(chGreen.provider) : '') as any
-
-      const applyToAsset = (assetId: string) => {
-        setDocProject((p) => ({
-          ...p,
-          assets: (p.assets || []).map((a) =>
-            a.id === assetId
-              ? { ...a, uri: nextUri, source: { type: 'ai' as const, prompt: usedPrompt, provider } }
-              : a
-          )
-        }))
-        return assetId
-      }
-
-      const createAsset = (name: string) => {
-        const assetId = uid('asset')
-        const asset: AssetV1 = {
-          id: assetId,
-          kind: 'image',
-          name,
-          uri: nextUri,
-          source: { type: 'ai' as const, prompt: usedPrompt, provider }
+      const kind = await applyTransparentCore({
+        target,
+        greenAssetPath: String(chGreen && chGreen.assetPath ? chGreen.assetPath : '').trim(),
+        greenUrl,
+        provider: chGreen && chGreen.provider ? String(chGreen.provider) : '',
+        draft: chDraft,
+        onPreview: (url) => {
+          try {
+            const u0 = String(chTransparentPreviewUrl || '').trim()
+            if (u0.startsWith('blob:')) URL.revokeObjectURL(u0)
+          } catch {}
+          setChTransparentPreviewUrl(url)
         }
-        setDocProject((p) => ({ ...p, assets: [...(p.assets || []), asset] }))
-        return assetId
-      }
-
-      if (target.kind === 'character') {
-        const existingId = String(ch?.imageAssetId || '').trim()
-        const existing = existingId ? (doc.project.assets || []).find((a) => a.id === existingId) || null : null
-        const assetId = existing ? applyToAsset(existingId) : createAsset(`AI 角色 ${ch?.name || ch?.id || ''}`.trim() || 'AI 角色')
-        setDocProject((p) => ({
-          ...p,
-          characters: (p.characters || []).map((x) => (x.id === target.characterId ? { ...x, imageAssetId: assetId } : x))
-        }))
-        setToast('已生成透明 PNG 并应用到角色')
-        return
-      }
-
-      if (target.kind === 'placement') {
-        const nodeId = String(target.nodeId || '').trim()
-        const placementId = String(target.placementId || '').trim()
-        const node0 = (doc.story.nodes || []).find((n) => n.id === nodeId) || null
-        const nn = node0 ? ensureNode(node0 as any) : null
-        const placements = Array.isArray(nn?.visuals?.placements) ? (nn!.visuals!.placements as any[]) : []
-        const pl = placements.find((p) => String(p && p.id) === placementId) || null
-        const existingId = String(pl && pl.imageAssetId ? pl.imageAssetId : '').trim()
-        const existing = existingId ? (doc.project.assets || []).find((a) => a.id === existingId) || null : null
-        const nodeName = String((node0 as any)?.name || nodeId).trim()
-        const assetId =
-          existing ? applyToAsset(existingId) : createAsset(`AI 姿势 ${nodeName} · ${ch?.name || ch?.id || ''}`.trim() || 'AI 姿势')
-
-        setDocStory((s) => ({
-          ...s,
-          nodes: (s.nodes || []).map((n) => {
-            if (n.id !== nodeId) return n
-            const n2 = ensureNode(n as any)
-            const v0 = n2.visuals || {}
-            const pls = Array.isArray(v0.placements) ? v0.placements : []
-            const next = pls.map((pp) => (pp.id === placementId ? { ...pp, imageAssetId: assetId } : pp))
-            return { ...n2, visuals: { ...v0, placements: next } }
-          })
-        }))
-        setToast('已生成透明 PNG 并应用到该摆放（覆盖）')
-        return
-      }
+      })
+      if (kind === 'character') setToast('已生成透明 PNG 并应用到角色')
+      else if (kind === 'placement') setToast('已生成透明 PNG 并应用到该摆放（覆盖）')
     } catch (e) {
       setChError(e instanceof Error ? e.message : String(e))
     } finally {
       setChBusy(false)
     }
+  }
+
+  // ===== 2026-09-01 姿势变体操作（出图统一管理在锁定向导；全部串行：本地 ComfyUI/OMLX 资源互斥，禁止并行）=====
+
+  type PoseGenOpts = {
+    posePrompt: string
+    posePromptZh?: string
+    posePromptEn?: string
+    negativePromptZh?: string
+    negativePromptEn?: string
+    ipadapter?: { enabled: boolean; weight: number; startAt: number; endAt: number }
+    // 2026-09-10 剧情姿势需求：候选回写需求 id，用于"该需求已出候选"标记与批量去重
+    reqId?: string
+  }
+
+  // 计划资产补丁统一入口：内存 sbAssetPlan + project.json 副本 + plan.json（persist 端点）三处一致。
+  // 读 sbPosePlanRef（渲染期镜像）而非闭包 sbAssetPlan，串行抽卡时不会丢前一张候选。
+  async function patchStoryboardPoseAsset(assetId: string, updater: (asset: any) => any): Promise<any | null> {
+    const plan = normalizeStoryboardAssetPlan(sbPosePlanRef.current) || readStoryboardAssetPlanFromProject(doc.project)
+    if (!plan) {
+      setSbError('尚未生成资产计划')
+      return null
+    }
+    let patched: any = null
+    const nextPlan = {
+      ...plan,
+      assets: (Array.isArray(plan.assets) ? plan.assets : []).map((a: any) => {
+        if (String(a?.id || '').trim() !== assetId) return a
+        patched = updater(a)
+        return patched
+      })
+    }
+    if (!patched) {
+      setSbError('未找到对应的角色资产')
+      return null
+    }
+    sbPosePlanRef.current = nextPlan as any
+    setSbAssetPlan(nextPlan as any)
+    persistStoryboardAssetPlan(nextPlan as any, '')
+    if (doc.mode === 'project' && doc.id) {
+      try {
+        const res = await persistStoryAssetPlanAi(doc.id, { plan: nextPlan as any })
+        // 2026-09-03 采信服务端返回的最新 _rev：plan/persist 会在服务端递增版本号，
+        // 不采信则外部更新检测横幅把"自己刚才的保存"误报成外部更新（实测假阳性）
+        const srvRev = Number((res as any) && (res as any)._rev) || 0
+        if (srvRev > 0) setDocProject((p) => ({ ...p, _rev: srvRev } as any))
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        setSbError(`姿势变体计划保存失败：${msg}`)
+        appendSbLog(`姿势变体计划保存失败：${msg}`)
+      }
+    }
+    return patched
+  }
+
+  function poseCharacterForAsset(asset: any): CharacterV1 | null {
+    const pid = String(asset?.projectCharacterId || '').trim()
+    const chs = doc.project?.characters || []
+    return (pid && chs.find((c) => c.id === pid)) || chs.find((c) => String(c.name || '').trim() === String(asset?.name || '').trim()) || null
+  }
+
+  function findPosePlanAsset(assetId: string): any | null {
+    const plan = normalizeStoryboardAssetPlan(sbPosePlanRef.current) || readStoryboardAssetPlanFromProject(doc.project)
+    return (Array.isArray(plan?.assets) ? plan!.assets : []).find((a: any) => String(a?.id || '').trim() === assetId) || null
+  }
+
+  // 2026-09-02 姿势草稿持久化：向导五个时机（剧情生成完成/场景预填/抽卡点击/切场景/高级参数变更）落 plan 资产 poseDraft
+  // 2026-09-10 姿势草稿手动翻译：姿势区缺「中文转英文」按钮，手改中文后旧英文会被生成链优先采用（en || zh）。
+  // 返回译稿由向导侧走填充保护（覆盖确认+可恢复），不在这里直写。
+  async function runStoryboardPoseDraftTranslate(assetId: string): Promise<string | null> {
+    if (doc.mode !== 'project' || !doc.project) return null
+    if (sbPosePromptBusyId || sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return null
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) {
+      setSbError('未找到对应的角色资产')
+      return null
+    }
+    const zh = String((asset as any)?.poseDraft?.promptZh || '').trim()
+    if (!zh) {
+      setSbError('中文栏为空，无法翻译')
+      return null
+    }
+    setSbError('')
+    setSbPosePromptBusyId(assetId)
+    appendSbLog(`姿势草稿中文转英文开始：${String(asset?.name || assetId)}（${zh.length} 字）`)
+    try {
+      const res = await translateStoryboardPromptText(doc.id, { text: zh, sourceLang: 'zh', targetLang: 'en', mode: 'prompt', timeoutMs: 60_000 })
+      const en = String(res.result?.translatedText || '').trim()
+      if (!en) throw new Error('empty_translation')
+      appendSbLog('姿势草稿翻译完成')
+      return en
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`姿势草稿翻译失败：${msg}`)
+      return null
+    } finally {
+      setSbPosePromptBusyId('')
+    }
+  }
+
+  async function runStoryboardPoseDraftSave(
+    assetId: string,
+    draft: { promptZh: string; promptEn: string; negativePromptZh: string; negativePromptEn: string; sceneId: string; ipadapterOn: boolean; ipadapterWeight: number; ipadapterStartAt: number; ipadapterEndAt: number; promptZhSource?: string }
+  ) {
+    if (doc.mode !== 'project' || !doc.project) return
+    await patchStoryboardPoseAsset(assetId, (a) => ({
+      ...a,
+      poseDraft: {
+        promptZh: String(draft.promptZh || ''),
+        promptEn: String(draft.promptEn || ''),
+        negativePromptZh: String(draft.negativePromptZh || ''),
+        negativePromptEn: String(draft.negativePromptEn || ''),
+        sceneId: String(draft.sceneId || ''),
+        ipadapterOn: Boolean(draft.ipadapterOn),
+        ipadapterWeight: Number(draft.ipadapterWeight) || 0.8,
+        ipadapterStartAt: Number(draft.ipadapterStartAt) || 0.2,
+        ipadapterEndAt: Number(draft.ipadapterEndAt) || 0.9,
+        promptZhSource: String(draft.promptZhSource || '')
+      }
+    }))
+  }
+
+  // 单次生成 1 张姿势候选并写进 plan 资产 poseCandidates（忙态由调用方管理，供 生成1张/再出4张/单张重抽 复用）
+  async function runStoryboardPoseGenerateOne(assetId: string, opts: PoseGenOpts) {
+    if (doc.mode !== 'project' || !doc.project) throw new Error('项目未打开')
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) throw new Error('未找到对应的角色资产')
+    const ch = poseCharacterForAsset(asset)
+    const dims = stageDims()
+    // 指纹优先角色设定，回退计划资产锚点词（与此前摆放抽卡池同款回退链）
+    const fp = String((ch?.ai as any)?.fingerprintPrompt || '').trim() || String(asset?.anchorPrompt || '').trim() || String(asset?.name || assetId).trim()
+    // 2026-09-02 姿势负向：草稿负向优先于角色/资产负向；中文稿在生成时翻译（sprite 端点只翻正向姿势词；串行守 KV 护栏）
+    const negZh = String(opts.negativePromptZh || '').trim()
+    let negEn = String(opts.negativePromptEn || '').trim()
+    if (!negEn && negZh) {
+      try {
+        const tr = await translateStoryboardPromptText(doc.id, { text: negZh, sourceLang: 'zh', targetLang: 'en', mode: 'prompt', timeoutMs: 60_000 })
+        negEn = String(tr?.result?.translatedText || '').trim()
+      } catch (_) { /* 翻译失败则负向中文原样下发（端点仍拼接内置 negBase 兜底） */ }
+    }
+    const negPose = negEn || negZh
+    const negBaseCh = String((ch?.ai as any)?.negativePrompt || '').trim() || String(asset?.negativePrompt || '').trim()
+    const neg = [negPose, negBaseCh].filter(Boolean).join(', ')
+    const res = await generateCharacterSpriteAi(doc.id, {
+      // 与单发流程同款身份锁定：传 characterId，服务端解析锁定主参考
+      characterId: String(ch?.id || '').trim() || undefined,
+      // 画风常量，不用世界锚点（锚点里的山谷/城市会把生成带成场景图，2026-09-01 实测）
+      globalPrompt: 'cartoon fairy tale picture book style, flat 2D illustration, bold clean outlines, cel shading, warm soft color palette',
+      fingerprintPrompt: fp,
+      posePrompt: String(opts.posePrompt || '').trim(),
+      negativePrompt: neg,
+      style: String(sbReq.style || 'picture_book'),
+      width: dims.w,
+      height: dims.h,
+      steps: Number(sbReq.steps || 20),
+      cfgScale: Number(sbReq.cfgScale || 7),
+      // 高级参数：IPAdapter 开启时以 body.ipadapter 强制走主参考锚定链（覆盖 env 默认 off）
+      ipadapter: opts.ipadapter && opts.ipadapter.enabled ? opts.ipadapter : undefined
+    })
+    const assetPath = String(res.assetPath || '').trim()
+    if (!assetPath) throw new Error('生成失败：服务端未返回 assetPath')
+    const promptZh = String(opts.posePromptZh || '').trim()
+    const promptEn = String(opts.posePromptEn || '').trim()
+    // 负向英文稿是生成时翻译产物：回填进 poseDraft（追溯/复用）并随候选记录
+    if (negEn && negEn !== String(opts.negativePromptEn || '').trim()) {
+      await patchStoryboardPoseAsset(assetId, (a) => ({ ...a, poseDraft: { ...(a.poseDraft || {}), negativePromptEn: negEn } }))
+    }
+    await patchStoryboardPoseAsset(assetId, (a) => ({
+      ...a,
+      poseCandidates: [
+        ...(Array.isArray(a.poseCandidates) ? a.poseCandidates : []),
+        // 2026-09-01 需求 3：候选记录 promptZh/promptEn，便于追溯与复用
+        {
+          assetPath,
+          posePrompt: String(opts.posePrompt || '').trim(),
+          ...(promptZh ? { promptZh } : {}),
+          ...(promptEn ? { promptEn } : {}),
+          ...(negPose ? { negativePrompt: negPose } : {}),
+          ...(String(opts.reqId || '').trim() ? { reqId: String(opts.reqId || '').trim() } : {}),
+          createdAt: new Date().toISOString()
+        }
+      ]
+    }))
+  }
+
+  // ============ 2026-09-10 剧情姿势需求（AI 提取候选 → 逐条手改 → 单个/批量手动生成） ============
+  const [sbPoseReqBusyId, setSbPoseReqBusyId] = useState('')
+
+  // 立绘只画角色本身（分层合成工艺：道具/地点由独立立绘摆位合成）——
+  // 需求提示词里的共现资产名（瓶子/石子/草地等）必须剔除并进负向，否则模型会把道具画进角色立绘污染抠图。
+  function buildPosePropVocab(plan: any, selfAssetId: string): { zh: string[]; en: string[] } {
+    const zh = new Set<string>()
+    const en = new Set<string>()
+    for (const a of (Array.isArray(plan?.assets) ? plan.assets : [])) {
+      const id = String(a?.id || '').trim()
+      if (!id || id === selfAssetId) continue
+      const terms = [a?.name, ...(Array.isArray(a?.aliases) ? a.aliases : [])]
+      for (const t0 of terms) {
+        const t = String(t0 || '').trim()
+        if (t.length < 2) continue
+        if (/^[\x20-\x7E]+$/.test(t)) en.add(t)
+        else zh.add(t)
+      }
+    }
+    // 计划级禁用替代物（EN）：同为立绘负向排除词
+    for (const f of (Array.isArray(plan?.forbiddenSubstitutes) ? plan.forbiddenSubstitutes : [])) {
+      const t = String(f || '').trim()
+      if (t && /^[\x20-\x7E]+$/.test(t)) en.add(t)
+    }
+    const byLenDesc = (x: string, y: string) => y.length - x.length
+    return { zh: Array.from(zh).sort(byLenDesc), en: Array.from(en).sort(byLenDesc) }
+  }
+
+  // 生成层净化：剔除道具/地点词（返回被剔词供负向与 UI 明示）；显示层保留剧情原文
+  function sanitizePosePromptForSprite(text: string, vocab: { zh: string[]; en: string[] }): { clean: string; stripped: string[] } {
+    let out = String(text || '')
+    const stripped: string[] = []
+    for (const term of [...vocab.zh, ...vocab.en]) {
+      if (!term) continue
+      if (out.includes(term)) {
+        out = out.split(term).join('')
+        stripped.push(term)
+      }
+    }
+    // 2026-09-10 走查实测补充：场景状语「在烈日下/在湖面上/在草丛中…」会把立绘生成带成场景图
+    // （"在烈日下艰难飞翔"把太阳与水面倒影画进了立绘）——道具词表之外的确定性剥离
+    out = out.replace(/在[^，,、；;]{1,12}[下上里中内]/g, '，')
+    out = out
+      .replace(/[，,、\s]{2,}/g, '，')
+      .replace(/^[，,、的了和与及跟\s]+|[，,、的了和与及跟\s]+$/g, '')
+      .trim()
+    return { clean: out, stripped }
+  }
+
+  const POSE_SPRITE_ONLY_PREFIX = '仅画角色本身，纯白背景，不含道具与场景'
+
+  function buildPoseRequirementFromState(scene: any, st: any, vocab: { zh: string[]; en: string[] }) {
+    const poseClean = sanitizePosePromptForSprite(st?.pose, vocab)
+    const actionClean = sanitizePosePromptForSprite(st?.action, vocab)
+    const parts = [poseClean.clean, st.view ? `${String(st.view).trim()}视角` : '', actionClean.clean, st.expression].map((x) => String(x || '').trim()).filter(Boolean)
+    return {
+      reqId: `${String(scene?.sceneId || '').trim()}::${String(st?.characterId || '').trim()}`,
+      sceneId: String(scene?.sceneId || '').trim(),
+      sceneName: String(scene?.sceneName || scene?.sceneId || '').trim(),
+      characterId: String(st?.characterId || '').trim(),
+      pose: String(st?.pose || '').trim(),
+      view: String(st?.view || '').trim(),
+      action: String(st?.action || '').trim(),
+      expression: String(st?.expression || '').trim(),
+      excludedProps: Array.from(new Set([...poseClean.stripped, ...actionClean.stripped])),
+      promptZh: [POSE_SPRITE_ONLY_PREFIX, ...parts].join('，'),
+      promptEn: '',
+      createdAt: new Date().toISOString()
+    }
+  }
+
+  async function runStoryboardPoseRequirementsExtract(assetId: string) {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbPoseReqBusyId || sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) {
+      setSbError('未找到对应的角色资产')
+      return
+    }
+    const label = String(asset?.name || assetId).trim() || assetId
+    setSbError('')
+    setSbPoseReqBusyId(assetId)
+    appendSbLog(`剧情姿势需求提取开始：${label}（AI 读取全故事场景×出场表，候选制）`)
+    try {
+      const res = await extractStoryPoseStatesAi(doc.id)
+      const charId = Object.keys(res.assetByCharacterId || {}).find((cid) => String(res.assetByCharacterId[cid]?.assetId || '').trim() === assetId)
+      if (!charId) throw new Error('该资产未在剧情姿势映射中（非角色资产或未入资产计划）')
+      const planForVocab = normalizeStoryboardAssetPlan(sbPosePlanRef.current) || readStoryboardAssetPlanFromProject(doc.project)
+      const vocab = buildPosePropVocab(planForVocab, assetId)
+      const reqs: any[] = []
+      for (const scene of (Array.isArray(res.poseStates?.scenes) ? res.poseStates.scenes : [])) {
+        for (const st of (Array.isArray(scene?.characterStates) ? scene.characterStates : [])) {
+          if (String(st?.characterId || '').trim() !== charId) continue
+          reqs.push(buildPoseRequirementFromState(scene, st, vocab))
+        }
+      }
+      if (!reqs.length) throw new Error('AI 未提取到该角色的剧情姿势状态')
+      await patchStoryboardPoseAsset(assetId, (a) => ({ ...a, poseRequirements: reqs }))
+      appendSbLog(`剧情姿势需求提取完成：${label} / ${reqs.length} 条（逐条可改，单个生成或批量生成）`)
+      setToast(`已提取 ${reqs.length} 条剧情姿势需求`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`剧情姿势需求提取失败：${label} - ${msg}`)
+    } finally {
+      setSbPoseReqBusyId('')
+    }
+  }
+
+  // 公共提示词库负向包（参考图纯净包/多视图排除包/通用负向包）的英文片段，组件级缓存（只读 GET，不耗模型）
+  const poseLibNegRef = useRef<string[] | null>(null)
+  async function poseLibraryNegativeEn(): Promise<string[]> {
+    if (poseLibNegRef.current) return poseLibNegRef.current
+    try {
+      const entries = await listPromptLibrary()
+      const wanted = new Set(['seed_neg_clutter', 'seed_neg_multiview', 'seed_neg_general'])
+      const list = entries
+        .filter((e) => wanted.has(e.id) && e.kind === 'negative')
+        .map((e) => String(e.textEn || '').trim())
+        .filter(Boolean)
+      poseLibNegRef.current = list
+      return list
+    } catch (_) {
+      return []
+    }
+  }
+
+  // 需求 → 生成参数：英文稿缺失时先串行翻译（与姿势负向同款生成时翻译链）；负向/IPAdapter 沿用该资产姿势草稿设置。
+  // 2026-09-10 立绘纯净防护：生成前再次净化中文稿（兼容净化前提取的旧需求），
+  // 被剔道具词进中文负向、计划 EN 道具词表进英文负向——立绘只画角色本身，道具走独立立绘摆位。
+  async function poseRequirementGenOpts(asset: any, req: any): Promise<PoseGenOpts> {
+    const planForVocab = normalizeStoryboardAssetPlan(sbPosePlanRef.current) || readStoryboardAssetPlanFromProject(doc.project)
+    const vocab = buildPosePropVocab(planForVocab, String(asset?.id || '').trim())
+    const zhRaw = String(req?.promptZh || '').trim()
+    const cleaned = sanitizePosePromptForSprite(zhRaw, vocab)
+    const zh = cleaned.clean || zhRaw
+    // 净化改变了中文稿时，需求里存的英文稿即失效（属于旧中文的翻译），必须重译——
+    // 2026-09-10 实测：复用旧译稿把"scorching sun"带进正向，负向补强也压不住，又出了天空背景
+    const zhChangedBySanitize = Boolean(cleaned.clean && cleaned.clean !== zhRaw)
+    let en = String(req?.promptEn || '').trim()
+    if (!en || zhChangedBySanitize) {
+      try {
+        const tr = await translateStoryboardPromptText(doc.id, { text: zh, sourceLang: 'zh', targetLang: 'en', mode: 'prompt', timeoutMs: 60_000 })
+        en = String(tr?.result?.translatedText || '').trim()
+      } catch (_) { /* 翻译失败则直接用中文稿下发（sprite 端点会再翻） */ }
+    }
+    const draft = (asset && (asset as any).poseDraft) || {}
+    const negZhBase = String(draft.negativePromptZh || '').trim()
+    const excludedZh = Array.from(new Set([...(Array.isArray(req?.excludedProps) ? req.excludedProps.map((x: any) => String(x || '').trim()).filter(Boolean) : []), ...cleaned.stripped]))
+    const negZh = [negZhBase, ...excludedZh.filter((t) => t && !negZhBase.includes(t))].filter(Boolean).join('，')
+    const negEnBase = String(draft.negativePromptEn || '').trim()
+    const negEnExtra = vocab.en.filter((t) => t && !negEnBase.toLowerCase().includes(t.toLowerCase()))
+    // 2026-09-10 走查实测补强：并入公共提示词库负向包（参考图纯净/多视图排除/通用）+ 倒影/多角色硬排除——
+    // 首张候选被"烈日"带成天空+水面倒影场景图、且出现双鸟倒影，负向必须显式压住
+    const libNeg = await poseLibraryNegativeEn()
+    const hardExclusions = ['reflection', 'duplicate', 'second character', 'multiple characters', 'sky', 'sun', 'water surface']
+    const negEnPool = [...negEnExtra, ...libNeg, ...hardExclusions].filter((t) => t && !negEnBase.toLowerCase().includes(String(t).toLowerCase()))
+    const negEn = [negEnBase, ...negEnPool].filter(Boolean).join(', ')
+    return {
+      posePrompt: en || zh,
+      posePromptZh: zh,
+      posePromptEn: en,
+      negativePromptZh: negZh,
+      negativePromptEn: negEn,
+      ipadapter: draft.ipadapterOn
+        ? { enabled: true, weight: Number(draft.ipadapterWeight) || 0.8, startAt: Number(draft.ipadapterStartAt) || 0.2, endAt: Number(draft.ipadapterEndAt) || 0.9 }
+        : undefined,
+      reqId: String(req?.reqId || '').trim() || undefined
+    }
+  }
+
+  // 英文稿是生成时翻译产物：回填进需求条目（追溯/复用）
+  async function patchPoseRequirementPromptEn(assetId: string, reqId: string, promptEn: string) {
+    const en = String(promptEn || '').trim()
+    if (!en) return
+    await patchStoryboardPoseAsset(assetId, (a) => ({
+      ...a,
+      poseRequirements: (Array.isArray(a.poseRequirements) ? a.poseRequirements : []).map((r: any) =>
+        String(r?.reqId || '') === reqId && !String(r?.promptEn || '').trim() ? { ...r, promptEn: en } : r
+      )
+    }))
+  }
+
+  // 单个手动生成：按某一条需求出 1 张姿势候选
+  async function runStoryboardPoseRequirementGenerate(assetId: string, reqId: string) {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy || sbPoseReqBusyId) return
+    const asset = findPosePlanAsset(assetId)
+    const req = (Array.isArray(asset?.poseRequirements) ? asset.poseRequirements : []).find((r: any) => String(r?.reqId || '') === reqId)
+    if (!asset || !req) {
+      setSbError('未找到对应的剧情姿势需求')
+      return
+    }
+    if (!String(req.promptZh || '').trim() && !String(req.promptEn || '').trim()) {
+      setSbError('该需求提示词为空，请先填写')
+      return
+    }
+    setSbError('')
+    setSbPoseGeneratingId(assetId)
+    setSbPoseDrawProgress({ done: 0, total: 1 })
+    appendSbLog(`姿势需求单张生成：${String(asset?.name || assetId)} / ${String(req.sceneName || req.sceneId)}`)
+    try {
+      const opts = await poseRequirementGenOpts(asset, req)
+      await runStoryboardPoseGenerateOne(assetId, opts)
+      await patchPoseRequirementPromptEn(assetId, reqId, opts.posePromptEn || '')
+      setToast('已生成 1 张姿势候选')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`姿势需求生成失败：${msg}`)
+    } finally {
+      setSbPoseGeneratingId('')
+      setSbPoseDrawProgress(null)
+    }
+  }
+
+  // 批量手动生成：一键按需求清单逐条串行出图（已有同需求候选的自动跳过；中断保留已出候选）
+  async function runStoryboardPoseRequirementsBatchGenerate(assetId: string) {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy || sbPoseReqBusyId) return
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) {
+      setSbError('未找到对应的角色资产')
+      return
+    }
+    const label = String(asset?.name || assetId).trim() || assetId
+    const reqs = (Array.isArray(asset?.poseRequirements) ? asset.poseRequirements : []).filter((r: any) => String(r?.promptZh || r?.promptEn || '').trim())
+    const doneReqIds = new Set((Array.isArray(asset?.poseCandidates) ? asset.poseCandidates : []).map((c: any) => String(c?.reqId || '')).filter(Boolean))
+    const todo = reqs.filter((r: any) => !doneReqIds.has(String(r?.reqId || '')))
+    if (!todo.length) {
+      setToast('全部剧情姿势需求已有候选')
+      return
+    }
+    setSbError('')
+    setSbPoseGeneratingId(assetId)
+    setSbPoseDrawProgress({ done: 0, total: todo.length })
+    appendSbLog(`姿势需求批量生成：${label} / ${todo.length} 条（串行）`)
+    try {
+      for (let i = 0; i < todo.length; i++) {
+        setSbPoseDrawProgress({ done: i, total: todo.length })
+        const req = todo[i]
+        try {
+          const cur = findPosePlanAsset(assetId)
+          const opts = await poseRequirementGenOpts(cur, req)
+          await runStoryboardPoseGenerateOne(assetId, opts)
+          await patchPoseRequirementPromptEn(assetId, String(req.reqId || ''), opts.posePromptEn || '')
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          setSbError(msg)
+          appendSbLog(`姿势需求批量生成中断：${String(req.sceneName || req.sceneId)} - ${msg}`)
+          return
+        }
+        setSbPoseDrawProgress({ done: i + 1, total: todo.length })
+      }
+      appendSbLog(`姿势需求批量生成完成：${label} / ${todo.length} 条`)
+      setToast(`已按需求生成 ${todo.length} 张姿势候选`)
+    } finally {
+      setSbPoseGeneratingId('')
+      setSbPoseDrawProgress(null)
+    }
+  }
+
+  async function runStoryboardPoseRequirementChange(assetId: string, reqId: string, patch: { promptZh?: string; promptEn?: string }) {
+    await patchStoryboardPoseAsset(assetId, (a) => ({
+      ...a,
+      poseRequirements: (Array.isArray(a.poseRequirements) ? a.poseRequirements : []).map((r: any) =>
+        String(r?.reqId || '') === reqId ? { ...r, ...(patch.promptZh != null ? { promptZh: String(patch.promptZh) } : {}), ...(patch.promptEn != null ? { promptEn: String(patch.promptEn) } : {}) } : r
+      )
+    }))
+  }
+
+  async function runStoryboardPoseRequirementDelete(assetId: string, reqId: string) {
+    await patchStoryboardPoseAsset(assetId, (a) => ({
+      ...a,
+      poseRequirements: (Array.isArray(a.poseRequirements) ? a.poseRequirements : []).filter((r: any) => String(r?.reqId || '') !== reqId)
+    }))
+    setToast('已删除该条姿势需求')
+  }
+
+  async function runStoryboardPoseDraw(assetId: string, opts: PoseGenOpts, total: number) {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return
+    const asset = findPosePlanAsset(assetId)
+    const label = String(asset?.name || assetId).trim() || assetId
+    setSbError('')
+    setSbPoseGeneratingId(assetId)
+    setSbPoseDrawProgress({ done: 0, total })
+    appendSbLog(`姿势变体抽卡开始：${label} / ${total} 张（串行）`)
+    try {
+      for (let i = 0; i < total; i++) {
+        setSbPoseDrawProgress({ done: i, total })
+        try {
+          await runStoryboardPoseGenerateOne(assetId, opts)
+        } catch (e) {
+          // 串行中断：已出的张保留在候选中，错误提示给用户
+          const msg = e instanceof Error ? e.message : String(e)
+          setSbError(msg)
+          appendSbLog(`姿势变体抽卡失败：${label} - ${msg}`)
+          return
+        }
+        setSbPoseDrawProgress({ done: i + 1, total })
+      }
+      appendSbLog(`姿势变体抽卡完成：${label} / ${total} 张`)
+      setToast(total > 1 ? `已出 ${total} 张姿势候选` : '已出 1 张姿势候选')
+    } finally {
+      setSbPoseGeneratingId('')
+      setSbPoseDrawProgress(null)
+    }
+  }
+
+  async function runStoryboardPoseReviewAll(assetId: string) {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) {
+      setSbError('未找到对应的角色资产')
+      return
+    }
+    const label = String(asset?.name || assetId).trim() || assetId
+    const ch = poseCharacterForAsset(asset)
+    const characterId = String(ch?.id || '').trim()
+    if (!characterId) {
+      setSbError('该资产未关联项目角色，无法评分')
+      return
+    }
+    const unscored = (Array.isArray(asset.poseCandidates) ? asset.poseCandidates : []).filter((c: any) => !Number.isFinite(Number(c?.score)))
+    if (!unscored.length) {
+      setToast('没有待评分的候选')
+      return
+    }
+    setSbError('')
+    setSbPoseReviewingId(assetId)
+    appendSbLog(`姿势候选 AI 评分开始：${label} / ${unscored.length} 张（串行）`)
+    try {
+      for (const cand of unscored) {
+        const path0 = String(cand?.assetPath || '').trim()
+        if (!path0) continue
+        const r = await reviewCharacterPoseAi(doc.id, { characterId, assetPath: path0 })
+        await patchStoryboardPoseAsset(assetId, (a) => ({
+          ...a,
+          poseCandidates: (Array.isArray(a.poseCandidates) ? a.poseCandidates : []).map((x: any) =>
+            String(x?.assetPath || '') === path0 ? { ...x, score: r.score, reason: r.reason } : x
+          )
+        }))
+      }
+      appendSbLog(`姿势候选 AI 评分完成：${label}`)
+      setToast('姿势候选 AI 评分完成')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`姿势候选 AI 评分失败：${label} - ${msg}`)
+    } finally {
+      setSbPoseReviewingId('')
+    }
+  }
+
+  async function runStoryboardPoseRedraw(assetId: string, assetPath: string, opts: PoseGenOpts) {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return
+    setSbError('')
+    setSbPoseGeneratingId(assetId)
+    setSbPoseDrawProgress({ done: 0, total: 1 })
+    try {
+      await patchStoryboardPoseAsset(assetId, (a) => ({
+        ...a,
+        poseCandidates: (Array.isArray(a.poseCandidates) ? a.poseCandidates : []).filter((x: any) => String(x?.assetPath || '') !== assetPath)
+      }))
+      await runStoryboardPoseGenerateOne(assetId, opts)
+      setToast('已重抽 1 张')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`姿势候选重抽失败：${msg}`)
+    } finally {
+      setSbPoseGeneratingId('')
+      setSbPoseDrawProgress(null)
+    }
+  }
+
+  async function runStoryboardPoseDeleteCandidate(assetId: string, assetPath: string) {
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return
+    // 只删 plan 数组条目，候选文件留磁盘（可接受）
+    await patchStoryboardPoseAsset(assetId, (a) => ({
+      ...a,
+      poseCandidates: (Array.isArray(a.poseCandidates) ? a.poseCandidates : []).filter((x: any) => String(x?.assetPath || '') !== assetPath)
+    }))
+    setToast('已删除候选')
+  }
+
+  // 命名锁定：RMBG 抠图 → 创建 project asset → 写 plan 资产 poseVariants（候选移出未锁定池）
+  async function runStoryboardPoseLock(assetId: string, assetPath: string, name: string, prompts: { posePrompt: string; posePromptZh?: string; posePromptEn?: string }) {
+    if (doc.mode !== 'project' || !doc.project || !doc.story) return
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) {
+      setSbError('未找到对应的角色资产')
+      return
+    }
+    const label = String(asset?.name || assetId).trim() || assetId
+    const cand = (Array.isArray(asset.poseCandidates) ? asset.poseCandidates : []).find((x: any) => String(x?.assetPath || '') === assetPath) || null
+    const lockName = String(name || '').trim() || `姿势 ${(Array.isArray(asset.poseVariants) ? asset.poseVariants.length : 0) + 1}`
+    setSbError('')
+    setSbPoseLockingKey(`${assetId}:${assetPath}`)
+    appendSbLog(`姿势变体锁定开始：${label} / ${lockName}（RMBG 抠图）`)
+    try {
+      const cut = await cutoutCharacterSpriteAi(doc.id, assetPath)
+      const cutoutPath = String(cut.assetPath || '').trim()
+      if (!cutoutPath) throw new Error('抠图失败：服务端未返回 assetPath')
+      const projectAssetId = uid('asset')
+      const projectAsset: AssetV1 = {
+        id: projectAssetId,
+        kind: 'image',
+        name: `AI 姿势 ${label}·${lockName}`,
+        uri: cutoutPath,
+        source: { type: 'ai' as const, prompt: String(prompts.posePrompt || '').trim().slice(0, 1800), provider: 'comfyui' as any }
+      }
+      setDocProject((p) => ({ ...p, assets: [...(p.assets || []), projectAsset] }))
+      // 2026-09-01 需求 3：promptZh/promptEn 随姿势词写入变体记录（候选已有的优先，回退入参/旧 posePrompt）
+      const variantZh = String(prompts.posePromptZh || cand?.promptZh || '').trim()
+      const variantEn = String(prompts.posePromptEn || cand?.promptEn || '').trim()
+      const variant = {
+        id: uid('pose'),
+        name: lockName,
+        posePrompt: String(prompts.posePrompt || cand?.posePrompt || '').trim(),
+        ...(variantZh ? { promptZh: variantZh } : {}),
+        ...(variantEn ? { promptEn: variantEn } : {}),
+        greenPath: assetPath,
+        cutoutPath,
+        projectAssetId,
+        projectAssetUri: cutoutPath,
+        score: Number.isFinite(Number(cand?.score)) ? Number(cand.score) : undefined,
+        reason: String(cand?.reason || '').trim() || undefined,
+        createdAt: new Date().toISOString()
+      }
+      await patchStoryboardPoseAsset(assetId, (a) => ({
+        ...a,
+        poseCandidates: (Array.isArray(a.poseCandidates) ? a.poseCandidates : []).filter((x: any) => String(x?.assetPath || '') !== assetPath),
+        poseVariants: [...(Array.isArray(a.poseVariants) ? a.poseVariants : []), variant]
+      }))
+      appendSbLog(`姿势变体已锁定：${label} / ${lockName}`)
+      setToast(`已锁定姿势变体：${lockName}`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`姿势变体锁定失败：${label} - ${msg}`)
+    } finally {
+      setSbPoseLockingKey('')
+    }
+  }
+
+  // 2026-09-01 剧情感知：该资产关联场景选项（场景 assetIds 含该角色 → story 节点，按剧情顺序编号）
+  function poseSceneOptionsFor(assetId: string): { sceneId: string; label: string }[] {
+    if (!doc.story) return []
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) return []
+    const plan = normalizeStoryboardAssetPlan(sbPosePlanRef.current) || readStoryboardAssetPlanFromProject(doc.project)
+    const scenes = Array.isArray((plan as any)?.scenes) ? (plan as any).scenes : []
+    // 2026-09-10 修复：plan.scenes[].assetIds 装的是"计划资产 id"（如 crow），
+    // 原实现误拿 projectCharacterId（char_xxx）去匹配，恒为空 → 关联场景下拉永远「无关联场景」。
+    const planAssetId = String(asset?.id || '').trim()
+    const hitIds = scenes
+      .filter((s: any) => (Array.isArray(s?.assetIds) ? s.assetIds : []).map((x: any) => String(x || '').trim()).includes(planAssetId))
+      .map((s: any) => String(s?.sceneId || '').trim())
+      .filter(Boolean)
+    // 兜底：plan.scenes 缺失时用资产级 sceneIds（计划构建时已汇总 sceneRefs/摆位/文本三路来源）
+    const effectiveIds = hitIds.length
+      ? hitIds
+      : (Array.isArray(asset?.sceneIds) ? asset.sceneIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
+    const out: { sceneId: string; label: string }[] = []
+    const seen = new Set<string>()
+    // 按 story 节点顺序编号（#N 与编辑器左栏场景序号一致）
+    ;(doc.story.nodes || []).forEach((n, idx) => {
+      const nid = String(n.id || '').trim()
+      if (!nid || !effectiveIds.includes(nid) || seen.has(nid)) return
+      seen.add(nid)
+      const nn = ensureNode(n as any)
+      const title = String((nn as any).body?.title || (nn as any).name || nid).trim()
+      out.push({ sceneId: nid, label: `#${idx + 1} ${title}` })
+    })
+    return out
+  }
+
+  // 选中场景的节点正文（标题+文本摘要），作为「按剧情生成提示词」的剧情上下文
+  function buildPoseSceneTextById(sceneId: string): string {
+    if (!doc.story) return ''
+    const sid = String(sceneId || '').trim()
+    const n0 = (doc.story.nodes || []).find((n) => n.id === sid) || null
+    const nn = n0 ? ensureNode(n0 as any) : null
+    if (!nn) return ''
+    const title = String((nn as any).body?.title || '').trim()
+    const sum = buildNodeTextSummary(String((nn as any).body?.text || '').trim())
+    return [title, sum].filter(Boolean).join('，').slice(0, 600)
+  }
+
+  // 2026-09-01 需求 1：按剧情生成姿势提示词（服务端中文稿→翻译英文稿）。
+  // sceneId 选中场景的节点正文作为 sceneText；没有关联场景时回退现状逻辑（全部关联场景摘要拼接）。
+  async function runStoryboardPoseAiPrompt(assetId: string, opts: { userHint: string; sceneId: string; reviewFeedback?: string }): Promise<{ promptZh: string; promptEn: string } | null> {
+    if (doc.mode !== 'project' || !doc.project) return null
+    if (sbPosePromptBusyId || sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return null
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) {
+      setSbError('未找到对应的角色资产')
+      return null
+    }
+    const ch = poseCharacterForAsset(asset)
+    const characterName = String(ch?.name || asset?.name || assetId).trim()
+    // 指纹回退链（与生成同款）：角色 ai.fingerprintPrompt → 计划资产 anchorPrompt → 角色名
+    const fp = String((ch?.ai as any)?.fingerprintPrompt || '').trim() || String(asset?.anchorPrompt || '').trim() || characterName
+    const sceneText = buildPoseSceneTextById(opts?.sceneId) || buildPosePrefillForAsset(assetId)
+    // 2026-09-10 实测修复（来源语义）：「按剧情生成」只把"用户亲手输入"的中文稿当额外要求传给模型；
+    // AI/配方/需求回填的残留稿（promptZhSource!=='user'）不带——旧稿整段传入会被本地模型保留重生
+    // （乌鸦场景产出"背身指向"无关姿势实证）。「按评语优化」路径保留当前稿作 hint（优化现有稿语义）。
+    const isReviewOptimize = Boolean(String(opts?.reviewFeedback || '').trim())
+    const draftSource = String((asset as any)?.poseDraft?.promptZhSource || '').trim()
+    const effectiveHint = isReviewOptimize || draftSource === 'user' ? String(opts?.userHint || '').trim() : ''
+    setSbError('')
+    setSbPosePromptBusyId(assetId)
+    appendSbLog(`按剧情生成姿势提示词开始：${characterName}（剧情上下文 ${sceneText.length} 字）`)
+    try {
+      const res = await generateCharacterPosePromptAi(doc.id, {
+        characterName,
+        fingerprintPrompt: fp,
+        sceneText,
+        userHint: effectiveHint,
+        // 2026-09-02 评分反馈闭环：「按评语优化提示词」带评审理由
+        reviewFeedback: String(opts?.reviewFeedback || '').trim() || undefined
+      })
+      if (!res.promptZh && !res.promptEn) throw new Error('服务端未返回提示词')
+      appendSbLog(`按剧情生成姿势提示词完成：${characterName}（中 ${res.promptZh.length} 字 / 英 ${res.promptEn.length} 字符）`)
+      setToast('已生成姿势提示词（中英文栏可继续编辑）')
+      return res
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`按剧情生成姿势提示词失败：${characterName} - ${msg}`)
+      return null
+    } finally {
+      setSbPosePromptBusyId('')
+    }
+  }
+
+  // 删除已锁定变体：只删 plan 记录与 project asset 关联（文件留磁盘）；正被摆放引用时阻断（返回 message 由向导 div 弹窗展示）
+  async function runStoryboardPoseDeleteVariant(assetId: string, variantId: string): Promise<{ ok: boolean; message?: string }> {
+    if (doc.mode !== 'project' || !doc.project || !doc.story) return { ok: false, message: '项目未打开' }
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return { ok: false, message: '当前有生成/评分/锁定任务进行中，请稍候再删' }
+    const asset = findPosePlanAsset(assetId)
+    const variant = (Array.isArray(asset?.poseVariants) ? asset.poseVariants : []).find((v: any) => String(v?.id || '') === variantId) || null
+    if (!variant) return { ok: false, message: '未找到该姿势变体' }
+    const refAssetId = String(variant.projectAssetId || '').trim()
+    const refNodes: string[] = []
+    if (refAssetId) {
+      // 2026-09-03 修复：引用检查改为先取服务端磁盘真相（用户实测：编辑器会话开着时，外部/旧内存的摆放数据会把删除误判成"仍被引用"，且旧会话保存会回滚外部修正）
+      let storyNodes: any[] = doc.story.nodes || []
+      try {
+        const fresh = await getProject(String(doc.project.id))
+        if (fresh && fresh.story && Array.isArray(fresh.story.nodes)) storyNodes = fresh.story.nodes
+      } catch { /* 拉取失败回退内存数据 */ }
+      for (const n of storyNodes) {
+        const pls = Array.isArray((n as any).visuals?.placements) ? (n as any).visuals.placements : []
+        if (pls.some((p: any) => String(p?.imageAssetId || '').trim() === refAssetId)) {
+          refNodes.push(String((n as any).body?.title || (n as any).name || n.id).trim() || String(n.id))
+        }
+      }
+    }
+    if (refNodes.length) {
+      return { ok: false, message: `「${String(variant.name || '姿势')}」正被 ${refNodes.length} 个摆放引用（${refNodes.slice(0, 3).join('、')}${refNodes.length > 3 ? ' 等' : ''}）。请先在摆放属性「图片（修改）」中改回「使用角色默认」或换成其他姿势，再删除。` }
+    }
+    if (refAssetId) setDocProject((p) => ({ ...p, assets: (p.assets || []).filter((a) => a.id !== refAssetId) }))
+    await patchStoryboardPoseAsset(assetId, (a) => ({
+      ...a,
+      poseVariants: (Array.isArray(a.poseVariants) ? a.poseVariants : []).filter((v: any) => String(v?.id || '') !== variantId)
+    }))
+    appendSbLog(`姿势变体已删除：${String(asset?.name || assetId)} / ${String(variant.name || variantId)}`)
+    setToast(`已删除姿势变体：${String(variant.name || '姿势')}`)
+    return { ok: true }
+  }
+
+  // 2026-09-02 自定义姿势配方：存 project.state.aiBackground.customPoseRecipes（走既有 setDocProject 防抖保存；同名覆盖幂等）
+  function saveCustomPoseRecipe(recipe: { name: string; promptZh: string; promptEn: string }) {
+    if (doc.mode !== 'project' || !doc.project) return
+    const name = String(recipe?.name || '').trim()
+    if (!name) {
+      setSbError('配方名称不能为空')
+      return
+    }
+    setDocProject((p) => {
+      const stateIn = (p as any).state && typeof (p as any).state === 'object' ? (p as any).state : {}
+      const aiBgIn = stateIn.aiBackground && typeof stateIn.aiBackground === 'object' ? stateIn.aiBackground : {}
+      const list = Array.isArray((aiBgIn as any).customPoseRecipes) ? (aiBgIn as any).customPoseRecipes : []
+      const next = [
+        ...list.filter((r: any) => String(r?.name || '').trim() !== name),
+        { name, promptZh: String(recipe.promptZh || ''), promptEn: String(recipe.promptEn || ''), createdAt: new Date().toISOString() }
+      ]
+      return { ...p, state: { ...stateIn, aiBackground: { ...aiBgIn, customPoseRecipes: next } } }
+    })
+    setToast(`已存为配方：${name}`)
+  }
+
+  // 按场景预填：拼接该资产关联场景（场景 assetIds 含该计划资产 id）的文本摘要作为姿势需求初稿
+  function buildPosePrefillForAsset(assetId: string): string {
+    if (!doc.story) return ''
+    const asset = findPosePlanAsset(assetId)
+    if (!asset) return ''
+    // 2026-09-10 修复：与 poseSceneOptionsFor 同一错配——assetIds 是计划资产 id 空间，不是 projectCharacterId
+    const planAssetId = String(asset?.id || '').trim()
+    const plan = normalizeStoryboardAssetPlan(sbPosePlanRef.current) || readStoryboardAssetPlanFromProject(doc.project)
+    const scenes = Array.isArray((plan as any)?.scenes) ? (plan as any).scenes : []
+    const hitSceneIds = scenes
+      .filter((s: any) => (Array.isArray(s?.assetIds) ? s.assetIds : []).map((x: any) => String(x || '').trim()).includes(planAssetId))
+      .map((s: any) => String(s?.sceneId || '').trim())
+      .filter(Boolean)
+    const effectiveIds = hitSceneIds.length
+      ? hitSceneIds
+      : (Array.isArray(asset?.sceneIds) ? asset.sceneIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
+    const parts: string[] = []
+    for (const sid of effectiveIds.slice(0, 3)) {
+      const n0 = (doc.story.nodes || []).find((n) => n.id === sid) || null
+      const nn = n0 ? ensureNode(n0 as any) : null
+      if (!nn) continue
+      const title = String((nn as any).body?.title || '').trim()
+      const sum = buildNodeTextSummary(String((nn as any).body?.text || '').trim())
+      const t = [title, sum].filter(Boolean).join('，')
+      if (t) parts.push(t)
+    }
+    return parts.join('；').slice(0, 400)
+  }
+
+  // 摆放属性「图片（修改）」下拉选项：该角色对应 plan 资产的已锁定姿势变体
+  function poseVariantOptionsFor(characterIdRaw: string): { id: string; name: string }[] {
+    const characterId = String(characterIdRaw || '').trim()
+    if (!characterId) return []
+    const chName = String((doc.project?.characters || []).find((c) => c.id === characterId)?.name || '').trim()
+    const plan = sbAssetPlan || readStoryboardAssetPlanFromProject(doc.project)
+    const planAssets = Array.isArray((plan as any)?.assets) ? (plan as any).assets : []
+    const hit = planAssets.find((a: any) =>
+      String(a?.category || '') === 'character' &&
+      (String(a?.projectCharacterId || '').trim() === characterId || (chName && String(a?.name || '').trim() === chName))
+    ) || null
+    const variants = Array.isArray(hit?.poseVariants) ? hit.poseVariants : []
+    return variants
+      .filter((v: any) => String(v?.projectAssetId || '').trim())
+      .map((v: any) => ({ id: String(v.projectAssetId).trim(), name: String(v?.name || '姿势').trim() }))
   }
 
   const problems = useMemo(() => {
@@ -5487,6 +7275,14 @@ function ensureNode(n: NodeV1): NodeV1 {
           nodes: s.nodes.map((x) => (x.id === n.id ? ensureNode(updater(ensureNode(x))) : x))
         }))
       }
+      // 场景编排器：placement 面板的离散编辑统一先压撤销快照（数字输入用 onFocus 压一次）
+      const setNodeUndo = (updater: (node: NodeV1) => NodeV1) => {
+        pushUndo()
+        setNode(updater)
+      }
+      const bgAssetId = String(n.visuals?.backgroundAssetId || '').trim()
+      const bgAsset = bgAssetId ? (doc.project?.assets || []).find((a) => a.id === bgAssetId) : null
+      const bgAssetName = String(bgAsset?.name || bgAssetId || '').trim()
 
       const allNodes = nodes
 
@@ -5956,6 +7752,7 @@ function ensureNode(n: NodeV1): NodeV1 {
 	                                const preset = normalizeDialogPreset((dialog as any).preset)
 	                                const x = clamp01(numberOr((dialog as any).x, 0.5))
 	                                const y = clamp01(numberOr((dialog as any).y, 0.88))
+	                                const opacity = clamp01(numberOr((dialog as any).opacity, 1))
 	                                const dir = normalizeChoicesDirection((choicesUi as any).direction)
 	                                const align = normalizeChoicesAlign((choicesUi as any).align)
 
@@ -6029,6 +7826,22 @@ function ensureNode(n: NodeV1): NodeV1 {
 	                                        </div>
 	                                      </div>
 	                                    ) : null}
+
+	                                    <div className="form-row">
+	                                      <label>底板透明度</label>
+	                                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1 }}>
+	                                        <input
+	                                          type="range"
+	                                          min={0}
+	                                          max={100}
+	                                          step={1}
+	                                          value={Math.round(opacity * 100)}
+	                                          onChange={(e) => setDialog({ opacity: clamp01(Number(e.target.value) / 100) })}
+	                                          style={{ flex: 1 }}
+	                                        />
+	                                        <span style={{ minWidth: 40, textAlign: 'right', opacity: 0.85 }}>{Math.round(opacity * 100)}%</span>
+	                                      </div>
+	                                    </div>
 
 	                                    <div className="hr" />
 
@@ -6485,6 +8298,7 @@ function ensureNode(n: NodeV1): NodeV1 {
 	                        const preset = normalizeDialogPreset((dialog as any).preset)
 	                        const x = clamp01(numberOr((dialog as any).x, 0.5))
 	                        const y = clamp01(numberOr((dialog as any).y, 0.88))
+	                        const opacity = clamp01(numberOr((dialog as any).opacity, 1))
 	                        const dir = normalizeChoicesDirection((choicesUi as any).direction)
 	                        const align = normalizeChoicesAlign((choicesUi as any).align)
 
@@ -6554,6 +8368,22 @@ function ensureNode(n: NodeV1): NodeV1 {
 	                                </div>
 	                              </div>
 	                            ) : null}
+
+	                            <div className="form-row">
+	                              <label>底板透明度</label>
+	                              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1 }}>
+	                                <input
+	                                  type="range"
+	                                  min={0}
+	                                  max={100}
+	                                  step={1}
+	                                  value={Math.round(opacity * 100)}
+	                                  onChange={(e) => setDialog({ opacity: clamp01(Number(e.target.value) / 100) })}
+	                                  style={{ flex: 1 }}
+	                                />
+	                                <span style={{ minWidth: 40, textAlign: 'right', opacity: 0.85 }}>{Math.round(opacity * 100)}%</span>
+	                              </div>
+	                            </div>
 
 	                            <div className="hr" />
 
@@ -7121,7 +8951,7 @@ function ensureNode(n: NodeV1): NodeV1 {
 
 	            <div className="fold">
 	              <div className="fold-head" onClick={() => toggleRightFold('placements')}>
-	                <div className="fold-title">角色摆放</div>
+	                <div className="fold-title">元素层级（背景 / 摆放）</div>
 	                <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
 	                  <button
                     type="button"
@@ -7151,6 +8981,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                       window.alert('请先在左侧创建角色')
                       return
                     }
+                    pushUndo()
                     const chId = choices[0].id
                     const p: CharacterPlacementV1 = {
                       id: uid('pl'),
@@ -7172,25 +9003,171 @@ function ensureNode(n: NodeV1): NodeV1 {
                 <button className="btn secondary" onClick={() => setActivePlacementId('')}>取消选择摆放</button>
               </div>
 
-              <div className="list">
-                {placements.map((p) => {
+              <div className="list stage-layer-list">
+                <div
+                  className={`item stage-layer-item ${bgRowSelected ? 'active' : ''}`}
+                  onClick={() => { setBgRowSelected(true); setActivePlacementId('') }}
+                  title="场景背景（在「尺寸与背景」分组中更换）"
+                >
+                  <div className="stage-layer-thumb stage-layer-thumb-bg">背</div>
+                  <div className="stage-layer-main">
+                    <div>背景</div>
+                    <div className="meta">{bgAssetName || '未设置背景'}</div>
+                  </div>
+                </div>
+                {placements.slice().sort((a, b) => numberOr(b.zIndex, 0) - numberOr(a.zIndex, 0)).map((p) => {
                   const ch = doc.project?.characters.find((c) => c.id === p.characterId)
+                  const imgId = String(p.imageAssetId || ch?.imageAssetId || '').trim()
+                  const asset = imgId ? (doc.project?.assets || []).find((x) => x.id === imgId) : null
+                  const name = String(ch?.name || asset?.name || p.characterId || p.id)
+                  const thumbUrl = asset?.uri ? resolveAsset(String(asset.uri), doc.assetBase) : ''
+                  const hidden = p.visible === false
                   return (
                     <div
                       key={p.id}
-                      className={`item ${p.id === activePlacementId ? 'active' : ''}`}
-                      onClick={() => setActivePlacementId(p.id)}
+                      className={`item stage-layer-item ${p.id === activePlacementId && !bgRowSelected ? 'active' : ''}${hidden ? ' stage-layer-hidden' : ''}`}
+                      onClick={() => { setBgRowSelected(false); setActivePlacementId(p.id) }}
                     >
-                      <div>{ch?.name || p.characterId}</div>
-                      <div className="meta">Placement: {p.id}</div>
+                      {thumbUrl ? (
+                        <img className="stage-layer-thumb" src={thumbUrl} alt="" />
+                      ) : (
+                        <div className="stage-layer-thumb stage-layer-thumb-fallback">{name.slice(0, 1)}</div>
+                      )}
+                      <div className="stage-layer-main">
+                        <div>{name}</div>
+                        <div className="meta">层级 {numberOr(p.zIndex, 0)}</div>
+                      </div>
+                      <div className="stage-layer-actions" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          title={hidden ? '显示该元素' : '隐藏该元素'}
+                          onClick={() => setNodeUndo((x) => ({
+                            ...x,
+                            visuals: {
+                              ...ensureNode(x).visuals,
+                              placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
+                                pp.id === p.id ? { ...pp, visible: hidden } : pp
+                              )
+                            }
+                          }))}
+                        >
+                          {hidden ? '隐' : '显'}
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          title="上移一层"
+                          onClick={() => setNodeUndo((x) => ({
+                            ...x,
+                            visuals: {
+                              ...ensureNode(x).visuals,
+                              placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
+                                pp.id === p.id ? { ...pp, zIndex: numberOr(pp.zIndex, 0) + 1 } : pp
+                              )
+                            }
+                          }))}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          title="下移一层"
+                          onClick={() => setNodeUndo((x) => ({
+                            ...x,
+                            visuals: {
+                              ...ensureNode(x).visuals,
+                              placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
+                                pp.id === p.id ? { ...pp, zIndex: numberOr(pp.zIndex, 0) - 1 } : pp
+                              )
+                            }
+                          }))}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          title="删除该摆放"
+                          onClick={() => {
+                            setNodeUndo((x) => ({
+                              ...x,
+                              visuals: {
+                                ...ensureNode(x).visuals,
+                                placements: (ensureNode(x).visuals?.placements || []).filter((pp) => pp.id !== p.id)
+                              }
+                            }))
+                            if (activePlacementId === p.id) setActivePlacementId('')
+                          }}
+                        >
+                          删
+                        </button>
+                      </div>
                     </div>
                   )
                 })}
               </div>
+              {bgRowSelected ? (
+                <div className="hint" style={{ marginTop: 6 }}>
+                  背景：{bgAssetName || '未设置'}{bgAssetId ? `（${bgAssetId}）` : ''}。更换或生成背景在上方「尺寸与背景」分组。
+                </div>
+              ) : null}
 
               {activePlacement ? (
-                <div style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 12, padding: 10 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 8 }}>摆放属性</div>
+                <div
+                  key={activePlacement.id}
+                  ref={placementPropsRef}
+                  className="placement-props-card"
+                  style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 12, padding: 10 }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 8 }}>
+                    摆放属性{(() => {
+                      const ch = doc.project?.characters.find((c) => c.id === activePlacement.characterId)
+                      const imgId = String(activePlacement.imageAssetId || ch?.imageAssetId || '').trim()
+                      const asset = imgId ? (doc.project?.assets || []).find((x) => x.id === imgId) : null
+                      const label = String(ch?.name || asset?.name || '').trim()
+                      return label ? `：${label}` : ''
+                    })()}
+                  </div>
+
+                  {/* 2026-09-01 图片来源追溯（B）：当前图是哪张、从哪来，一眼可查 */}
+                  {(() => {
+                    const ch0 = doc.project?.characters.find((c) => c.id === activePlacement.characterId)
+                    const imgId0 = String(activePlacement.imageAssetId || ch0?.imageAssetId || '').trim()
+                    const asset0 = imgId0 ? (doc.project?.assets || []).find((x) => x.id === imgId0) || null : null
+                    if (!asset0) return null
+                    const thumb = asset0.uri ? resolveAsset(String(asset0.uri), doc.assetBase) : ''
+                    const srcPrompt = String((asset0 as any)?.source?.prompt || '').trim()
+                    return (
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 10, padding: 8, borderRadius: 10, background: 'rgba(94,204,255,0.06)' }}>
+                        {thumb ? <img src={thumb} alt="" style={{ width: 56, height: 56, objectFit: 'contain', borderRadius: 8, background: 'rgba(255,255,255,0.06)', flexShrink: 0 }} /> : null}
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{asset0.name || asset0.id}</div>
+                          <div className="hint" style={{ fontSize: 11, wordBreak: 'break-all' }}>{asset0.id}</div>
+                          {srcPrompt ? (
+                            <details style={{ marginTop: 4 }}>
+                              <summary className="hint" style={{ cursor: 'pointer', fontSize: 11 }}>生成提示词摘要</summary>
+                              <div className="hint" style={{ fontSize: 11, marginTop: 4, maxHeight: 90, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{srcPrompt.slice(0, 600)}</div>
+                            </details>
+                          ) : null}
+                          <div style={{ marginTop: 6 }}>
+                            <button
+                              type="button"
+                              className="btn secondary"
+                              style={{ fontSize: 11, padding: '2px 10px' }}
+                              onClick={() => {
+                                setSelection({ type: 'asset', id: asset0.id })
+                                setLeftTab('assets')
+                              }}
+                            >
+                              在资源中打开
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()}
 
                   <div className="form-row">
                     <label>角色</label>
@@ -7199,7 +9176,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                       value={activePlacement.characterId}
                       onChange={(e) => {
                         const id = e.target.value
-                        setNode((x) => ({
+                        setNodeUndo((x) => ({
                           ...x,
                           visuals: {
                             ...ensureNode(x).visuals,
@@ -7219,52 +9196,66 @@ function ensureNode(n: NodeV1): NodeV1 {
                   </div>
 
                   <div className="form-row">
-                    <label>图片（覆盖）</label>
-                    <select
-                      className="sel"
-                      value={activePlacement.imageAssetId || ''}
-                      onChange={(e) => {
-                        const v = e.target.value || undefined
-                        setNode((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id ? { ...pp, imageAssetId: v } : pp
-                            )
-                          }
-                        }))
-                      }}
-                      title="为当前节点的该角色摆放指定一张“姿势图”（覆盖角色默认图片）"
-                    >
-                      <option value="">（使用角色默认）</option>
-                      {doc.project.assets.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.name || a.id}
-                        </option>
-                      ))}
-                    </select>
+                    <label>图片（修改）</label>
+                    {/* 2026-09-01 摆放属性降级为纯消费端：只列「使用角色默认」+ 该角色已锁定姿势变体；
+                        当前引用不在列表中（历史遗留）时追加「当前（未纳入管理）」保证不丢显示 */}
+                    {(() => {
+                      const poseOpts = poseVariantOptionsFor(activePlacement.characterId)
+                      const currentId = String(activePlacement.imageAssetId || '').trim()
+                      const currentInList = currentId && poseOpts.some((v) => v.id === currentId)
+                      return (
+                        <select
+                          className="sel"
+                          value={activePlacement.imageAssetId || ''}
+                          onChange={(e) => {
+                            const v = e.target.value || undefined
+                            setNodeUndo((x) => ({
+                              ...x,
+                              visuals: {
+                                ...ensureNode(x).visuals,
+                                placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
+                                  pp.id === activePlacement.id ? { ...pp, imageAssetId: v } : pp
+                                )
+                              }
+                            }))
+                          }}
+                          title="为当前节点的该角色摆放选用一个已锁定姿势变体（覆盖角色默认图片）；姿势变体在「锁定事物」向导第 5 步管理"
+                        >
+                          <option value="">（使用角色默认）</option>
+                          {poseOpts.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.name}
+                            </option>
+                          ))}
+                          {currentId && !currentInList ? <option value={currentId}>当前（未纳入管理）</option> : null}
+                        </select>
+                      )
+                    })()}
+                  </div>
+
+                  <div className="form-row">
+                    <label>动作描述</label>
+                    <textarea
+                      className="story-lock-textarea compact-rows"
+                      value={placementPoseDraft}
+                      onChange={(e) => setPlacementPoseDraft(e.target.value)}
+                      placeholder="该角色在当前场景的动作与表情，例如：指着左边稻草堆，得意表情"
+                    />
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
                     <button
                       className="btn secondary"
-                      onClick={() =>
-                        openPlacementSpriteModal({
-                          nodeId: n.id,
-                          placementId: activePlacement.id,
-                          characterId: activePlacement.characterId
-                        })
-                      }
-                      title="根据当前场景文本生成该角色的“姿势透明 PNG”，并覆盖到该摆放"
+                      onClick={() => void openPoseVariantManagerForCharacter(activePlacement.characterId)}
+                      title="出图统一管理在锁定向导：打开「锁定事物」第 5 步该角色资产的姿势变体区（抽卡/评分/命名锁定）"
                     >
-                      AI 生成摆放 PNG（透明）
+                      管理姿势变体…
                     </button>
                     {activePlacement.imageAssetId ? (
                       <button
                         className="btn secondary"
                         onClick={() => {
-                          setNode((x) => ({
+                          setNodeUndo((x) => ({
                             ...x,
                             visuals: {
                               ...ensureNode(x).visuals,
@@ -7274,9 +9265,9 @@ function ensureNode(n: NodeV1): NodeV1 {
                             }
                           }))
                         }}
-                        title="清除该摆放的图片覆盖，回退为角色默认图片"
+                        title="清除该摆放的图片修改，回退为角色默认图片"
                       >
-                        清除覆盖
+                        恢复默认
                       </button>
                     ) : null}
                   </div>
@@ -7288,6 +9279,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                       type="number"
                       step="0.01"
                       value={activePlacement.transform.x}
+                      onFocus={pushUndo}
                       onChange={(e) => {
                         const v = clamp01(Number(e.target.value))
                         setNode((x) => ({
@@ -7310,6 +9302,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                       type="number"
                       step="0.01"
                       value={activePlacement.transform.y}
+                      onFocus={pushUndo}
                       onChange={(e) => {
                         const v = clamp01(Number(e.target.value))
                         setNode((x) => ({
@@ -7332,6 +9325,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                       type="number"
                       step="0.05"
                       value={activePlacement.transform.scale}
+                      onFocus={pushUndo}
                       onChange={(e) => {
                         const v = Number(e.target.value)
                         setNode((x) => ({
@@ -7354,6 +9348,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                       type="number"
                       step="1"
                       value={activePlacement.transform.rotationDeg}
+                      onFocus={pushUndo}
                       onChange={(e) => {
                         const v = Number(e.target.value)
                         setNode((x) => ({
@@ -7370,13 +9365,36 @@ function ensureNode(n: NodeV1): NodeV1 {
                   </div>
 
                   <div className="form-row">
+                    <label>层级（zIndex）</label>
+                    <input
+                      className="input"
+                      type="number"
+                      step="1"
+                      value={numberOr(activePlacement.zIndex, 0)}
+                      onFocus={pushUndo}
+                      onChange={(e) => {
+                        const v = Number(e.target.value)
+                        setNode((x) => ({
+                          ...x,
+                          visuals: {
+                            ...ensureNode(x).visuals,
+                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
+                              pp.id === activePlacement.id ? { ...pp, zIndex: Number.isFinite(v) ? v : 0 } : pp
+                            )
+                          }
+                        }))
+                      }}
+                    />
+                  </div>
+
+                  <div className="form-row">
                     <label>可见</label>
                     <select
                       className="sel"
                       value={activePlacement.visible === false ? '0' : '1'}
                       onChange={(e) => {
                         const v = e.target.value === '0' ? false : true
-                        setNode((x) => ({
+                        setNodeUndo((x) => ({
                           ...x,
                           visuals: {
                             ...ensureNode(x).visuals,
@@ -7392,11 +9410,63 @@ function ensureNode(n: NodeV1): NodeV1 {
                     </select>
                   </div>
 
-                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  {/* 2026-09-01 翻转开关收进面板（B）：与工具栏同一语义，面板内可直接调 */}
+                  <div className="form-row">
+                    <label>翻转</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {(['flipX', 'flipY'] as const).map((axis) => {
+                        const on = Boolean((activePlacement.transform as any)?.[axis])
+                        return (
+                          <button
+                            key={axis}
+                            type="button"
+                            className={`btn secondary${on ? ' active' : ''}`}
+                            style={on ? { borderColor: '#5eccff', color: '#5eccff' } : undefined}
+                            onClick={() =>
+                              setNodeUndo((x) => ({
+                                ...x,
+                                visuals: {
+                                  ...ensureNode(x).visuals,
+                                  placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
+                                    pp.id === activePlacement.id
+                                      ? { ...pp, transform: { ...pp.transform, [axis]: !Boolean((pp.transform as any)?.[axis]) } as any }
+                                      : pp
+                                  )
+                                }
+                              }))
+                            }
+                          >
+                            {axis === 'flipX' ? '左右反转' : '上下反转'}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      className="btn secondary"
+                      title="位置/缩放/角度/翻转恢复默认"
+                      onClick={() => {
+                        setNodeUndo((x) => ({
+                          ...x,
+                          visuals: {
+                            ...ensureNode(x).visuals,
+                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
+                              pp.id === activePlacement.id
+                                ? { ...pp, transform: { x: 0.5, y: 1, scale: 1, rotationDeg: 0 } as any }
+                                : pp
+                            )
+                          }
+                        }))
+                      }}
+                    >
+                      重置变换
+                    </button>
                     <button
                       className="btn secondary"
                       onClick={() => {
-                        setNode((x) => ({
+                        setNodeUndo((x) => ({
                           ...x,
                           visuals: {
                             ...ensureNode(x).visuals,
@@ -7409,6 +9479,34 @@ function ensureNode(n: NodeV1): NodeV1 {
                       删除摆放
                     </button>
                   </div>
+
+                  {/* 2026-09-01 调试区（B）：数据级排障入口——id/资产/transform 原文可复制 */}
+                  <details style={{ marginTop: 10 }}>
+                    <summary className="hint" style={{ cursor: 'pointer', fontSize: 11 }}>调试信息</summary>
+                    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <pre
+                        className="hint"
+                        style={{ fontSize: 11, margin: 0, padding: 8, borderRadius: 8, background: 'rgba(0,0,0,0.25)', maxHeight: 160, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+                      >{JSON.stringify(activePlacement, null, 2)}</pre>
+                      <div>
+                        <button
+                          type="button"
+                          className="btn secondary"
+                          style={{ fontSize: 11, padding: '2px 10px' }}
+                          onClick={() => {
+                            try {
+                              navigator.clipboard.writeText(JSON.stringify(activePlacement, null, 2))
+                              setToast('已复制摆放数据')
+                            } catch {
+                              setToast('复制失败')
+                            }
+                          }}
+                        >
+                          复制 JSON
+                        </button>
+                      </div>
+                    </div>
+                  </details>
                 </div>
               ) : null}
             </div>
@@ -8145,6 +10243,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                 className="btn secondary"
                 onClick={async () => {
                   await initStoryboardBatchFromDoc()
+                  setSbPoseFocusAssetId('')
                   setSbRenderOpen(false)
                   setSbOpen(true)
                   void runStoryboardOpenChecks()
@@ -8152,6 +10251,36 @@ function ensureNode(n: NodeV1): NodeV1 {
                 disabled={busy}
               >
                 锁定事物
+              </button>
+            ) : null}
+            {doc.mode === 'project' && doc.story ? (
+              <button
+                className="btn secondary"
+                title="直达正式场景出图（背景生产车间）：编辑场景提示词、重新出图、批量重渲、待审核处理，无需穿过锁定向导"
+                onClick={async () => {
+                  // 2026-09-01 场景出图直接入口（用户需求：调背景不必每次穿 7 步向导）
+                  await initStoryboardBatchFromDoc()
+                  const ok = await saveIfDirty()
+                  if (!ok) return
+                  setSbOpen(false)
+                  setSbRenderOpen(true)
+                  void runStoryboardOpenChecks()
+                }}
+                disabled={busy}
+              >
+                场景出图
+              </button>
+            ) : null}
+            {doc.mode === 'project' ? (
+              <button
+                className="btn secondary"
+                title="在 Finder 中打开本项目 AI 素材目录（assets/ai），直接管理全部 AI 生成图"
+                onClick={() => {
+                  void openProjectAiAssetsFolder(doc.id).catch((e) => setToast(`打开素材目录失败：${e instanceof Error ? e.message : String(e)}`))
+                }}
+                disabled={busy}
+              >
+                素材目录
               </button>
             ) : null}
 	          {problems.length ? <div className="hint" style={{ color: '#fca5a5' }}>校验：{problems.length} 个问题</div> : <div className="hint">校验：通过</div>}
@@ -8163,12 +10292,38 @@ function ensureNode(n: NodeV1): NodeV1 {
 	        </div>
 	      </div>
 
+      {externalNewerRev > 0 && doc.mode === 'project' ? (
+        <div className="external-update-banner">
+          <span>项目已在其他窗口或流程中更新（新版本 {externalNewerRev}）。为避免旧内容覆盖新变更，请刷新加载最新。</span>
+          <div className="banner-actions">
+            <button
+              className="btn secondary"
+              onClick={() => setExternalNewerRev(0)}
+              title="暂不刷新（注意：继续编辑并保存会覆盖外部的新变更）"
+            >
+              知道了
+            </button>
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={async () => {
+                setExternalNewerRev(0)
+                try { await openProject(doc.id) } catch {}
+              }}
+            >
+              刷新加载最新
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="main">
         <div className="panel">
           <div className="tabs">
             <div className={`tab ${leftTab === 'nodes' ? 'active' : ''}`} onClick={() => setLeftTab('nodes')}>节点</div>
             <div className={`tab ${leftTab === 'characters' ? 'active' : ''}`} onClick={() => setLeftTab('characters')}>角色</div>
             <div className={`tab ${leftTab === 'assets' ? 'active' : ''}`} onClick={() => setLeftTab('assets')}>资源</div>
+            <div className={`tab ${leftTab === 'materials' ? 'active' : ''}`} onClick={() => setLeftTab('materials')}>素材</div>
           </div>
 
 	          <div className="section">
@@ -8236,23 +10391,107 @@ function ensureNode(n: NodeV1): NodeV1 {
                 </div>
               </>
             ) : null}
+
+            {leftTab === 'materials' && doc.project ? (
+              <>
+                <div className="hr" />
+                <div className="hint">把素材拖到中间画布即可在当前场景摆放；同一素材可摆放多个。</div>
+                <div className="hr" />
+                <div className="list">
+                  {stageMaterials.map((m) => (
+                    <div
+                      key={m.key}
+                      className="item stage-material-item"
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('application/x-gamestudio-asset', JSON.stringify({
+                          characterId: m.characterId || '',
+                          imageAssetId: m.imageAssetId,
+                          name: m.name
+                        }))
+                        e.dataTransfer.effectAllowed = 'copy'
+                      }}
+                      title="拖入中间画布摆放"
+                    >
+                      <div>{m.name}</div>
+                      <div className="meta">{m.kind}</div>
+                    </div>
+                  ))}
+                  {stageMaterials.length === 0 ? (
+                    <div className="hint">暂无可摆放素材：请先在「角色」生成角色图，或完成锁定事物主参考。</div>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
 
-        <div className="canvas">
+        <div
+          className={`canvas${canvasDropActive ? ' canvas-drop-active' : ''}`}
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.types).includes('application/x-gamestudio-asset')) {
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'copy'
+              if (!canvasDropActive) setCanvasDropActive(true)
+            }
+          }}
+          onDragLeave={() => setCanvasDropActive(false)}
+          onDrop={(e) => {
+            const raw = e.dataTransfer.getData('application/x-gamestudio-asset')
+            setCanvasDropActive(false)
+            if (!raw) return
+            e.preventDefault()
+            handleDropMaterial(raw, e.clientX, e.clientY)
+          }}
+        >
           <div className="canvas-wrap" ref={canvasHostRef} />
+          {doc.mode === 'project' && doc.project && doc.story ? (
+            <div className="stage-toolbar">
+              <button
+                type="button"
+                className={`stage-mode-badge ${editMode ? 'edit' : 'preview'}`}
+                onClick={() => setEditMode((v) => !v)}
+                title={editMode ? '当前为编辑模式：可拖动/摆放/编辑元素；点击切换到预览模式' : '当前为预览模式：画布只读；点击切换到编辑模式'}
+              >
+                {editMode ? '编辑模式' : '预览模式'}
+              </button>
+              <span className="stage-toolbar-sep" />
+              <button type="button" className="stage-tool-btn" onClick={() => setStageZoom((z) => Math.max(0.25, Math.round((z / 1.2) * 100) / 100))} title="缩小">−</button>
+              <span className="stage-toolbar-zoom">{Math.round(stageZoom * 100)}%</span>
+              <button type="button" className="stage-tool-btn" onClick={() => setStageZoom((z) => Math.min(4, Math.round(z * 1.2 * 100) / 100))} title="放大">＋</button>
+              <button type="button" className="stage-tool-btn" onClick={() => { setStageZoom(1); setStagePan({ x: 0, y: 0 }) }} title="适应窗口（重置缩放与平移）">适应窗口</button>
+              <button type="button" className={`stage-tool-btn ${panToolActive ? 'active' : ''}`} onClick={() => setPanToolActive((v) => !v)} title="平移工具：开启后拖动画布平移视图">平移</button>
+              <span className="stage-toolbar-sep" />
+              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={() => togglePlacementFlip('flipX')} title="左右反转选中元素">左右反转</button>
+              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={() => togglePlacementFlip('flipY')} title="上下反转选中元素">上下反转</button>
+              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={() => bumpPlacementZ(1)} title="选中元素上移一层">前移</button>
+              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={() => bumpPlacementZ(-1)} title="选中元素下移一层">后移</button>
+              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={deleteToolbarPlacement} title="删除选中摆放">删除</button>
+              <span className="stage-toolbar-sep" />
+              <button type="button" className="stage-tool-btn" disabled={!undoCount} onClick={undoPlacementChange} title="撤销上一次摆放操作（Ctrl/Cmd+Z）">撤销</button>
+            </div>
+          ) : null}
           {doc.project && doc.story && effectivePreviewNode ? (
             <div
               className="stage-ui"
               ref={stageUiRef}
               style={
                 stageViewport
-                  ? {
-                      width: stageViewport.stageW,
-                      height: stageViewport.stageH,
-                      transform: `translate(${stageViewport.offsetX}px, ${stageViewport.offsetY}px) scale(${stageViewport.scale})`,
-                      transformOrigin: '0 0'
-                    }
+                  ? (() => {
+                      const z = Math.max(0.25, Math.min(4, Number(stageZoom) || 1))
+                      const viewW = canvasSize.w || 0
+                      const viewH = canvasSize.h || 0
+                      const cx0 = viewW / 2
+                      const cy0 = viewH / 2
+                      const rx = cx0 + (stageViewport.offsetX - cx0) * z + stagePan.x
+                      const ry = cy0 + (stageViewport.offsetY - cy0) * z + stagePan.y
+                      return {
+                        width: stageViewport.stageW,
+                        height: stageViewport.stageH,
+                        transform: `translate(${rx}px, ${ry}px) scale(${stageViewport.scale * z})`,
+                        transformOrigin: '0 0'
+                      }
+                    })()
                   : { width: '100%', height: '100%' }
               }
             >
@@ -8299,6 +10538,10 @@ function ensureNode(n: NodeV1): NodeV1 {
                 const dialogPreset = normalizeDialogPreset((node as any)?.visuals?.ui?.dialog?.preset)
                 const dialogX = clamp01(numberOr((node as any)?.visuals?.ui?.dialog?.x, 0.5))
                 const dialogY = clamp01(numberOr((node as any)?.visuals?.ui?.dialog?.y, 0.88))
+                // 对话框底板透明度（节点级，缺省 1）：与导出运行时 storyPixi.js 同一比例（card 0.74×op、textBox 0.35×op）
+                const dialogOpacity = Math.max(0, Math.min(1, numberOr((node as any)?.visuals?.ui?.dialog?.opacity, 1)))
+                const dialogCardBg = `rgba(2, 6, 23, ${(0.74 * dialogOpacity).toFixed(3)})`
+                const dialogTextBg = `rgba(2, 6, 23, ${(0.35 * dialogOpacity).toFixed(3)})`
                 const choicesDir = normalizeChoicesDirection((node as any)?.visuals?.ui?.choices?.direction)
                 const choicesAlign = normalizeChoicesAlign((node as any)?.visuals?.ui?.choices?.align)
 
@@ -8327,9 +10570,10 @@ function ensureNode(n: NodeV1): NodeV1 {
                         position: 'absolute',
                         left: stageViewport.stageW * dialogX,
                         top: stageViewport.stageH * dialogY,
-                        transform: 'translate(-50%, -50%)'
+                        transform: 'translate(-50%, -50%)',
+                        background: dialogCardBg
                       }
-                    : {}
+                    : { background: dialogCardBg }
 
                 const choicesStyle: CSSProperties = (() => {
                   if (choicesDir !== 'column') {
@@ -8448,7 +10692,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                           ))}
                         </ul>
                       ) : null}
-                      <div className="dialog-text">{card?.moral || '故事结束。'}</div>
+                      <div className="dialog-text" style={{ background: dialogTextBg }}>{card?.moral || '故事结束。'}</div>
                       <div className={`dialog-choices ${choicesDir === 'column' ? 'vertical' : ''}`} style={choicesStyle}>
                         {(card?.buttons || [])
                           .filter((b) => String((b as any).type || '') !== 'backToHub')
@@ -8501,7 +10745,7 @@ function ensureNode(n: NodeV1): NodeV1 {
                       {rt.wait.kind === 'condition' ? <span className="dialog-wait">等待条件成立…</span> : null}
                     </div>
 
-                    {hasText ? <div className="dialog-text">{displayText}</div> : null}
+                    {hasText ? <div className="dialog-text" style={{ background: dialogTextBg }}>{displayText}</div> : null}
 
                     {rt.wait.kind === 'choice' ? (
                       <div className={`dialog-choices ${choicesDir === 'column' ? 'vertical' : ''}`} style={choicesStyle}>
@@ -8564,6 +10808,74 @@ function ensureNode(n: NodeV1): NodeV1 {
         </div>
       ) : null}
 
+      {sbOverrideModal.open ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 200,
+            display: 'grid',
+            placeItems: 'center',
+            background: 'rgba(2,6,23,0.82)'
+          }}
+        >
+          <div
+            style={{
+              width: 'min(560px, calc(100vw - 32px))',
+              background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
+              border: '1px solid rgba(96,165,250,0.35)',
+              borderRadius: 16,
+              boxShadow: '0 24px 60px rgba(0,0,0,0.45)',
+              padding: 18
+            }}
+          >
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#e5e7eb', marginBottom: 8 }}>人工特批确认</div>
+            <div
+              style={{
+                padding: '10px 12px',
+                borderRadius: 10,
+                border: '1px solid rgba(248,113,113,0.35)',
+                background: 'rgba(15,23,42,0.75)',
+                color: '#fca5a5',
+                fontSize: 13,
+                lineHeight: 1.6
+              }}
+            >
+              {sbOverrideModal.message}
+            </div>
+            <div style={{ fontSize: 14, color: '#cbd5e1', lineHeight: 1.6, marginTop: 12 }}>
+              AI 评审未通过该候选图。是否人工确认，仍将该图设为主参考？此操作会记录人工特批。
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <button
+                className="btn secondary"
+                onClick={() => {
+                  const resolver = sbOverrideResolverRef.current
+                  sbOverrideResolverRef.current = null
+                  setSbOverrideModal({ open: false, message: '' })
+                  if (resolver) resolver(false)
+                }}
+              >
+                取消
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  const resolver = sbOverrideResolverRef.current
+                  sbOverrideResolverRef.current = null
+                  setSbOverrideModal({ open: false, message: '' })
+                  if (resolver) resolver(true)
+                }}
+              >
+                人工确认，设为主参考
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {latestExportModal.open ? (
         <div
           style={{
@@ -8574,8 +10886,7 @@ function ensureNode(n: NodeV1): NodeV1 {
             placeItems: 'center',
             background: 'rgba(2,6,23,0.82)'
           }}
-        >
-          <div
+        >          <div
             style={{
               width: 'min(560px, calc(100vw - 32px))',
               background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
@@ -9205,8 +11516,11 @@ function ensureNode(n: NodeV1): NodeV1 {
             closeStoryboardAssetGallery()
             setSbOpen(false)
             setSbError('')
+            setSbPoseFocusAssetId('')
+            try { if (localStorage.getItem(sbWsOpenStorageKey) === doc.id) localStorage.removeItem(sbWsOpenStorageKey) } catch {}
           }}
           onReloadProject={() => { if (doc.mode === 'project') void openProject(doc.id) }}
+          onSave={async () => saveCurrent()}
           onRunOpenChecks={() => void runStoryboardOpenChecks()}
           onGenerateEntity={runStoryboardGenerateEntitySpec}
           onBuildAssetPlan={runStoryboardBuildAssetPlan}
@@ -9214,6 +11528,12 @@ function ensureNode(n: NodeV1): NodeV1 {
           onGenerateAllMissingAssetRefs={() => void runStoryboardGenerateAllMissingAssetReferences()}
           onAnalyzeAssetRef={(assetId) => void runStoryboardAnalyzeAssetReference(assetId)}
           onOptimizeAssetRef={(assetId) => void runStoryboardEnhanceAssetPrompt(assetId)}
+          onEnhanceAllPrompts={() => void runStoryboardEnhanceAllAssetPrompts()}
+          onDraftGlobalPromptZh={() => void runStoryboardDraftGlobalPromptZh()}
+          enhanceAllProgress={sbEnhanceAllProgress}
+          globalDraftBusy={sbGlobalDraftBusy}
+          promptGate={sbPromptGate}
+          onPromptGateChange={updateStoryboardLockPromptGate}
           onSelectAssetRef={(assetId, assetPath) => void runStoryboardSelectAssetReference(assetId, assetPath)}
           onGenerateAssetLineart={(assetId) => void runStoryboardGenerateAssetLineart(assetId)}
           onOpenAssetGallery={(assetId) => void runStoryboardOpenAssetGallery(assetId)}
@@ -9231,6 +11551,39 @@ function ensureNode(n: NodeV1): NodeV1 {
           onChangeAssetPrompt={(assetId, patch) => updateStoryboardLockAssetPrompt(assetId, patch)}
           onTranslateAssetPromptPositive={(assetId) => void translateStoryboardLockAssetPrompt(assetId, 'positive')}
           onTranslateAssetPromptNegative={(assetId) => void translateStoryboardLockAssetPrompt(assetId, 'negative')}
+          poseGeneratingId={sbPoseGeneratingId}
+          poseDrawProgress={sbPoseDrawProgress}
+          poseReviewingId={sbPoseReviewingId}
+          poseLockingKey={sbPoseLockingKey}
+          posePromptBusyId={sbPosePromptBusyId}
+          poseFocusAssetId={sbPoseFocusAssetId}
+          poseSceneOptionsFor={(assetId) => poseSceneOptionsFor(assetId)}
+          poseGalleryAssetId={sbPoseGalleryAssetId}
+          onPoseGalleryOpen={(assetId) => setSbPoseGalleryAssetId(assetId)}
+          onPoseGalleryClose={() => setSbPoseGalleryAssetId('')}
+          onPosePrefill={(assetId) => buildPosePrefillForAsset(assetId)}
+          onPoseDraftSave={(assetId, draft) => void runStoryboardPoseDraftSave(assetId, draft)}
+          onPoseAiPrompt={(assetId, opts) => runStoryboardPoseAiPrompt(assetId, opts)}
+          onPoseDraftTranslate={(assetId) => runStoryboardPoseDraftTranslate(assetId)}
+          customPoseRecipes={(() => {
+            const st = (doc.project as any)?.state
+            const list = st && st.aiBackground && Array.isArray(st.aiBackground.customPoseRecipes) ? st.aiBackground.customPoseRecipes : []
+            return list
+          })()}
+          onPoseSaveRecipe={(recipe) => saveCustomPoseRecipe(recipe)}
+          onPoseGenerate={(assetId, opts) => void runStoryboardPoseDraw(assetId, opts, 1)}
+          onPoseGenerateFour={(assetId, opts) => void runStoryboardPoseDraw(assetId, opts, 4)}
+          poseReqBusyId={sbPoseReqBusyId}
+          onPoseRequirementsExtract={(assetId) => void runStoryboardPoseRequirementsExtract(assetId)}
+          onPoseRequirementGenerate={(assetId, reqId) => void runStoryboardPoseRequirementGenerate(assetId, reqId)}
+          onPoseRequirementsBatchGenerate={(assetId) => void runStoryboardPoseRequirementsBatchGenerate(assetId)}
+          onPoseRequirementChange={(assetId, reqId, patch) => void runStoryboardPoseRequirementChange(assetId, reqId, patch)}
+          onPoseRequirementDelete={(assetId, reqId) => void runStoryboardPoseRequirementDelete(assetId, reqId)}
+          onPoseReviewAll={(assetId) => void runStoryboardPoseReviewAll(assetId)}
+          onPoseRedraw={(assetId, assetPath, opts) => void runStoryboardPoseRedraw(assetId, assetPath, opts)}
+          onPoseDeleteCandidate={(assetId, assetPath) => void runStoryboardPoseDeleteCandidate(assetId, assetPath)}
+          onPoseLock={(assetId, assetPath, name, prompts) => void runStoryboardPoseLock(assetId, assetPath, name, prompts)}
+          onPoseDeleteVariant={(assetId, variantId) => runStoryboardPoseDeleteVariant(assetId, variantId)}
           onConfirmAssetPlan={confirmStoryboardAssetPlan}
           onOpenRender={async () => {
             if (!sbAssetConfirmReady) return
@@ -9239,6 +11592,7 @@ function ensureNode(n: NodeV1): NodeV1 {
             closeStoryboardAssetGallery()
             setSbOpen(false)
             setSbRenderOpen(true)
+            try { if (localStorage.getItem(sbWsOpenStorageKey) === doc.id) localStorage.removeItem(sbWsOpenStorageKey) } catch {}
           }}
         />
 
@@ -9514,6 +11868,16 @@ function ensureNode(n: NodeV1): NodeV1 {
             setSbRenderOpen(false)
             setSbError('')
           }}
+          onReloadProject={() => { if (doc.mode === 'project') void openProject(doc.id) }}
+          onAppendLog={(line) => appendSbLog(line)}
+          onArrangeScene={(nodeId) => {
+            const id = String(nodeId || '').trim()
+            if (!id || !nodeById.has(id)) return
+            setSelection({ type: 'node', id })
+            setPreviewNodeId(id)
+            setRightFold((prev) => ({ ...prev, placements: true }))
+          }}
+          onOpenAssetLock={(a) => void openAssetLockInWizard({ planAssetId: a.id, name: a.name })}
           onGenerateAll={() => void runStoryboardGenerateAllPrompts('all')}
           onRetryPending={() => void runStoryboardGenerateAllPrompts('pending')}
           onApplyAll={() => void runStoryboardValidateAndApply('all')}

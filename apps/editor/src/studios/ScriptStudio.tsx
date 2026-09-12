@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { markStartupReady } from '../startupReady'
 import {
   compileBlueprintDetailed,
   getProject,
@@ -89,6 +90,7 @@ export default function ScriptStudio(props: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      markStartupReady() // 启动覆盖层按真实加载收尾（重复调用安全）
     }
   }
 
@@ -108,7 +110,13 @@ export default function ScriptStudio(props: Props) {
     setError('')
     try {
       if (projectTitleDirty) {
-        await saveProject(props.projectId, { project: { title: projectTitle } })
+        // 乐观锁：先读当前 _rev（服务端强制，缺失/不符会 409）
+        let rev = 0
+        try {
+          const cur = await getProject(props.projectId)
+          rev = Number((cur as any)._rev || 0)
+        } catch (_) { /* 读取失败按 0 提交，由服务端 409 兜底 */ }
+        await saveProject(props.projectId, { project: { title: projectTitle }, _rev: rev })
         setProjectTitleDirty(false)
       }
       const next = await saveScripts(props.projectId, scripts)

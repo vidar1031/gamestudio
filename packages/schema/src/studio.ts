@@ -185,6 +185,13 @@ export type ProjectStateDefV1 = {
   aiBackground?: AiBackgroundStateV1 | Record<string, any>
 }
 
+export type CharacterPlacementPoseCandidateV1 = {
+  assetPath: string
+  score?: number
+  reason?: string
+  createdAt?: string
+}
+
 export type CharacterPlacementV1 = {
   id: string
   characterId: string
@@ -192,6 +199,8 @@ export type CharacterPlacementV1 = {
   transform: Transform2DV1
   visible?: boolean
   zIndex?: number
+  /** 2026-09-01 动作立绘抽卡池候选（编辑器写入 story.json placements，删除候选只删数组条目，文件留磁盘） */
+  poseCandidates?: CharacterPlacementPoseCandidateV1[]
 }
 
 export type StageOrientationV1 = 'portrait' | 'landscape'
@@ -216,6 +225,8 @@ export type DialogLayoutV1 = {
   preset: DialogPresetV1
   x?: number
   y?: number
+  /** 对话框底板透明度 0-1（缺省 1），2026-08-31 新增：节点级控制，编辑器与导出运行时共用 */
+  opacity?: number
 }
 
 export type ChoicesDirectionV1 = 'row' | 'column'

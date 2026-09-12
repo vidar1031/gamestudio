@@ -1,5 +1,20 @@
 import React, { useState } from 'react'
-import { resolveUrl, type AiBackgroundRequest, type StoryboardPromptQualityReview } from './api'
+import {
+  resolveUrl,
+  listImageReviewsAi,
+  approveImageReviewAi,
+  rejectImageReviewAi,
+  listProjectAiCoverage,
+  renderStorySceneAi,
+  listStorySceneImagesAi,
+  bindStorySceneImageAi,
+  deleteStorySceneImageAi,
+  type AiBackgroundRequest,
+  type AiCoverage,
+  type ImageReviewRecord,
+  type StorySceneImageItem,
+  type StoryboardPromptQualityReview
+} from './api'
 
 export type StoryboardBatchItem = {
   nodeId: string
@@ -12,6 +27,10 @@ export type StoryboardBatchItem = {
   promptReview?: StoryboardPromptQualityReview | null
   status?: 'idle' | 'generating' | 'generated' | 'applying' | 'applied' | 'error'
   note?: string
+  // 场景管理卡片：当前已绑定背景图（ComposeStudio 构建 items 时从项目资产解析）
+  backgroundAssetId?: string
+  backgroundUri?: string
+  backgroundUrl?: string
 }
 
 function getDoubaoDefaultSize(aspectRatio: string) {
@@ -46,6 +65,22 @@ function getPromptReviewTone(review: StoryboardPromptQualityReview | null | unde
   if (verdict === 'ok') return { cls: 'ok', color: '#a7f3d0' }
   if (verdict === 'error') return { cls: 'bad', color: '#fca5a5' }
   return { cls: 'pending', color: '#fde68a' }
+}
+
+// 项目资产 uri（assets/... 相对路径或完整 URL）转可显示地址，与锁定工作台同一规则
+function toProjectAssetUrl(projectId: string, rawUri: string) {
+  const uri = String(rawUri || '').trim()
+  if (!uri || !projectId) return ''
+  if (/^https?:\/\//i.test(uri) || uri.startsWith('data:')) return uri
+  return resolveUrl(`/project-assets/${encodeURIComponent(String(projectId))}/${uri.replace(/^\/+/, '')}`)
+}
+
+// 场景图版本端点返回的 url 可能是 /project-assets/... 相对路径，统一补全为可显示地址
+function toSceneImageSrc(rawUrl: string) {
+  const value = String(rawUrl || '').trim()
+  if (!value) return ''
+  if (/^https?:\/\//i.test(value) || value.startsWith('data:')) return value
+  return resolveUrl(value.startsWith('/') ? value : `/${value}`)
 }
 
 export default function AiStoryboardBatchModal(props: {
@@ -151,6 +186,13 @@ export default function AiStoryboardBatchModal(props: {
   onPauseQueue: () => void
   onResumeQueue: () => void
   onCancelQueue: () => void
+  // 场景管理：出图/绑定写回后重载项目数据；日志行追加到弹窗日志区
+  onReloadProject?: () => void
+  onAppendLog?: (line: string) => void
+  // 场景编排器入口：关闭弹窗并定位到该场景节点进行画布编排
+  onArrangeScene?: (nodeId: string) => void
+  // 出场事物联动：点击场景卡的事物 chip，打开锁定事物向导并定位到该资产的详情/姿势变体区
+  onOpenAssetLock?: (asset: { id: string; name: string; category: string }) => void
 }) {
   const v = props.value
   const busy = props.busyGenerate || props.busyApply || props.busyEntity || props.assetPlanBusy
@@ -191,7 +233,10 @@ export default function AiStoryboardBatchModal(props: {
   const storyBibleReady = Boolean(String((v as any).storyBibleJson || '').trim())
   const sceneRenderOpenReady = envReady && props.assetConfirmReady
   const sceneRenderReady = sceneRenderOpenReady && props.continuityReady
-  const configuredLoras = Array.isArray((v as any).loras) ? (v as any).loras.map((x: any) => String(x || '').trim()).filter(Boolean) : []
+  const configuredLoras = (Array.isArray((v as any).loras) && (v as any).loras.length)
+    ? (v as any).loras.map((x: any) => String(x || '').trim()).filter(Boolean)
+    // 2026-09-09：项目未配 batch draft 时回退 studio 生效 LoRA（此前显示 (none)，实际生成已带全局 LoRA——显示与事实不符）
+    : (Array.isArray((openChecks as any).imageLoras) ? (openChecks as any).imageLoras : [])
   const assetPlanReady = Boolean(assetPlan && planAssets.length > 0)
   const readyAssetCount = planAssets.filter((asset) => String(asset?.referenceStatus || '').trim() === 'ready').length
   const requiredAssetCount = planAssets.filter((asset) => String(asset?.renderStrategy || '').trim() === 'ref_required').length
@@ -317,6 +362,271 @@ export default function AiStoryboardBatchModal(props: {
   const [renderPanelExpanded, setRenderPanelExpanded] = useState(true)
   const [renderLogsExpanded, setRenderLogsExpanded] = useState(false)
   const logPreview = props.logs.length ? props.logs.slice(-3).join('\n') : '(暂无日志)'
+
+  // 场景管理卡片：出图总账 / 待审核 / 单场景重新出图 状态
+  const projectId = String(props.projectId || '').trim()
+  const [coverage, setCoverage] = useState<AiCoverage | null>(null)
+  const [pendingReviews, setPendingReviews] = useState<ImageReviewRecord[]>([])
+  const [reviewBusyIds, setReviewBusyIds] = useState<string[]>([])
+  const [renderingSceneIds, setRenderingSceneIds] = useState<string[]>([])
+  const [rerenderAllBusy, setRerenderAllBusy] = useState(false)
+  const [sceneSourceExpandedIds, setSceneSourceExpandedIds] = useState<string[]>([])
+  const [localBgUrls, setLocalBgUrls] = useState<Record<string, string>>({})
+  const [sceneActionHint, setSceneActionHint] = useState('')
+  const pendingReviewsRef = React.useRef<ImageReviewRecord[]>([])
+
+  const refreshReviewsAndCoverage = async () => {
+    if (!projectId) return
+    const [reviews, cov] = await Promise.all([
+      listImageReviewsAi(projectId, 'pending').catch(() => [] as ImageReviewRecord[]),
+      listProjectAiCoverage(projectId).catch(() => null)
+    ])
+    pendingReviewsRef.current = reviews
+    setPendingReviews(reviews)
+    setCoverage(cov)
+  }
+
+  // 弹窗打开期间每 3s 轮询待审核与出图总账（关闭即停）
+  React.useEffect(() => {
+    if (!props.open || !projectId) return undefined
+    let stopped = false
+    const pull = async () => {
+      const [reviews, cov] = await Promise.all([
+        listImageReviewsAi(projectId, 'pending').catch(() => [] as ImageReviewRecord[]),
+        listProjectAiCoverage(projectId).catch(() => null)
+      ])
+      if (stopped) return
+      pendingReviewsRef.current = reviews
+      setPendingReviews(reviews)
+      setCoverage(cov)
+    }
+    void pull()
+    const timer = window.setInterval(pull, 3000)
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [props.open, projectId])
+
+  // 打开/项目切换后自动定位到场景管理区（每次打开只定位一次，不抢用户滚动）
+  const sceneSectionRef = React.useRef<HTMLDivElement>(null)
+  React.useEffect(() => {
+    if (!props.open) return undefined
+    const timer = window.setTimeout(() => {
+      sceneSectionRef.current?.scrollIntoView({ block: 'start' })
+    }, 60)
+    return () => window.clearTimeout(timer)
+  }, [props.open, projectId])
+
+  // 场景图版本图库：打开时按场景拉取（不轮询），出图/换绑/删除后单场景刷新
+  const [sceneGallery, setSceneGallery] = useState<Record<string, { items: StorySceneImageItem[]; boundUri: string }>>({})
+  const [gallerySelected, setGallerySelected] = useState<Record<string, string>>({})
+  const [galleryBusy, setGalleryBusy] = useState<Record<string, boolean>>({})
+  const [galleryHint, setGalleryHint] = useState<Record<string, string>>({})
+  const refreshSceneGallery = async (sceneId: string) => {
+    if (!projectId || !sceneId) return
+    try {
+      const res = await listStorySceneImagesAi(projectId, sceneId)
+      setSceneGallery((prev) => ({ ...prev, [sceneId]: res }))
+    } catch (_) { /* 图库拉取失败不阻断卡片渲染 */ }
+  }
+  const sceneNodeIdsKey = props.items.map((x) => x.nodeId).join(',')
+  React.useEffect(() => {
+    if (!props.open || !projectId) return
+    for (const id of sceneNodeIdsKey.split(',').filter(Boolean)) {
+      void refreshSceneGallery(id)
+    }
+    // 仅按打开状态/项目/场景 id 集合触发，items 内容变化（编辑提示词）不重复拉取
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.open, projectId, sceneNodeIdsKey])
+
+  const logLine = (line: string) => {
+    if (props.onAppendLog) props.onAppendLog(line)
+    else setSceneActionHint(line)
+  }
+  const reviewPhaseLabel = (phase: string) => {
+    if (phase === 'pre_generate') return '出图前审核'
+    if (phase === 'lock_confirm') return '锁定确认'
+    if (phase === 'scene_bind') return '场景图绑定'
+    return phase || '审核'
+  }
+  const sceneNameOfReview = (review: ImageReviewRecord) => {
+    const hit = props.items.find((x) => String(x.nodeId || '') === String(review.sceneId || '').trim())
+    return String(hit?.nodeName || (review.params as any)?.sceneName || review.sceneId || review.targetKey || '场景').trim()
+  }
+  const formatBindTime = (raw: string) => {
+    const v = String(raw || '').trim()
+    return v ? v.replace('T', ' ').slice(0, 16) : ''
+  }
+
+  const sceneAssetCategoryLabel = (category: string) => {
+    const c = String(category || '').trim()
+    if (c === 'character') return '角色'
+    if (c === 'prop') return '道具'
+    if (c === 'location') return '地点'
+    return c || '事物'
+  }
+  // 出场事物：优先 assetPlan.scenes[i].promptAssets（场景→事物正向关联）；
+  // 为空时回退 assetPlan.assets[j].sceneIds 反查；锁定状态以资产 primaryReferenceAssetUri 非空为准
+  const sceneAssetsOf = (sceneNodeId: string): Array<{ id: string; name: string; category: string; locked: boolean }> => {
+    const plan = assetPlan
+    const nodeId = String(sceneNodeId || '').trim()
+    if (!plan || !nodeId) return []
+    const assets = Array.isArray(plan.assets) ? plan.assets : []
+    const assetsById = new Map(assets.map((a: any) => [String(a?.id || '').trim(), a]))
+    const toEntry = (raw: any) => {
+      const id = String(raw?.id || '').trim()
+      const full = assetsById.get(id) || raw
+      return {
+        id,
+        name: String(raw?.name || full?.name || id).trim() || id,
+        category: String(full?.category || raw?.category || '').trim(),
+        locked: Boolean(String(full?.primaryReferenceAssetUri || '').trim())
+      }
+    }
+    const scenes = Array.isArray(plan.scenes) ? plan.scenes : []
+    const scene = scenes.find((s: any) => String(s?.sceneId || '').trim() === nodeId)
+    const promptAssets = Array.isArray(scene?.promptAssets) ? scene.promptAssets : []
+    if (promptAssets.length) return promptAssets.map(toEntry).filter((x: any) => x && x.id)
+    return assets
+      .filter((a: any) => Array.isArray(a?.sceneIds) && a.sceneIds.map((x: any) => String(x || '').trim()).includes(nodeId))
+      .map(toEntry)
+      .filter((x: any) => x.id)
+  }
+
+  const decideReview = async (review: ImageReviewRecord, approved: boolean) => {
+    if (!projectId || reviewBusyIds.includes(review.reviewId)) return
+    setReviewBusyIds((prev) => [...prev, review.reviewId])
+    try {
+      if (approved) await approveImageReviewAi(projectId, review.reviewId)
+      else await rejectImageReviewAi(projectId, review.reviewId)
+      logLine(`${approved ? '已批准' : '已拒绝'}：${reviewPhaseLabel(review.phase)} / ${sceneNameOfReview(review)}`)
+      // 场景图绑定批准后服务端已写回 story.json，重载项目让画布与总账对齐
+      if (approved && review.phase === 'scene_bind') props.onReloadProject?.()
+      await refreshReviewsAndCoverage()
+    } catch (e: any) {
+      window.alert(`审核操作失败：${e && e.message ? e.message : String(e)}`)
+    } finally {
+      setReviewBusyIds((prev) => prev.filter((x) => x !== review.reviewId))
+    }
+  }
+
+  const handleRenderScene = async (it: StoryboardBatchItem) => {
+    if (!projectId || renderingSceneIds.includes(it.nodeId)) return
+    const scenePrompt = String(it.prompt || '').trim()
+    if (!scenePrompt) return
+    setRenderingSceneIds((prev) => [...prev, it.nodeId])
+    logLine(`开始重新出图：${it.nodeName}`)
+    try {
+      const res = await renderStorySceneAi(projectId, it.nodeId, {
+        scenePrompt,
+        negativePrompt: String(it.negativePrompt || '').trim(),
+        backgroundOnly: true
+      })
+      if (res.pendingReview) {
+        const phase = String(res.pendingReview.phase || '')
+        logLine(phase === 'scene_bind'
+          ? `场景图已生成，待审核绑定：${it.nodeName}（在上方待审核区处理）`
+          : `出图前审核待批准：${it.nodeName}（在上方待审核区批准后自动继续）`)
+      } else {
+        if (res.url) setLocalBgUrls((prev) => ({ ...prev, [it.nodeId]: resolveUrl(String(res.url)) }))
+        logLine(`场景出图完成：${it.nodeName}`)
+        props.onReloadProject?.()
+      }
+      await Promise.all([refreshReviewsAndCoverage(), refreshSceneGallery(it.nodeId)])
+    } catch (e: any) {
+      const msg = e && e.message ? e.message : String(e)
+      logLine(`场景出图失败：${it.nodeName} - ${msg}`)
+    } finally {
+      setRenderingSceneIds((prev) => prev.filter((x) => x !== it.nodeId))
+    }
+  }
+
+  const canRerenderAll = Boolean(projectId) && !busy && !rerenderAllBusy && envReady && props.items.some((x) => String(x.prompt || '').trim())
+  const handleRerenderAll = async () => {
+    if (!projectId || rerenderAllBusy) return
+    const targets = props.items.filter((x) => String(x.prompt || '').trim())
+    if (!targets.length) {
+      logLine('没有具备英文提示词的场景，无法重渲')
+      return
+    }
+    setRerenderAllBusy(true)
+    logLine(`开始全部重渲：共 ${targets.length} 个场景（逐个串行）`)
+    let ok = 0
+    let skipped = 0
+    let failed = 0
+    try {
+      for (const it of targets) {
+        if (pendingReviewsRef.current.some((r) => String(r.sceneId || '').trim() === String(it.nodeId || '').trim())) {
+          skipped += 1
+          logLine(`跳过：${it.nodeName}（存在待审核项，请先在待审核区处理）`)
+          continue
+        }
+        setRenderingSceneIds((prev) => (prev.includes(it.nodeId) ? prev : [...prev, it.nodeId]))
+        try {
+          const res = await renderStorySceneAi(projectId, it.nodeId, {
+            scenePrompt: String(it.prompt || '').trim(),
+            negativePrompt: String(it.negativePrompt || '').trim(),
+            backgroundOnly: true
+          })
+          if (res.pendingReview) {
+            skipped += 1
+            logLine(`待审核：${it.nodeName}（已挂起审核，请在待审核区批准）`)
+          } else {
+            ok += 1
+            if (res.url) setLocalBgUrls((prev) => ({ ...prev, [it.nodeId]: resolveUrl(String(res.url)) }))
+            logLine(`重渲完成：${it.nodeName}`)
+          }
+        } catch (e: any) {
+          failed += 1
+          const msg = e && e.message ? e.message : String(e)
+          logLine(`重渲失败：${it.nodeName} - ${msg}`)
+        } finally {
+          setRenderingSceneIds((prev) => prev.filter((x) => x !== it.nodeId))
+        }
+        await Promise.all([refreshReviewsAndCoverage(), refreshSceneGallery(it.nodeId)])
+      }
+      logLine(`全部重渲结束：成功 ${ok} / 待审核或跳过 ${skipped} / 失败 ${failed}`)
+      if (ok > 0) props.onReloadProject?.()
+    } finally {
+      setRerenderAllBusy(false)
+    }
+  }
+
+  const handleBindSceneImage = async (it: StoryboardBatchItem, assetPath: string) => {
+    if (!projectId || galleryBusy[it.nodeId]) return
+    setGalleryBusy((prev) => ({ ...prev, [it.nodeId]: true }))
+    setGalleryHint((prev) => ({ ...prev, [it.nodeId]: '' }))
+    try {
+      await bindStorySceneImageAi(projectId, it.nodeId, assetPath)
+      logLine(`已设为背景：${it.nodeName}`)
+      setGallerySelected((prev) => ({ ...prev, [it.nodeId]: '' }))
+      await Promise.all([refreshSceneGallery(it.nodeId), refreshReviewsAndCoverage()])
+      // 换绑已写回 story.json/project.json，重载项目让画布同步
+      props.onReloadProject?.()
+    } catch (e: any) {
+      const msg = e && e.message ? e.message : String(e)
+      setGalleryHint((prev) => ({ ...prev, [it.nodeId]: `设为背景失败：${msg}` }))
+    } finally {
+      setGalleryBusy((prev) => ({ ...prev, [it.nodeId]: false }))
+    }
+  }
+
+  const handleDeleteSceneImage = async (it: StoryboardBatchItem, item: StorySceneImageItem) => {
+    if (!projectId || galleryBusy[it.nodeId]) return
+    const ok = window.confirm(`确认删除该场景图版本？删除后不可恢复。\n${item.assetPath}`)
+    if (!ok) return
+    setGalleryBusy((prev) => ({ ...prev, [it.nodeId]: true }))
+    setGalleryHint((prev) => ({ ...prev, [it.nodeId]: '' }))
+    try {
+      await deleteStorySceneImageAi(projectId, it.nodeId, item.assetPath)
+      logLine(`已删除场景图版本：${it.nodeName}`)
+      setGallerySelected((prev) => ({ ...prev, [it.nodeId]: '' }))
+      await refreshSceneGallery(it.nodeId)
+    } catch (e: any) {
+      const msg = e && e.message ? e.message : String(e)
+      setGalleryHint((prev) => ({ ...prev, [it.nodeId]: /bound_image/i.test(msg) ? '当前绑定背景不可删除' : `删除失败：${msg}` }))
+    } finally {
+      setGalleryBusy((prev) => ({ ...prev, [it.nodeId]: false }))
+    }
+  }
   const fullLogs = props.logs.length ? props.logs.join('\n') : '暂无日志'
   const promptOpBusy = Boolean(props.promptOpBusy)
   const translateCountdownSec = Number(props.translateCountdownSec || 0)
@@ -703,25 +1013,103 @@ export default function AiStoryboardBatchModal(props: {
                     {renderPanelExpanded ? (
                     <div className="ai-storyboard-section ai-storyboard-stack-card">
                     <div className="ai-storyboard-section-body">
-                      <div className="ai-storyboard-section ai-storyboard-scenes">
+                      {coverage ? (
+                        <div className="ai-coverage-summary">
+                          <span className="ai-coverage-summary-label">出图总账</span>
+                          {coverage.hasPlan ? (
+                            <span className="ai-coverage-summary-text">
+                              场景绑定 {coverage.scenes.bound}/{coverage.scenes.total} · 待审核 {coverage.overall.pendingReviews} · 总进度 {coverage.overall.percent}%
+                            </span>
+                          ) : (
+                            <span className="ai-coverage-summary-text">尚未生成资产计划</span>
+                          )}
+                        </div>
+                      ) : null}
+                      <div className="ai-storyboard-section ai-storyboard-scenes" ref={sceneSectionRef}>
                         <div className="ai-storyboard-section-head">
-                          <div className="ai-storyboard-section-title">场景提示词列表（可编辑）</div>
-                          <div className="hint">共 {props.items.length} 个场景，先补齐中英文提示词，再运行场景测试。</div>
+                          <div className="ai-storyboard-section-title">场景管理（可编辑提示词 / 重新出图）</div>
+                          <div className="hint">共 {props.items.length} 个场景。每个场景可编辑提示词、查看当前场景图并单独重新出图；有审核挂起时请先在下方待审核区处理。</div>
                         </div>
                         <div className="ai-storyboard-section-body" style={{ minHeight: 0 }}>
+                          {pendingReviews.length > 0 ? (
+                            <div className="ai-review-pending-list">
+                              <div className="ai-review-pending-head">
+                                <div className="ai-review-pending-title">待审核（{pendingReviews.length}）</div>
+                                <div className="hint">批准后自动继续；场景图绑定批准后写回项目</div>
+                              </div>
+                              {pendingReviews.map((review) => {
+                                const reviewBusy = reviewBusyIds.includes(review.reviewId)
+                                const reviewSceneName = sceneNameOfReview(review)
+                                const reviewThumb = String(review.resultImagePath || '').trim() ? toProjectAssetUrl(projectId, review.resultImagePath) : ''
+                                return (
+                                  <div key={review.reviewId} className="ai-review-pending-item">
+                                    <div className="ai-review-pending-main">
+                                      <span className="ai-review-phase">{reviewPhaseLabel(review.phase)}</span>
+                                      <span className="ai-review-target">{reviewSceneName}</span>
+                                      {review.aiReview && Number.isFinite(Number(review.aiReview.score)) && (
+                                        <span className="ai-review-score">AI {Math.round(Number(review.aiReview.score))} 分</span>
+                                      )}
+                                    </div>
+                                    {reviewThumb ? (
+                                      <img className="ai-review-thumb" src={reviewThumb} alt={reviewSceneName} onClick={() => window.open(reviewThumb, '_blank')} />
+                                    ) : null}
+                                    <div className="ai-review-actions">
+                                      <button className="btn secondary" type="button" disabled={reviewBusy} onClick={() => void decideReview(review, true)}>{reviewBusy ? '处理中…' : '批准'}</button>
+                                      <button className="btn secondary" type="button" disabled={reviewBusy} onClick={() => void decideReview(review, false)}>拒绝</button>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : null}
+                          {sceneActionHint ? <div className="hint" style={{ margin: '4px 0' }}>{sceneActionHint}</div> : null}
                           <div className="ai-storyboard-scenes-list">
                             <div className="ai-storyboard-scenes-scroll">
                         {props.items.map((it, idx) => {
                           const promptReviewTone = getPromptReviewTone(it.promptReview)
-                          const currentStatus = String(it.status || 'idle').trim() || 'idle'
-                          const statusTone =
-                            currentStatus === 'applied' || currentStatus === 'generated'
-                              ? 'ok'
-                              : currentStatus === 'error'
-                                ? 'bad'
-                                : currentStatus === 'generating' || currentStatus === 'applying'
-                                  ? 'pending'
-                                  : 'warn'
+                          const sceneAssets = sceneAssetsOf(it.nodeId)
+                          const rendering = renderingSceneIds.includes(it.nodeId)
+                          const sceneReview = pendingReviews.find((r) => String(r.sceneId || '').trim() === String(it.nodeId || '').trim())
+                          const covScene = coverage && Array.isArray(coverage.scenes?.items)
+                            ? coverage.scenes.items.find((s) => String(s.id || '') === String(it.nodeId || '')) || null
+                            : null
+                          let sceneStatusLabel = '待出图'
+                          let sceneStatusTone = ''
+                          if (rendering) {
+                            sceneStatusLabel = '出图中…'
+                            sceneStatusTone = 'pending'
+                          } else if (sceneReview) {
+                            sceneStatusLabel = '待审核'
+                            sceneStatusTone = 'pending'
+                          } else if (covScene) {
+                            if (covScene.status === 'bound') {
+                              sceneStatusLabel = '已绑定'
+                              sceneStatusTone = 'ok'
+                            } else if (covScene.status === 'rendered') {
+                              sceneStatusLabel = '已出图待绑定'
+                              sceneStatusTone = 'warn'
+                            }
+                          } else if (String(it.backgroundUrl || '').trim()) {
+                            sceneStatusLabel = '已绑定'
+                            sceneStatusTone = 'ok'
+                          }
+                          const covThumb = covScene && covScene.backgroundExists ? toProjectAssetUrl(projectId, String(covScene.backgroundUri || '')) : ''
+                          const thumbUrl = String(localBgUrls[it.nodeId] || '').trim() || covThumb || String(it.backgroundUrl || '').trim()
+                          const gallery = sceneGallery[it.nodeId] || null
+                          const galleryItems = gallery?.items || []
+                          const selectedImagePath = String(gallerySelected[it.nodeId] || '').trim()
+                          const selectedImage = galleryItems.find((x) => x.assetPath === selectedImagePath) || null
+                          const isImageBound = (img: StorySceneImageItem) => Boolean(img.isBound) || (Boolean(gallery?.boundUri) && img.assetPath === String(gallery?.boundUri || ''))
+                          const mainPreviewUrl = selectedImage ? toSceneImageSrc(selectedImage.url) : (thumbUrl || (galleryItems[0] ? toSceneImageSrc(galleryItems[0].url) : ''))
+                          const galleryBusyNow = Boolean(galleryBusy[it.nodeId])
+                          const promptEmpty = !String(it.prompt || '').trim()
+                          const renderDisabled = !projectId || busy || rerenderAllBusy || rendering || promptEmpty || !envReady
+                          const renderTitle = promptEmpty ? '先生成英文提示词' : (!envReady ? '请先通过顶部环境体检' : '按当前英文提示词重新出图')
+                          const sourceExpanded = sceneSourceExpandedIds.includes(it.nodeId)
+                          const bindTimeText = formatBindTime(String(covScene?.bindApprovedAt || ''))
+                          const bindInfo = covScene
+                            ? (covScene.bindApproved ? `已绑定${bindTimeText ? ` · ${bindTimeText}` : ''}` : (covScene.backgroundExists ? '已出图，待审核绑定' : '未绑定背景'))
+                            : (thumbUrl ? '背景来自当前项目绑定' : '未绑定背景')
                           return (
                             <div key={it.nodeId} className="story-lock-global-card ai-storyboard-scene-prompt-card">
                               <div className="story-lock-global-head">
@@ -729,13 +1117,34 @@ export default function AiStoryboardBatchModal(props: {
                                   <div className="story-lock-workspace-log-title">
                                     #{idx + 1} {it.nodeName}
                                   </div>
+                                  <div className="ai-storyboard-scene-assets">
+                                    出场事物：{sceneAssets.length > 0
+                                      ? (props.onOpenAssetLock
+                                        ? sceneAssets.map((a, ai) => (
+                                          <React.Fragment key={a.id || `${a.name}-${ai}`}>
+                                            {ai > 0 ? '、' : null}
+                                            <button
+                                              type="button"
+                                              className="ai-storyboard-scene-asset-link"
+                                              title={`打开锁定事物向导：${a.name}`}
+                                              onClick={() => props.onOpenAssetLock?.({ id: a.id, name: a.name, category: a.category })}
+                                            >
+                                              {a.name}（{sceneAssetCategoryLabel(a.category)}·{a.locked ? '已锁' : '未锁'}）
+                                            </button>
+                                          </React.Fragment>
+                                        ))
+                                        : sceneAssets.map((a) => `${a.name}（${sceneAssetCategoryLabel(a.category)}·${a.locked ? '已锁' : '未锁'}）`).join('、'))
+                                      : '未关联'}
+                                  </div>
                                   <div className="story-lock-workspace-chip-row">
-                                    <span className={`ai-storyboard-status ${statusTone}`}>状态: {currentStatus}</span>
+                                    <span className={`ai-storyboard-status ${sceneStatusTone}`.trim()}>{sceneStatusLabel}</span>
+                                    {it.promptReview ? (
+                                      <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
+                                        AI 评分 {Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
+                                      </span>
+                                    ) : null}
                                     <span className={`ai-storyboard-status ${String(it.promptZh || '').trim() ? 'ok' : 'bad'}`}>正向中文</span>
                                     <span className={`ai-storyboard-status ${String(it.prompt || '').trim() ? 'ok' : 'bad'}`}>正向英文</span>
-                                    <span className={`ai-storyboard-status ${String(it.negativePromptZh || '').trim() ? 'ok' : 'warn'}`}>负向中文</span>
-                                    <span className={`ai-storyboard-status ${String(it.negativePrompt || '').trim() ? 'ok' : 'warn'}`}>负向英文</span>
-                                    <span className="ai-storyboard-status pending">{it.nodeId}</span>
                                     {(props.busyGenerate || props.busyApply) && (it.status === 'generating' || it.status === 'applying') && props.generatingNodeId === it.nodeId ? (
                                       <span className="ai-storyboard-status pending">耗时 {((props.generatingNodeElapsedMs || 0) / 1000).toFixed(1)}s</span>
                                     ) : null}
@@ -748,76 +1157,129 @@ export default function AiStoryboardBatchModal(props: {
                                   <button className="btn secondary" type="button" onClick={() => props.onApplyItemPromptReview(it.nodeId)} disabled={busy || !it.promptReview?.ai?.optimizedPrompt}>
                                     继续强化提示词
                                   </button>
+                                  <button className="btn secondary" type="button" onClick={() => void handleRenderScene(it)} disabled={renderDisabled} title={renderTitle}>
+                                    {rendering ? '出图中…' : '重新出图'}
+                                  </button>
+                                  <button
+                                    className="btn secondary"
+                                    type="button"
+                                    onClick={() => {
+                                      void props.onClose()
+                                      props.onArrangeScene?.(it.nodeId)
+                                    }}
+                                    title="关闭本面板，在合成工作室画布中编排该场景的角色与事物站位"
+                                  >
+                                    编排站位
+                                  </button>
                                 </div>
                               </div>
-                              <div className="story-lock-prompt-stack">
-                                <div className="story-lock-prompt-section">
-                                  <div className="story-lock-global-subtitle">场景原文</div>
-                                  <div className="story-lock-workspace-log-box ai-storyboard-scene-source">
-                                    <pre>{it.userInput || '(无场景文本)'}</pre>
-                                  </div>
+                              <div className="ai-storyboard-scene-card-main">
+                                <div className="ai-storyboard-scene-side">
+                                  {mainPreviewUrl ? (
+                                    <img className="ai-storyboard-scene-thumb" src={mainPreviewUrl} alt={it.nodeName} onClick={() => window.open(mainPreviewUrl, '_blank')} title="点击查看大图" />
+                                  ) : (
+                                    <div className="ai-storyboard-scene-thumb-empty">暂无场景图</div>
+                                  )}
+                                  <div className="ai-storyboard-scene-bind-info">{bindInfo}</div>
+                                  {galleryItems.length > 0 ? (
+                                    <div className="ai-storyboard-scene-gallery">
+                                      {galleryItems.map((img) => {
+                                        const bound = isImageBound(img)
+                                        const selected = selectedImagePath === img.assetPath
+                                        return (
+                                          <button
+                                            key={img.assetPath}
+                                            type="button"
+                                            className={`ai-storyboard-scene-version${bound ? ' bound' : ''}${selected ? ' active' : ''}`}
+                                            title={img.assetPath}
+                                            onClick={() => setGallerySelected((prev) => ({ ...prev, [it.nodeId]: selected ? '' : img.assetPath }))}
+                                          >
+                                            <img src={toSceneImageSrc(img.url)} alt="" />
+                                            {bound ? <span className="ai-storyboard-scene-version-badge">当前背景</span> : null}
+                                          </button>
+                                        )
+                                      })}
+                                    </div>
+                                  ) : null}
+                                  {selectedImage ? (
+                                    <div className="ai-storyboard-scene-version-actions">
+                                      <span className="hint">{formatBindTime(selectedImage.createdAt) || '未标注时间'}</span>
+                                      {isImageBound(selectedImage) ? (
+                                        <span className="hint">当前绑定背景</span>
+                                      ) : (
+                                        <>
+                                          <button className="btn secondary" type="button" disabled={galleryBusyNow} onClick={() => void handleBindSceneImage(it, selectedImage.assetPath)}>设为背景</button>
+                                          <button className="btn secondary" type="button" disabled={galleryBusyNow} onClick={() => void handleDeleteSceneImage(it, selectedImage)}>删除</button>
+                                        </>
+                                      )}
+                                    </div>
+                                  ) : null}
+                                  {galleryHint[it.nodeId] ? <div className="hint ai-storyboard-scene-gallery-hint">{galleryHint[it.nodeId]}</div> : null}
                                 </div>
-                                {it.promptReview ? (
+                                <div className="story-lock-prompt-stack" style={{ flex: 1, minWidth: 0 }}>
                                   <div className="story-lock-prompt-section">
-                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                                      <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
-                                        AI 评分：{Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
-                                      </span>
-                                      <span className="hint" style={{ color: promptReviewTone.color }}>{it.promptReview.ai.summary}</span>
+                                    <div className="story-lock-global-subhead">
+                                      <div className="story-lock-global-subtitle">场景原文</div>
+                                      <button className="btn secondary" type="button" onClick={() => setSceneSourceExpandedIds((prev) => (prev.includes(it.nodeId) ? prev.filter((x) => x !== it.nodeId) : [...prev, it.nodeId]))}>
+                                        {sourceExpanded ? '收起' : '展开'}
+                                      </button>
                                     </div>
-                                    {it.promptReview.ai.suggestions?.length ? (
-                                      <div className="hint" style={{ whiteSpace: 'pre-wrap' }}>建议：{it.promptReview.ai.suggestions.slice(0, 3).join('；')}</div>
-                                    ) : null}
-                                    {it.promptReview.aiError?.message ? (
-                                      <div className="hint" style={{ color: '#fca5a5' }}>AI 回退：{it.promptReview.aiError.message}</div>
-                                    ) : null}
+                                    <div className="story-lock-workspace-log-box ai-storyboard-scene-source">
+                                      {sourceExpanded ? (
+                                        <pre>{it.userInput || '(无场景文本)'}</pre>
+                                      ) : (
+                                        <pre className="ai-storyboard-scene-source-collapsed">{it.userInput || '(无场景文本)'}</pre>
+                                      )}
+                                    </div>
                                   </div>
-                                ) : null}
-                                <div className="story-lock-prompt-section">
-                                  <div className="story-lock-global-subhead">
-                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                  {it.promptReview ? (
+                                    <div className="story-lock-prompt-section">
+                                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                        <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
+                                          AI 评分：{Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
+                                        </span>
+                                        <span className="hint" style={{ color: promptReviewTone.color }}>{it.promptReview.ai.summary}</span>
+                                      </div>
+                                      {it.promptReview.ai.suggestions?.length ? (
+                                        <div className="hint" style={{ whiteSpace: 'pre-wrap' }}>建议：{it.promptReview.ai.suggestions.slice(0, 3).join('；')}</div>
+                                      ) : null}
+                                      {it.promptReview.aiError?.message ? (
+                                        <div className="hint" style={{ color: '#fca5a5' }}>AI 回退：{it.promptReview.aiError.message}</div>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+                                  <div className="story-lock-prompt-section">
+                                    <div className="story-lock-global-subhead">
                                       <div className="story-lock-global-subtitle">正向提示词</div>
-                                      {it.promptReview ? (
-                                        <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
-                                          评分 {Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
-                                        </span>
-                                      ) : null}
+                                    </div>
+                                    <div className="story-lock-prompt-grid">
+                                      <label className="story-lock-prompt-field">
+                                        <span>中文</span>
+                                        <textarea className="story-lock-textarea compact-rows" value={it.promptZh || ''} onChange={(e) => props.onChangeItem(it.nodeId, { promptZh: e.target.value })} placeholder="AI 强化后的中文场景提示词" />
+                                      </label>
+                                      <label className="story-lock-prompt-field">
+                                        <span>英文</span>
+                                        <textarea className="story-lock-textarea compact-rows" value={it.prompt || ''} onChange={(e) => props.onChangeItem(it.nodeId, { prompt: e.target.value })} placeholder="英文场景提示词（用于出图）" />
+                                      </label>
                                     </div>
                                   </div>
-                                  <div className="story-lock-prompt-grid">
-                                    <label className="story-lock-prompt-field">
-                                      <span>中文</span>
-                                      <textarea className="story-lock-textarea compact-rows" value={it.promptZh || ''} onChange={(e) => props.onChangeItem(it.nodeId, { promptZh: e.target.value })} placeholder="AI 强化后的中文场景提示词" />
-                                    </label>
-                                    <label className="story-lock-prompt-field">
-                                      <span>英文</span>
-                                      <textarea className="story-lock-textarea compact-rows" value={it.prompt || ''} onChange={(e) => props.onChangeItem(it.nodeId, { prompt: e.target.value })} placeholder="英文场景提示词（用于出图）" />
-                                    </label>
-                                  </div>
-                                </div>
-                                <div className="story-lock-prompt-section">
-                                  <div className="story-lock-global-subhead">
-                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                  <div className="story-lock-prompt-section">
+                                    <div className="story-lock-global-subhead">
                                       <div className="story-lock-global-subtitle">负向提示词</div>
-                                      {it.promptReview ? (
-                                        <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>
-                                          评分 {Number.isFinite(Number(it.promptReview.ai.score)) ? `${Math.round(Number(it.promptReview.ai.score))}/100` : 'n/a'}
-                                        </span>
-                                      ) : null}
+                                    </div>
+                                    <div className="story-lock-prompt-grid">
+                                      <label className="story-lock-prompt-field">
+                                        <span>中文</span>
+                                        <textarea className="story-lock-textarea compact-rows" value={it.negativePromptZh || ''} onChange={(e) => props.onChangeItem(it.nodeId, { negativePromptZh: e.target.value })} placeholder="中文场景负向提示词（可选）" />
+                                      </label>
+                                      <label className="story-lock-prompt-field">
+                                        <span>英文</span>
+                                        <textarea className="story-lock-textarea compact-rows" value={it.negativePrompt || ''} onChange={(e) => props.onChangeItem(it.nodeId, { negativePrompt: e.target.value })} placeholder="英文场景负向提示词（用于出图）" />
+                                      </label>
                                     </div>
                                   </div>
-                                  <div className="story-lock-prompt-grid">
-                                    <label className="story-lock-prompt-field">
-                                      <span>中文</span>
-                                      <textarea className="story-lock-textarea compact-rows" value={it.negativePromptZh || ''} onChange={(e) => props.onChangeItem(it.nodeId, { negativePromptZh: e.target.value })} placeholder="中文场景负向提示词（可选）" />
-                                    </label>
-                                    <label className="story-lock-prompt-field">
-                                      <span>英文</span>
-                                      <textarea className="story-lock-textarea compact-rows" value={it.negativePrompt || ''} onChange={(e) => props.onChangeItem(it.nodeId, { negativePrompt: e.target.value })} placeholder="英文场景负向提示词（用于出图）" />
-                                    </label>
-                                  </div>
+                                  {it.note ? <div className="hint">{it.note}</div> : null}
                                 </div>
-                                {it.note ? <div className="hint">{it.note}</div> : null}
                               </div>
                             </div>
                           )
@@ -930,6 +1392,9 @@ export default function AiStoryboardBatchModal(props: {
               </button>
             </div>
             <div className="right">
+              <button onClick={() => void handleRerenderAll()} disabled={!canRerenderAll} title="按各场景当前英文提示词逐个重新出图（串行；有待审核项的场景会跳过）">
+                {rerenderAllBusy ? '重渲中…' : '全部重渲'}
+              </button>
               <button onClick={props.onApplyAll} disabled={!canApplyAll}>
                 {props.busyApply ? '应用中…' : '开始批量出图'}
               </button>

@@ -1,0 +1,182 @@
+{
+  "schemaVersion": "1.0",
+  "startNodeId": "bn_sc_1788926605753_kvxs0l",
+  "placeholders": [],
+  "nodes": [
+    {
+      "id": "bn_sc_1788926605753_kvxs0l",
+      "scriptCardId": "sc_1788926605753_kvxs0l",
+      "name": "石瓶里的乌鸦",
+      "kind": "scene",
+      "textDraft": "烈日当空，乌鸦口渴难耐，它用喙敲打着颈边光滑的石瓶，却怎么也喝不到水。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_kvxs0l",
+          "text": "继续",
+          "toNodeId": "bn_sc_1788926605753_bzt7zv"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_bzt7zv",
+      "scriptCardId": "sc_1788926605753_bzt7zv",
+      "name": "灵光一闪",
+      "kind": "scene",
+      "textDraft": "它看见旁边散落的彩色玻璃珠，脑中浮现出水位上升的画面，陷入了犹豫。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_bzt7zv",
+          "text": "继续",
+          "toNodeId": "bn_sc_1788926605753_dxf19h"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_dxf19h",
+      "scriptCardId": "sc_1788926605753_dxf19h",
+      "name": "策略抉择",
+      "kind": "scene",
+      "textDraft": "乌鸦决定尝试一种方法来升高水位。\n选项1：逐一叼起玻璃珠投入瓶中\n选项2：用翅膀将瓶子推倒",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_dxf19h_1",
+          "text": "逐一叼起玻璃珠投入瓶中",
+          "toNodeId": "bn_sc_1788926605753_111b6b"
+        },
+        {
+          "id": "bc_sc_1788926605753_dxf19h_2",
+          "text": "用翅膀将瓶子推倒",
+          "toNodeId": "bn_sc_1788926605753_j2vt7r"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_111b6b",
+      "scriptCardId": "sc_1788926605753_111b6b",
+      "name": "1后果1",
+      "kind": "scene",
+      "textDraft": "乌鸦每放一颗珠子，水位便肉眼可见地上升，它感到充满希望。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_111b6b",
+          "text": "继续",
+          "toNodeId": "bn_sc_1788926605753_a1vjx5"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_j2vt7r",
+      "scriptCardId": "sc_1788926605753_j2vt7r",
+      "name": "1后果2",
+      "kind": "scene",
+      "textDraft": "瓶子猛地倒地，玻璃珠滚落一地，瓶底卡在石头缝里倒不出来。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_j2vt7r",
+          "text": "继续",
+          "toNodeId": "bn_sc_1788926605753_a1vjx5"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_a1vjx5",
+      "scriptCardId": "sc_1788926605753_a1vjx5",
+      "name": "现状评估",
+      "kind": "scene",
+      "textDraft": "无论是整齐堆积的珠子还是破碎的现场，乌鸦都必须面对当下的困境。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_a1vjx5",
+          "text": "继续",
+          "toNodeId": "bn_sc_1788926605753_od7540"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_od7540",
+      "scriptCardId": "sc_1788926605753_od7540",
+      "name": "最终行动",
+      "kind": "scene",
+      "textDraft": "面对即将干涸的喉咙，乌鸦需要做出最后的决断。\n选项1：坚持耐心投入剩余珠子\n选项2：放弃喝水，飞向远方",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_od7540_1",
+          "text": "坚持耐心投入剩余珠子",
+          "toNodeId": "bn_sc_1788926605753_wb6lvc"
+        },
+        {
+          "id": "bc_sc_1788926605753_od7540_2",
+          "text": "放弃喝水，飞向远方",
+          "toNodeId": "bn_sc_1788926605753_pvhls7"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_wb6lvc",
+      "scriptCardId": "sc_1788926605753_wb6lvc",
+      "name": "2后果1",
+      "kind": "scene",
+      "textDraft": "它忍着疲惫继续投掷，直到最后一颗珠子落下，清澈的水漫过了瓶口。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_wb6lvc",
+          "text": "继续",
+          "toNodeId": "bn_sc_1788926605753_x7x5nr"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_pvhls7",
+      "scriptCardId": "sc_1788926605753_pvhls7",
+      "name": "2后果2",
+      "kind": "scene",
+      "textDraft": "它痛苦地鸣叫一声，挥动双翼，向着未知的天际飞去。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": [
+        {
+          "id": "bc_sc_1788926605753_pvhls7",
+          "text": "继续",
+          "toNodeId": "bn_sc_1788926605753_k0cv4t"
+        }
+      ]
+    },
+    {
+      "id": "bn_sc_1788926605753_x7x5nr",
+      "scriptCardId": "sc_1788926605753_x7x5nr",
+      "name": "结局1",
+      "kind": "ending",
+      "textDraft": "乌鸦低下头，畅快地喝着甘甜的泉水，清脆的鸣叫声在山谷回荡。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    },
+    {
+      "id": "bn_sc_1788926605753_k0cv4t",
+      "scriptCardId": "sc_1788926605753_k0cv4t",
+      "name": "结局2",
+      "kind": "ending",
+      "textDraft": "乌鸦孤独的身影消失在夕阳余晖中，只留下空荡的石瓶见证它的离去。",
+      "actorIds": [],
+      "eventIds": [],
+      "choices": []
+    }
+  ],
+  "updatedAt": "2026-09-09T04:03:25.754Z"
+}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { markStartupReady } from '../startupReady'
 import {
   analyzeProjectScripts,
   createProjectWithAiDetailed,
@@ -366,6 +367,7 @@ export default function Hub(props: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      markStartupReady() // 启动覆盖层按真实加载收尾（重复调用安全）
     }
   }
 

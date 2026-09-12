@@ -13,10 +13,13 @@ const PROJECT_KEY = 'gamestudio.projectId'
 
 function loadPersistedStage(): { stage: Stage; projectId: string | null } {
   try {
-    // Always enter Hub first to show startup entry card.
-    // Stage persistence is still kept for internal navigation after entering editor.
+    // 2026-08-26 修复：刷新后恢复上次打开的界面（原来强制回 Hub，持久化形同虚设）。
+    // 仅当 stage 与 projectId 同时有效才恢复进工作室，否则回 Hub。
+    const stage = localStorage.getItem(STAGE_KEY)
     const projectId = localStorage.getItem(PROJECT_KEY)
-    if (projectId) return { stage: 'hub', projectId: null }
+    if (projectId && (stage === 'script' || stage === 'blueprint' || stage === 'compose')) {
+      return { stage, projectId }
+    }
     return { stage: 'hub', projectId: null }
   } catch {
     return { stage: 'hub', projectId: null }

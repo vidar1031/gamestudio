@@ -58,6 +58,7 @@ export async function translatePromptText({ provider, model, apiUrl, proxyUrl, t
     const body = {
       instructions,
       input,
+      max_output_tokens: 2048, // 2026-08-26：翻译输出短，封顶以压 OMLX KV 预留（默认 8192 会撞内存护栏）
       ...(model ? { model: String(model).trim() } : {}),
       text: { format: { type: 'json_schema', name: 'prompt_translation', strict: true, schema } }
     }

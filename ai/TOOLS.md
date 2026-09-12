@@ -43,6 +43,10 @@
 - 故事完整度核实（真实浏览器逐节点走查导出 H5 + Kimi 视觉评审，异步任务）：`POST /api/projects/:id/ai/story/completeness-check`
 - 最近完整度报告：`GET /api/projects/:id/ai/story/completeness-check/latest`
 - 任务进度轮询：`GET /api/projects/:id/ai/tasks`
+- 出图总账（需要多少图/完成多少/缺哪些，确定性只读聚合）：`GET /api/projects/:id/ai/coverage`；control 代理：`GET /api/control/gamestudio/projects/:projectId/ai/coverage`
+- 场景↦资产关联确定性修复（名称/别名子串匹配，支持 aliasOverrides 证据别名）：`POST /api/projects/:id/ai/story/assets/plan/repair-links`
+- 角色动作立绘（绿幕图生成；2026-09-01 定型配方：指纹前置+去人类化+动物主语+动作强调 `(…:1.25)`，中文动作词服务端自动转英文；`characterId` 可接 IPAdapter 但默认关——实测各档位都会锚死主参考站姿，`STUDIO_SPRITE_IPADAPTER=on` 才启用）：`POST /api/projects/:id/ai/character/sprite`
+- 立绘抠图（RMBG 语义分割 → 透明 PNG；已替代前端 chroma key——按颜色抠图对衣服撞色/渐变底会挖穿）：`POST /api/projects/:id/ai/character/cutout`
 
 ## 权威目录
 

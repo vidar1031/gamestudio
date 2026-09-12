@@ -56,6 +56,7 @@ function buildMockContext(overrides = {}) {
     buildHermesStartupProfile: () => ({}),
     buildHermesPreflight: async () => ({ ready: false }),
     buildHermesSelfCheck: async () => ({}),
+    buildReasoningStartBlocker: () => ({ error: 'left_brain_model_not_loaded', details: '模型未启动，请先加载模型。' }),
     buildModelStateSnapshot: () => baseModel,
     buildRuntimeStateSnapshot: (status) => status,
     cancelReasoningSession: () => {},

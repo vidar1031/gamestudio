@@ -19,3 +19,8 @@ export function deleteProject(projectId: string) {
     method: 'DELETE'
   })
 }
+
+// 出图总账：经 control-server 代理读取 GameStudio 的只读出图聚合
+export function getAiCoverage(projectId: string) {
+  return fetch(`/api/control/gamestudio/projects/${encodeURIComponent(projectId)}/ai/coverage`)
+}

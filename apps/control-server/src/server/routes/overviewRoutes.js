@@ -570,7 +570,7 @@ export function registerOverviewRoutes(app, context) {
   app.get('/api/control/projects', async (c) => {
     try {
       const result = await gameStudioServerClient.listProjects()
-      return c.json({ ok: result.ok, projects: result.data?.projects || [], error: result.error || null })
+      return c.json({ ok: result.ok, projects: result.data?.items || result.data?.projects || [], error: result.error || null })
     } catch (error) {
       return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
     }
@@ -620,6 +620,21 @@ export function registerOverviewRoutes(app, context) {
       return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 502)
     } finally {
       clearTimeout(timeout)
+    }
+  })
+
+  // ── 出图总账代理（数据所有权属于 GameStudio server，此处透传只读聚合）──
+  app.get('/api/control/gamestudio/projects/:projectId/ai/coverage', async (c) => {
+    try {
+      const { projectId } = c.req.param()
+      const result = await gameStudioServerClient.getAiCoverage(projectId)
+      if (!result.ok) {
+        const status = result.status >= 400 && result.status < 600 ? result.status : 502
+        return c.json({ ok: false, error: result.error || 'coverage_unavailable', message: result.message || '' }, status)
+      }
+      return c.json({ ok: true, projectId, coverage: result.data?.coverage || null })
+    } catch (error) {
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500)
     }
   })
 

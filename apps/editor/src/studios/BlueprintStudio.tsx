@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { markStartupReady } from '../startupReady'
 import {
   compileCompose,
   getBlueprint,
@@ -246,6 +247,7 @@ export default function BlueprintStudio(props: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      markStartupReady() // 启动覆盖层按真实加载收尾（重复调用安全）
     }
   }
 

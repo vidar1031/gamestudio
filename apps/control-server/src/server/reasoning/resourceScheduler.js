@@ -7,8 +7,9 @@
  * 因此 control 侧做主动互斥调度：
  *
  * 语义约定：
- * - 槽位状态机：idle / llm / gpu / blocked。
+ * - 槽位状态机：idle / llm / gpu / vision / blocked。
  *   idle=无模型在线承诺；llm=配置模型在线服务文本类；gpu=出图占用中（模型已退出）；
+ *   vision=视觉评审模型在线（配置 LLM 已换出，2026-09-12 起视觉需求经调度器换入，不再靠 OMLX LRU 自平衡）；
  *   blocked=交换/回载失败后的显式阻断（事件与状态端点可见，不静默继续）。
  * - 资源分类：story workflow action -> 资源类别（默认 llm；出图类 gpu）。
  *   判定为纯函数 resolveActionResourceKind，队列层与 step 层共用同一张映射表。
@@ -51,12 +52,14 @@ export const RESOURCE_SLOT_STATE = Object.freeze({
   IDLE: 'idle',
   LLM: 'llm',
   GPU: 'gpu',
+  VISION: 'vision',
   BLOCKED: 'blocked'
 })
 
 export const RESOURCE_KIND = Object.freeze({
   LLM: 'llm',
-  GPU: 'gpu'
+  GPU: 'gpu',
+  VISION: 'vision'
 })
 
 // story workflow action -> 资源类别映射：默认 llm；出图类 gpu。
@@ -250,15 +253,15 @@ export function createResourceScheduler({
 
   // ---- 内存态（持久化子集：state/holders/blocked/lastSwapAt） ----
   let slotState = RESOURCE_SLOT_STATE.IDLE
-  let gpuHolderKey = null
-  let gpuAcquiredAt = null
+  // 独占槽位（writer）：gpu=出图（全员卸载）；vision=视觉评审模型换入（配置 LLM 换出）
+  let exclusiveHolder = null // { kind: 'gpu'|'vision', key, acquiredAt }
   const llmHolderKeys = new Set()
   let llmWaiterCount = 0
   let blockedInfo = null // { reason, detail, at }
   let lastSwap = null // { direction, at, unloadMs, loadMs, result, holder }
-  const gpuWaitQueue = [] // [{ holderKey, resolve, reject, shouldAbort }]
+  const exclusiveWaitQueue = [] // [{ kind, holderKey, resolve, reject, shouldAbort }]
   let swapInFlight = null // 交换/加载互斥锁（Promise）
-  let gpuPumping = false
+  let exclusivePumping = false
   let settleTimer = null
   let reconcileTimer = null
   let stopped = true
@@ -266,6 +269,7 @@ export function createResourceScheduler({
   let lastReconcile = null // { at, result, detail }
 
   const resolveModel = () => String(resolveConfiguredModel()?.model || '').trim()
+  const resolveVisionModel = () => String(process.env.HERMES_VISION_MODEL || resolveConfiguredModel()?.visionModel || '').trim()
 
   // ---- 持久化（原子写） ----
   const persistState = () => {
@@ -274,9 +278,10 @@ export function createResourceScheduler({
       const doc = {
         version: '1',
         state: slotState,
-        gpuHolder: gpuHolderKey ? { holder: gpuHolderKey, acquiredAt: gpuAcquiredAt } : null,
+        gpuHolder: exclusiveHolder ? { holder: exclusiveHolder.key, kind: exclusiveHolder.kind, acquiredAt: exclusiveHolder.acquiredAt } : null,
         llmHolders: [...llmHolderKeys],
         configuredModel: resolveModel() || null,
+        visionModel: resolveVisionModel() || null,
         blocked: blockedInfo,
         lastSwap,
         updatedAt: nowFn()
@@ -293,9 +298,9 @@ export function createResourceScheduler({
     try {
       if (!fs.existsSync(STATE_FILE)) return
       const doc = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'))
-      // 重启后持有者一律清空（无任何执行在飞行中）；gpu 状态回落 idle，由 reconcile 对齐真实世界
+      // 重启后持有者一律清空（无任何执行在飞行中）；独占状态回落 idle，由 reconcile 对齐真实世界
       if (Object.values(RESOURCE_SLOT_STATE).includes(doc?.state)) {
-        slotState = doc.state === RESOURCE_SLOT_STATE.GPU ? RESOURCE_SLOT_STATE.IDLE : doc.state
+        slotState = (doc.state === RESOURCE_SLOT_STATE.GPU || doc.state === RESOURCE_SLOT_STATE.VISION) ? RESOURCE_SLOT_STATE.IDLE : doc.state
       }
       blockedInfo = doc?.blocked && typeof doc.blocked === 'object' ? doc.blocked : null
       lastSwap = doc?.lastSwap && typeof doc.lastSwap === 'object' ? doc.lastSwap : null
@@ -429,7 +434,8 @@ export function createResourceScheduler({
     appendEvent('swap_to_gpu_ok', { holder, result: 'ok', unloadedCount: loaded.length, unload_ms: unloadMs })
   })
 
-  // 交换到 llm：回载配置模型 -> 探测加载成功；失败显式置 blocked
+  // 交换到 llm：先卸载非配置模型（vision 换出/外来残留，32G 装不下第二个大模型）
+  // -> 回载配置模型 -> 探测加载成功；失败显式置 blocked
   const swapToLlm = (holder, { trigger } = {}) => withSwapLock(async () => {
     const model = resolveModel()
     if (!model) {
@@ -442,6 +448,135 @@ export function createResourceScheduler({
     }
     const startedAt = Date.now()
     appendEvent('swap_to_llm_start', { holder, trigger: trigger || null, model })
+    const status0 = await omlxClient.getModelStatus()
+    if (!status0.ok) {
+      const detail = `omlx_status_unreachable:${status0.detail || 'unknown'}`
+      appendEvent('swap_to_llm_failed', { holder, trigger: trigger || null, result: 'failed', detail })
+      slotState = RESOURCE_SLOT_STATE.BLOCKED
+      blockedInfo = { reason: 'resource_swap_load_failed', detail, at: nowFn() }
+      persistState()
+      throw new Error(`resource_swap_load_failed:${detail}`)
+    }
+    const loaded0 = status0.models.filter((m) => m.id && (m.loaded || m.isLoading))
+    const onlyConfiguredLoaded = loaded0.length === 1 && loaded0[0].id === model && loaded0[0].loaded === true && loaded0[0].isLoading !== true
+    if (!onlyConfiguredLoaded) {
+      // 卸载全部非配置模型（含 vision 模型换出）
+      for (const entry of loaded0) {
+        if (entry.id === model && entry.loaded === true && entry.isLoading !== true) continue
+        const unloaded = await unloadModelWithRetry(entry.id, holder)
+        if (!unloaded.ok) {
+          const detail = `unload_failed:${entry.id}:${unloaded.detail}`
+          appendEvent('swap_to_llm_failed', { holder, trigger: trigger || null, model: entry.id, result: 'failed', detail })
+          slotState = RESOURCE_SLOT_STATE.BLOCKED
+          blockedInfo = { reason: 'resource_swap_load_failed', detail, at: nowFn() }
+          persistState()
+          throw new Error(`resource_swap_load_failed:${detail}`)
+        }
+      }
+      const configuredStillLoaded = loaded0.some((m) => m.id === model && m.loaded === true && m.isLoading !== true)
+      if (!configuredStillLoaded) {
+        const released = await waitUntil(async () => {
+          const health = await omlxClient.getHealth()
+          if (!health.ok) return { ok: false, detail: health.detail || 'health_unreachable' }
+          return Number(health.loadedCount) === 0 ? { ok: true } : { ok: false, detail: `loaded_count=${health.loadedCount}` }
+        }, unloadTimeout, 'memory_release')
+        if (!released.ok) {
+          appendEvent('swap_to_llm_failed', { holder, trigger: trigger || null, result: 'failed', detail: released.detail })
+          slotState = RESOURCE_SLOT_STATE.BLOCKED
+          blockedInfo = { reason: 'resource_swap_load_failed', detail: released.detail, at: nowFn() }
+          persistState()
+          throw new Error(`resource_swap_load_failed:memory_release:${released.detail}`)
+        }
+      }
+      let lastDetail = ''
+      for (let attempt = 0; attempt <= retryMax; attempt += 1) {
+        const loadResult = await omlxClient.loadModel(model)
+        if (loadResult?.ok) {
+          const settled = await waitUntil(async () => {
+            const status = await omlxClient.getModelStatus()
+            if (!status.ok) return { ok: false, detail: status.detail || 'status_unreachable' }
+            const entry = status.models.find((m) => m.id === model)
+            return entry?.loaded === true && entry.isLoading !== true ? { ok: true } : { ok: false, detail: 'not_loaded_yet' }
+          }, loadTimeout, 'model_load')
+          if (settled.ok) {
+            const loadMs = Date.now() - startedAt
+            slotState = RESOURCE_SLOT_STATE.LLM
+            blockedInfo = null
+            lastSwap = { direction: 'to_llm', at: nowFn(), unloadMs: null, loadMs, result: 'ok', holder }
+            persistState()
+            appendEvent('swap_to_llm_ok', { holder, trigger: trigger || null, model, result: 'ok', load_ms: loadMs })
+            return { ok: true, loadMs }
+          }
+          lastDetail = settled.detail
+        } else {
+          lastDetail = loadResult?.detail || 'load_request_failed'
+        }
+        if (attempt < retryMax) {
+          appendEvent('swap_load_retry', { holder, model, attempt: attempt + 1, detail: lastDetail })
+          await sleepFn(pollMs)
+        }
+      }
+      // 装载失败：显式 blocked，不静默继续
+      slotState = RESOURCE_SLOT_STATE.BLOCKED
+      blockedInfo = { reason: 'resource_swap_load_failed', detail: `${model}:${lastDetail || 'load_failed'}`, at: nowFn() }
+      persistState()
+      appendEvent('swap_to_llm_failed', { holder, trigger: trigger || null, model, result: 'failed', detail: lastDetail || 'load_failed' })
+      throw new Error(`resource_swap_load_failed:${model}:${lastDetail || 'load_failed'}`)
+    }
+    // 快路径：配置模型已独占在线，无需交换
+    slotState = RESOURCE_SLOT_STATE.LLM
+    blockedInfo = null
+    lastSwap = { direction: 'to_llm', at: nowFn(), unloadMs: null, loadMs: 0, result: 'ok', holder }
+    persistState()
+    appendEvent('swap_to_llm_ok', { holder, trigger: trigger || null, model, result: 'ok', load_ms: 0, detail: 'already_loaded' })
+    return { ok: true, loadMs: 0 }
+  })
+
+  // 交换到 vision：卸载全部已加载模型（含配置 LLM）-> 载入视觉评审模型 -> 探测成功。
+  // 快路径：vision 模型已独占在线时直接放行（连续视觉评审不重复装卸）。
+  // 失败显式置 blocked（unload 失败抛 resource_swap_unload_failed，load 失败抛 resource_swap_load_failed）。
+  const swapToVision = (holder) => withSwapLock(async () => {
+    const model = resolveVisionModel()
+    if (!model) {
+      const detail = 'vision_model_missing'
+      appendEvent('swap_to_vision_failed', { holder, result: 'failed', detail })
+      slotState = RESOURCE_SLOT_STATE.BLOCKED
+      blockedInfo = { reason: 'resource_swap_load_failed', detail, at: nowFn() }
+      persistState()
+      throw new Error(`resource_swap_load_failed:${detail}`)
+    }
+    const startedAt = Date.now()
+    appendEvent('swap_to_vision_start', { holder, model })
+    const status0 = await omlxClient.getModelStatus()
+    if (!status0.ok) {
+      appendEvent('swap_to_vision_failed', { holder, result: 'failed', detail: `status_unreachable:${status0.detail || 'unknown'}` })
+      throw new Error(`resource_swap_unload_failed:omlx_status_unreachable:${status0.detail || 'unknown'}`)
+    }
+    const loaded0 = status0.models.filter((m) => m.id && (m.loaded || m.isLoading))
+    const visionAlreadyLoaded = loaded0.length === 1 && loaded0[0].id === model && loaded0[0].loaded === true && loaded0[0].isLoading !== true
+    if (visionAlreadyLoaded) {
+      lastSwap = { direction: 'to_vision', at: nowFn(), unloadMs: null, loadMs: 0, result: 'ok', holder }
+      appendEvent('swap_to_vision_ok', { holder, model, result: 'ok', load_ms: 0, detail: 'already_loaded' })
+      return { ok: true, loadMs: 0 }
+    }
+    for (const entry of loaded0) {
+      const unloaded = await unloadModelWithRetry(entry.id, holder)
+      if (!unloaded.ok) {
+        appendEvent('swap_to_vision_failed', { holder, model: entry.id, result: 'failed', detail: unloaded.detail })
+        throw new Error(`resource_swap_unload_failed:${entry.id}:${unloaded.detail}`)
+      }
+    }
+    if (loaded0.length > 0) {
+      const released = await waitUntil(async () => {
+        const health = await omlxClient.getHealth()
+        if (!health.ok) return { ok: false, detail: health.detail || 'health_unreachable' }
+        return Number(health.loadedCount) === 0 ? { ok: true } : { ok: false, detail: `loaded_count=${health.loadedCount}` }
+      }, unloadTimeout, 'memory_release')
+      if (!released.ok) {
+        appendEvent('swap_to_vision_failed', { holder, result: 'failed', detail: released.detail })
+        throw new Error(`resource_swap_unload_failed:memory_release:${released.detail}`)
+      }
+    }
     let lastDetail = ''
     for (let attempt = 0; attempt <= retryMax; attempt += 1) {
       const loadResult = await omlxClient.loadModel(model)
@@ -454,11 +589,8 @@ export function createResourceScheduler({
         }, loadTimeout, 'model_load')
         if (settled.ok) {
           const loadMs = Date.now() - startedAt
-          slotState = RESOURCE_SLOT_STATE.LLM
-          blockedInfo = null
-          lastSwap = { direction: 'to_llm', at: nowFn(), unloadMs: null, loadMs, result: 'ok', holder }
-          persistState()
-          appendEvent('swap_to_llm_ok', { holder, trigger: trigger || null, model, result: 'ok', load_ms: loadMs })
+          lastSwap = { direction: 'to_vision', at: nowFn(), unloadMs: null, loadMs, result: 'ok', holder }
+          appendEvent('swap_to_vision_ok', { holder, model, result: 'ok', load_ms: loadMs })
           return { ok: true, loadMs }
         }
         lastDetail = settled.detail
@@ -470,15 +602,14 @@ export function createResourceScheduler({
         await sleepFn(pollMs)
       }
     }
-    // 装载失败：显式 blocked，不静默继续
     slotState = RESOURCE_SLOT_STATE.BLOCKED
     blockedInfo = { reason: 'resource_swap_load_failed', detail: `${model}:${lastDetail || 'load_failed'}`, at: nowFn() }
     persistState()
-    appendEvent('swap_to_llm_failed', { holder, trigger: trigger || null, model, result: 'failed', detail: lastDetail || 'load_failed' })
+    appendEvent('swap_to_vision_failed', { holder, model, result: 'failed', detail: lastDetail || 'load_failed' })
     throw new Error(`resource_swap_load_failed:${model}:${lastDetail || 'load_failed'}`)
   })
 
-  // gpu 批次终结后的 settle 窗口：窗口内新 gpu 申请取消 reload（出图攒批）
+  // 独占批次（gpu/vision）终结后的 settle 窗口：窗口内新独占申请取消 reload（出图/评审攒批）
   const scheduleSwapBackToLlm = (holder) => {
     if (settleTimer) {
       clearTimeout(settleTimer)
@@ -486,60 +617,66 @@ export function createResourceScheduler({
     }
     settleTimer = setTimeout(() => {
       settleTimer = null
-      if (gpuHolderKey !== null || gpuWaitQueue.length > 0) return // 已有新 gpu 占用/等待，不 reload
-      void swapToLlm(holder, { trigger: 'gpu_batch_end' }).catch((error) => {
+      if (exclusiveHolder !== null || exclusiveWaitQueue.length > 0) return // 已有新独占占用/等待，不 reload
+      void swapToLlm(holder, { trigger: 'exclusive_batch_end' }).catch((error) => {
         // swapToLlm 内部已置 blocked + 落事件，这里只留日志
         logger(`[RESOURCE][SWAP_BACK][ERROR] detail=${error instanceof Error ? error.message : String(error)}`)
       })
     }, settleMs)
   }
 
-  // gpu 等待队列驱动：writer 优先，等 llm 持有者自然收尾（step 边界，不掐断运行中推理）
-  const pumpGpuQueue = async () => {
-    if (gpuPumping) return
-    gpuPumping = true
+  // 独占等待队列驱动（gpu/vision 统一 FIFO，writer 优先）：等 llm 持有者自然收尾
+  // （step 边界，不掐断运行中推理）；相邻两个不同类独占申请之间发生模型交换
+  const pumpExclusiveQueue = async () => {
+    if (exclusivePumping) return
+    exclusivePumping = true
     try {
       for (;;) {
-        const next = gpuWaitQueue[0]
+        const next = exclusiveWaitQueue[0]
         if (!next) break
         const aborted = typeof next.shouldAbort === 'function' ? next.shouldAbort() : null
         if (aborted?.aborted) {
-          gpuWaitQueue.shift()
+          exclusiveWaitQueue.shift()
           next.resolve({ admitted: false, reason: aborted.reason || 'aborted' })
           continue
         }
-        if (gpuHolderKey !== null) break // 他人持有 gpu，等 release 触发 pump
+        if (exclusiveHolder !== null) break // 他人持有独占槽，等 release 触发 pump
         if (llmHolderKeys.size > 0) {
           await sleepFn(pollMs) // 等运行中的 llm step 收尾
           continue
         }
         try {
-          await swapToGpu(next.holderKey)
-          gpuHolderKey = next.holderKey
-          gpuAcquiredAt = nowFn()
-          slotState = RESOURCE_SLOT_STATE.GPU
+          if (next.kind === RESOURCE_KIND.VISION) {
+            await swapToVision(next.holderKey)
+            slotState = RESOURCE_SLOT_STATE.VISION
+          } else {
+            await swapToGpu(next.holderKey)
+            slotState = RESOURCE_SLOT_STATE.GPU
+          }
+          exclusiveHolder = { kind: next.kind, key: next.holderKey, acquiredAt: nowFn() }
           blockedInfo = null
           persistState()
-          gpuWaitQueue.shift()
+          exclusiveWaitQueue.shift()
           next.resolve({ admitted: true })
         } catch (error) {
-          gpuWaitQueue.shift()
+          exclusiveWaitQueue.shift()
           next.reject(error) // 交换失败显式抛出，由 step 失败语义收敛
         }
       }
     } finally {
-      gpuPumping = false
+      exclusivePumping = false
     }
   }
 
-  const acquireGpu = (holderKey, { shouldAbort } = {}) => new Promise((resolve, reject) => {
+  const acquireExclusive = (kind, holderKey, { shouldAbort } = {}) => new Promise((resolve, reject) => {
     if (settleTimer) {
-      clearTimeout(settleTimer) // 攒批：窗口内新 gpu 申请取消待执行的 reload
+      clearTimeout(settleTimer) // 攒批：窗口内新独占申请取消待执行的 reload
       settleTimer = null
     }
-    // 等待中的取消/超时看守：gpu 批次可能很长，等待者必须在 abort 时显式退出，
+    // 等待中的取消/超时看守：独占批次可能很长，等待者必须在 abort 时显式退出，
     // 不能把 B04 取消/超时语义拖延到他人 release 之后
     const waiter = {
+      kind,
       holderKey,
       shouldAbort,
       resolve: (value) => {
@@ -554,13 +691,13 @@ export function createResourceScheduler({
     const abortWatch = setInterval(() => {
       const aborted = typeof shouldAbort === 'function' ? shouldAbort() : null
       if (!aborted?.aborted) return
-      const idx = gpuWaitQueue.indexOf(waiter)
+      const idx = exclusiveWaitQueue.indexOf(waiter)
       if (idx < 0) return // 已被 pump 取出（交换进行中或已放行），交换不中断，由竞速点收敛取消
-      gpuWaitQueue.splice(idx, 1)
+      exclusiveWaitQueue.splice(idx, 1)
       waiter.resolve({ admitted: false, reason: aborted.reason || 'aborted' })
     }, pollMs)
-    gpuWaitQueue.push(waiter)
-    if (!gpuPumping && gpuHolderKey === null) void pumpGpuQueue()
+    exclusiveWaitQueue.push(waiter)
+    if (!exclusivePumping && exclusiveHolder === null) void pumpExclusiveQueue()
   })
 
   const acquireLlm = async (holderKey, { shouldAbort, onWaitChange } = {}) => {
@@ -570,8 +707,8 @@ export function createResourceScheduler({
       for (;;) {
         const aborted = typeof shouldAbort === 'function' ? shouldAbort() : null
         if (aborted?.aborted) return { admitted: false, reason: aborted.reason || 'aborted' }
-        const gpuBusy = gpuHolderKey !== null || gpuWaitQueue.length > 0 || gpuPumping
-        if (!gpuBusy) {
+        const exclusiveBusy = exclusiveHolder !== null || exclusiveWaitQueue.length > 0 || exclusivePumping
+        if (!exclusiveBusy) {
           if (slotState === RESOURCE_SLOT_STATE.LLM) {
             llmHolderKeys.add(holderKey)
             persistState()
@@ -616,22 +753,21 @@ export function createResourceScheduler({
   const acquire = async (kind, holder, options = {}) => {
     const holderKey = String(holder || '').trim()
     if (!holderKey) throw new Error('resource_acquire_requires_holder')
-    if (kind === RESOURCE_KIND.GPU) return acquireGpu(holderKey, options)
+    if (kind === RESOURCE_KIND.GPU || kind === RESOURCE_KIND.VISION) return acquireExclusive(kind, holderKey, options)
     return acquireLlm(holderKey, options)
   }
 
   const release = (kind, holder) => {
     const holderKey = String(holder || '').trim()
     if (!holderKey) return { released: false }
-    if (kind === RESOURCE_KIND.GPU) {
-      if (gpuHolderKey !== holderKey) return { released: false }
-      const heldSince = gpuAcquiredAt
-      gpuHolderKey = null
-      gpuAcquiredAt = null
+    if (kind === RESOURCE_KIND.GPU || kind === RESOURCE_KIND.VISION) {
+      if (!exclusiveHolder || exclusiveHolder.key !== holderKey || exclusiveHolder.kind !== kind) return { released: false }
+      const heldSince = exclusiveHolder.acquiredAt
+      exclusiveHolder = null
       persistState()
-      appendEvent('gpu_release', { holder: holderKey, heldSince, gpuQueueLength: gpuWaitQueue.length })
-      if (gpuWaitQueue.length > 0) {
-        void pumpGpuQueue() // 攒批：直接交棒下一个 gpu 申请，不 reload
+      appendEvent('exclusive_release', { holder: holderKey, kind, heldSince, queueLength: exclusiveWaitQueue.length })
+      if (exclusiveWaitQueue.length > 0) {
+        void pumpExclusiveQueue() // 攒批：直接交棒下一个独占申请（同类免交换，异类走 swap），不 reload
       } else {
         scheduleSwapBackToLlm(holderKey)
       }
@@ -652,21 +788,33 @@ export function createResourceScheduler({
     const status = await omlxClient.getModelStatus()
     const actions = []
     if (status.ok) {
-      // 1. 单模型守卫：卸载非配置模型（如 default gpt-oss 被 OMLX 自动拉起）
-      const foreign = status.models.filter((m) => m.id && m.id !== configuredModel && (m.loaded || m.isLoading))
+      // 1. 单模型守卫：卸载"当前槽位不应在线"的模型（如 default gpt-oss 被 OMLX 自动拉起）。
+      // 放行名单按槽位状态决定：llm/idle/blocked -> 仅配置模型；vision -> 仅视觉模型；gpu -> 全不在线。
+      // 不再无条件放行视觉模型——它与配置模型物理上不可共存（2026-09-12 实测 OMLX 拒载），
+      // 视觉需求统一经 acquire('vision') 交换换入。
+      const visionModel = resolveVisionModel()
+      const allowedModel = slotState === RESOURCE_SLOT_STATE.VISION ? visionModel : configuredModel
+      const foreign = status.models.filter((m) => m.id && m.id !== allowedModel && (m.loaded || m.isLoading))
       for (const entry of foreign) {
         const unloaded = await unloadModelWithRetry(entry.id, `reconcile:${trigger}`)
         actions.push({ action: 'guard_unload_foreign_model', model: entry.id, ok: unloaded.ok, detail: unloaded.ok ? null : unloaded.detail })
         appendEvent('guard_unload_foreign_model', { holder: `reconcile:${trigger}`, model: entry.id, result: unloaded.ok ? 'ok' : 'failed', detail: unloaded.ok ? null : unloaded.detail })
       }
       // 2. 漂移纠正：state=llm 但配置模型实际不在线 -> idle；
+      //    state=vision 但视觉模型实际不在线 -> idle；
       //    反向：配置模型在线且槽位空闲（如启动后首次对齐）-> llm
       const configuredEntry = status.models.find((m) => m.id === configuredModel)
       const configuredLoaded = configuredEntry?.loaded === true && configuredEntry?.isLoading !== true
+      const visionEntry = status.models.find((m) => m.id === visionModel)
+      const visionLoaded = Boolean(visionModel) && visionEntry?.loaded === true && visionEntry?.isLoading !== true
       if (slotState === RESOURCE_SLOT_STATE.LLM && !configuredLoaded) {
         slotState = RESOURCE_SLOT_STATE.IDLE
         persistState()
         actions.push({ action: 'drift_corrected', detail: 'configured_model_offline_while_llm' })
+      } else if (slotState === RESOURCE_SLOT_STATE.VISION && !visionLoaded) {
+        slotState = RESOURCE_SLOT_STATE.IDLE
+        persistState()
+        actions.push({ action: 'drift_corrected', detail: 'vision_model_offline_while_vision' })
       } else if (slotState === RESOURCE_SLOT_STATE.IDLE && configuredLoaded && !blockedInfo) {
         slotState = RESOURCE_SLOT_STATE.LLM
         persistState()
@@ -674,7 +822,8 @@ export function createResourceScheduler({
       }
       // 3. 配置模型缺席且有 llm 需求（或 blocked 自愈）-> 回载
       const llmDemand = llmHolderKeys.size > 0 || llmWaiterCount > 0
-      if (!configuredLoaded && slotState !== RESOURCE_SLOT_STATE.GPU && configuredModel && (llmDemand || slotState === RESOURCE_SLOT_STATE.BLOCKED)) {
+      const exclusiveOccupied = slotState === RESOURCE_SLOT_STATE.GPU || slotState === RESOURCE_SLOT_STATE.VISION
+      if (!configuredLoaded && !exclusiveOccupied && configuredModel && (llmDemand || slotState === RESOURCE_SLOT_STATE.BLOCKED)) {
         try {
           await swapToLlm(`reconcile:${trigger}`, { trigger: slotState === RESOURCE_SLOT_STATE.BLOCKED ? 'guard_blocked_retry' : 'guard_reload_configured' })
           actions.push({ action: 'guard_reload_configured', model: configuredModel, ok: true })
@@ -738,12 +887,16 @@ export function createResourceScheduler({
     return {
       enabled: true,
       state: slotState,
-      gpuHolder: gpuHolderKey ? { holder: gpuHolderKey, acquiredAt: gpuAcquiredAt } : null,
+      gpuHolder: exclusiveHolder && exclusiveHolder.kind === RESOURCE_KIND.GPU ? { holder: exclusiveHolder.key, acquiredAt: exclusiveHolder.acquiredAt } : null,
+      visionHolder: exclusiveHolder && exclusiveHolder.kind === RESOURCE_KIND.VISION ? { holder: exclusiveHolder.key, acquiredAt: exclusiveHolder.acquiredAt } : null,
       llmHolders: [...llmHolderKeys],
       llmWaiters: llmWaiterCount,
-      gpuQueueLength: gpuWaitQueue.length,
+      gpuQueueLength: exclusiveWaitQueue.filter((w) => w.kind !== RESOURCE_KIND.VISION).length,
+      visionQueueLength: exclusiveWaitQueue.filter((w) => w.kind === RESOURCE_KIND.VISION).length,
+      exclusiveQueueLength: exclusiveWaitQueue.length,
       swapInFlight: Boolean(swapInFlight),
       configuredModel: resolveModel() || null,
+      visionModel: resolveVisionModel() || null,
       modelOnline,
       memory: memory ? { ...memory, source: live ? 'live' : 'cache' } : null,
       blocked: blockedInfo,
@@ -789,10 +942,13 @@ export function createResourceScheduler({
     getSnapshot() {
       return {
         state: slotState,
-        gpuHolder: gpuHolderKey,
+        gpuHolder: exclusiveHolder && exclusiveHolder.kind === RESOURCE_KIND.GPU ? exclusiveHolder.key : null,
+        visionHolder: exclusiveHolder && exclusiveHolder.kind === RESOURCE_KIND.VISION ? exclusiveHolder.key : null,
+        exclusiveHolder,
         llmHolders: [...llmHolderKeys],
         llmWaiters: llmWaiterCount,
-        gpuQueueLength: gpuWaitQueue.length,
+        gpuQueueLength: exclusiveWaitQueue.filter((w) => w.kind !== RESOURCE_KIND.VISION).length,
+        exclusiveQueueLength: exclusiveWaitQueue.length,
         blocked: blockedInfo,
         lastSwap
       }

@@ -35,12 +35,18 @@ import {
   getChatHistory as getChatHistoryRequest,
   getChatHistoryFile,
   getContextCandidates,
+  compactChatHistory as compactChatHistoryRequest,
+  listChatSessions as listChatSessionsRequest,
+  archiveCurrentChatSession as archiveCurrentChatSessionRequest,
+  openChatSession as openChatSessionRequest,
+  deleteChatSession as deleteChatSessionRequest,
   openChatHistoryFile,
   postAgentStream,
   saveChatHistoryFile,
 } from '../services/chatApi'
 import type { AgentStreamStep } from '../types/agentStream'
 import { dispatchEvent, getEventRegistry } from '../services/eventsApi'
+import { confirmDialog } from '../lib/uiDialog'
 
 type HealthResponse = {
   ok: boolean
@@ -483,7 +489,7 @@ type ReasoningSession = {
   userPrompt: string
   parentSessionId?: string | null
   childSessionIds?: string[]
-  status: 'planning' | 'running' | 'waiting_review' | 'completed' | 'failed' | 'cancelled'
+  status: 'queued' | 'planning' | 'running' | 'waiting_review' | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'timeout'
   createdAt: string
   updatedAt: string
   plan: ReasoningPlan | null
@@ -786,6 +792,13 @@ export function useControlConsoleApp() {
   const reasoningClearMessage = ref('')
   const chatHistory = ref<ChatHistoryEntry[]>([])
   const persistedChatHistory = ref<ChatHistoryEntry[]>([])
+  // 对话水位（ChatGPT 式长聊管理）：warn/high 时提示用户确认压缩或清空
+  const chatWaterLevel = ref<{ entries: number; pairs: number; estimatedTokens: number; budgetTokens: number; ratio: number; level: string } | null>(null)
+  const chatCompactBusy = ref(false)
+  // 会话历史管理（文件存储 ai/chat/sessions/）
+  const chatSessions = ref<Array<{ sessionId: string; title: string; createdAt: string | null; updatedAt: string | null; entryCount: number; preview: string }>>([])
+  const chatSessionsOpen = ref(false)
+  const chatSessionsBusy = ref(false)
   const pendingReasoningUserPrompt = ref('')
   // 故事需求确认待办：服务端要求补充/确认字段时暂存，等待用户下一句话回应
   const pendingStoryRequirementConfirm = ref<{ prompt: string; requirement: Record<string, unknown> } | null>(null)
@@ -799,6 +812,7 @@ export function useControlConsoleApp() {
   let overviewPollInterval: ReturnType<typeof setInterval> | null = null
   let reasoningPollTimer: ReturnType<typeof setTimeout> | null = null
   let productionTestPollInterval: ReturnType<typeof setInterval> | null = null
+  let runtimeStatePollInterval: ReturnType<typeof setInterval> | null = null
   let productionTestFollowPausedUntil = 0
   let logsRequestInFlight = false
   let memoryRecordsRequestInFlight = false
@@ -894,7 +908,7 @@ export function useControlConsoleApp() {
     return ''
   })
   const chatMemoryDirty = computed(() => chatMemoryDraft.value !== chatMemoryLoadedContent.value)
-  const reasoningStatusLabel = computed(() => !activeReasoningSession.value ? '未开始' : activeReasoningSession.value.status === 'planning' ? '制定任务中' : activeReasoningSession.value.status === 'running' ? '执行中' : activeReasoningSession.value.status === 'waiting_review' ? '待人工确认' : activeReasoningSession.value.status === 'completed' ? '已完成' : activeReasoningSession.value.status === 'cancelled' ? '已停止' : '失败')
+  const reasoningStatusLabel = computed(() => !activeReasoningSession.value ? '未开始' : activeReasoningSession.value.status === 'queued' ? '排队中' : activeReasoningSession.value.status === 'planning' ? '制定任务中' : activeReasoningSession.value.status === 'running' ? '执行中' : activeReasoningSession.value.status === 'waiting_review' ? '待人工确认' : activeReasoningSession.value.status === 'completed' ? '已完成' : activeReasoningSession.value.status === 'cancelled' ? '已停止' : activeReasoningSession.value.status === 'blocked' ? '被阻断' : activeReasoningSession.value.status === 'failed' ? '失败' : '未知状态')
   const reasoningPendingReview = computed(() => activeReasoningSession.value?.status === 'waiting_review' && activeReasoningSession.value.review ? activeReasoningSession.value.review : null)
   const reasoningReviewTargetLabel = computed(() => {
     const review = reasoningPendingReview.value
@@ -961,6 +975,18 @@ export function useControlConsoleApp() {
     if (!state) return
     controlState.value = state
     leftBrainRunning.value = state.runtime?.state === 'running'
+    // runtimeState 与轮询控制状态同源同步：修复"侧栏显示运行中、聊天页却提示未启动"的双源漂移
+    // （runtimeState 此前只在用户手动操作时更新，轮询不刷新，启动后来自别处的状态变化会让它永久过期）
+    if (state.runtime?.state) {
+      runtimeState.value = {
+        state: state.runtime.state as RuntimeState['state'],
+        label: state.runtime.label || '',
+        detail: state.runtime.detail || '',
+        pid: state.runtime.pid ?? null,
+        logFile: runtimeState.value?.logFile || '',
+        availableActions: runtimeState.value?.availableActions || []
+      }
+    }
     if (state.model?.inspection) leftInspection.value = state.model.inspection
     else if (state.preflight?.inspection) leftInspection.value = state.preflight.inspection
   }
@@ -1055,7 +1081,8 @@ export function useControlConsoleApp() {
       '不会删除长期记忆、上下文池、项目文件或已归档 session。',
       lineCount > 0 ? `当前窗口约 ${lineCount} 行日志。` : '当前窗口没有可见日志。'
     ].join('\n')
-    if (typeof window !== 'undefined' && !window.confirm(message)) return
+    const confirmed = await confirmDialog({ title: '清空日志窗口', message, confirmText: '确认清空', danger: true })
+    if (!confirmed) return
     logClearBusy.value = true
     logClearMessage.value = ''
     memoryRecordsError.value = ''
@@ -2022,7 +2049,7 @@ export function useControlConsoleApp() {
 
   async function deleteContextPoolEntry(entryId: string) {
     if (!entryId || contextPoolDeleteBusy.value) return
-    if (typeof window !== 'undefined' && !window.confirm('确认删除这条上下文池记录吗？删除后不可恢复。')) return
+    if (!(await confirmDialog({ title: '删除上下文池记录', message: '确认删除这条上下文池记录吗？删除后不可恢复。', confirmText: '确认删除', danger: true }))) return
     contextPoolDeleteBusy.value = true
     contextPoolEditorError.value = ''
     contextPoolFileSaveMessage.value = ''
@@ -2194,6 +2221,46 @@ export function useControlConsoleApp() {
       return true
     }
     const payload = await response.json().catch(() => null)
+    // 写操作/生产推进提案：control 识别出可执行意图，query 类（体检/读取）直接执行读回结果，
+    // command 类落到既有事件确认卡，用户点确认才经 dispatch（command 审核门）执行
+    if (payload?.code === 'action_proposal' && payload.proposal?.eventId) {
+      const proposal = payload.proposal
+      if (proposal.kind === 'query') {
+        appendLocalChatEntry({ role: 'assistant', content: `${proposal.summary || proposal.title}。这是只读操作，直接执行，结果见下方事件卡片。` })
+        reasoningBusy.value = false
+        await dispatchEventFromChat({
+          eventId: proposal.eventId,
+          code: proposal.code || undefined,
+          title: proposal.title || proposal.eventId,
+          category: proposal.category || 'studio',
+          kind: 'query',
+          reviewRequired: false,
+          description: proposal.summary || ''
+        }, proposal.payload || {}, true)
+        return true
+      }
+      eventConfirmPending.value = {
+        event: {
+          eventId: proposal.eventId,
+          code: proposal.code || undefined,
+          title: proposal.title || proposal.eventId,
+          category: proposal.category || 'project',
+          kind: proposal.kind || 'command',
+          reviewRequired: proposal.reviewRequired !== false,
+          description: proposal.summary || '',
+          ...(proposal.workflowPrompt ? { workflowPrompt: proposal.workflowPrompt } : {})
+        } as EventChainRegistryEventWithMeta & { workflowPrompt?: string },
+        payload: proposal.payload || {},
+        argsText: ''
+      }
+      appendLocalChatEntry({
+        role: 'assistant',
+        content: `检测到写操作请求：${proposal.summary || proposal.title}。\n这是写操作，需要你确认后才会执行（走事件审核门禁、全程留痕）。请在下方确认卡片中选择「确认执行」或「取消」。`
+      })
+      // 提案是同步 JSON 路径，没有流式消费来收尾，需手动复位忙碌态
+      reasoningBusy.value = false
+      return true
+    }
     if (payload?.code === 'not_consultative') return false
     // 其它失败（runtime 未运行/左脑门禁未就绪）与既有路径同语义，直接抛给统一错误处理
     throw new Error(payload?.details || payload?.error || `agent_stream_http_${response.status}`)
@@ -2268,7 +2335,16 @@ export function useControlConsoleApp() {
       syncReasoningSessionUi(session)
       return session
     } catch (caught) {
-      reasoningError.value = caught instanceof Error ? caught.message : String(caught)
+      const msg = caught instanceof Error ? caught.message : String(caught)
+      // 2026-09-09：会话已被服务端清理（取消/孤儿收敛/control 重启）时安静脱离附着——
+      // 此前会把 session_not_found 常驻错误横幅且不清理本地记录，用户看到"出错也没有停止"。
+      if (msg.includes('reasoning_session_not_found')) {
+        activeReasoningSession.value = null
+        persistActiveReasoningSessionId(null)
+        reasoningError.value = ''
+        return null
+      }
+      reasoningError.value = msg
       return null
     }
   }
@@ -2314,8 +2390,8 @@ export function useControlConsoleApp() {
     }, delayMs)
   }
 
-  // 新建会话：脱离当前执行链、清空输入与对话内容（服务端聊天记录先归档再清空，可溯），
-  // 让输入区回到干净起点；历史任务到会话列表查看。
+  // 新建会话：先把当前会话归档为会话文件（ai/chat/sessions/，可在会话历史中找回并继续），
+  // 再清空工作区；归档由服务端完成（含跨天回填内容一并入档）
   async function startNewChatSession() {
     stopReasoningPolling()
     resetAgentStreamState()
@@ -2323,13 +2399,75 @@ export function useControlConsoleApp() {
     sandboxPrompt.value = ''
     pendingReasoningUserPrompt.value = ''
     reasoningError.value = ''
-    await clearMemoryRecords(['chat-history'])
+    try {
+      await archiveCurrentChatSessionRequest('hermes-manager')
+    } catch (caught) {
+      console.error('Failed to archive chat session:', caught)
+    }
+    await loadChatHistory()
+    if (chatSessionsOpen.value) await loadChatSessions()
+  }
+
+  // ============ 会话历史管理 ============
+  async function loadChatSessions() {
+    if (chatSessionsBusy.value) return
+    chatSessionsBusy.value = true
+    try {
+      const response = await listChatSessionsRequest('hermes-manager')
+      const payload = await response.json().catch(() => null)
+      if (response.ok && payload?.ok && Array.isArray(payload.sessions)) {
+        chatSessions.value = payload.sessions
+      }
+    } catch (caught) {
+      console.error('Failed to load chat sessions:', caught)
+    } finally {
+      chatSessionsBusy.value = false
+    }
+  }
+
+  async function toggleChatSessions() {
+    chatSessionsOpen.value = !chatSessionsOpen.value
+    if (chatSessionsOpen.value) await loadChatSessions()
+  }
+
+  async function openChatSessionById(sessionId: string) {
+    if (chatSessionsBusy.value) return
+    chatSessionsBusy.value = true
+    try {
+      const response = await openChatSessionRequest('hermes-manager', sessionId)
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `open_session_http_${response.status}`)
+      chatSessionsOpen.value = false
+      await loadChatHistory()
+    } catch (caught) {
+      reasoningError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      chatSessionsBusy.value = false
+    }
+  }
+
+  async function deleteChatSessionById(sessionId: string) {
+    if (chatSessionsBusy.value) return
+    if (!(await confirmDialog({ title: '删除会话记录', message: '确认删除这条会话记录吗？删除后不可恢复。', confirmText: '确认删除', danger: true }))) return
+    chatSessionsBusy.value = true
+    try {
+      const response = await deleteChatSessionRequest('hermes-manager', sessionId)
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `delete_session_http_${response.status}`)
+      // 本地即时移除；busy 解除后再整体重载对齐服务端（此前在 busy 内调 loadChatSessions 会被其 busy 守卫直接跳过，列表永不刷新）
+      chatSessions.value = chatSessions.value.filter((s) => s.sessionId !== sessionId)
+    } catch (caught) {
+      reasoningError.value = caught instanceof Error ? caught.message : String(caught)
+    } finally {
+      chatSessionsBusy.value = false
+    }
+    await loadChatSessions()
   }
 
   async function clearReasoningSession() {
     const sessionId = activeReasoningSession.value?.sessionId
     if (!sessionId || !canClearReasoningSession.value || reasoningStopBusy.value) return
-    if (typeof window !== 'undefined' && !window.confirm('确认清理当前可观测推理链记录吗？\n仅已结束任务可清理。后端会先备份 session JSON 和清理报告，再从当前时间线移除。')) return
+    if (!(await confirmDialog({ title: '清理推理链记录', message: '确认清理当前可观测推理链记录吗？\n仅已结束任务可清理。后端会先备份 session JSON 和清理报告，再从当前时间线移除。', confirmText: '确认清理', danger: true }))) return
     reasoningStopBusy.value = true
     reasoningError.value = ''
     reasoningClearMessage.value = ''
@@ -2472,6 +2610,25 @@ export function useControlConsoleApp() {
     const pending = eventConfirmPending.value
     if (!pending || eventDispatchBusy.value) return
     eventConfirmPending.value = null
+    // 工作流产线提案（如 Story Bible 需 control 构造输入）：确认后创建可观测执行链 session，不走裸事件
+    const workflowPrompt = (pending.event as { workflowPrompt?: string }).workflowPrompt
+    if (workflowPrompt) {
+      appendLocalChatEntry({ role: 'assistant', content: `已确认，进入可观测执行链：${pending.event.title}。任务链与审核点会出现在下方。` })
+      const response = await createReasoningSession('hermes-manager', {
+        prompt: workflowPrompt,
+        reviewMode: reasoningAutoApproveEnabled.value ? 'full-auto' : 'manual',
+      })
+      const payload = await response.json().catch(() => null)
+      if (response.ok && payload?.ok && payload?.session?.sessionId) {
+        pendingReasoningUserPrompt.value = workflowPrompt
+        reasoningBusy.value = true
+        await loadReasoningSession(payload.session.sessionId)
+        scheduleReasoningPolling()
+      } else {
+        appendLocalChatEntry({ role: 'error', content: `执行链创建失败：${payload?.error || `http_${response.status}`}` })
+      }
+      return
+    }
     appendLocalChatEntry({ role: 'assistant', content: `已确认执行事件：${pending.event.title}（${pending.event.eventId}）。` })
     const result = await dispatchEventFromChat(pending.event, pending.payload, true)
     if (result && !result.ok) {
@@ -2609,6 +2766,7 @@ export function useControlConsoleApp() {
           persistedChatHistory.value = payload.history.map((message: any) => ({ role: message.role, content: message.content, tokens: message.tokens, transient: false }))
           rebuildDisplayedChatHistory()
           chatMemoryFile.value = payload.file || null
+          chatWaterLevel.value = payload.waterLevel || null
           if (payload.activeRequest?.contextSources) chatContextInfo.value = payload.activeRequest.contextSources
           return payload
         }
@@ -2622,6 +2780,24 @@ export function useControlConsoleApp() {
   }
 
   async function openChatMemoryEditor() { chatMemoryEditorOpen.value = true; await loadChatMemoryFile() }
+
+  // 对话水位管理动作：用户确认后压缩早期对话为摘要 / 归档清空重开，完成后刷新历史与水位
+  async function compactChatHistory(action: 'compress' | 'clear') {
+    if (chatCompactBusy.value) return null
+    chatCompactBusy.value = true
+    try {
+      const response = await compactChatHistoryRequest('hermes-manager', { action, keepRecentPairs: 4 })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `compact_http_${response.status}`)
+      await loadChatHistory()
+      return payload
+    } catch (caught) {
+      console.error('Failed to compact chat history:', caught)
+      return null
+    } finally {
+      chatCompactBusy.value = false
+    }
+  }
 
   async function openChatHistoryFileInEditor() {
     chatMemoryOpenBusy.value = true
@@ -2682,7 +2858,7 @@ export function useControlConsoleApp() {
 
   async function clearChatWindowHistory() {
     if (chatMemorySaveBusy.value || chatMemoryBusy.value) return
-    if (typeof window !== 'undefined' && !window.confirm('确认清空当前 Hermes 回答窗口吗？\n系统会先分析并归档当天聊天缓冲 JSON，再清空窗口。\n不会删除长期记忆、状态/任务/决策、上下文池或项目文件。')) return
+    if (!(await confirmDialog({ title: '清空回答窗口', message: '确认清空当前 Hermes 回答窗口吗？\n系统会先分析并归档当天聊天缓冲 JSON，再清空窗口。\n不会删除长期记忆、状态/任务/决策、上下文池或项目文件。', confirmText: '确认清空', danger: true }))) return
     chatMemorySaveBusy.value = true
     chatMemoryError.value = ''
     chatMemorySaveMessage.value = ''
@@ -2728,6 +2904,9 @@ export function useControlConsoleApp() {
     memoryRecordPollInterval = setInterval(() => { void loadMemoryRecords() }, 5000)
     overviewPollInterval = setInterval(() => { void fetchOverview() }, 3000)
     productionTestPollInterval = setInterval(() => { void loadActiveProductionTestSession() }, 1500)
+    // 2026-08-26 修复：runtime 状态此前只在用户手动操作时更新，周期轮询不覆盖，
+    // 导致"已启动但聊天页仍提示未启动"。每 5s 轮询 runtime-status（同源刷新 leftBrainRunning 与 runtimeState）。
+    runtimeStatePollInterval = setInterval(() => { void refreshHermesRuntimeState().catch(() => {}) }, 5000)
     window.addEventListener('keydown', handleEditorModalWindowKeydown, true)
     void loadContextCandidates()
     void fetchOverview()
@@ -2767,6 +2946,7 @@ export function useControlConsoleApp() {
     if (memoryRecordPollInterval) clearInterval(memoryRecordPollInterval)
     if (overviewPollInterval) clearInterval(overviewPollInterval)
     if (productionTestPollInterval) clearInterval(productionTestPollInterval)
+    if (runtimeStatePollInterval) clearInterval(runtimeStatePollInterval)
     stopChatHistoryPolling()
     stopReasoningPolling()
     window.removeEventListener('keydown', handleEditorModalWindowKeydown, true)
@@ -3081,6 +3261,16 @@ export function useControlConsoleApp() {
     chatMemoryBusy,
     chatContextInfo,
     chatHistory,
+    chatWaterLevel,
+    chatCompactBusy,
+    compactChatHistory,
+    chatSessions,
+    chatSessionsOpen,
+    chatSessionsBusy,
+    toggleChatSessions,
+    loadChatSessions,
+    openChatSessionById,
+    deleteChatSessionById,
     chatMemoryDirty,
     chatMemoryDraft,
     chatMemoryEditorOpen,

@@ -168,12 +168,35 @@ export function extractJsonObjectString(text) {
 
   const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
   const candidate = fencedMatch ? fencedMatch[1].trim() : raw
+
+  // 配平括号截取第一个完整 JSON 对象（2026-09-06 修复）：
+  // 本地模型常把同一份 JSON 重复输出多遍、或泄漏 think 标签残渣，
+  // 旧的"首{到尾}"贪婪切片会把多个对象拼成一个非法 JSON，
+  // 导致调用方解析失败后被静默替换为兜底计划（丢查证步骤）。
   const firstBrace = candidate.indexOf('{')
-  const lastBrace = candidate.lastIndexOf('}')
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return candidate.slice(firstBrace, lastBrace + 1)
+  if (firstBrace < 0) return candidate
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = firstBrace; i < candidate.length; i += 1) {
+    const ch = candidate[i]
+    if (inString) {
+      if (escaped) { escaped = false; continue }
+      if (ch === '\\') { escaped = true; continue }
+      if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') { inString = true; continue }
+    if (ch === '{') { depth += 1; continue }
+    if (ch === '}') {
+      depth -= 1
+      if (depth === 0) return candidate.slice(firstBrace, i + 1)
+    }
   }
-  return candidate
+
+  // 配平失败（对象在中途被截断）：退回旧的"首{到尾}"行为，由调用方兜底
+  const lastBrace = candidate.lastIndexOf('}')
+  return lastBrace > firstBrace ? candidate.slice(firstBrace, lastBrace + 1) : candidate
 }
 
 function isMetaAnalysisPrompt(userPrompt) {
@@ -628,6 +651,9 @@ function sanitizeProductionTestSteps(steps, fallbackSteps, contextSelection = {}
 export function isLikelyReadOnlyReasoningPrompt(userPrompt) {
   const text = String(userPrompt || '')
   if (!text.trim()) return true
+  // 2026-09-08：裸 shell 命令形态（请执行 cd …、带 && 或 .sh）同样是调用意图——
+  // 否则 sanitize 会把模型规划的 shell_execute 步骤静默剥光，计划被兜底替换且无任何留痕（实测现场）。
+  if (/&&|\.sh\b|请执行|执行命令|运行命令/i.test(text)) return false
   return !/(创建|新建|写入|修改|编辑|删除|重命名|导出|更新|写回|落盘|执行脚本|运行脚本|重启|启动|停止|恢复|暂停)/i.test(text)
 }
 

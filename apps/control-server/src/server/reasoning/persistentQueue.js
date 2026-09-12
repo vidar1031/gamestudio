@@ -23,7 +23,9 @@
  *   重新入队的 item 从 B02 checkpoint 的 nextStepIndex 恢复，已成功 step 不重跑；
  *   从未开始执行的（session 仍为 queued）直接重新排队从头跑（plan 阶段幂等，无副作用）。
  * - 人工审核门禁不可绕过：重启时处于 waiting_review（或刚从 waiting_review 收敛为 orphaned）
- *   的 session 不自动重排队，item 释放为 waiting_review，走 B03 人工 recover。
+ *   的 session 不自动重排队，item 释放为 waiting_review，走 B03 人工 recover；
+ *   但超过 HERMES_REASONING_WAITING_REVIEW_TTL_MS（默认 24h）无人处理的等待审核会话，
+ *   启动恢复时收敛为 cancelled，避免僵尸会话永久驻留并被前端反复恢复。
  * - AUTO-C02 重试调度：session 失败经 retryPolicy 确定性分类——retryable 且未达上限时
  *   item 回 queued 落 nextAttemptAt（指数退避，到点才可再领取），session 转 retry_wait；
  *   达到上限稳定终结 failed（retryHistory 记录每次原因与时间）；needs_review/blocked 类
@@ -68,6 +70,7 @@ import {
   buildOrphanedTransition,
   buildOrphanBlockedTransition
 } from './orphanRecovery.js'
+import { convergeSessionTermination } from './taskDeadline.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -84,6 +87,10 @@ const DEFAULT_TICK_MS = 1000
 // 心跳过期扫描间隔（挂 worker 周期能力，B03 遗留的可选增强）：
 // HERMES_REASONING_QUEUE_HEARTBEAT_SCAN_INTERVAL_MS 可覆盖，默认 60000ms；<=0 关闭
 const DEFAULT_HEARTBEAT_SCAN_INTERVAL_MS = 60000
+// waiting_review 过期收敛阈值：HERMES_REASONING_WAITING_REVIEW_TTL_MS 可覆盖，默认 24h；<=0 关闭。
+// 人工审核长期无人处理的 session 会永久驻留，前端每次刷新都把它当作「最新非终结会话」
+// 恢复出僵尸审核面板；启动恢复时对超龄 waiting_review 一律收敛为 cancelled（终态）。
+const DEFAULT_WAITING_REVIEW_TTL_MS = 86400000
 // item history 上限，避免长期运行无限增长
 const MAX_ITEM_HISTORY_ENTRIES = 30
 // AUTO-C02：item retryHistory 上限（每次重试调度记录原因与时间）
@@ -138,6 +145,14 @@ export function resolveQueueHeartbeatScanIntervalMs(value) {
   if (raw === undefined || raw === null || raw === '') return DEFAULT_HEARTBEAT_SCAN_INTERVAL_MS
   const num = Number(raw)
   if (!Number.isFinite(num)) return DEFAULT_HEARTBEAT_SCAN_INTERVAL_MS
+  return Math.floor(num)
+}
+
+// waiting_review 过期阈值解析（默认 24h；<=0 表示关闭过期收敛）
+export function resolveWaitingReviewTtlMs(value) {
+  const raw = value ?? process.env.HERMES_REASONING_WAITING_REVIEW_TTL_MS
+  const num = Number(raw)
+  if (!Number.isFinite(num)) return DEFAULT_WAITING_REVIEW_TTL_MS
   return Math.floor(num)
 }
 
@@ -464,7 +479,8 @@ function requeueQueueItem(item, { resumeFromStep, reason, nowFn }) {
  * - session 缺失 -> item blocked（明确阻断，不猜测）；
  * - session 终态 / failed -> item 镜像终结（不重复领取、不重复执行）；
  * - session queued（从未开始或死于 plan 阶段）-> item 重置为 queued 从头跑（plan 幂等）；
- * - session waiting_review -> item 释放为 waiting_review（人工在环，不动 session）；
+ * - session waiting_review -> item 释放为 waiting_review（人工在环，不动 session；
+ *   超过 TTL 无人处理的收敛为 cancelled，见 resolveWaitingReviewTtlMs）；
  * - session 其他非终结状态 -> 按 B03 orphan 语义先收敛为 orphaned；
  *   其中从 waiting_review 收敛来的不自动重排队（审核门禁不可绕过）；
  *   其余评估恢复资格：证据完整 -> 重新入队（resumeFromStep=checkpoint.nextStepIndex，
@@ -489,6 +505,7 @@ export function recoverPersistentQueueOnStartup({
     requeued: 0,
     mirroredTerminal: 0,
     releasedWaitingReview: 0,
+    expiredWaitingReview: 0,
     blocked: 0,
     errors: [],
     managedSessionIds: new Set()
@@ -509,6 +526,19 @@ export function recoverPersistentQueueOnStartup({
     }
   }
   return summary
+}
+
+// session 进入 waiting_review 的时间（ms epoch）：取最后一次转入 waiting_review 的
+// stateTransition 时间戳，缺失时回退 updatedAt / createdAt；都无法解析返回 null。
+function resolveWaitingReviewSinceMs(session) {
+  const transitions = Array.isArray(session?.stateTransitions) ? session.stateTransitions : []
+  for (let i = transitions.length - 1; i >= 0; i -= 1) {
+    if (transitions[i]?.to !== REASONING_SESSION_STATE.WAITING_REVIEW) continue
+    const ts = Date.parse(transitions[i]?.timestamp || '')
+    if (Number.isFinite(ts)) return ts
+  }
+  const fallback = Date.parse(session?.updatedAt || '') || Date.parse(session?.createdAt || '')
+  return Number.isFinite(fallback) ? fallback : null
 }
 
 function recoverOneQueueItem(item, { readSession, updateSession, appendEvent, nowFn, maxRecoveryCount, summary }) {
@@ -539,8 +569,36 @@ function recoverOneQueueItem(item, { readSession, updateSession, appendEvent, no
     return
   }
 
-  // 人工审核等待：释放槽位，session 保持等待人工，不触碰
+  // 人工审核等待：默认释放槽位，session 保持等待人工，不触碰；
+  // 但超过 TTL（默认 24h，HERMES_REASONING_WAITING_REVIEW_TTL_MS 可覆盖，<=0 关闭）仍
+  // 无人处理的，收敛为 cancelled 终态——否则僵尸会话永久驻留，前端每次刷新都把它
+  // 当作「最新非终结会话」恢复出待审面板。
   if (status === REASONING_SESSION_STATE.WAITING_REVIEW) {
+    const ttlMs = resolveWaitingReviewTtlMs()
+    const waitingSinceMs = resolveWaitingReviewSinceMs(session)
+    if (ttlMs > 0 && waitingSinceMs !== null && Date.parse(nowFn()) - waitingSinceMs >= ttlMs) {
+      const result = convergeSessionTermination({
+        sessionId: item.sessionId,
+        outcome: 'cancelled',
+        reason: 'queue_waiting_review_expired',
+        phase: 'waiting_review',
+        eventSummary: `人工审核等待超过 ${Math.floor(ttlMs / 3600000)}h 无人处理，启动恢复已将会话收敛为 cancelled。`,
+        readSession,
+        updateSession,
+        appendEvent,
+        nowFn
+      })
+      if (result.converged) {
+        markQueueItemTerminal(item, REASONING_QUEUE_ITEM_STATE.CANCELLED, 'queue_mirror_session_cancelled', nowFn, { lastError: 'queue_waiting_review_expired' })
+        summary.expiredWaitingReview += 1
+      } else {
+        // 已被其他路径收敛（启动恢复为同步流程，理论不可达）：保持旧语义释放，
+        // 若 session 实际已终态，后续 tick 的镜像逻辑会收敛 item。
+        releaseQueueItemToWaitingReview(item, 'queue_restart_while_waiting_review', nowFn)
+        summary.releasedWaitingReview += 1
+      }
+      return
+    }
     releaseQueueItemToWaitingReview(item, 'queue_restart_while_waiting_review', nowFn)
     summary.releasedWaitingReview += 1
     return

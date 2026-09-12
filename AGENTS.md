@@ -73,6 +73,13 @@ scripts/          # 构建、生命周期、测试、维护脚本
 | Control Console | `http://127.0.0.1:8870` |
 | OMLX（本地模型） | `http://127.0.0.1:18888/v1` |
 
+### 本地模型硬约束（32G / 8K，2026-08-26 实测确立）
+
+- 全系统（GameStudio `storage/_config/studio_settings.json` 的 scripts/prompt/translation + Hermes `config/hermes/manager.left-brain.json`）统一使用 `Qwen3.6-27B-4bit`（8K 上下文变体）。
+- **禁止**改回 `Qwen3.6-27B-MLX-4bit`（32K 变体）：KV 预留 ~5.6GB，27B 权重 ~15.7GB，合计超 oMLX prefill 内存护栏（~22.95GB）导致全部 400 拒答；且 control 资源调度器只认配置模型，其他已加载模型会被 `guard_unload_foreign_model` 强杀（生成中请求被断）。
+- 本地模型调用必须给出有限 `max_output_tokens`（增强/翻译类 ≤2048）；OMLX 按 max_tokens 预留 KV，默认 8192 会直接撞护栏。
+- 同一模型的多次调用串行执行，禁止并行 prefill（KV 峰值翻倍）。
+
 ---
 
 ## 构建与开发命令
@@ -234,7 +241,7 @@ node --check apps/server/src/index.js
 - `control-console` 与 `control-server` 必须保持同一套控制语义；若一侧调整 contract，另一侧必须同步更新。
 - 左脑配置 -> 预检/自检 -> 启动/恢复的顺序不可绕过。
 - reasoning 与 chat 语义分离：`ping-model` 是普通聊天路径，`reasoning-sessions` 是可观测推理路径。
-- 本地重负载资源互斥（AUTO-R01）：OMLX 模型与 ComfyUI 出图共享机器内存，由 control 资源调度器互斥（出图 step 前卸载模型、批次结束回载、单模型守卫）；`HERMES_RESOURCE_SCHEDULER_ENABLED` 默认开，状态见 `GET /api/control/resources/state` 与守护台「资源互斥」卡片。
+- 本地重负载资源互斥（AUTO-R01）：OMLX 模型与 ComfyUI 出图共享机器内存，由 control 资源调度器互斥；`HERMES_RESOURCE_SCHEDULER_ENABLED` 默认开，状态见 `GET /api/control/resources/state` 与守护台「资源互斥」卡片。2026-09-12 扩展为统一互斥：槽位 llm/gpu/vision 三类（vision=视觉评审模型换入）；**所有本地模型/出图调用必须先取租约**——apps/server 经 `POST /api/control/resources/lease`（客户端封装 `apps/server/src/ai/resourceLease.js`，choke point：openai.js 文本、background.js 出图、storyCompleteness.js/characterPoseReview.js 视觉），control 内部非 step 调用经 `withInlineLlmLease`；story_* 委派类 step 不在边界持卡（防双向等待死锁）。
 - 详见 `docs/系统生产级推进方案.md` 与 `ai/control_architecture.md`。
 
 ### 编辑器契约
@@ -246,8 +253,11 @@ node --check apps/server/src/index.js
 ### 安全边界
 - 模型输出只能作为候选，不是事实。
 - 写入、删除、导出、脚本和外部服务动作必须受 review gate 约束。
+- **正式工作流强制（2026-09-09 用户指令，硬性法律，不可绕过）**：任何故事生产（创建/脚本/蓝图/圣经/资产计划/锁定事物/线稿/场景出图/摆位/校验/导出）**必须走正式生产工作流链**（control reasoning `story_workflow_execute` 的分步计划），每一步必须有可观测记录（reasoning session 事件流 + `/ai/tasks` 进度 + 审核记录），**任何一步失败必须显式停止**（failed/blocked 等待处置），禁止带病继续执行后续步骤。**禁止用零散 API/事件的即席组合替代正式工作流**——事件分发只用于正式链内的确定性步骤与经批准的修补动作，不得作为生产主路径。生产任务默认 reviewMode=manual（计划先审、逐步骤可审），只有用户明确授权才可用 full-auto。
 - 图片生成实行三级审核门禁（`STUDIO_IMAGE_REVIEW_MODE=manual` 时）：出图前审核（`pre_generate`）→ AI 评审后人工确认锁定（`lock_confirm`）→ 场景图人工确认绑定（`scene_bind`）。审核记录存 `<project>/reviews/image_reviews.jsonl`；`approve` 后才执行生成或写回。Control 驱动的调用默认带 `x-image-review-mode: off` 旁路（control 已有自己的步骤级审核）。
 - 长任务（锁定测试、场景渲染、批量渲染）必须经 `/api/projects/:id/ai/tasks` 暴露进度，禁止黑盒同步调用。
+- 出图可观测（强制规则，2026-08-29 用户指令）：ComfyUI 只能经 `ensureComfyUiRunning` / `openComfyUiInTerminal`（Terminal.app 可见窗口）启动，禁止 `nohup` 等黑盒静默启动；一切出图动作（参考图抽卡、锁定测试、线稿、场景渲染）必须创建 `/api/projects/:id/ai/tasks` 进度条目并在锁定事物向导 UI 可见，禁止无进度黑盒跑图。
+- 出图即压（强制规则，2026-09-09 用户指令）：生成图写盘时按用途分层压缩（`apps/server/src/ai/imageOptimize.js`）——立绘/cutout/主参考走**无损 WebP**（真相源零质量损失），场景背景走 JPEG q90，候选/绿幕/线稿/测试图走 WebP q92；禁止再落未压缩大 PNG。存量批压走 `POST /api/projects/:id/assets/compress`（幂等，同步改写 project.json 与 plan.json 引用）。导出包另有一层引用收集+压缩（`storyPixi.js`，目标 ≤5MB），两层不冲突。
 - workspace 外路径必须拒绝。
 - `_inbox` proposal 不能自动晋级为 active intent、workflow 或 evaluator。
 - `.env` / `.env.local` 不得提交含真实密钥的版本。
@@ -317,6 +327,8 @@ curl -sS "http://127.0.0.1:2099/api/control/hermes/session-search?q=<关键词>"
 | `STUDIO_PROXY_URL` | 本地 HTTP 代理（如 Clash） |
 | `STUDIO_IMAGE_REVIEW_MODE` | 图片生成审核模式：`manual`（默认，人工门禁）/ `ai_only`（AI 评审即终审）/ `off`（全自动） |
 | `MOONSHOT_API_KEY` | Moonshot/Kimi API 密钥；配置后锁定测试视觉评审走 Kimi |
+| `STUDIO_POSE_REVIEW_PROVIDER` | 姿势一致性评审通道：`auto`（默认，有 Kimi key 走 Kimi 否则本地视觉模型）/ `kimi` / `local_vl` / `off`；也可在 `storage/_config/studio_settings.json` 的 review 节配置 `poseReviewProvider/poseReviewModel/poseReviewBaseUrl` |
+| `HERMES_VISION_MODEL` | 本地视觉评审模型名（默认 `gemma-4-26b-a4b-it-4bit`，经 OMLX 多模态）；同步写入 `config/hermes/manager.left-brain.json` 的 `visionModel` 字段，资源调度器外来模型守卫据此放行 |
 
 服务器启动时会自动加载 `.env` / `.env.local`（通过 `apps/server/src/env.js`）。
 
@@ -354,6 +366,7 @@ PID 与日志保存在 `.run/` 目录：
 | `docs/系统生产级推进方案.md` | 系统分工、启动流程、任务流、路由规则、UI 约束 |
 | `docs/Control + GameStudio 生产工作流联调测试说明.md` | 联调测试标准与验证清单 |
 | `docs/PRODUCTION_DEFECTS.md` | 当前生产缺陷与未实现项 |
+| `docs/运行时能力测试基准.md` | 32G/16K 运行时硬约束与分组测试通过标准（硬基准，不可偏离） |
 | `ai/AGENTS.md` | Hermes 工作契约（控制平面专用） |
 | `ai/TOOLS.md` | 工具目录、接口、端口、命令速查 |
 | `ai/control_architecture.md` | Control 当前结构说明（权威当前状态） |
@@ -387,6 +400,13 @@ PID 与日志保存在 `.run/` 目录：
 - 验证生产链路时，由 control 侧事件链执行，我只观察证据（事件分发记录、reasoning sessions、`/ai/tasks` 进度、审核记录），不越俎代庖。
 - 任何"帮我跑一遍生产"的请求，都转化为"让 control 能跑一遍生产"的代码建设；发现 control 能力不足时，补 control 的能力，而不是自己下场。
 - 图片生产的把关在审核门禁（出图前/锁定确认/场景绑定），审核入口统一呈现在 control-console，人不需要切换到其他界面。
+
+### 工具链验证硬性指标（2026-09-10 用户指令，不可绕过）
+
+- **验证必须走工具自身链路**：能力验证/测试必须经由工具自身的链路完成（编辑器 UI、control 事件链、正式生产工作流），并在工具内留下可观测证据（plan/项目数据、`/ai/tasks` 进度、审核记录、UI 可见状态）。**禁止用"直接 API 调用 + 原始输出判定"代替工具链验证后宣布达标**。仅纯 CRUD/健康检查/配置读写类接口允许命令行直验。
+- **测试必须在工具内留痕**：生成类能力测试产生的候选（提示词/需求清单/草稿/候选图）必须经工具链落到工具内可见状态，用户打开 UI 即可复核；汇报时必须指明证据在工具内的位置。测试完"工具里什么都没有"= 验证不成立。
+- **结合需求用足工具**：实现新需求时优先复用并接入既有工具链能力（持久化、审核门禁、进度条目、翻译链、关联选择器），不得另起绕过这些能力的旁路实现；发现工具链缺能力就补工具链，不用手工代偿。
+- **生产操作归用户/正式工作流**：出图、脚本、导出等生产内容永远由用户操作或正式工作流驱动；agent 的职责是把工具链建到"用户自己能用本地 AI 跑通全部流程"。
 
 ---
 

@@ -195,7 +195,14 @@ export async function getProject(projectId) {
 
 export async function updateProject(projectId, payload) {
   const id = encodeURIComponent(normalizeProjectId(projectId))
-  const result = await requestGameStudio(`/api/projects/${id}`, { method: 'PUT', body: payload })
+  // 乐观锁：先读当前 _rev 再提交（服务端强制 _rev，缺失/不符会 409）
+  let rev = 0
+  try {
+    const current = await requestGameStudio(`/api/projects/${id}`)
+    rev = Number(current?.data?.project?._rev) || 0
+  } catch (_) { /* 读取失败按 0 提交，由服务端 409 兜底 */ }
+  const body = payload && typeof payload === 'object' ? { ...payload, _rev: rev } : payload
+  const result = await requestGameStudio(`/api/projects/${id}`, { method: 'PUT', body })
   return withProjectEvidence(result, projectId)
 }
 
@@ -392,6 +399,13 @@ export async function renderStorySceneBackgroundsBatch(projectId, payload = {}) 
   return withProjectEvidence(result, projectId)
 }
 
+// 出图总账（只读聚合）：需要多少图/完成多少/缺哪些
+export async function getAiCoverage(projectId) {
+  const id = encodeURIComponent(normalizeProjectId(projectId))
+  const result = await requestGameStudio(`/api/projects/${id}/ai/coverage`, { timeoutMs: 15000 })
+  return withProjectEvidence(result, projectId)
+}
+
 export async function getStorySceneBatch(projectId) {
   const id = encodeURIComponent(normalizeProjectId(projectId))
   const result = await requestGameStudio(`/api/projects/${id}/ai/story/scenes/batch`, { timeoutMs: 15000 })
@@ -450,6 +464,7 @@ export const gameStudioServerClient = {
   selectStoryAssetReference,
   renderStoryScene,
   renderStorySceneBackgroundsBatch,
+  getAiCoverage,
   getStorySceneBatch,
   generateStoryScenePlacements,
   generateAssetLineart

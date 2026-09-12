@@ -134,8 +134,22 @@ export function registerRuntimeRoutes(app, context) {
         return c.json({ ok: false, error: 'restart_script_missing' }, 500)
       }
 
+      // 整体重启的真实语义（修复长期"all-restart 只重启 control、不动 Hermes"的死代码问题：
+      // 早期分支提前 return，下方 Hermes 停止/启动逻辑从未触达）：
+      // 先在当前进程内停止 Hermes（避免新 control 面对孤儿进程），
+      // 脚本拉起新 control 后按重启前状态把 Hermes 恢复运行。
+      const hermesWasRunning = current.state === 'running' && Boolean(current.pid)
+      if (hermesWasRunning) {
+        appendHermesLog(`[RESTART] Stopping Hermes pid=${current.pid} before control restart`)
+        await stopHermesRuntime()
+      }
+
       appendHermesLog('[RESTART] Scheduling full control restart via restart_control.sh')
-      const child = spawn('bash', ['-lc', `sleep 1 && exec '${CONTROL_RESTART_SCRIPT}'`], {
+      const controlPort = String(process.env.CONTROL_SERVER_PORT || 2099)
+      const resumeHermesCmd = hermesWasRunning
+        ? ` && sleep 2 && curl -sS -m 120 -X POST 'http://127.0.0.1:${controlPort}/api/control/agents/hermes-manager/runtime-action' -H 'Content-Type: application/json' -d '{"action":"start"}' >/dev/null 2>&1 || true`
+        : ''
+      const child = spawn('bash', ['-lc', `sleep 1 && '${CONTROL_RESTART_SCRIPT}'${resumeHermesCmd}`], {
         cwd: GAMESTUDIO_ROOT,
         detached: true,
         stdio: 'ignore'
@@ -145,6 +159,7 @@ export function registerRuntimeRoutes(app, context) {
       return c.json({
         ok: true,
         restartingControl: true,
+        hermesRestarting: hermesWasRunning,
         detail: 'Control 与 Hermes 正在整体重启。',
         runtimeStatus: current,
         state: context.getHermesControlState()

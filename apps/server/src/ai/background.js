@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getProxyUrl } from '../net/proxy.js'
 import { generateImageViaDoubaoArkImages } from './doubao.js'
+import { withResourceLease } from './resourceLease.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -945,7 +946,12 @@ async function waitComfyImage({ baseUrl, promptId, timeoutMs }) {
   throw e
 }
 
-export async function runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl, timeoutMs }) {
+// ComfyUI 出图统一经 control 资源调度器租约准入（gpu 独占写卡，出图前换出 OMLX 模型）
+export async function runComfyuiPromptWorkflow(params) {
+  return withResourceLease('gpu', 'gs:comfyui:prompt_workflow', () => runComfyuiPromptWorkflowInner(params))
+}
+
+async function runComfyuiPromptWorkflowInner({ workflow, comfyuiBaseUrl, timeoutMs }) {
   const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
   const effectiveTimeoutMs = parseComfyTimeoutMs(timeoutMs)
   if (!workflow || typeof workflow !== 'object') {
@@ -1728,6 +1734,9 @@ async function generateBackgroundViaComfyui(input) {
     const clipVisionModels = await fetchComfyModelList(baseUrl, '/models/clip_vision', 5000)
     const ipAdapterModel =
       pickPreferredComfyModel(ipAdapterModels, [
+        // 2026-09-01 调用方可显式指定 IPAdapter 模型（如动作立绘用通用 plus 模型锁动物角色，
+        // 默认的 plus-face 人脸模型会把动物角色锚成人类）
+        String(input && input.ipadapterModel || '').trim(),
         process.env.COMFYUI_IPADAPTER_MODEL || '',
         'plus-face',
         'faceid',
@@ -1783,10 +1792,12 @@ async function generateBackgroundViaComfyui(input) {
           clip_vision: [clipVisionId, 0],
           image: [imageNodeId, 0],
           weight,
-          weight_type: 'linear',
+          weight_type: String(ref.weightType || 'linear'),
           combine_embeds: 'concat',
-          start_at: 0,
-          end_at: 1,
+          // 2026-09-01 作用区间可配：动作立绘需要换姿势时用 start_at>0 放开早期构图步
+          // （全程 [0,1] 会把主参考的站姿一起锚死，实测动作词完全不生效）
+          start_at: clampFloat(ref.startAt, 0, 1, 0),
+          end_at: clampFloat(ref.endAt, 0, 1, 1),
           embeds_scaling: 'V only'
         })
       }

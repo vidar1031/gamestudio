@@ -43,6 +43,41 @@ async function decodeToHtmlImage(blob: Blob): Promise<HTMLImageElement> {
   }
 }
 
+// 2026-09-01 角点采样底色：模型很少给出纯绿 (0,255,0)，实测偏青/蓝绿。
+// 从四边中点与四角取 8 个 5x5 色块做分量中位数，作为实际底色；opts.key 显式传入时仍优先。
+function sampleBorderKeyColor(data: Uint8ClampedArray, w: number, h: number): { r: number; g: number; b: number } {
+  const pts: Array<[number, number]> = [
+    [2, 2], [w - 3, 2], [2, h - 3], [w - 3, h - 3],
+    [Math.floor(w / 2), 2], [Math.floor(w / 2), h - 3],
+    [2, Math.floor(h / 2)], [w - 3, Math.floor(h / 2)]
+  ]
+  const samples: number[][] = []
+  for (const [cx, cy] of pts) {
+    let r = 0
+    let g = 0
+    let b = 0
+    let n = 0
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const x = Math.min(w - 1, Math.max(0, cx + dx))
+        const y = Math.min(h - 1, Math.max(0, cy + dy))
+        const i = (y * w + x) * 4
+        r += data[i]
+        g += data[i + 1]
+        b += data[i + 2]
+        n++
+      }
+    }
+    if (n > 0) samples.push([r / n, g / n, b / n])
+  }
+  if (!samples.length) return { r: 0, g: 255, b: 0 }
+  const medianAt = (idx: number) => {
+    const sorted = samples.map((s) => s[idx]).sort((a, b2) => a - b2)
+    return sorted[Math.floor(sorted.length / 2)]
+  }
+  return { r: medianAt(0), g: medianAt(1), b: medianAt(2) }
+}
+
 export async function chromaKeyUrlToPng(
   imageUrl: string,
   opts?: ChromaKeyOptions
@@ -50,7 +85,6 @@ export async function chromaKeyUrlToPng(
   const url = String(imageUrl || '').trim()
   if (!url) throw new Error('missing_image_url')
 
-  const key = opts?.key || { r: 0, g: 255, b: 0 }
   const threshold = clampFloat(opts?.threshold, 0, 255, 80)
   const feather = clampFloat(opts?.feather, 0, 255, 40)
   const crop = Boolean(opts?.crop ?? true)
@@ -94,6 +128,7 @@ export async function chromaKeyUrlToPng(
 
   const imgData = ctx.getImageData(0, 0, w, h)
   const data = imgData.data
+  const key = opts?.key || sampleBorderKeyColor(data, w, h)
   const thr = threshold
   const fea = Math.max(0, feather)
 

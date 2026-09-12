@@ -422,7 +422,12 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
         : (String(settings?.review?.provider || '').toLowerCase() === 'omlx' ? (env.localoxmlModel || 'Qwen3.6-27B-4bit') : 'kimi-for-coding'),
       apiUrl: settings?.review?.apiUrl
         ? String(settings.review.apiUrl)
-        : (String(settings?.review?.provider || '').toLowerCase() === 'omlx' ? (env.localoxmlBaseUrl || 'http://127.0.0.1:18888/v1') : (String(process.env.MOONSHOT_BASE_URL || '').trim() || 'https://api.kimi.com/coding/v1'))
+        : (String(settings?.review?.provider || '').toLowerCase() === 'omlx' ? (env.localoxmlBaseUrl || 'http://127.0.0.1:18888/v1') : (String(process.env.MOONSHOT_BASE_URL || '').trim() || 'https://api.kimi.com/coding/v1')),
+      // 2026-09-08 姿势一致性评审 provider 开关（Kimi 周配额耗尽时切本地视觉模型 gemma，实测多模态可用）：
+      // poseReviewProvider: auto/kimi/local_vl/off；poseReviewModel/poseReviewBaseUrl 仅在 local_vl 时生效
+      poseReviewProvider: settings?.review?.poseReviewProvider ? String(settings.review.poseReviewProvider).toLowerCase() : null,
+      poseReviewModel: settings?.review?.poseReviewModel ? String(settings.review.poseReviewModel) : null,
+      poseReviewBaseUrl: settings?.review?.poseReviewBaseUrl ? String(settings.review.poseReviewBaseUrl) : null
     },
     secrets: {
       openai: { present: Boolean(secretsOpenai.value), masked: maskKey(secretsOpenai.value), source: secretsOpenai.source, value: secretsOpenai.value || null },

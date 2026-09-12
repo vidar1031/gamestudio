@@ -377,13 +377,14 @@ export async function walkStoryPlayer({
   settleMs = 700,
   navTimeoutMs = 20000,
   arrivalTimeoutMs = 4000,
+  recreatePage = null,
   sleep = defaultSleep
 }) {
   const reports = []
   const eventSink = sink || { currentTag: '', consoleErrors: [], failedRequests: [] }
   let playerInitChecked = false
 
-  for (const nodeId of graph.visitOrder) {
+  const visitNode = async (nodeId) => {
     const node = graph.nodeMap.get(nodeId)
     eventSink.currentTag = nodeId
 
@@ -463,13 +464,31 @@ export async function walkStoryPlayer({
       await page.screenshot({ path: shotPath })
     } catch (_) { /* 截图失败不阻断走查，AI 评审随之降级 */ }
 
-    // 6. AI 视觉评审：仅对到达的节点执行；失败如实记 unavailable
+    // 6. AI 视觉评审：仅对到达的节点执行；失败如实记 unavailable。
+    // 初审判失败的节点做一次独立复审（噪声抑制：本地小模型对同一画面存在 run 间波动，
+    // 两次独立评审一致判失败才计入失败；复审结论与初审一并留痕）
     let aiReview = { status: 'skipped', reason: reachable ? 'reviewer_not_configured' : 'node_unreachable' }
     if (reachable && reviewer) {
       try {
         aiReview = await reviewer({ node, observed, screenshotPath: shotPath })
       } catch (e) {
         aiReview = { status: 'unavailable', reason: asStr(e && e.message) || 'review_failed' }
+      }
+      if (aiReview && aiReview.status === 'completed' && aiReview.passed === false) {
+        try {
+          const recheck = await reviewer({ node, observed, screenshotPath: shotPath })
+          aiReview.recheck = recheck
+          if (recheck && recheck.status === 'completed' && recheck.passed === true) {
+            aiReview = {
+              ...recheck,
+              summary: `初审未过（${asStr(aiReview.summary) || '-'}），复审通过：${asStr(recheck.summary) || '-'}`,
+              recheck: undefined,
+              firstReview: { score: aiReview.score, issues: aiReview.issues, summary: aiReview.summary }
+            }
+          }
+        } catch (e) {
+          aiReview.recheck = { status: 'unavailable', reason: asStr(e && e.message) || 'recheck_failed' }
+        }
       }
     }
 
@@ -496,6 +515,23 @@ export async function walkStoryPlayer({
     }
     reports.push(report)
     if (onNodeDone) await onNodeDone({ nodeId, index: reports.length, total: graph.visitOrder.length + graph.unreachableNodeIds.length, report })
+  }
+
+  for (const nodeId of graph.visitOrder) {
+    // 渲染进程崩溃/后台标签页被 Chrome 回收（detached frame）时重建页面重试（最多 2 次）：
+    // 长视觉评审期间页面长时间空闲，32G 内存压力下标签页可能被丢弃
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await visitNode(nodeId)
+        break
+      } catch (e) {
+        const msg = e && e.message ? String(e.message) : String(e)
+        const crashed = /detached|target closed|session closed|frame/i.test(msg)
+        if (!crashed || attempt >= 2 || typeof recreatePage !== 'function') throw e
+        page = await recreatePage()
+        playerInitChecked = false // 新页面需重新确认播放器初始化
+      }
+    }
   }
 
   // 静态不可达节点（图中没有任何路径）：直接记失败证据，不消耗浏览器访问
@@ -566,12 +602,15 @@ function buildNodeReviewInstructions(nodeContext) {
     `请按以下细则审查该节点画面：\n` +
     `1. 图文匹配：画面内容与节点文本描述的场景是否一致。\n` +
     `2. 立绘合成：人物立绘是否为透明背景自然合成——无白底/黑底方框、无明显错位、无被裁出画面。\n` +
+    `   注意材质白名单：玻璃瓶、水滴、浅色/半透明材质的道具立绘，其自身的白色或半透明外观属于设计特征，\n` +
+    `   不得误判为"白底方框/透明度处理失败"；只有出现包裹整个立绘的矩形实心色块（与立绘轮廓明显不符）才算透明度失败。\n` +
     `3. 背景纯净：背景图本身不应包含人物（人物应由立绘层提供）。\n` +
     `4. 破图与占位：有无图片加载失败导致的大片纯黑/纯白/灰块；出现「场景图像未生成」占位文字必须判失败。\n` +
     `5. 文本可读：对话框文本清晰可读，未被异常遮挡。\n` +
     `输出要求：只输出一个合法 JSON 对象，不要 markdown 代码块，不要任何额外文字。\n` +
     `JSON 结构：{"passed": 布尔, "score": 0到100的整数, "issues": ["问题描述"], "summary": "一句话结论"}\n` +
-    `passed=false 当且仅当存在上述任一类明确缺陷；拿不准的轻微风格问题只扣分不判失败。`
+    `判失败纪律：passed=false 当且仅当存在上述任一类明确缺陷；每条 issue 必须指明画面中具体可见的元素与位置，\n` +
+    `不得给出无法从截图直接确认的指控（如声称存在乱码/残影但无法指出位置）；拿不准的轻微风格问题只扣分不判失败。`
   )
 }
 
@@ -646,7 +685,11 @@ export async function reviewNodeScreenshotWithVision({
       throw new Error((json && json.error && json.error.message) || `review_http_${res.status}`)
     }
     const content = asStr(json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content)
-    const parsed = normalizeCompletenessAiReview(JSON.parse(extractJsonObjectString(content) || '{}'))
+    // 模型未输出合法 JSON 时必须显式失败（由调用方记 unavailable/failed），
+    // 不得把空输出归一化成"20 分未通过"伪造评审结论
+    const rawJsonText = extractJsonObjectString(content)
+    if (!rawJsonText) throw new Error('invalid_completeness_review_output')
+    const parsed = normalizeCompletenessAiReview(JSON.parse(rawJsonText))
     if (!parsed) throw new Error('invalid_completeness_review_output')
     return parsed
   } finally {
@@ -768,7 +811,7 @@ export function createPuppeteerBrowserLauncher({ executablePath } = {}) {
     return puppeteer.launch({
       executablePath: exe,
       headless: true,
-      args: ['--no-sandbox', '--disable-dev-shm-usage', '--hide-scrollbars', '--mute-audio']
+      args: ['--no-sandbox', '--disable-dev-shm-usage', '--hide-scrollbars', '--mute-audio', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows']
     })
   }
 }
@@ -806,12 +849,15 @@ export async function runStoryCompletenessCheck({
   let reports
   const browser = await launchBrowser()
   try {
-    const page = await browser.newPage()
-    if (typeof page.setViewport === 'function') {
-      await page.setViewport({ width: 960, height: 1280, deviceScaleFactor: 1 })
-    }
     const sink = { currentTag: '', consoleErrors: [], failedRequests: [] }
-    attachPageObservers(page, sink)
+    const setupPage = async (p) => {
+      if (typeof p.setViewport === 'function') {
+        await p.setViewport({ width: 960, height: 1280, deviceScaleFactor: 1 })
+      }
+      attachPageObservers(p, sink)
+      return p
+    }
+    let page = await setupPage(await browser.newPage())
     reports = await walkStoryPlayer({
       page,
       graph,
@@ -825,6 +871,12 @@ export async function runStoryCompletenessCheck({
       arrivalTimeoutMs,
       navTimeoutMs,
       sleep,
+      recreatePage: async () => {
+        // 旧页面（渲染进程已崩/被回收）尽力关闭，换新页面并重挂观察者
+        try { await page.close() } catch { /* best effort */ }
+        page = await setupPage(await browser.newPage())
+        return page
+      },
       onNodeDone: onProgress
     })
   } finally {

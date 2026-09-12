@@ -696,6 +696,174 @@ function parseStoryBibleJsonText(rawText) {
   throw e
 }
 
+// ============ 本地小内存机：Story Bible 分块生成路径（2026-08-25） ============
+// 实测：27B/4bit + 8K 上下文 + Metal cap ~24GB 下，单发大 schema 调用的 prefill 工作区（~4.4GB）
+// 必撞 OMLX prefill 内存闸（权重+KV 已占 ~23GB）。分块后每次调用 prefill ~1GB 可通过。
+// 仅 localoxml 默认走此路径（云端 doubao 等保持单发）；分块失败再回退单发。
+
+function bibleEntityMiniItem(kind) {
+  const base = {
+    id: { type: 'string', maxLength: 80 },
+    name: { type: 'string', maxLength: 80 },
+    aliases: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 20 },
+    anchorPrompt: { type: 'string', maxLength: kind === 'location' ? 260 : 300 },
+    locked: { type: ['boolean', 'null'] }
+  }
+  if (kind === 'character') base.negativePrompt = { type: ['string', 'null'], maxLength: 200 }
+  if (kind === 'prop') base.forbiddenSubstitutes = { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 40 }
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: base,
+    required: Object.keys(base)
+  }
+}
+
+function bibleChunkSchema(kind) {
+  if (kind === 'global') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        worldAnchor: { type: 'string', minLength: 1, maxLength: 600 },
+        eventChain: { type: 'array', items: { type: 'string', maxLength: 160 }, maxItems: 80 },
+        forbiddenSubstitutes: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 120 }
+      },
+      required: ['worldAnchor', 'eventChain', 'forbiddenSubstitutes']
+    }
+  }
+  if (kind === 'sceneRefs') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        sceneRefs: {
+          type: 'array',
+          maxItems: 200,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              sceneId: { type: 'string', maxLength: 120 },
+              characters: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 40 },
+              props: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 60 },
+              locations: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 40 }
+            },
+            required: ['sceneId', 'characters', 'props', 'locations']
+          }
+        }
+      },
+      required: ['sceneRefs']
+    }
+  }
+  // characters / props / locations
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      [kind]: { type: 'array', maxItems: kind === 'characters' ? 60 : kind === 'props' ? 120 : 80, items: bibleEntityMiniItem(kind.slice(0, -1)) }
+    },
+    required: [kind]
+  }
+}
+
+function buildBibleChunkInstructions(kind) {
+  const common = '你是"交互故事制作工具"的连续分镜一致性助手。输出必须是唯一 JSON 对象，不要解释文字、不要 markdown。候选实体只是提示不是真相源，以场景实际内容为准。'
+  if (kind === 'global') {
+    return `${common}\n本块任务：产出全局锚定。worldAnchor：一句到两句英文，包含时代/地域/建筑语言/光照色调/镜头语言。eventChain：按场景编号列出可见动作与状态变化（英文短句）。forbiddenSubstitutes：全局容易误画的替代物（英文短词）。`
+  }
+  if (kind === 'characters') {
+    return `${common}\n本块任务：只保留后续连续出图真正需要稳定复用的角色核心身份。anchorPrompt 只写"角色本体 + 稳定基础穿着/物种特征"，不要把临时状态、姿势、情绪、受伤、拿着某物写成核心身份。单一事件里的临时状态（如受伤的狼）不固化进 id/name/anchorPrompt。群体对象只有确实需要稳定复用视觉身份才保留。每个角色输出 id（英文短横线小写）、name、aliases、anchorPrompt、negativePrompt（可为 null）、locked（默认 true）。`
+  }
+  if (kind === 'props') {
+    return `${common}\n本块任务：逐道具输出结构级 anchorPrompt（英文一行：部件/材质/形状/尺寸感/连接方式/典型摆放）。只保留会在后续场景反复作为独立视觉对象出现的道具；一次性动作/伤口状态不算长期道具。可穿戴可拆卸物（hat/bag/shoes 等）必须是 props 而不是角色外观的一部分，描述以物件本身为中心。每个道具输出 id、name、aliases、anchorPrompt、forbiddenSubstitutes（易误替代物）、locked（默认 true）。`
+  }
+  if (kind === 'locations') {
+    return `${common}\n本块任务：只输出可复用地点锚点（时代/地域/建筑风格/光照一句英文 anchorPrompt）。每个地点输出 id、name、aliases、anchorPrompt、locked（默认 true）。`
+  }
+  // sceneRefs
+  return `${common}\n本块任务：为每个场景绑定画面中实际应出现的实体（用给定 id 引用，不要用名字）。只有画面里应实际出现的对象才能进入；被提到/呼喊/回忆/远处听见不等于要画进场景。选择点场景只能绑定做选择前画面中已存在的对象。每个场景通常只放一个主地点。对每条场景输出 sceneId、characters、props、locations（数组可空）。`
+}
+
+function summarizeInputForBibleChunks(input) {
+  const sceneSummaries = (Array.isArray(input?.scenes) ? input.scenes : []).map((scene) => ({
+    sceneId: String(scene?.sceneId || '').trim(),
+    name: String(scene?.name || '').trim(),
+    summary: clampStr(scene?.text || '', 200)
+  })).filter((scene) => scene.sceneId)
+  const candidateEntities = input?.candidateEntities && typeof input.candidateEntities === 'object' ? input.candidateEntities : {}
+  const slimEntity = (item) => ({
+    id: String(item?.id || '').trim(),
+    name: String(item?.name || '').trim(),
+    anchorPrompt: clampStr(item?.anchorPrompt || item?.fingerprintPrompt || '', 200)
+  })
+  return {
+    title: clampStr(input?.title || '', 120),
+    brief: clampStr(input?.brief || '', 400),
+    sceneSummaries,
+    candidateWorldHints: input?.candidateWorldHints || {},
+    candidateCharacters: (Array.isArray(candidateEntities.characters) ? candidateEntities.characters : []).map(slimEntity),
+    candidateProps: (Array.isArray(candidateEntities.props) ? candidateEntities.props : []).map(slimEntity),
+    candidateLocations: (Array.isArray(candidateEntities.locations) ? candidateEntities.locations : []).map(slimEntity)
+  }
+}
+
+async function callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind, input }) {
+  const body = {
+    instructions: buildBibleChunkInstructions(kind),
+    input: JSON.stringify(input || {}, null, 2),
+    ...(model ? { model: String(model).trim() } : {}),
+    text: {
+      format: {
+        type: 'json_schema',
+        name: `story_bible_${kind}`,
+        strict: true,
+        schema: bibleChunkSchema(kind)
+      }
+    }
+  }
+  const { json } = await openaiResponsesJsonForTools({ body, provider, apiUrl, proxyUrl, timeoutMs })
+  const outText = extractResponseOutputText(json)
+  const parsed = parseStoryBibleJsonText(outText)
+  return parsed && typeof parsed === 'object' ? parsed : {}
+}
+
+async function generateStoryBibleChunked({ provider, model, apiUrl, proxyUrl, timeoutMs, input }) {
+  const slim = summarizeInputForBibleChunks(input)
+  const globalPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'global', input: slim })
+  const characterPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'characters', input: slim })
+  const propPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'props', input: slim })
+  const locationPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'locations', input: slim })
+  const sceneRefsPart = await callStoryBibleChunk({
+    provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'sceneRefs',
+    input: {
+      scenes: slim.sceneSummaries.map((scene) => ({ sceneId: scene.sceneId, name: scene.name })),
+      chosenEntityIds: {
+        characters: (Array.isArray(characterPart?.characters) ? characterPart.characters : []).map((item) => `${item?.id}(${item?.name})`),
+        props: (Array.isArray(propPart?.props) ? propPart.props : []).map((item) => `${item?.id}(${item?.name})`),
+        locations: (Array.isArray(locationPart?.locations) ? locationPart.locations : []).map((item) => `${item?.id}(${item?.name})`)
+      }
+    }
+  })
+
+  const merged = sanitizeStoryBibleSemantics({
+    schemaVersion: '1.0',
+    worldAnchor: String(globalPart?.worldAnchor || '').trim(),
+    characters: Array.isArray(characterPart?.characters) ? characterPart.characters : [],
+    props: Array.isArray(propPart?.props) ? propPart.props : [],
+    locations: Array.isArray(locationPart?.locations) ? locationPart.locations : [],
+    eventChain: Array.isArray(globalPart?.eventChain) ? globalPart.eventChain : [],
+    forbiddenSubstitutes: Array.isArray(globalPart?.forbiddenSubstitutes) ? globalPart.forbiddenSubstitutes : [],
+    sceneRefs: Array.isArray(sceneRefsPart?.sceneRefs) ? sceneRefsPart.sceneRefs : []
+  })
+  if (!validateStoryBible(merged)) {
+    const salvaged = buildDeterministicStoryBibleFallback(input, merged)
+    if (!validateStoryBible(salvaged)) throw new Error('invalid_chunked_story_bible')
+    return salvaged
+  }
+  return merged
+}
+
 export async function generateStoryBible({
   provider,
   model,
@@ -706,7 +874,43 @@ export async function generateStoryBible({
 }) {
   const p = String(provider || '').trim().toLowerCase()
   const timeoutRaw = Number(timeoutMs)
-  const t = (Number.isFinite(timeoutRaw) && timeoutRaw <= 0) ? 0 : clampInt(timeoutMs, 5_000, 180_000, 90_000)
+  const t = (Number.isFinite(timeoutRaw) && timeoutRaw <= 0) ? 0 : clampInt(timeoutMs, 5_000, 600_000, 90_000)
+
+  // 本地 27B/8K 小内存机：单发大结构调用的 prefill 工作区必撞 OMLX 内存闸（2026-08-25 四次实测），
+  // 默认分块生成（每次调用 prefill ~1GB 可过闸）；分块失败再回退单发旧路径。
+  let legacyFallbackChunkError = null
+  if (p === 'localoxml') {
+    try {
+      const chunkStart = Date.now()
+      const chunked = await generateStoryBibleChunked({ provider: p, model, apiUrl, proxyUrl, timeoutMs: t, input })
+      try {
+        const repaired = await requestStoryBibleStructuredOutput({
+          provider: p,
+          model,
+          apiUrl,
+          proxyUrl,
+          timeoutMs: t,
+          instructions: buildStoryBibleRepairInstructions(),
+          input: {
+            draftStoryBible: chunked,
+            sceneIds: (Array.isArray(input?.scenes) ? input.scenes : []).map((scene) => String(scene?.sceneId || scene?.key || '')).filter(Boolean)
+          },
+          maxRetriesOpenAi: 1,
+          maxRetriesOther: 1
+        })
+        return {
+          result: repaired.result,
+          meta: { ...(repaired.meta || {}), chunked: true, chunkDurationMs: Date.now() - chunkStart }
+        }
+      } catch (_) {
+        return { result: chunked, meta: { chunked: true, chunkDurationMs: Date.now() - chunkStart, repairSkipped: true } }
+      }
+    } catch (chunkError) {
+      // 分块失败：落到既有单发路径（保底语义不变），并把分块失败原因写进 meta 便于排查
+      legacyFallbackChunkError = chunkError instanceof Error ? chunkError.message : String(chunkError)
+    }
+  }
+
   const initial = await requestStoryBibleStructuredOutput({
     provider: p,
     model,
@@ -738,7 +942,8 @@ export async function generateStoryBible({
       result: repaired.result,
       meta: {
         ...(initial.meta || {}),
-        repair: repaired.meta || null
+        repair: repaired.meta || null,
+        ...(legacyFallbackChunkError ? { chunkFallbackReason: legacyFallbackChunkError } : {})
       }
     }
   } catch (_) {
