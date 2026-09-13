@@ -24,6 +24,19 @@ function controlBaseUrl() {
   return String(process.env.STUDIO_CONTROL_BASE_URL || DEFAULT_CONTROL_BASE_URL).replace(/\/+$/, '')
 }
 
+// 接入守则 v1：携带客户端凭证（x-client-id + Bearer key）。
+// key 经 .env 的 STUDIO_CONTROL_CLIENT_KEY 注入；未配置时按守护台本机操作员通道（console-local）兜底。
+function leaseHeaders() {
+  const clientId = String(process.env.STUDIO_CONTROL_CLIENT_ID || 'gamestudio').trim()
+  const key = String(process.env.STUDIO_CONTROL_CLIENT_KEY || '').trim()
+  const headers = { 'Content-Type': 'application/json', Accept: 'application/json' }
+  if (key) {
+    headers['x-client-id'] = clientId
+    headers.Authorization = `Bearer ${key}`
+  }
+  return headers
+}
+
 let leaseSeq = 0
 
 async function acquireLease(kind, holder, timeoutMs) {
@@ -32,8 +45,8 @@ async function acquireLease(kind, holder, timeoutMs) {
   try {
     const res = await fetch(`${controlBaseUrl()}/api/control/resources/lease`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ kind, holder }),
+      headers: leaseHeaders(),
       signal: controller.signal
     })
     const payload = await res.json().catch(() => null)
@@ -63,7 +76,7 @@ async function releaseLease(leaseId) {
   try {
     await fetch(`${controlBaseUrl()}/api/control/resources/lease/release`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: leaseHeaders(),
       body: JSON.stringify({ leaseId })
     })
   } catch {
