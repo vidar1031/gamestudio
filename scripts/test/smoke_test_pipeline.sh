@@ -2,43 +2,33 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CONTROL_SCRIPT="$ROOT/scripts/test/control_production_test.mjs"
+CONTROL_REPO="${LOCAL_AGENT_CONTROL_ROOT:-/Volumes/ovokit2t/aiwork/local-agent-control}"
+CONTROL_SCRIPT="$CONTROL_REPO/scripts/test/control_production_test.mjs"
 
-print_help() {
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   cat <<'EOF'
 GameStudio Control-First Smoke Test
 
 用法:
   bash scripts/test/smoke_test_pipeline.sh [--help]
 
-行为:
-  1. 不再启动或检查 GameStudio server/editor 主链路
-  2. 先检查 control 控制器
-  3. 后续测试全部以 control 反馈为基准
-  4. 实际执行委托给 scripts/test/control_production_test.mjs
+说明:
+  守护台（control）已拆分至独立仓 local-agent-control，本脚本仅作转发入口。
+  实际测试脚本：$LOCAL_AGENT_CONTROL_ROOT/scripts/test/control_production_test.mjs
 EOF
-}
-
-if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  print_help
   exit 0
 fi
 
 if [ ! -f "$CONTROL_SCRIPT" ]; then
-  echo "缺少 control 测试脚本: $CONTROL_SCRIPT" >&2
+  echo "缺少 control 测试脚本: $CONTROL_SCRIPT（守护台已拆分至 local-agent-control，请确认该仓库存在）" >&2
   exit 1
 fi
-
-cd "$ROOT"
 
 echo "========================================"
 echo "  GameStudio Control-First Smoke Test"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  （经 local-agent-control 守护台执行）"
 echo "========================================"
-echo ""
-echo "本脚本不再检查或启动 GameStudio server/editor。"
-echo "测试将先检查 control 控制器，再通过 control 执行后续阶段。"
 echo ""
 
 exec node "$CONTROL_SCRIPT" "$@"

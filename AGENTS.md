@@ -8,9 +8,11 @@
 
 GameStudio 是一个 H5 互动故事生产工具仓库。当前主方向是让 `control` 驱动 `Hermes` 完成故事项目的创建、配置、生成与验证。
 
+> **2026-09-13 结构变更**：控制平面（守护台）已拆分为独立仓 **`/Volumes/ovokit2t/aiwork/local-agent-control`**（本仓平级目录），本仓不再包含 `apps/control-server` / `apps/control-console`。守护台的启动、开发与契约维护全部在新仓进行（`sh /Volumes/ovokit2t/aiwork/local-agent-control/restart_control.sh`）；本仓业务后端经 HTTP 租约接入统一互斥（`apps/server/src/ai/resourceLease.js`）。
+
 系统由两条主线组成：
 - **业务平面**：`apps/editor`（前端编辑器）+ `apps/server`（业务后端），负责互动故事的编辑、编译、校验、资产管理和导出。
-- **控制平面**：`apps/control-console`（控制台前端）+ `apps/control-server`（控制台后端），负责任务编排、模型路由、审核门禁、可观测执行和生命周期控制。
+- **控制平面**（独立仓 local-agent-control）：守护台前端 + 后端，负责任务编排、模型路由、审核门禁、可观测执行、资源互斥和生命周期控制。
 
 项目产物真相源：`storage/projects/`。若设置了环境变量 `STUDIO_STORAGE_ROOT`，则以外部目录为准。
 
@@ -36,8 +38,6 @@ GameStudio 是一个 H5 互动故事生产工具仓库。当前主方向是让 `
 apps/
   editor/           # H5 互动故事编辑器（React + PixiJS）
   server/           # 业务后端：项目读写、编译、校验、资产、导出
-  control-console/  # 控制平面 UI（Vue）
-  control-server/   # 控制平面后端：任务编排、Hermes 控制、审核
 packages/
   schema/           # 共享类型与 schema（ProjectV1、StoryV1、BlueprintDocV1 等）
   builder/          # 构建插件接口定义（BuilderPlugin）
@@ -45,18 +45,17 @@ packages/
 storage/
   projects/         # 项目产物真相源
   demo_library/     # Demo 素材库
-ai/               # Hermes 项目记忆、契约与工具目录
-config/hermes/    # Hermes 左脑配置、intent、routing、skill
-state/            # 运行时事件、reasoning sessions、review records
-scripts/          # 构建、生命周期、测试、维护脚本
+ai/               # Hermes 项目记忆、契约与工具目录（历史留存；生效副本在 local-agent-control）
+config/hermes/    # Hermes 左脑配置、intent、routing、skill（历史留存；生效副本在 local-agent-control）
+state/            # 运行时事件、reasoning sessions、review records（旧守护台历史数据；新运行数据在 local-agent-control/state）
+scripts/          # 构建、生命周期、测试、维护脚本（control 域测试已迁至 local-agent-control/scripts/test）
 ```
 
 ### 关键目录事实
 
 - 编辑器源码：`apps/editor/src`
 - 业务后端源码：`apps/server/src`
-- 控制台前端源码：`apps/control-console/src`
-- 控制台后端源码：`apps/control-server/src`
+- 守护台（控制平面）：独立仓 `../local-agent-control`（apps/control-server + apps/control-console）
 - 项目存储根：`storage`
 - 项目创建目录：`storage/projects`
 - Demo 素材目录：`storage/demo_library`
@@ -114,10 +113,10 @@ npm install
 ./status_project.sh
 ```
 
-### 控制平面
+### 控制平面（守护台，独立仓）
 
 ```bash
-sh restart_control.sh
+sh /Volumes/ovokit2t/aiwork/local-agent-control/restart_control.sh
 ```
 
 ### 单独开发
@@ -126,28 +125,24 @@ sh restart_control.sh
 # 构建共享包（必须先执行，因为 editor 依赖 schema）
 npm run build:packages
 
-# 单独启动各服务
+# 单独启动业务服务
 npm run dev:server
 npm run dev:editor
-npm run dev:control-server
-npm run dev:control-console
 ```
 
 ### 类型检查
 
 ```bash
-# 全部前端项目
+# 前端项目
 npm run typecheck
 
 # 单独项目
 npm --workspace @game-studio/editor run typecheck
-npm --workspace @game-studio/control-console run typecheck
 ```
 
 ### 后端语法检查
 
 ```bash
-node --check apps/control-server/src/index.js
 node --check apps/server/src/index.js
 ```
 
@@ -178,27 +173,9 @@ node --check apps/server/src/index.js
   - `src/plugins/` — 构建插件（storyPixi.js）
   - `src/net/` — 网络代理
 
-#### `apps/control-console`
-- **框架**：Vite + Vue 3 + TypeScript
-- **入口**：`src/main.ts` -> `src/App.vue`
-- **结构**：
-  - `components/` — Vue 组件
-  - `composables/` — Vue Composition API 逻辑
-  - `services/` — API 封装（controlApi、chatApi、reasoningApi）
-  - `lib/` — 共享工具（chatMarkdown、reasoning 格式化）
-
-#### `apps/control-server`
-- **框架**：Node.js + Hono
-- **入口**：`src/index.js`
-- **分层**：
-  - `app/createApp.js` — Hono app 创建与中间件
-  - `config/` — 常量与路径配置
-  - `routes/registerRoutes.js` — 统一路由装配入口
-  - `server/routes/` — 按域拆分的路由模块（overview、runtime、config、context、chat、reasoning）
-  - `server/services/` — 服务层（chat、config、context、reasoning、runtime、gameStudioServerClient）
-  - `server/workflows/` — 工作流定义（storyProduction、gameStudioBootstrap、projectStatus）
-  - `server/reasoning/` — 推理相关（分类、记忆、质量门、提示词构建）
-  - `server/intents/` — Intent 注册与提案管理
+#### 守护台（已拆分至独立仓 `../local-agent-control`）
+- 前端 `apps/control-console`（Vite + Vue 3 + TS）、后端 `apps/control-server`（Node.js + Hono）
+- 分层与模块说明见新仓 `docs/` 与 `ai/control_architecture.md`
 
 ### Packages
 
@@ -342,17 +319,18 @@ curl -sS "http://127.0.0.1:2099/api/control/hermes/session-search?q=<关键词>"
 | --- | --- |
 | `start_project.sh` | 启动 editor + server（前台/后台） |
 | `stop_project.sh` | 停止业务服务 |
-| `restart_control.sh` | 重启 control-server + control-console |
 | `restart_server.sh` | 重启 server |
 | `status_project.sh` | 查看运行状态 |
 | `team_checkin.sh` | 团队签到 |
 | `reporter.sh` | 状态报告 |
 
+守护台生命周期脚本在独立仓：`/Volumes/ovokit2t/aiwork/local-agent-control/restart_control.sh`（本仓不再提供 restart_control.sh）。
+
 PID 与日志保存在 `.run/` 目录：
 - `server.pid` / `server.log`
 - `editor.pid` / `editor.log`
-- `control-server.pid` / `control-server.log`
-- `control-console.pid` / `control-console.log`
+
+守护台的 PID 与日志在 local-agent-control 仓的 `.run/`。
 
 ---
 
@@ -395,8 +373,8 @@ PID 与日志保存在 `.run/` 目录：
 ## Agent 定位（最高优先级，不可偏离）
 
 - **我是 control 的建设者，不是生产操作员。** 禁止直接调用 GameStudio 生成类 API（出图、锁定测试、线稿、场景渲染、导出等）替用户完成生产任务——那会造成 token 浪费、绕过审核、产出无证据链的结果。
-- 生产任务（故事生成、场景图生成）必须由 **control 侧通过事件机制**驱动：用户 → control（hermes-manager）→ 事件分发（`apps/server/events/registry.v1.json` + `eventDispatcher`）→ GameStudio Server → ComfyUI。
-- 我的工作范围是修改 `apps/control-server` / `apps/control-console` / `apps/server` 的代码，让 control 具备并持续增强自动化能力：事件注册与映射、工作流编排、审核门禁、可观测执行链、能力自愈。
+- 生产任务（故事生成、场景图生成）必须由 **control 侧通过事件机制**驱动：用户 → control（hermes-manager，独立仓 local-agent-control）→ 事件分发（`apps/server/events/registry.v1.json` + 新仓 `eventDispatcher`）→ GameStudio Server → ComfyUI。
+- 我的工作范围是修改 `apps/server`（本仓）与新仓 `apps/control-server` / `apps/control-console` 的代码，让 control 具备并持续增强自动化能力：事件注册与映射、工作流编排、审核门禁、可观测执行链、能力自愈。
 - 验证生产链路时，由 control 侧事件链执行，我只观察证据（事件分发记录、reasoning sessions、`/ai/tasks` 进度、审核记录），不越俎代庖。
 - 任何"帮我跑一遍生产"的请求，都转化为"让 control 能跑一遍生产"的代码建设；发现 control 能力不足时，补 control 的能力，而不是自己下场。
 - 图片生产的把关在审核门禁（出图前/锁定确认/场景绑定），审核入口统一呈现在 control-console，人不需要切换到其他界面。

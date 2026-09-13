@@ -4,7 +4,7 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 
 ## 当前目标
 
-- 由 `apps/control-console` + `apps/control-server` 作为控制平面。
+- 控制平面（守护台）为独立仓 `../local-agent-control`（local-agent-control，2026-09-13 起从本仓拆出）。
 - 由 Hermes 作为执行代理，完成项目管理、计划生成、内容生成和图片生成相关任务。
 - 由 `apps/editor` 和 `apps/server` 作为实际业务前后端。
 - 由 `storage/projects` 作为项目创建与持久化目录。
@@ -13,13 +13,12 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 
 - 前端编辑器：`apps/editor`
 - 业务后端：`apps/server`
-- 控制台前端：`apps/control-console`
-- 控制台后端：`apps/control-server`
+- 守护台前端/后端：`../local-agent-control/apps/control-console` / `../local-agent-control/apps/control-server`
 - 项目存储根：`storage`
 - 项目创建目录：`storage/projects`
 - Demo 素材库：`storage/demo_library`
-- Hermes 项目记忆：`ai/`
-- Hermes 控制配置：`config/hermes/`
+- Hermes 项目记忆：`ai/`（历史留存；生效副本在 local-agent-control）
+- Hermes 控制配置：`config/hermes/`（历史留存；生效副本在 local-agent-control）
 
 如果设置了 `STUDIO_STORAGE_ROOT`，则 `apps/server` 以外部目录下的 `projects/` 与 `demo_library/` 为准。
 
@@ -36,9 +35,9 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 - 状态：`./status_project.sh`
 - 停止：`./stop_project.sh`
 
-控制平面：
+控制平面（守护台，独立仓）：
 
-- 重启 control：`sh restart_control.sh`
+- 重启 control：`sh /Volumes/ovokit2t/aiwork/local-agent-control/restart_control.sh`
 
 ## 端口
 
