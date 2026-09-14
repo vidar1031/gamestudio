@@ -2922,6 +2922,118 @@
         "素材批压"
       ],
       "chatArgs": []
+    },
+    {
+      "code": "GS-44",
+      "eventId": "studio.lifecycle.status",
+      "version": 1,
+      "category": "studio",
+      "kind": "query",
+      "title": "查询 GameStudio 项目服务运行状态",
+      "description": "查询 server(1999) 健康状态，作为生命周期 status 标准事件。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "sideEffects": [],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 60000,
+      "transport": {
+        "http": {
+          "method": "GET",
+          "path": "/api/health"
+        }
+      },
+      "aliases": [
+        "运行状态",
+        "服务状态",
+        "状态查询"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-45",
+      "eventId": "studio.lifecycle.stop",
+      "version": 1,
+      "category": "studio",
+      "kind": "command",
+      "title": "停止 GameStudio 项目服务",
+      "description": "本地停止 GameStudio Server(1999) 与 Editor(8868)：bash ./stop_project.sh。transport.local 本地执行，不走 HTTP。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "sideEffects": [
+        "停止本地进程（GameStudio server/editor）"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 60000,
+      "transport": {
+        "local": {
+          "command": "bash",
+          "args": [
+            "./stop_project.sh"
+          ],
+          "cwd": "${GAMESTUDIO_ROOT}"
+        }
+      },
+      "aliases": [
+        "停止项目",
+        "停止工作室",
+        "关闭服务"
+      ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-46",
+      "eventId": "studio.lifecycle.restart",
+      "version": 1,
+      "category": "studio",
+      "kind": "command",
+      "title": "重启 GameStudio 项目服务",
+      "description": "本地重启 GameStudio Server(1999) 与 Editor(8868)：先 stop 再 start --detached，随后等待健康检查通过。",
+      "payloadSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "sideEffects": [
+        "重启本地进程（GameStudio server/editor）"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 300000,
+      "transport": {
+        "local": {
+          "command": "bash",
+          "args": [
+            "-lc",
+            "./stop_project.sh || true; ./start_project.sh --detached"
+          ],
+          "cwd": "${GAMESTUDIO_ROOT}",
+          "waitHealth": [
+            {
+              "name": "server",
+              "url": "http://127.0.0.1:1999/api/health",
+              "timeoutMs": 60000
+            },
+            {
+              "name": "editor",
+              "url": "http://localhost:8868",
+              "timeoutMs": 90000
+            }
+          ]
+        }
+      },
+      "aliases": [
+        "重启项目",
+        "重启工作室"
+      ],
+      "chatArgs": []
     }
   ]
 }
