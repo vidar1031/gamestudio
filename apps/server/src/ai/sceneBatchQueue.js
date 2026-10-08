@@ -110,6 +110,12 @@ const REFERENCE_GATE_CODES = new Set([
   'reference_path_outside_project'
 ])
 
+// 场景绑定 AI 视觉评审门禁（2026-09-27 F5）：评审未通过且换 seed 重渲仍失败，
+// 单场景端点内已完成重试预算，属质量门禁阻断而非故障，批次侧不重试、归类 blocked
+const REVIEW_GATE_CODES = new Set([
+  'scene_ai_review_failed'
+])
+
 // 确定性 provider/输入错误：重跑必现（对齐 C02 schema/权限/确定性业务错误）
 const NON_RETRYABLE_CODES = new Set([
   'disabled',
@@ -154,9 +160,9 @@ export function classifySceneFailure({ httpStatus, error, message } = {}) {
   const code = asStr(error)
   const detail = `${code} | ${asStr(message)}`
 
-  // 1. reference gate（E02）：显式阻断语义，单独归类，绝不重试
-  if (REFERENCE_GATE_CODES.has(code)) {
-    return { category: SCENE_FAILURE_CATEGORY.BLOCKED, rule: 'reference_gate_blocked', reason: `命中 reference gate（${code}），属门禁阻断而非故障，不重试、不阻塞其他场景。` }
+  // 1. reference gate（E02）/ AI 视觉评审门禁（F5）：显式阻断语义，单独归类，绝不重试
+  if (REFERENCE_GATE_CODES.has(code) || REVIEW_GATE_CODES.has(code)) {
+    return { category: SCENE_FAILURE_CATEGORY.BLOCKED, rule: 'reference_gate_blocked', reason: `命中 reference/review gate（${code}），属门禁阻断而非故障，不重试、不阻塞其他场景。` }
   }
   // 2. 显式确定性错误码：重跑必现
   if (NON_RETRYABLE_CODES.has(code)) {

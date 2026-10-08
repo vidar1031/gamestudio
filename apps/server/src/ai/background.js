@@ -162,8 +162,8 @@ function sdStyleProfile(style) {
   }
   // picture_book default
   return {
-    pos: "children's picture book illustration, hand-painted storybook style, soft edges, stylized forms, non-photorealistic",
-    neg: 'photorealistic, realistic face, skin texture pores, DSLR photo, cinematic photo, 3d render'
+    pos: "children's picture book illustration, hand-painted watercolor style, soft edges, stylized forms, empty peaceful scenery, landscape environment only, non-photorealistic",
+    neg: 'photorealistic, realistic face, skin texture pores, DSLR photo, cinematic photo, 3d render, open book, closed book, storybook object, book pages, giant book, text, watermark, animal, cartoon animal, pig, wolf, fox, rabbit, bear, bird, deer, cow, wildlife, creature, animal face, furry creature, any living being, person, character'
   }
 }
 
@@ -919,6 +919,22 @@ async function waitComfyImage({ baseUrl, promptId, timeoutMs }) {
       const j = await r.json().catch(() => null)
       if (r.ok && j && typeof j === 'object') {
         const item = j[String(promptId)]
+        const statusStr = String(item && item.status && item.status.status_str ? item.status.status_str : '').trim().toLowerCase()
+        if (statusStr === 'error') {
+          let detail = ''
+          const msgs = item.status && Array.isArray(item.status.messages) ? item.status.messages : []
+          for (const m of msgs) {
+            if (Array.isArray(m) && m[0] === 'execution_error' && m[1]) {
+              const nodeType = String(m[1].node_type || '').trim()
+              const msg = String(m[1].exception_message || '').trim()
+              detail = (nodeType ? `${nodeType}: ` : '') + msg
+              break
+            }
+          }
+          const e = new Error(`comfyui_execution_error: prompt_id=${String(promptId)}${detail ? ' ' + detail : ''}`)
+          e.status = 502
+          throw e
+        }
         const outputs = item && item.outputs && typeof item.outputs === 'object' ? item.outputs : null
         if (outputs) {
           for (const k of Object.keys(outputs)) {
@@ -1509,7 +1525,8 @@ export async function generateComfyuiLineartFromReference({
   seed,
   timeoutMs,
   hintPrefix,
-  finalPrefix
+  finalPrefix,
+  onStage
 }) {
   const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
   const effectiveTimeoutMs = parseComfyTimeoutMs(timeoutMs)
@@ -1608,6 +1625,7 @@ export async function generateComfyuiLineartFromReference({
     '3': { class_type: chosenPreprocessor, inputs: buildInputsForComfyNode(preprocessorSpec, { image: ['2', 0], resolution: Math.max(w, h), coarse: 'disable' }) },
     '4': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['3', 0], filename_prefix: String(hintPrefix || 'gamestudio_story_lock/hint') }) }
   }
+  if (typeof onStage === 'function') onStage('hint')
   const hint = await runComfyuiPromptWorkflow({ workflow: hintWorkflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
 
   const finalWorkflow = {
@@ -1625,6 +1643,7 @@ export async function generateComfyuiLineartFromReference({
     '12': { class_type: 'VAEDecode', inputs: buildInputsForComfyNode(vaeDecodeSpec, { samples: ['11', 0], vae: ['1', 2] }) },
     '13': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['12', 0], filename_prefix: String(finalPrefix || 'gamestudio_story_lock/final') }) }
   }
+  if (typeof onStage === 'function') onStage('final')
   const final = await runComfyuiPromptWorkflow({ workflow: finalWorkflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
 
   return {
@@ -1646,6 +1665,220 @@ export async function generateComfyuiLineartFromReference({
       seed: redrawSeed,
       hintUrl: hint.meta && hint.meta.url ? hint.meta.url : '',
       finalUrl: final.meta && final.meta.url ? final.meta.url : ''
+    }
+  }
+}
+
+// ============ 2026-10-08 姿势骨架驱动出图（OpenPose union ControlNet + IPAdapter 身份锚定） ============
+// 场景：角色换姿势（坐/骑/走/跑/持物）——纯 IPAdapter 会把姿势拉回主参考站姿（实测），
+// 正确路径是骨架驱动：姿势骨架图直接喂 union ControlNet(type=openpose)，身份经 IPAdapter 主参考。
+// 骨架由姿势库预烘焙（公共资产，跨故事复用），本工作流不再跑预处理器。
+
+// 从任意参考图提取 OpenPose 骨架（姿势库烘焙用）
+export async function extractComfyuiPoseSkeleton({
+  imageBytes,
+  imageFilename,
+  comfyuiBaseUrl,
+  timeoutMs,
+  prefix
+}) {
+  const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
+  const effectiveTimeoutMs = parseComfyTimeoutMs(timeoutMs)
+  const loadImageSpec = await fetchComfyNodeSpec(baseUrl, 'LoadImage', 5000)
+  const dwSpec = (await fetchComfyNodeSpec(baseUrl, 'DWPreprocessor', 5000)) || (await fetchComfyNodeSpec(baseUrl, 'OpenposePreprocessor', 5000))
+  const saveImageSpec = await fetchComfyNodeSpec(baseUrl, 'SaveImage', 5000)
+  if (!loadImageSpec || !dwSpec || !saveImageSpec) {
+    const e = new Error('comfyui_pose_preprocessor_not_ready: 缺少 DWPose/OpenPose 预处理节点（需 comfyui_controlnet_aux）')
+    e.status = 502
+    throw e
+  }
+  const uploaded = await uploadComfyImage({
+    baseUrl,
+    bytes: imageBytes,
+    filename: imageFilename || 'pose_source.png',
+    overwrite: true,
+    type: 'input',
+    timeoutMs: effectiveTimeoutMs <= 0 ? 15000 : Math.min(effectiveTimeoutMs, 15000)
+  })
+  const dwClass = String(dwSpec.__classType || 'DWPreprocessor')
+  const workflow = {
+    '1': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(loadImageSpec, { image: uploaded.imageValue, upload: 'image' }) },
+    '2': { class_type: dwClass, inputs: buildInputsForComfyNode(dwSpec, { image: ['1', 0] }) },
+    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || 'gamestudio_pose/skeleton') }) }
+  }
+  const result = await runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
+  return { bytes: result.bytes, ext: result.ext, meta: { provider: 'comfyui', postprocess: dwClass, url: result.meta && result.meta.url ? result.meta.url : '' } }
+}
+
+// 姿势骨架 + 身份锚定出立绘：骨架图直接进 union openpose，身份走 IPAdapter（作用区间可配，默认放开早期构图步）
+export async function generateComfyuiPoseVariantSprite({
+  identityReferenceBytes,
+  identityReferenceFilename,
+  poseSkeletonBytes,
+  comfyuiBaseUrl,
+  model,
+  ipadapterModel,
+  prompt,
+  negativePrompt,
+  width,
+  height,
+  steps,
+  cfgScale,
+  seed,
+  ipadapterWeight,
+  ipadapterStartAt,
+  ipadapterEndAt,
+  controlStrength,
+  controlEndPercent,
+  timeoutMs,
+  prefix,
+  onStage
+}) {
+  const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
+  const effectiveTimeoutMs = parseComfyTimeoutMs(timeoutMs)
+  const w = clampInt(width, 256, 2048, 768)
+  const h = clampInt(height, 256, 2048, 1152)
+  const useSeed = clampSeed(seed, null) ?? Math.floor(Math.random() * 4_294_967_295)
+  const strength = clampFloat(controlStrength, 0.1, 1.0, 0.9)
+  const endPct = clampFloat(controlEndPercent, 0.1, 1.0, 0.9)
+  const stage = typeof onStage === 'function' ? onStage : () => {}
+
+  const checkpoint = normalizeComfyCheckpointName(model) || await (async () => {
+    try {
+      const resp = await fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, { method: 'GET' })
+      const j = resp.ok ? await resp.json().catch(() => null) : null
+      const arr = extractComfyChoiceList(j && j.CheckpointLoaderSimple && j.CheckpointLoaderSimple.input && j.CheckpointLoaderSimple.input.required && j.CheckpointLoaderSimple.input.required.ckpt_name)
+      return arr[0] || ''
+    } catch (_) { return '' }
+  })()
+  if (!checkpoint) {
+    const e = new Error('comfyui_missing_model: 请在设置中选择模型')
+    e.status = 501
+    throw e
+  }
+
+  const specs = {
+    checkpoint: await fetchComfyNodeSpec(baseUrl, 'CheckpointLoaderSimple', 5000),
+    emptyLatent: await fetchComfyNodeSpec(baseUrl, 'EmptyLatentImage', 5000),
+    clipText: await fetchComfyNodeSpec(baseUrl, 'CLIPTextEncode', 5000),
+    ksampler: await fetchComfyNodeSpec(baseUrl, 'KSampler', 5000),
+    vaeDecode: await fetchComfyNodeSpec(baseUrl, 'VAEDecode', 5000),
+    saveImage: await fetchComfyNodeSpec(baseUrl, 'SaveImage', 5000),
+    loadImage: await fetchComfyNodeSpec(baseUrl, 'LoadImage', 5000),
+    controlLoader: await fetchComfyNodeSpec(baseUrl, 'ControlNetLoader', 5000),
+    unionType: await fetchComfyNodeSpec(baseUrl, 'SetUnionControlNetType', 5000),
+    controlApply: await fetchComfyNodeSpec(baseUrl, 'ControlNetApplyAdvanced', 5000),
+    ipLoader: await fetchComfyNodeSpec(baseUrl, 'IPAdapterModelLoader', 5000),
+    clipVision: await fetchComfyNodeSpec(baseUrl, 'CLIPVisionLoader', 5000)
+  }
+  const missing = Object.entries(specs).filter(([, v]) => !v).map(([k]) => k)
+  if (missing.length) {
+    const e = new Error(`comfyui_pose_variant_not_ready: 缺少节点 ${missing.join('/')}`)
+    e.status = 502
+    throw e
+  }
+  const ipApplySpec =
+    (await fetchComfyNodeSpec(baseUrl, 'IPAdapterAdvanced', 5000)) ||
+    (await fetchComfyNodeSpec(baseUrl, 'IPAdapterApplyAdvanced', 5000)) ||
+    (await fetchComfyNodeSpec(baseUrl, 'IPAdapterApply', 5000))
+  if (!ipApplySpec) {
+    const e = new Error('comfyui_pose_variant_not_ready: 缺少 IPAdapter 节点')
+    e.status = 502
+    throw e
+  }
+
+  const controlnetModels = await fetchComfyModelList(baseUrl, '/models/controlnet', 5000)
+  const chosenControlnet = pickPreferredComfyModel(controlnetModels, ['controlnet-union-sdxl-1.0', 'controlnet-union', 'union'])
+  if (!chosenControlnet) {
+    const e = new Error('comfyui_missing_controlnet_model: 未找到 union ControlNet 模型')
+    e.status = 502
+    throw e
+  }
+  const ipModels = await fetchComfyModelList(baseUrl, '/models/ipadapter', 5000)
+  const chosenIpModel = pickPreferredComfyModel(ipModels, [String(ipadapterModel || '').trim(), 'ip-adapter-plus_sdxl_vit-h', 'ip-adapter_sdxl_vit-h', 'ip-adapter-plus-face_sdxl_vit-h', 'ipadapter'])
+  const clipVisionModels = await fetchComfyModelList(baseUrl, '/models/clip_vision', 5000)
+  const chosenClipVision = pickPreferredComfyModel(clipVisionModels, ['CLIP-ViT-H-14-laion2B-s32B-b79K', 'clip_vision', 'vit'])
+  if (!chosenIpModel || !chosenClipVision) {
+    const e = new Error('comfyui_ipadapter_not_ready: missing ipadapter/clip_vision models')
+    e.status = 502
+    throw e
+  }
+
+  stage('upload_identity')
+  const idUpload = await uploadComfyImage({ baseUrl, bytes: identityReferenceBytes, filename: identityReferenceFilename || 'pose_identity.png', overwrite: true, type: 'input', timeoutMs: effectiveTimeoutMs <= 0 ? 15000 : Math.min(effectiveTimeoutMs, 15000) })
+  stage('upload_skeleton')
+  const skUpload = await uploadComfyImage({ baseUrl, bytes: poseSkeletonBytes, filename: 'pose_skeleton.png', overwrite: true, type: 'input', timeoutMs: effectiveTimeoutMs <= 0 ? 15000 : Math.min(effectiveTimeoutMs, 15000) })
+
+  const workflow = {
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: buildInputsForComfyNode(specs.checkpoint, { ckpt_name: checkpoint }) },
+    '2': { class_type: 'EmptyLatentImage', inputs: buildInputsForComfyNode(specs.emptyLatent, { width: w, height: h, batch_size: 1 }) },
+    '3': { class_type: 'CLIPTextEncode', inputs: buildInputsForComfyNode(specs.clipText, { text: String(prompt || '').trim(), clip: ['1', 1] }) },
+    '4': { class_type: 'CLIPTextEncode', inputs: buildInputsForComfyNode(specs.clipText, { text: String(negativePrompt || '').trim(), clip: ['1', 1] }) },
+    '5': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(specs.loadImage, { image: skUpload.imageValue, upload: 'image' }) },
+    '6': { class_type: 'ControlNetLoader', inputs: buildInputsForComfyNode(specs.controlLoader, { control_net_name: chosenControlnet }) },
+    '7': { class_type: 'SetUnionControlNetType', inputs: buildInputsForComfyNode(specs.unionType, { control_net: ['6', 0], type: 'openpose' }) },
+    '8': {
+      class_type: 'ControlNetApplyAdvanced',
+      inputs: buildInputsForComfyNode(specs.controlApply, {
+        positive: ['3', 0],
+        negative: ['4', 0],
+        control_net: ['7', 0],
+        image: ['5', 0],
+        strength,
+        start_percent: 0.0,
+        end_percent: endPct,
+        vae: ['1', 2]
+      })
+    },
+    '10': { class_type: 'IPAdapterModelLoader', inputs: buildInputsForComfyNode(specs.ipLoader, { ipadapter_file: chosenIpModel }) },
+    '11': { class_type: 'CLIPVisionLoader', inputs: buildInputsForComfyNode(specs.clipVision, { clip_name: chosenClipVision }) },
+    '12': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(specs.loadImage, { image: idUpload.imageValue, upload: 'image' }) },
+    '13': {
+      class_type: String(ipApplySpec.__classType || 'IPAdapterAdvanced'),
+      inputs: buildInputsForComfyNode(ipApplySpec, {
+        model: ['1', 0],
+        ipadapter: ['10', 0],
+        clip_vision: ['11', 0],
+        image: ['12', 0],
+        weight: clampFloat(ipadapterWeight, 0.1, 1.5, 0.85),
+        weight_type: 'linear',
+        combine_embeds: 'concat',
+        start_at: clampFloat(ipadapterStartAt, 0, 1, 0.2),
+        end_at: clampFloat(ipadapterEndAt, 0, 1, 0.9),
+        embeds_scaling: 'V only'
+      })
+    },
+    '20': {
+      class_type: 'KSampler',
+      inputs: buildInputsForComfyNode(specs.ksampler, {
+        seed: useSeed,
+        steps: clampInt(steps, 8, 60, 24),
+        cfg: clampFloat(cfgScale, 1, 20, 6),
+        sampler_name: 'dpmpp_2m_sde',
+        scheduler: 'karras',
+        denoise: 1,
+        model: ['13', 0],
+        positive: ['8', 0],
+        negative: ['8', 1],
+        latent_image: ['2', 0]
+      })
+    },
+    '21': { class_type: 'VAEDecode', inputs: buildInputsForComfyNode(specs.vaeDecode, { samples: ['20', 0], vae: ['1', 2] }) },
+    '22': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(specs.saveImage, { images: ['21', 0], filename_prefix: String(prefix || 'gamestudio_pose/variant') }) }
+  }
+
+  stage('comfy_generate')
+  const result = await runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
+  return {
+    bytes: result.bytes,
+    ext: result.ext,
+    meta: {
+      provider: 'comfyui',
+      postprocess: 'pose_variant_openpose_ipadapter',
+      controlnetModel: chosenControlnet,
+      ipadapterModel: chosenIpModel,
+      seed: useSeed,
+      url: result.meta && result.meta.url ? result.meta.url : ''
     }
   }
 }

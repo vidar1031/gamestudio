@@ -163,7 +163,10 @@ export async function writeStudioSettings(storageRoot, incoming) {
       size: has(inImage, 'size') ? sanitizeSize(inImage.size) : sanitizeSize(prev?.image?.size),
       sdwebuiBaseUrl: has(inImage, 'sdwebuiBaseUrl') ? sanitizeUrl(inImage.sdwebuiBaseUrl) : sanitizeUrl(prev?.image?.sdwebuiBaseUrl),
       comfyuiBaseUrl: has(inImage, 'comfyuiBaseUrl') ? sanitizeUrl(inImage.comfyuiBaseUrl) : sanitizeUrl(prev?.image?.comfyuiBaseUrl),
-      comfyuiModelsRoot: has(inImage, 'comfyuiModelsRoot') ? sanitizeFsPath(inImage.comfyuiModelsRoot) : sanitizeFsPath(prev?.image?.comfyuiModelsRoot)
+      comfyuiModelsRoot: has(inImage, 'comfyuiModelsRoot') ? sanitizeFsPath(inImage.comfyuiModelsRoot) : sanitizeFsPath(prev?.image?.comfyuiModelsRoot),
+      // 2026-09-28 出图风格预设（《小猫钓鱼》样本沉淀）：对象原样透传，保存/读取不丢字段
+      activeStylePreset: has(inImage, 'activeStylePreset') ? String(inImage.activeStylePreset || '').trim() : (prev?.image?.activeStylePreset ?? undefined),
+      stylePresets: (inImage && typeof inImage.stylePresets === 'object' && inImage.stylePresets) ? inImage.stylePresets : prev?.image?.stylePresets
     },
     tts: {
       provider: has(inTts, 'provider') ? sanitizeProvider(inTts.provider) : sanitizeProvider(prev?.tts?.provider),
@@ -406,7 +409,10 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
       size: imageSize || null,
       sdwebuiBaseUrl: sdwebuiBaseUrl || null,
       comfyuiBaseUrl: comfyuiBaseUrl || null,
-      comfyuiModelsRoot: (comfyuiModelsRoot && path.isAbsolute(comfyuiModelsRoot)) ? comfyuiModelsRoot : null
+      comfyuiModelsRoot: (comfyuiModelsRoot && path.isAbsolute(comfyuiModelsRoot)) ? comfyuiModelsRoot : null,
+      // 2026-09-28 出图风格预设透传（提示词/LoRA/尺寸构建端消费）
+      activeStylePreset: settings?.image?.activeStylePreset ? String(settings.image.activeStylePreset).trim() || null : null,
+      stylePresets: (settings?.image?.stylePresets && typeof settings.image.stylePresets === 'object') ? settings.image.stylePresets : null
     },
     tts: {
       provider: settings?.tts?.provider ? String(settings.tts.provider) : 'none',

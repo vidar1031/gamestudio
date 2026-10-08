@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { markStartupReady } from '../startupReady'
+import { dlgConfirm } from '../dialog'
 import {
   compileBlueprintDetailed,
   getProject,
@@ -145,9 +146,9 @@ export default function ScriptStudio(props: Props) {
     })
   }
 
-  function deleteScript(id: string) {
+  async function deleteScript(id: string) {
     if (!scripts) return
-    if (!window.confirm('确定删除该场景？')) return
+    if (!(await dlgConfirm('确定删除该场景？', { danger: true, okText: '删除' }))) return
 
     mutate((d) => {
       const nextCards = d.cards.filter((c) => c.id !== id)
@@ -184,7 +185,7 @@ export default function ScriptStudio(props: Props) {
     if (!scripts) return
 
     if (dirty) {
-      const ok = window.confirm('场景列表有未保存的修改，是否先保存？')
+      const ok = await dlgConfirm('场景列表有未保存的修改，是否先保存？', { okText: '先保存' })
       if (ok) await save()
     }
 
@@ -563,13 +564,13 @@ export default function ScriptStudio(props: Props) {
                   setAiFixNote('')
 
                   if (dirty || projectTitleDirty) {
-                    const ok = window.confirm('脚本或标题有未保存修改。为避免 AI 基于旧内容修复，是否先保存？')
+                    const ok = await dlgConfirm('脚本或标题有未保存修改。为避免 AI 基于旧内容修复，是否先保存？', { okText: '先保存' })
                     if (!ok) return
                     await save()
                     if (dirty || projectTitleDirty) return
                   }
 
-                  const ok = window.confirm('将调用 AI 自动修复脚本中的结构问题（会覆盖脚本内容，并同步更新蓝图文件）。是否继续？')
+                  const ok = await dlgConfirm('将调用 AI 自动修复脚本中的结构问题（会覆盖脚本内容，并同步更新蓝图文件）。是否继续？', { okText: '继续修复' })
                   if (!ok) return
 
                   setAiFixBusy(true)

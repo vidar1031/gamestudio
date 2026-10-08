@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { markStartupReady } from '../startupReady'
+import { dlgAlert } from '../dialog'
 import {
   compileCompose,
   getBlueprint,
@@ -405,13 +406,13 @@ export default function BlueprintStudio(props: Props) {
     if (!blueprint) return
 
     if (!blueprint.startNodeId) {
-      window.alert('请先设置 startNodeId')
+      void dlgAlert('请先设置 startNodeId')
       return
     }
 
     const hasEnding = (blueprint.nodes || []).some((n) => n.kind === 'ending')
     if (!hasEnding) {
-      window.alert('当前蓝图还没有任何「结局」节点，请先添加至少一个结局。')
+      void dlgAlert('当前蓝图还没有任何「结局」节点，请先添加至少一个结局。')
       return
     }
 

@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
+import { serveStatic } from '@hono/node-server/serve-static'
 import { cors } from 'hono/cors'
 import { mkdir, readFile, readdir, rename, stat, writeFile, rm, copyFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -23,11 +24,14 @@ import { enhanceStoryAssetPromptWithAi } from './ai/storyAssetPromptEnhance.js'
 import { generateCharacterFingerprint, generateCharacterPosePrompt } from './ai/characterPrompt.js'
 import { generateStoryBible } from './ai/storyBible.js'
 import { buildPoseStateExtractionInput, extractStoryPoseStates } from './ai/storyPoseStates.js'
+import { buildPropStateExtractionInput, extractStoryPropStates } from './ai/storyPropStates.js'
+import { buildCompositionInput, extractStoryComposition } from './ai/storyComposition.js'
 import { translatePromptText } from './ai/translate.js'
-import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, buildStorySceneRenderSpec, getStoryAssetRenderProfile, repairStoryAssetPlanSceneLinks, summarizeStoryAssetPlan } from './ai/storyAssets.js'
+import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, buildStorySceneRenderSpec, getStoryAssetRenderProfile, repairStoryAssetPlanSceneLinks, resolveStoryStylePreset, summarizeStoryAssetPlan } from './ai/storyAssets.js'
 import { buildStoryboardLockTestNegativePrompt, buildStoryboardLockTestPrompt, buildStoryboardLockTestWorkflow, pickStoryboardLockTestAsset, reviewStoryboardLockImageWithAi } from './ai/storyLock.js'
 import { evaluateStoryAssetReferenceReview, sniffImageMetaFromBytes, verifyStoryAssetReferenceFile } from './ai/storyAssetReferenceGate.js'
 import { reviewCharacterPoseConsistencyWithAi, reviewCharacterPoseConsistencyWithLocalVl } from './ai/characterPoseReview.js'
+import { reviewSceneBackgroundWithAi, reviewSceneBackgroundWithLocalVl } from './ai/sceneBackgroundReview.js'
 import { createAiTask, getAiTask, listAiTasks, loadAiTasksFromDisk, updateAiTask } from './ai/taskProgress.js'
 import { checkSceneSuccess, createSceneBatch, findInterruptedSceneBatches, loadSceneBatch, resumeSceneBatch, runSceneBatch } from './ai/sceneBatchQueue.js'
 import { COMPLETENESS_TASK_KIND, createNodeVisualReviewer, createPuppeteerBrowserLauncher, loadLatestCompletenessReport, resolveChromeExecutablePath, resolveReviewConfig, runStoryCompletenessCheck } from './ai/storyCompleteness.js'
@@ -114,7 +118,22 @@ const projectIdBoundaryGuard = async (c, next) => {
 app.use('/api/projects/:id', projectIdBoundaryGuard)
 app.use('/api/projects/:id/*', projectIdBoundaryGuard)
 
-app.get('/api/health', (c) => c.json({ ok: true, service: 'gamestudio_server' }))
+// 2026-10-05 构建版本号：服务每次启动生成。前端轮询 /api/health 对比 buildId，
+// 不一致即自动刷新——服务端重启/升级后界面无需用户手动强刷。
+// 2026-10-06 修订：buildId 追加编辑器 dist 指纹（index.html mtime+size）。此前只反映服务端重启，
+// 编辑器重新 build（生产托管模式 dist 由本服务伺服）不触发前端自动刷新，用户标签页一直跑旧 bundle
+// （假日出游圣经 400 事件即旧内存 bundle 所致）。
+const SERVER_BUILD_ID = `${Date.now().toString(36)}_${process.pid}`
+const EDITOR_DIST_INDEX_HTML = path.resolve(__dirname, '..', '..', 'editor', 'dist', 'index.html')
+async function editorDistFingerprint() {
+  try {
+    const st = await stat(EDITOR_DIST_INDEX_HTML)
+    return `${Math.round(st.mtimeMs).toString(36)}x${st.size.toString(36)}`
+  } catch {
+    return 'nodist'
+  }
+}
+app.get('/api/health', async (c) => c.json({ ok: true, service: 'gamestudio_server', buildId: `${SERVER_BUILD_ID}:${await editorDistFingerprint()}` }))
 app.get('/favicon.ico', (c) => c.body(null, 204))
 
 // 事件层：暴露 GameStudio 事件注册表（apps/server/events/registry.v1.json）
@@ -572,7 +591,7 @@ function hasHumanSignals(text) {
   ].some((token) => s.includes(token))
 }
 
-function chooseStoryboardAssetLoras({ asset, requestedLoras }) {
+function chooseStoryboardAssetLoras({ asset, requestedLoras, stylePreset }) {
   const category = String(asset && asset.category || '').trim().toLowerCase()
   const lockProfile = String(asset && asset.lockProfile || '').trim().toLowerCase()
   const rawExplicit = Array.isArray(requestedLoras) ? requestedLoras.map((x) => String(x || '').trim()).filter(Boolean) : []
@@ -580,8 +599,13 @@ function chooseStoryboardAssetLoras({ asset, requestedLoras }) {
   const isSafePropReferenceLora = (entry) => {
     const name = String(entry || '').trim().toLowerCase()
     if (!name) return false
-    if (/(child|children|storybook|picturebook|book_illustration|genrih|furry|portrait|character|face|animal)/i.test(name)) return false
-    if (/(flat.?2d|cutout|game.?props?|game.?prop|object|asset)/i.test(name)) return true
+    // 2026-09-27 收窄黑名单：只保留会把 prop 拟人化/生物化的条目——furry/portrait/character/face/animal
+    // 风格的 LoRA 会把道具拉向生物体（按原注释意图保留 furry）；child/children/storybook/picturebook/
+    // book_illustration/genrih 是绘本风格 LoRA 的名称特征，正是保护类 prop 需要的风格，原黑名单把它们
+    // 误杀了（settings 配置的 flat_childrenXX.safetensors 即中招，保护类 prop 抽卡零风格 LoRA 全灭）。
+    if (/(furry|portrait|character|face|animal)/i.test(name)) return false
+    // 白名单：扁平/绘本/插画/物件类风格 LoRA
+    if (/(flat|cutout|storybook|picturebook|book.?illustration|children|game.?props?|object|asset)/i.test(name)) return true
     return false
   }
   const explicit = isProtectedProp ? rawExplicit.filter(isSafePropReferenceLora) : rawExplicit
@@ -596,9 +620,13 @@ function chooseStoryboardAssetLoras({ asset, requestedLoras }) {
 
   for (const item of explicit) push(item)
 
-  const styleDefault = 'Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7'
-  const furryDefault = 'Anime_Furry_Style_SDXL.safetensors:0.7'
-  if (!explicit.length && category !== 'prop') push(styleDefault)
+  // 2026-09-28 默认 LoRA 栈沉淀进 settings 风格预设（loras.defaultStyle/characterAnimal），缺省用内置兜底
+  const presetLoras = (stylePreset && stylePreset.loras && typeof stylePreset.loras === 'object') ? stylePreset.loras : {}
+  const styleDefault = String(presetLoras.defaultStyle || '').trim() || 'Childrens_book_illustration_by_Genrih_Valk.safetensors:0.7'
+  const furryDefault = String(presetLoras.characterAnimal || '').trim() || 'Anime_Furry_Style_SDXL.safetensors:0.7'
+  // 2026-09-27：prop 无可用显式 LoRA 时与 character 一样补默认绘本风格 LoRA，不留空
+  // （保护类 prop 零风格 LoRA 会产出写实照片风候选，小猫钓鱼鱼竿/浮漂 11+18 张全灭）
+  if (!explicit.length) push(styleDefault)
   const signalText = [
     String(asset && asset.name || '').trim(),
     String(asset && asset.anchorPrompt || '').trim(),
@@ -660,15 +688,15 @@ function storyAssetCheckpointCandidates(asset) {
     return byPriority
   }
   if (lockProfile === 'slender_prop') {
-    if (/\b(bobber|float)\b|浮漂|漂子/.test(signalText)) {
-      push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
-    } else {
-      push('sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0', 'ivisionIllustration_ivision10.safetensors', 'ivisionIllustration')
-    }
+    // 2026-09-26：slender_prop 一律 ivision 优先——sd_xl_base 对绘本风细长道具稳定产出跑题图
+    // （实测钓鱼线→女性铠甲角色线稿 score 2、鱼竿→多面板技术图解 score 14，AI 评审全灭）；
+    // ivision 渲染的 organic/character 资产均通过评审。sd_xl_base 降为回退。
+    push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
     return byPriority
   }
   if (lockProfile === 'rigid_prop' || lockWorkflow === 'prop_product') {
-    push('sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0', 'ivisionIllustration_ivision10.safetensors', 'ivisionIllustration')
+    // 2026-09-26：rigid_prop 同样 ivision 优先——sd_xl_base 对绘本风道具稳定产出跑题/版图（与 slender_prop 同款失败）
+    push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
     return byPriority
   }
   if (category === 'prop') {
@@ -2057,14 +2085,20 @@ function sanitizeStoryAssetPromptZh({ asset, promptZh }) {
   let seenRole = false
   let seenStructure = false
   for (const part of parts) {
-    const value = storyAssetStr(part).trim()
+    let value = storyAssetStr(part).trim()
     if (!value) continue
     if (/^(关联场景|常与这些元素同场)\s*[:：]/.test(value)) continue
-    if (/^故事职责\s*[:：]/.test(value)) {
+    // 2026-10-07 提示词卫生：语境线标签前缀（叙事识别重点：/结构关注点：/故事职责：）是输入侧元信息，
+    // AI 抄进正文会随翻译进入生图模型——剥前缀留内容（公主穿衣三资产实测）
+    const hadStructure = /^结构关注点\s*[:：]/.test(value)
+    const hadRole = /^故事职责\s*[:：]/.test(value)
+    value = value.replace(/^(叙事识别重点|结构关注点|故事职责)\s*[:：]\s*/, '')
+    if (!value) continue
+    if (hadRole) {
       if (seenRole) continue
       seenRole = true
     }
-    if (/^结构关注点\s*[:：]/.test(value)) {
+    if (hadStructure) {
       if (seenStructure) continue
       seenStructure = true
     }
@@ -2104,7 +2138,8 @@ function isStoryAssetBobberLike(asset) {
 }
 
 function isStoryAssetRodLike(asset) {
-  return /\b(bamboo fishing rod|bamboo rod|fishing rod|fishing pole|pole)\b|竹鱼竿|鱼竿|竹竿/.test(storyAssetSignalHay(asset))
+  // 2026-10-07：裸 "pole" 过宽（衣架 alias "hanger pole" 串台成鱼竿，公主穿衣实测）——只认钓鱼语境词
+  return /\b(bamboo fishing rod|bamboo rod|fishing rod|fishing pole)\b|竹鱼竿|鱼竿|竹竿/.test(storyAssetSignalHay(asset))
 }
 
 function isStoryAssetBucketLike(asset) {
@@ -2401,12 +2436,20 @@ function isManagedStoryAssetPathForAsset(asset, rawPath) {
   const uri = normalizeStoryAssetUri(rawPath)
   if (!uri) return false
   const prefixes = getManagedStoryAssetPrefixes(asset)
-  return (
+  if (
     uri.startsWith(prefixes.current) ||
     uri.startsWith(prefixes.legacyRefs) ||
     uri.startsWith(prefixes.legacyLineart) ||
     uri.startsWith(prefixes.legacyLineartDir)
-  )
+  ) return true
+  // 2026-09-16 姿势/状态变体图（assets/ai/characters 共享目录）按变体记录归属纳入图库管理
+  for (const v of (Array.isArray(asset && asset.poseVariants) ? asset.poseVariants : [])) {
+    if (uri === normalizeStoryAssetUri(v && v.cutoutPath) || uri === normalizeStoryAssetUri(v && v.greenPath)) return true
+  }
+  for (const v of (Array.isArray(asset && asset.stateVariants) ? asset.stateVariants : [])) {
+    if (uri === normalizeStoryAssetUri(v && v.cutoutPath) || uri === normalizeStoryAssetUri(v && v.greenPath)) return true
+  }
+  return false
 }
 
 function labelForStoryAssetGalleryKind(kind) {
@@ -2414,6 +2457,10 @@ function labelForStoryAssetGalleryKind(kind) {
   if (kind === 'selected_white_bg') return '主参考立绘'
   if (kind === 'lineart_hint') return '线稿 Hint'
   if (kind === 'lineart_final') return '线稿成品'
+  if (kind === 'pose_variant') return '姿势立绘'
+  if (kind === 'pose_variant_green') return '姿势绿幕'
+  if (kind === 'state_variant') return '状态立绘'
+  if (kind === 'state_variant_green') return '状态绿幕'
   return '图片'
 }
 
@@ -2422,6 +2469,15 @@ function inferStoryAssetGalleryKind({ uri, ref, asset }) {
   if (!normalized) return 'unknown'
   if (normalized === normalizeStoryAssetUri(asset && asset.lineartHintAssetUri)) return 'lineart_hint'
   if (normalized === normalizeStoryAssetUri(asset && asset.lineartFinalAssetUri)) return 'lineart_final'
+  // 2026-09-16 姿势/状态变体：以变体记录的 green/cutout 判定（先于 postprocess/文件名启发式）
+  for (const v of (Array.isArray(asset && asset.poseVariants) ? asset.poseVariants : [])) {
+    if (normalized === normalizeStoryAssetUri(v && v.cutoutPath)) return 'pose_variant'
+    if (normalized === normalizeStoryAssetUri(v && v.greenPath)) return 'pose_variant_green'
+  }
+  for (const v of (Array.isArray(asset && asset.stateVariants) ? asset.stateVariants : [])) {
+    if (normalized === normalizeStoryAssetUri(v && v.cutoutPath)) return 'state_variant'
+    if (normalized === normalizeStoryAssetUri(v && v.greenPath)) return 'state_variant_green'
+  }
   // 选定主参考（抠图立绘）：历史白底 rmbg_white_bg 与现行透明 rmbg_alpha 共用同一 gallery 类别
   const refPostprocess = storyAssetStr(ref && ref.postprocess).trim()
   if (refPostprocess === 'rmbg_white_bg' || refPostprocess === 'rmbg_alpha') return 'selected_white_bg'
@@ -2479,6 +2535,26 @@ function buildStoryAssetGalleryEntries({ projectId, project, plan, asset }) {
     normalizeStoryAssetUri(asset && asset.lineartFinalAssetUri)
   ].filter(Boolean)
   for (const uri of specialUris) candidateUris.add(uri)
+  // 2026-09-16 姿势/状态变体图纳入图库（绿幕+立绘），按变体记录补充元数据
+  const variantByUri = new Map()
+  for (const v of (Array.isArray(asset && asset.poseVariants) ? asset.poseVariants : [])) {
+    for (const [field, kind] of [['greenPath', 'green'], ['cutoutPath', 'cutout']]) {
+      const uri = normalizeStoryAssetUri(v && v[field])
+      if (uri) {
+        candidateUris.add(uri)
+        variantByUri.set(uri, { variantId: v.id, variantName: v.name, score: v.score, composite: v.composite, part: kind })
+      }
+    }
+  }
+  for (const v of (Array.isArray(asset && asset.stateVariants) ? asset.stateVariants : [])) {
+    for (const [field, kind] of [['greenPath', 'green'], ['cutoutPath', 'cutout']]) {
+      const uri = normalizeStoryAssetUri(v && v[field])
+      if (uri) {
+        candidateUris.add(uri)
+        variantByUri.set(uri, { variantId: v.id, variantName: v.name, score: v.score, composite: v.composite, part: kind })
+      }
+    }
+  }
 
   for (const uri of candidateUris) {
     if (!uri || !isManagedStoryAssetPathForAsset(asset, uri) || seen.has(uri)) continue
@@ -2486,6 +2562,7 @@ function buildStoryAssetGalleryEntries({ projectId, project, plan, asset }) {
     const ref = refByUri.get(uri) || null
     const batch = batchByUri.get(uri) || null
     const projectAsset = projectAssetByUri.get(uri) || null
+    const variantMeta = variantByUri.get(uri) || null
     const kind = inferStoryAssetGalleryKind({ uri, ref, asset })
     const analysis = batch && batch.analysis && typeof batch.analysis === 'object'
       ? batch.analysis
@@ -2518,6 +2595,13 @@ function buildStoryAssetGalleryEntries({ projectId, project, plan, asset }) {
         (batch && batch.recommended)
       ),
       inLatestBatch: batchByUri.has(uri),
+      ...(variantMeta ? {
+        variantId: variantMeta.variantId,
+        variantName: variantMeta.variantName,
+        variantScore: Number.isFinite(Number(variantMeta.score)) ? Number(variantMeta.score) : undefined,
+        variantComposite: variantMeta.composite || undefined,
+        variantPart: variantMeta.part
+      } : {}),
       analysis
     })
   }
@@ -2775,7 +2859,8 @@ function scoreStoryAssetPromptCandidate({ asset, promptZh, promptEn, negativePro
     suggestions.push('补齐容易混淆的替代物、人物、场景和多物件排除项。')
   }
 
-  if (/(单一物件|仅画物件本身|single object|isolated object|exactly one object)/i.test(`${promptZhText} ${promptEnText}`)) {
+  // 2026-10-07 单物件约束同义词拓宽：AI 常写"单独悬挂/单件展示/单物展示"而非白名单原词（白裙、全身镜实测漏分）
+  if (/(单一物件|仅画物件本身|单独(一|的|悬挂|展示|呈现)?|单件|单物|独件|独立物件|单个|仅一件|仅展示|single object|isolated object|exactly one object|single item|one object only)/i.test(`${promptZhText} ${promptEnText}`)) {
     score += 8
     strengths.push('单物件约束明确。')
   } else if (category === 'prop') {
@@ -2799,7 +2884,9 @@ function scoreStoryAssetPromptCandidate({ asset, promptZh, promptEn, negativePro
     suggestions.push('补充无人物、无手持、无场景、无环境杂项。')
   }
 
-  if (context && typeof context === 'object') {
+  // 2026-10-07：三条语境线（故事职责/叙事识别重点/结构关注点）词表全部来自道具语境，
+  // 角色提示词永远命中不了——角色跳过道具语境块，走下方专属评分线（公主穿衣 34 分误报根修）
+  if (category !== 'character' && context && typeof context === 'object') {
     const roleLineZh = storyAssetStr(context.roleLineZh).trim()
     const plotCueLineZh = storyAssetStr(context.plotCueLineZh).trim()
     const structureLineZh = storyAssetStr(context.structureLineZh).trim()
@@ -2823,6 +2910,43 @@ function scoreStoryAssetPromptCandidate({ asset, promptZh, promptEn, negativePro
     } else if (structureLineZh) {
       risks.push('提示词缺少结构关注点。')
       suggestions.push('把关键结构部位、连接关系、端头/孔位/节点写清楚。')
+    }
+  }
+
+  // 2026-10-07 角色评分公平性根修：上面三条语境线的词表全部来自道具语境（浮漂/连接点/开口容积），
+  // 角色提示词永远命中不了——角色被钉死在 34 分基线并误报"推倒重生"（公主穿衣佳佳/艾莉实测）。
+  // 角色改走专属评分线：身份特征吸收 / 参考图构图约束 / 神态可读性。
+  if (category === 'character') {
+    // 角色语境线不适用道具词表——补偿分：角色专属三条线（各 10 分，对齐道具的 30 分语境权重）
+    const anchorText = storyAssetStr(asset && asset.anchorPrompt)
+    const featureTokens = (anchorText.match(/[一-鿿]{2,8}/g) || [])
+      .filter((t) => !/^(的|了|与|和|或在|是|有|无|不|单一|纯白|背景|居中|全身|正面|站姿|角色|年轻|一个)/.test(t))
+      .slice(0, 12)
+    const nameTokens = [name, ...(Array.isArray(asset && asset.aliases) ? asset.aliases : [])]
+      .map((x) => storyAssetStr(x).trim())
+      .filter((t) => t.length >= 2)
+    const identityHits = [...nameTokens, ...featureTokens].filter((t) => promptZhText.includes(t) || combinedEn.includes(t.toLowerCase()))
+    if (identityHits.length >= 2) {
+      score += 10
+      strengths.push('提示词吸收了角色身份特征。')
+    } else {
+      risks.push('提示词缺少角色身份特征（名字/发型/服装等锚点词）。')
+      suggestions.push('把角色的发型、服装、体型等身份锚点特征写进正向词。')
+    }
+    const frameText = `${promptZhText} ${promptEnText}`
+    if (/(全身|full.?body|head to toe)/i.test(frameText) && /(正面|front)/i.test(frameText) && /(单[一个两]?[角色人]|single character|one character|居中)/i.test(frameText)) {
+      score += 10
+      strengths.push('全身正面单角色构图约束明确。')
+    } else {
+      risks.push('参考图构图约束不足（全身/正面/单角色）。')
+      suggestions.push('补充"全身、正面、单角色、居中、纯白背景"的参考图构图约束。')
+    }
+    if (/(表情|神态|微笑|开朗|温柔|灵动|眼神|气质)/.test(promptZhText) || /(expression|smile|gentle|cheerful|demeanor)/i.test(promptEnText)) {
+      score += 10
+      strengths.push('神态/气质可读性约束明确。')
+    } else {
+      risks.push('缺少神态/气质约束（角色表情是锁定身份的一部分）。')
+      suggestions.push('补充角色的神态或气质关键词（如 友好开朗/温柔/眼神灵动）。')
     }
   }
 
@@ -2903,7 +3027,8 @@ function scoreStoryAssetPromptCandidate({ asset, promptZh, promptEn, negativePro
     }
   }
 
-  if (/\b(bamboo fishing rod|bamboo rod|fishing rod|fishing pole|pole)\b|竹鱼竿|鱼竿|竹竿/.test(signalText)) {
+  // 2026-10-07：裸 pole 串台修复（与 isStoryAssetRodLike 同步）——衣架"hanger pole"不再命中鱼竿分支
+  if (/\b(bamboo fishing rod|bamboo rod|fishing rod|fishing pole)\b|竹鱼竿|鱼竿|竹竿/.test(signalText)) {
     const rodSignals = /(竹节|竹制|bamboo|nodes?|竿梢|tip|no reel|无渔轮|棉线|cotton line|hook|鱼钩)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
     const badRodSignals = /(开口|容积|桶沿|肩带|提梁|bucket|pail|strap|handle|红白|葫芦|bobber|float|center pin|eyelet)/i.test(`${promptZhText} ${promptEnText} ${combinedZh} ${combinedEn}`)
     if (rodSignals) {
@@ -2927,14 +3052,17 @@ function scoreStoryAssetPromptCandidate({ asset, promptZh, promptEn, negativePro
     suggestions.push('不要把“关联场景”原样写进正向词，只把它转成结构和识别要求。')
   }
 
+  // 2026-10-07 否定盲修复：先剥掉"无/不含/没有/不出现/禁止 X"否定片段再测危险词——
+  // 否则"无任何人物，模特或衣架出现"这类正确排除句被误判为混入人物语义（公主穿衣白裙 29 分实测）
+  const promptZhPositiveOnly = promptZhText.replace(/(无任何|无|没有|不含|不包括|不出现|禁止|不要|避免|排除|去除)[^，。；,;、]{0,20}/g, '，')
   const dangerousHumanCue =
-    /(女孩|男孩|头部|脸部|模特|佩戴展示|戴在头上|girl|boy|portrait|wearing|worn on head|model)/i.test(promptZhText)
+    /(女孩|男孩|头部|脸部|模特|佩戴展示|戴在头上|girl|boy|portrait|wearing|worn on head|model)/i.test(promptZhPositiveOnly)
   const explicitPersonCue =
-    /(人物|角色)/.test(promptZhText) &&
-    !/(无人物|无人|非人物|不出现人物|仅画物件本身|无角色|不出现角色)/.test(promptZhText)
+    /(人物|角色)/.test(promptZhPositiveOnly) &&
+    !/(无人物|无人|非人物|不出现人物|仅画物件本身|无角色|不出现角色)/.test(promptZhPositiveOnly)
   const childCue =
-    /儿童/.test(promptZhText) &&
-    !/(儿童道具|儿童故事|儿童绘本|storybook|picture book)/i.test(promptZhText)
+    /儿童/.test(promptZhPositiveOnly) &&
+    !/(儿童道具|儿童故事|儿童绘本|storybook|picture book)/i.test(promptZhPositiveOnly)
   if ((dangerousHumanCue || explicitPersonCue || childCue) && category === 'prop') {
     score -= 18
     risks.push('道具正向词混入人物/佩戴展示语义。')
@@ -3070,6 +3198,21 @@ async function deleteStoryAssetManagedFile({ id, dir, plan, asset, targetAssetPa
   const removedProjectAssets = projectAssets.filter((item) => normalizeStoryAssetUri(item && item.uri) === targetUri)
   const removedProjectAssetIds = new Set(removedProjectAssets.map((item) => storyAssetStr(item && item.id).trim()).filter(Boolean))
 
+  // 2026-09-16 摆位引用守卫：图被 story.json 任一摆位引用时禁止删除（与场景图 bound_image 同款语义，防画布白洞）
+  if (removedProjectAssetIds.size) {
+    const storyDoc = bundle.story && typeof bundle.story === 'object' ? bundle.story : null
+    const boundHit = (Array.isArray(storyDoc && storyDoc.nodes) ? storyDoc.nodes : []).find((node) =>
+      (Array.isArray(node && node.visuals && node.visuals.placements) ? node.visuals.placements : [])
+        .some((p) => removedProjectAssetIds.has(storyAssetStr(p && p.imageAssetId).trim()))
+    )
+    if (boundHit) {
+      const e = new Error(`该图片正被场景「${storyAssetStr(boundHit.name || boundHit.id) || '未命名'}」的摆位引用，请先在合成层解除摆位后再删除`)
+      e.code = 'bound_image'
+      e.status = 409
+      throw e
+    }
+  }
+
   const abs = path.join(dir, targetUri)
   await rm(abs, { force: true }).catch(() => null)
   await cleanupEmptyStoryAssetDirs(path.dirname(abs), path.join(dir, 'assets', 'ai'))
@@ -3108,6 +3251,14 @@ async function deleteStoryAssetManagedFile({ id, dir, plan, asset, targetAssetPa
       const nextBatch = Array.isArray(item && item.latestReferenceBatch)
         ? item.latestReferenceBatch.filter((entry) => normalizeStoryAssetUri(entry && entry.assetPath) !== targetUri)
         : []
+      // 2026-09-16 姿势/状态变体记录联动：立绘被删整条移除；仅绿幕被删则清空 greenPath 保留变体
+      const cleanVariants = (variants) => Array.isArray(variants)
+        ? variants
+            .filter((v) => normalizeStoryAssetUri(v && v.cutoutPath) !== targetUri)
+            .map((v) => (normalizeStoryAssetUri(v && v.greenPath) === targetUri ? { ...v, greenPath: '' } : v))
+        : variants
+      const nextPoseVariants = cleanVariants(item && item.poseVariants)
+      const nextStateVariants = cleanVariants(item && item.stateVariants)
       const primaryReferenceAssetUri = deletingPrimary ? '' : storyAssetStr(item && item.primaryReferenceAssetUri).trim()
       const primaryReferenceAssetId = deletingPrimary ? '' : storyAssetStr(item && item.primaryReferenceAssetId).trim()
       const lineartHintAssetUri = deletingHint || deletingPrimary ? '' : storyAssetStr(item && item.lineartHintAssetUri).trim()
@@ -3121,6 +3272,8 @@ async function deleteStoryAssetManagedFile({ id, dir, plan, asset, targetAssetPa
         ...item,
         generatedRefs: nextGeneratedRefs,
         latestReferenceBatch: nextBatch,
+        ...(Array.isArray(nextPoseVariants) ? { poseVariants: nextPoseVariants } : {}),
+        ...(Array.isArray(nextStateVariants) ? { stateVariants: nextStateVariants } : {}),
         latestRecommendedReferenceAssetUri: normalizeStoryAssetUri(item && item.latestRecommendedReferenceAssetUri) === targetUri
           ? ''
           : storyAssetStr(item && item.latestRecommendedReferenceAssetUri).trim(),
@@ -3396,7 +3549,7 @@ async function writeAiDraftProject({ dir, id, title, formula, scripts, blueprint
   await writeJson(path.join(dir, 'story.json'), defaultStory())
   await writeJson(path.join(dir, 'scripts.json'), scripts || defaultScripts())
   await writeJson(path.join(dir, 'blueprint.json'), blueprint || defaultBlueprint())
-  await writeJson(path.join(dir, 'meta.json'), { ...defaultMeta({ id, title }), aiFormula: formula })
+  await writeJson(path.join(dir, 'meta.json'), { ...defaultMeta({ id, title }), aiFormula: formula, aiDraftStatus: 'pending' })
   return project
 }
 
@@ -3422,9 +3575,33 @@ async function touchProjectUpdatedAt(dir) {
     const metaPath = path.join(dir, 'meta.json')
     const meta = (await existsFile(metaPath)) ? await readJson(metaPath) : null
     if (meta && typeof meta === 'object') {
-      await writeJson(metaPath, { ...meta, updatedAt: nowIso() })
+      // 2026-09-27 F8：meta.json.stage 随写盘收口同步回写（创建时写 'script' 后无人更新），
+      // 派生逻辑与 /api/projects/summary 的 Hub 展示值保持一致（deriveProjectStage 单一来源）
+      const stage = await deriveProjectStageFromDisk(dir)
+      await writeJson(metaPath, { ...meta, stage, updatedAt: nowIso() })
     }
   } catch (_) {}
+}
+
+// 项目阶段派生（单一来源）：script→blueprint→compose→export→playable，
+// 与 /api/projects/summary 的 Hub 列表展示口径一致
+function deriveProjectStage({ cards, blueprintNodes, storyNodes, distExists }) {
+  return !(Number(cards) > 0) ? 'script'
+    : !(Number(blueprintNodes) > 0) ? 'blueprint'
+    : !(Number(storyNodes) > 2) ? 'compose'
+    : !distExists ? 'export'
+    : 'playable'
+}
+
+async function deriveProjectStageFromDisk(dir) {
+  const scripts = await readJson(path.join(dir, 'scripts.json')).catch(() => null)
+  const blueprint = await readJson(path.join(dir, 'blueprint.json')).catch(() => null)
+  const story = await readJson(path.join(dir, 'story.json')).catch(() => null)
+  const cards = Array.isArray(scripts?.cards) ? scripts.cards.length : 0
+  const blueprintNodes = Array.isArray(blueprint?.nodes) ? blueprint.nodes.length : 0
+  const storyNodes = story?.nodes && typeof story.nodes === 'object' ? Object.keys(story.nodes).length : 0
+  const distExists = await existsFile(path.join(dir, 'builds', 'latest', 'dist', 'index.html'))
+  return deriveProjectStage({ cards, blueprintNodes, storyNodes, distExists })
 }
 
 function normalizeAiStoryFormula(input) {
@@ -3458,7 +3635,113 @@ function buildScriptsFromDraftCards(cardsIn, prevScripts, formula) {
 
   const scripts = { schemaVersion: '1.0', cards, updatedAt: nowIso() }
   scripts.cards = normalizeScriptCardsForBlueprint(scripts.cards, formula)
+  // 2026-10-05 公式硬约束：AI 即兴多写选项时，确定性裁剪到公式值（裁选项句/后果卡/结局卡并重编号），
+  // 不再依赖 LLM 修复的自由改写（后者曾幻觉出多余选择点与结局，P1-20 编辑器同款）。
+  scripts.cards = fitScriptCardsToFormula(scripts.cards, formula)
   return scripts
+}
+
+// 按结构公式确定性拟合卡片（只做"减/重编号"，不编造内容）：
+// ①每选择点选项数 > optionsPerChoice：保留前 N 个（重编号选项句），删除被裁选项的后果卡并重编号保留的；
+// ②选择点总数 > choicePoints：仅保留前 choicePoints 个选择点，删除多余选择点卡及其全部后果卡；
+// ③后果卡与其结局卡之间不得夹普通场景（夹着的删除）；
+// ④结局卡裁剪到 endings 个并重编号；⑤重名卡去重。
+function fitScriptCardsToFormula(cards, formula) {
+  const cp = Math.max(0, Number(formula?.choicePoints) || 0)
+  const opt = Math.max(0, Number(formula?.optionsPerChoice) || 0)
+  const end = Math.max(0, Number(formula?.endings) || 0)
+  if (!cp && !opt && !end) return cards
+  const list = cards.map((c) => ({ ...c }))
+
+  // ①+② 选择点发现（按出现顺序编号）与裁剪
+  const choiceCards = list.filter((c) => (String(c.text || '').match(/选项\s*\d{1,2}\s*[:：]/g) || []).length >= 2)
+  choiceCards.forEach((c, i) => { c.__choiceNo = i + 1 })
+  const dropChoiceNos = new Set()
+  if (cp > 0 && choiceCards.length > cp) {
+    choiceCards.slice(cp).forEach((c) => { c.__drop = true; dropChoiceNos.add(c.__choiceNo) })
+  }
+  for (const c of choiceCards) {
+    if (c.__drop) continue
+    const marks = [...String(c.text || '').matchAll(/选项\s*(\d{1,2})\s*[:：]/g)]
+    if (opt > 0 && marks.length > opt) {
+      const keepOld = marks.slice(0, opt).map((m) => Number(m[1]))
+      const dropOld = new Set(marks.map((m) => Number(m[1])).filter((k) => !keepOld.includes(k)))
+      const firstIdx = String(c.text).search(/选项\s*\d{1,2}\s*[:：]/)
+      const head = firstIdx > 0 ? String(c.text).slice(0, firstIdx).trim() : ''
+      const parts = String(c.text).slice(Math.max(0, firstIdx)).split(/(?=选项\s*\d{1,2}\s*[:：])/)
+      const segByOld = {}
+      for (const seg of parts) {
+        const m = seg.match(/选项\s*(\d{1,2})\s*[:：]/)
+        if (m) segByOld[Number(m[1])] = seg
+      }
+      const kept = []
+      keepOld.forEach((oldK, i) => {
+        const seg = String(segByOld[oldK] || '').replace(/选项\s*\d{1,2}\s*[:：]\s*/, `选项${i + 1}：`).trim()
+        if (seg) kept.push(seg)
+      })
+      c.text = (head ? head + ' ' : '') + kept.join(' ')
+      const renum = new Map(keepOld.map((k, i) => [k, i + 1]))
+      c.__conseqRenum = { renum, dropOld, choiceNo: c.__choiceNo }
+    }
+  }
+  for (const c of list) {
+    const m = c.name.match(/^(\d{1,2})后果(\d{1,2})$/)
+    if (!m) continue
+    const choiceNo = Number(m[1])
+    if (dropChoiceNos.has(choiceNo)) { c.__drop = true; continue }
+    const owner = choiceCards.find((x) => x.__choiceNo === choiceNo)
+    const fit = owner && owner.__conseqRenum
+    if (fit && fit.choiceNo === choiceNo) {
+      const k = Number(m[2])
+      if (fit.dropOld.has(k)) c.__drop = true
+      else c.name = `${choiceNo}后果${fit.renum.get(k)}`
+    }
+  }
+
+  // ④结局裁剪+重编号
+  if (end > 0) {
+    const endings = list
+      .filter((c) => /^结局\d{1,2}$/.test(c.name) && !c.__drop)
+      .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
+    if (endings.length > end) endings.slice(end).forEach((c) => { c.__drop = true })
+    let ei = 0
+    for (const c of list) {
+      if (/^结局\d{1,2}$/.test(c.name) && !c.__drop) { ei += 1; c.name = `结局${ei}` }
+    }
+  }
+
+  // ③后果卡与结局卡之间夹着的普通卡删除（保铺垫段与后果卡前的铺垫）
+  {
+    const alive = list.filter((c) => !c.__drop)
+    const firstConseqOrder = Math.min(...alive.filter((c) => /\d{1,2}后果\d{1,2}$/.test(c.name)).map((c) => Number(c.order) || 0).filter(Number.isFinite), Infinity)
+    if (Number.isFinite(firstConseqOrder)) {
+      for (const c of alive) {
+        const o = Number(c.order) || 0
+        if (o <= firstConseqOrder) continue
+        const isConseq = /\d{1,2}后果\d{1,2}$/.test(c.name)
+        const isEnding = /^结局\d{1,2}$/.test(c.name)
+        const hasOptions = (String(c.text || '').match(/选项\s*\d{1,2}\s*[:：]/g) || []).length >= 2
+        if (!isConseq && !isEnding && !hasOptions) c.__drop = true
+      }
+    }
+  }
+
+  // ⑤重名去重（非后果/结局的叙述卡同名时后缀序号）
+  {
+    const seen = new Map()
+    for (const c of list) {
+      if (c.__drop) continue
+      if (/\d{1,2}后果\d{1,2}$/.test(c.name) || /^结局\d{1,2}$/.test(c.name)) continue
+      const n = seen.get(c.name) || 0
+      seen.set(c.name, n + 1)
+      if (n > 0) c.name = `${c.name}${n + 1}`
+    }
+  }
+
+  return list.filter((c) => !c.__drop).map((c) => {
+    const { __drop, __choiceNo, __conseqRenum, ...rest } = c
+    return rest
+  })
 }
 
 function collectBlockingScriptIssues(report, validation) {
@@ -3717,7 +4000,9 @@ app.get('/api/projects', async (c) => {
     try {
       const p0 = await readJson(path.join(dir, 'project.json'))
       const { project: p, changed } = normalizeProjectAndDetectChanges(p0)
-      items.push(p)
+      // 2026-10-05 草稿标记透传：AI 生成未确认的项目不消失于列表（草稿入口依赖），由前端分开展示
+      const meta = await readJson(path.join(dir, 'meta.json')).catch(() => null)
+      items.push({ ...p, aiDraftStatus: String(meta?.aiDraftStatus || 'confirmed') })
       if (changed) await writeJson(path.join(dir, 'project.json'), p)
     } catch (_) {}
   }
@@ -3767,11 +4052,8 @@ app.get('/api/projects/summary', async (c) => {
         compose: storyNodes > 2,
         export: distExists
       }
-      const stage = !stages.scripts ? 'script'
-        : !stages.blueprint ? 'blueprint'
-        : !stages.compose ? 'compose'
-        : !stages.export ? 'export'
-        : 'playable'
+      const stage = deriveProjectStage({ cards, blueprintNodes, storyNodes, distExists })
+      const meta = await readJson(path.join(dir, 'meta.json')).catch(() => null)
       items.push({
         id: p.id || id,
         title: p.title || '',
@@ -3783,12 +4065,23 @@ app.get('/api/projects/summary', async (c) => {
         imageStats,
         stages,
         stage,
+        aiDraftStatus: String(meta?.aiDraftStatus || 'confirmed'),
         distUrl: distExists ? `/demos/${p.id || id}/latest/dist/index.html` : null
       })
     } catch (_) {}
   }
   items.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
   return c.json({ success: true, items })
+})
+
+app.post('/api/projects/:id/confirm-draft', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const meta = await readJson(path.join(dir, 'meta.json')).catch(() => ({}))
+  await writeJson(path.join(dir, 'meta.json'), { ...meta, aiDraftStatus: 'confirmed', confirmedAt: nowIso() })
+  return c.json({ success: true, projectId: id })
 })
 
 app.post('/api/projects', storyInputGate('story.project.create'), async (c) => {
@@ -4145,7 +4438,8 @@ app.post('/api/projects/:id/analyze/scripts', async (c) => {
   const scriptsPath = path.join(dir, 'scripts.json')
   if (!(await existsFile(scriptsPath))) return c.json({ success: false, error: 'missing_scripts' }, 404)
   const scripts = await readJson(scriptsPath)
-  const analysis = analyzeScriptsForBlueprint(scripts)
+  const meta = await readJson(path.join(dir, 'meta.json')).catch(() => null)
+  const analysis = analyzeScriptsForBlueprint(scripts, meta?.aiFormula)
 
   return c.json({ success: true, analysis })
 })
@@ -4924,6 +5218,11 @@ app.post('/api/projects/:id/compile/compose', storyInputGate('story.compose.comp
 
       const textDraft = String(n && n.textDraft || '')
       const isEnding = kind === 'ending'
+      // 2026-09-27 结局卡文本层清理：title 取正文首行（如"空桶叹息"/"满载而归"），moral 不再重复该首行标题；
+      // 正文不足两行时 title 回退节点名、moral 取全文
+      const endingLines = isEnding ? textDraft.split('\n').map((ln) => ln.trim()).filter(Boolean) : []
+      const endingTitle = endingLines.length > 1 ? endingLines[0] : ''
+      const endingMoral = (endingTitle ? endingLines.slice(1).join('\n').trim() : textDraft.trim()) || '故事结束。'
       const timeline = {
         steps: [
           isEnding
@@ -4933,9 +5232,9 @@ app.post('/api/projects/:id/compile/compose', storyInputGate('story.compose.comp
                   {
                     type: 'ui.showEndingCard',
                     card: {
-                      title: String(n && n.name || nodeId),
+                      title: endingTitle || String(n && n.name || nodeId),
                       bullets: [],
-                      moral: textDraft || '故事结束。',
+                      moral: endingMoral,
                       buttons: [
                         { type: 'restart', label: '重新开始' },
                         { type: 'backToHub', label: '返回工作台' }
@@ -6234,6 +6533,57 @@ app.post('/api/projects/:id/ai/story/pose-states', async (c) => {
   }
 })
 
+// AI：提取道具状态需求（2026-09-16，候选制不写盘）——逐道具识别跨场景视觉状态变化（水位/满空/破碎…）
+// 与"终态合并关系"（如石子沉进瓶内），供锁定向导道具状态变体区构建需求清单；持久化由编辑器确认后走 plan 保存链。
+app.post('/api/projects/:id/ai/story/prop-states', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.prompt) {
+    return c.json({ success: false, error: 'disabled', message: '“提示词生成”已在设置中关闭' }, 503)
+  }
+  if (!studio.effective.prompt.provider || studio.effective.prompt.provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“提示词生成”并选择 Provider/Model' }, 400)
+  }
+
+  try {
+    const bundle = await readProjectBundle(id)
+    const storyBible = readStoryBibleFromProjectDoc(bundle.project)
+    if (!storyBible || typeof storyBible !== 'object') {
+      return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible。' }, 400)
+    }
+    const input = buildPropStateExtractionInput({ project: bundle.project, story: bundle.story, storyBible })
+    if (!input.scenes.length) {
+      return c.json({ success: false, error: 'no_prop_scenes', message: '没有事物出场的场景可提取。' }, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    const timeoutMs = clampInt(body?.timeoutMs, 5_000, 600_000, clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 600_000, 90_000))
+    const { result, meta } = await extractStoryPropStates({
+      provider: studio.effective.prompt.provider,
+      model: studio.effective.prompt.model,
+      apiUrl: studio.effective.prompt.apiUrl,
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs,
+      input
+    })
+    // 附带道具→计划资产映射（bible propId 与计划资产同 id 直接对应），编辑器按资产挂载需求清单
+    const plan = await readStoryAssetPlanIfExists(id).catch(() => null)
+    const assetByPropId = {}
+    for (const asset of (plan && Array.isArray(plan.assets) ? plan.assets : [])) {
+      const aid = String(asset?.id || '').trim()
+      if (aid) assetByPropId[aid] = { assetId: aid, assetName: String(asset.name || aid).trim() }
+    }
+    return c.json({ success: true, propStates: result, assetByPropId, meta })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
 app.post('/api/projects/:id/ai/translate', async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
@@ -6302,6 +6652,65 @@ app.post('/api/projects/:id/ai/translate', async (c) => {
 
 })
 
+// AI：提取场景构图规格（2026-10-04）——逐场景产出元素摆放"需求单"（位置/大小/远近/前后遮挡/朝向/状态+原文依据），
+// 替代摆位的纯默认值兜底。候选制：默认只返回不落盘；body.persist=true 时写入 plan.scenes[].composition（生产链审核后调用）。
+app.post('/api/projects/:id/ai/story/composition', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.prompt) {
+    return c.json({ success: false, error: 'disabled', message: '“提示词生成”已在设置中关闭' }, 503)
+  }
+  if (!studio.effective.prompt.provider || studio.effective.prompt.provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“提示词生成”并选择 Provider/Model' }, 400)
+  }
+
+  try {
+    const bundle = await readProjectBundle(id)
+    const plan = await readStoryAssetPlanIfExists(id)
+    if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+    const input = buildCompositionInput({ project: bundle.project, story: bundle.story, plan })
+    if (!input.scenes.length) {
+      return c.json({ success: false, error: 'no_composable_scenes', message: '没有含出场元素的场景可构图。' }, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    const timeoutMs = clampInt(body?.timeoutMs, 5_000, 600_000, 120_000)
+    const { result, meta } = await extractStoryComposition({
+      provider: studio.effective.prompt.provider,
+      model: studio.effective.prompt.model,
+      apiUrl: studio.effective.prompt.apiUrl,
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs,
+      input
+    })
+
+    let persisted = false
+    if (body?.persist === true) {
+      const byId = new Map((result.scenes || []).map((s) => [String(s.sceneId || '').trim(), s]))
+      const nextPlan = {
+        ...plan,
+        generatedAt: nowIso(),
+        scenes: (Array.isArray(plan.scenes) ? plan.scenes : []).map((s) => {
+          const hit = byId.get(String(s && s.sceneId || '').trim())
+          return hit ? { ...s, composition: { cameraNote: hit.cameraNote || '', items: hit.items || [], source: 'ai', updatedAt: nowIso() } } : s
+        })
+      }
+      nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+      await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+      persisted = true
+    }
+
+    return c.json({ success: true, composition: result, persisted, meta })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
 app.post('/api/projects/:id/ai/story/assets/plan', storyInputGate('story.assets.plan', (c, body) => ({ projectId: c.req.param('id'), ...body })), async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
@@ -6349,6 +6758,45 @@ app.post('/api/projects/:id/ai/story/assets/plan/persist', async (c) => {
     rev = Number(doc && doc._rev) || 0
   } catch (_) {}
   return c.json({ success: true, plan, _rev: rev })
+})
+
+// 2026-09-16 资产计划真删除：按 assetId 从磁盘真相计划移除资产并清洗场景引用，全量覆盖写盘。
+// 背景：persist 通道 mergeAssetsById 会保留磁盘独有条目，编辑器推"已过滤计划"删不掉（实测删除静默无效）。
+// 删除类写按 2026-09-09 治理注释不走 merge（与 repair-links 同款全量覆盖）。
+app.post('/api/projects/:id/ai/story/assets/plan/remove-asset', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = String(body?.assetId || '').trim()
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+  const assets = Array.isArray(plan.assets) ? plan.assets : []
+  const target = assets.find((a) => String(a && a.id || '').trim() === assetId) || null
+  if (!target) return c.json({ success: false, error: 'asset_not_found', message: '计划中未找到该事物资产。' }, 404)
+  const scrubIdList = (list) => (Array.isArray(list) ? list : []).map((x) => String(x || '').trim()).filter((x) => x && x !== assetId)
+  const nextPlan = {
+    ...plan,
+    generatedAt: nowIso(),
+    excludedAssetIds: Array.from(new Set([...(Array.isArray(plan.excludedAssetIds) ? plan.excludedAssetIds : []), assetId])),
+    assets: assets.filter((a) => String(a && a.id || '').trim() !== assetId),
+    scenes: (Array.isArray(plan.scenes) ? plan.scenes : []).map((scene) => ({
+      ...scene,
+      assetIds: scrubIdList(scene && scene.assetIds),
+      promptAssets: (Array.isArray(scene && scene.promptAssets) ? scene.promptAssets : []).filter((x) => String(x && x.id || '').trim() !== assetId),
+      missingRequiredAssetIds: scrubIdList(scene && scene.missingRequiredAssetIds),
+      readyReferenceAssetIds: scrubIdList(scene && scene.readyReferenceAssetIds)
+    }))
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await saveStoryAssetPlan(id, nextPlan)
+  let rev = 0
+  try {
+    const doc = await readJson(path.join(dir, 'project.json'))
+    rev = Number(doc && doc._rev) || 0
+  } catch (_) {}
+  return c.json({ success: true, plan: nextPlan, removedAssetId: assetId, removedAssetName: String(target.name || ''), _rev: rev })
 })
 
 // 场景↦资产关联确定性修复：按计划资产的名称/别名（+调用方证据别名 aliasOverrides）在场景文本中
@@ -6685,8 +7133,40 @@ async function writeStoryAssetPrimaryToProject({ id, dir, asset, primaryReferenc
   await writeJson(path.join(dir, 'project.json'), nextProject)
 }
 
-function getStoryAssetRenderSize(asset) {
-  const profile = getStoryAssetRenderProfile(asset && typeof asset === 'object' ? asset : { category: asset })
+// 2026-09-28：锁定写回时补齐提示词中文稿（确定性模板，不调 LLM、不阻断锁定）。
+// 背景：自动生产链不走编辑器「AI 生成提示词」向导，promptZh 从未产生，编辑器打开时只能归一化出
+// 英文/负向词骨架，锁定工作区提示词面板首栏（中文稿）空白（《小猫钓鱼》12/12 资产实测全空）。
+// 这里用 buildStoryAssetPromptEnhancement 的本地模板兜底中文稿；编辑器「AI 生成提示词」仍可覆盖出更精细的稿子。
+async function backfillStoryAssetPromptDraftZh({ id, dir, plan, asset }) {
+  const assetId = storyAssetStr(asset && asset.id).trim()
+  if (!assetId) return
+  const bundle = await readProjectBundle(id)
+  const doc = bundle.rawProject && typeof bundle.rawProject === 'object' ? bundle.rawProject : null
+  if (!doc) return
+  const state = doc.state && typeof doc.state === 'object' ? doc.state : {}
+  const aiBg = state.aiBackground && typeof state.aiBackground === 'object' ? state.aiBackground : {}
+  const drafts = aiBg.storyboardLockAssetPrompts && typeof aiBg.storyboardLockAssetPrompts === 'object' ? { ...aiBg.storyboardLockAssetPrompts } : {}
+  const prev = drafts[assetId] && typeof drafts[assetId] === 'object' ? drafts[assetId] : {}
+  if (storyAssetStr(prev.promptZh).trim()) return // 已有中文稿（人工/AI 生成）不覆盖
+  const fallback = buildStoryAssetPromptEnhancement({ asset, plan })
+  const promptZh = storyAssetStr(fallback && fallback.promptZh).trim()
+  if (!promptZh) return
+  drafts[assetId] = {
+    ...prev,
+    promptZh,
+    promptEn: storyAssetStr(prev.promptEn).trim() || storyAssetStr(fallback.promptEn).trim(),
+    negativePromptZh: storyAssetStr(prev.negativePromptZh).trim() || storyAssetStr(fallback.negativePromptZh).trim(),
+    negativePrompt: storyAssetStr(prev.negativePrompt).trim() || storyAssetStr(fallback.negativePrompt).trim()
+  }
+  await writeJson(path.join(dir, 'project.json'), {
+    ...doc,
+    updatedAt: new Date().toISOString(),
+    state: { ...state, aiBackground: { ...aiBg, storyboardLockAssetPrompts: drafts } }
+  })
+}
+
+function getStoryAssetRenderSize(asset, stylePreset) {
+  const profile = getStoryAssetRenderProfile(asset && typeof asset === 'object' ? asset : { category: asset }, stylePreset)
   return { width: Number(profile.width || 768), height: Number(profile.height || 768) }
 }
 
@@ -6981,12 +7461,13 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
           ? draft.loras.map((x) => String(x || '').trim()).filter(Boolean)
           : (Array.isArray(studio.effective.image.loras) ? studio.effective.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : [])
       )
-  const effectiveLoras = chooseStoryboardAssetLoras({ asset, requestedLoras })
+  const stylePreset = resolveStoryStylePreset(studio)
+  const effectiveLoras = chooseStoryboardAssetLoras({ asset, requestedLoras, stylePreset })
   const requestedModel = String(body?.model || draft?.model || '').trim()
   const modelResolution = await resolveStoryboardAssetModel({ studio, imgProvider, requestedModel, asset })
   const effectiveModel = String(modelResolution.model || '').trim()
   const style = normalizeStyleEnum(body?.style || draft.style || 'picture_book')
-  const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
+  const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset, stylePreset)
   const width = clampInt(body?.width, 256, 2048, widthDefault)
   const height = clampInt(body?.height, 256, 2048, heightDefault)
   const batchSize = clampInt(body?.batchSize, 1, 6, 4)
@@ -7003,7 +7484,7 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
     storyAssetStr(asset && asset.referencePromptHint).trim()
   )
   const assetNegativePrompt = sanitizedDraft.negativePrompt
-  const prompt = String(body?.prompt || '').trim() || buildStoryAssetReferencePrompt({ plan, asset, style, globalPrompt, assetPrompt })
+  const prompt = String(body?.prompt || '').trim() || buildStoryAssetReferencePrompt({ plan, asset, style, globalPrompt, assetPrompt, stylePreset })
   const negativePrompt = String(body?.negativePrompt || '').trim() || buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNegativePrompt, assetNegativePrompt })
 
   try {
@@ -7235,11 +7716,11 @@ app.post('/api/projects/:id/ai/story/assets/reference/optimize', async (c) => {
             ? draft.loras.map((x) => String(x || '').trim()).filter(Boolean)
             : (Array.isArray(studio.effective.image.loras) ? studio.effective.image.loras.map((x) => String(x || '').trim()).filter(Boolean) : [])
         )
-    const effectiveLoras = chooseStoryboardAssetLoras({ asset, requestedLoras })
+    const effectiveLoras = chooseStoryboardAssetLoras({ asset, requestedLoras, stylePreset: resolveStoryStylePreset(studio) })
     const requestedModel = String(body?.model || draft?.model || '').trim()
     const modelResolution = await resolveStoryboardAssetModel({ studio, imgProvider, requestedModel, asset })
     const effectiveModel = String(modelResolution.model || '').trim()
-    const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
+    const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset, resolveStoryStylePreset(studio))
     const width = clampInt(body?.width, 256, 2048, widthDefault)
     const height = clampInt(body?.height, 256, 2048, heightDefault)
     const batchSize = clampInt(body?.batchSize, 1, 6, 4)
@@ -7538,11 +8019,15 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
             fallbackPromptEn: fallback.promptEn,
             fallbackNegativePrompt: fallback.negativePrompt,
             timeoutMs: ['localoxml', 'ollama'].includes(provider) ? 300_000 : 60_000
-          }).catch(() => ({
-            promptEn: fallback.promptEn,
-            negativePrompt: fallback.negativePrompt,
-            meta: { provider: 'fallback', model: null, api: null, note: 'translation_fallback' }
-          }))
+          }).catch((translateErr) => {
+            // 2026-10-07 可观测：内联翻译失败不再静默——落日志说明英文栏将回落到模板兜底件
+            logStage({ stage: 'asset.prompt_enhance', event: 'translate_fallback', traceId, project: id, item: assetId, err: translateErr instanceof Error ? translateErr.message : String(translateErr) })
+            return {
+              promptEn: fallback.promptEn,
+              negativePrompt: fallback.negativePrompt,
+              meta: { provider: 'fallback', model: null, api: null, note: 'translation_fallback' }
+            }
+          })
           const sanitizedTranslated = sanitizeProtectedAssetPrompt({
             asset,
             promptEn: translated.promptEn,
@@ -7744,6 +8229,10 @@ app.post('/api/projects/:id/ai/story/assets/reference/select', storyInputGate('s
     })
     const nextAsset = (Array.isArray(plan.assets) ? plan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || asset
     await writeStoryAssetPrimaryToProject({ id, dir, asset: nextAsset, primaryReferenceAssetId })
+    // 2026-09-28：锁定即补齐提示词中文稿（模板兜底，失败不阻断选定）
+    try {
+      await backfillStoryAssetPromptDraftZh({ id, dir, plan, asset: nextAsset })
+    } catch (_) { /* 回填失败不阻断选定结果 */ }
     // 结论留痕：选定即补写 lock_confirm（approved）。control 旁路链路（x-image-review-mode: off）同样落审核事实，
     // 否则出图总账的 locked 状态永远缺这部分资产。
     try {
@@ -7817,6 +8306,12 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
   )
   const lineartNegative = String(body?.negativePrompt || '').trim() || 'color, watercolor, gouache, shading, shadow, grayscale wash, background scene, extra character, extra limbs, multiple views, text, logo, realistic photo'
 
+  const lineartTargetName = String(asset.name || assetId).trim()
+  const lineartTask = createAiTask(id, 'story.asset.lineart', {
+    total: 1,
+    message: `线稿准备：${lineartTargetName}`
+  })
+
   // 出图前审核（manual 模式）：挂起并返回 202，批准后自动执行
   const reviewMode = resolveImageReviewMode(c, body)
   if (reviewMode === 'manual' && !(await hasApprovedPreGenerate(dir, c))) {
@@ -7833,14 +8328,15 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
         execute: { endpoint: `/api/projects/${encodeURIComponent(id)}/ai/story/assets/lineart`, payload: body && typeof body === 'object' ? body : {} }
       })
     }
-    return c.json({ success: true, pendingReview: review }, 202)
+    updateAiTask(lineartTask.taskId, { stage: 'waiting_review', done: true, message: `出图前审核待批准：${lineartTargetName}` })
+    return c.json({ success: true, pendingReview: review, taskId: lineartTask.taskId }, 202)
   }
 
   try {
     logStage({ stage: 'asset.lineart', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'controlnet_lineart_only' })
     const abs = path.join(dir, primaryReferenceAssetUri.replace(/^\/+/, ''))
     const refBytes = await readFile(abs)
-    const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset)
+    const { width: widthDefault, height: heightDefault } = getStoryAssetRenderSize(asset, resolveStoryStylePreset(studio))
     const result = await generateComfyuiLineartFromReference({
       referenceBytes: refBytes,
       referenceFilename: `${String(asset.id || 'asset').trim() || 'asset'}.png`,
@@ -7859,7 +8355,11 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
       seed: body?.seed,
       timeoutMs: body?.timeoutMs,
       hintPrefix: buildStoryAssetComfyPrefix(asset, 'lineart_hint'),
-      finalPrefix: buildStoryAssetComfyPrefix(asset, 'lineart_final')
+      finalPrefix: buildStoryAssetComfyPrefix(asset, 'lineart_final'),
+      onStage: (stage) => {
+        if (stage === 'hint') updateAiTask(lineartTask.taskId, { stage: 'preprocessing', message: `线稿预处理中：${lineartTargetName}` })
+        else if (stage === 'final') updateAiTask(lineartTask.taskId, { stage: 'redrawing', message: `线稿重绘中：${lineartTargetName}` })
+      }
     })
     const persisted = await persistStoryAssetLineartResult({
       id,
@@ -7892,10 +8392,12 @@ app.post('/api/projects/:id/ai/story/assets/lineart', async (c) => {
       projectDoc._rev = Number(projectDoc._rev || 0) + 1
       await writeJson(projectPath, projectDoc)
     } catch (_) { /* 同步失败不阻断线稿结果 */ }
-    return c.json({ success: true, asset: persisted.asset, plan: persisted.plan, hintAssetPath: persisted.hintAssetPath, finalAssetPath: persisted.finalAssetPath, hintUrl: persisted.hintUrl, finalUrl: persisted.finalUrl, meta: result.meta, prompt: lineartPrompt, negativePrompt: lineartNegative })
+    updateAiTask(lineartTask.taskId, { stage: 'done', done: true, current: 1, message: `线稿完成：${lineartTargetName}` })
+    return c.json({ success: true, taskId: lineartTask.taskId, asset: persisted.asset, plan: persisted.plan, hintAssetPath: persisted.hintAssetPath, finalAssetPath: persisted.finalAssetPath, hintUrl: persisted.hintUrl, finalUrl: persisted.finalUrl, meta: result.meta, prompt: lineartPrompt, negativePrompt: lineartNegative })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
+    updateAiTask(lineartTask.taskId, { stage: 'error', done: true, error: msg, message: msg })
     logStage({ stage: 'asset.lineart', event: 'fail', traceId, project: id, item: assetId, status: mapped.httpStatus, ok: false, err: msg })
     return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
@@ -8019,6 +8521,73 @@ async function persistSceneBackgroundBinding({ dir, rawProject, story, sceneId, 
     data: { sceneId: String(sceneId || ''), assetPath: String(assetPath || '') }
   })
   return projectAsset
+}
+
+// 场景背景绑定前 AI 视觉评审（2026-09-27，F5 fail-closed）：
+// x-image-review-mode:off 只旁路人工门禁，本评审照常执行。
+// 返回 { status:'completed', passed, score, summary, issues, provider, model, reviewedAt }
+//    或 { status:'unavailable', reason, reviewedAt }——视觉通道不可用（模型未加载/租约超时/配置关闭）
+// 时调用方必须挂 pending 待人工，禁止盲批 approved。
+async function reviewSceneBackgroundForBind({ id, dir, studio, renderSpec, sceneId, assetPath }) {
+  const reviewedAt = new Date().toISOString()
+  const unavailable = (reason) => ({ status: 'unavailable', reason: String(reason || 'scene_review_unavailable'), reviewedAt })
+  try {
+    const abs = path.join(dir, String(assetPath || '').replace(/^\/+/, ''))
+    const buf = await readFile(abs)
+    const sniff = sniffImageMetaFromBytes(buf)
+    if (!sniff) return unavailable('invalid_scene_image')
+    const reviewCfg = (studio && studio.effective && studio.effective.review && typeof studio.effective.review === 'object') ? studio.effective.review : {}
+    // 评审通道解析与姿势一致性评审同源（STUDIO_SCENE_REVIEW_PROVIDER 可独立覆盖）：
+    // local_vl（默认，gemma 经 OMLX + vision 租约）/ kimi / auto / off
+    const providerSetting = String(process.env.STUDIO_SCENE_REVIEW_PROVIDER || process.env.STUDIO_POSE_REVIEW_PROVIDER || reviewCfg.poseReviewProvider || 'local_vl').trim().toLowerCase()
+    if (providerSetting === 'off') return unavailable('scene_review_disabled')
+    const moonshotKey = String(process.env.MOONSHOT_API_KEY || '').trim()
+    const useKimi = providerSetting === 'kimi' || (providerSetting === 'auto' && Boolean(moonshotKey))
+    if (useKimi && !moonshotKey) return unavailable('missing_moonshot_api_key')
+    const environmentAnchors = (Array.isArray(renderSpec && renderSpec.environmentLocks) ? renderSpec.environmentLocks : [])
+      .map((line) => String(line || '').split(': ').slice(1).join(': ').trim())
+      .filter(Boolean)
+    const sceneName = String(renderSpec && renderSpec.sceneName || sceneId || '').trim()
+    if (!useKimi) {
+      // 本地 VL 输入降采样（≤512px，与姿势一致性评审同款 python3+PIL，防 prefill 撞 OMLX 内存护栏）
+      let small = null
+      try {
+        const absOut = abs.replace(/\.(png|jpe?g|webp)$/i, '') + '_vl512.png'
+        const s0 = await stat(abs)
+        const s1 = await stat(absOut).catch(() => null)
+        if (!(s1 && s1.mtimeMs >= s0.mtimeMs)) {
+          await new Promise((resolve, reject) => {
+            const py = spawn('python3', ['-c',
+              "import sys; from PIL import Image; im=Image.open(sys.argv[1]).convert('RGB'); im.thumbnail((512,512)); im.save(sys.argv[2])",
+              abs, absOut])
+            py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('shrink_exit_' + code))))
+            py.on('error', reject)
+          })
+        }
+        small = await readFile(absOut)
+      } catch (_) { small = null }
+      const out = await reviewSceneBackgroundWithLocalVl({
+        baseUrl: String(reviewCfg.poseReviewBaseUrl || process.env.LOCALOXML_BASE_URL || 'http://127.0.0.1:18888/v1').trim(),
+        apiKey: String(process.env.LOCALOXML_API_KEY || 'omlx123').trim(),
+        model: String(reviewCfg.poseReviewModel || process.env.STUDIO_SCENE_REVIEW_MODEL || process.env.STUDIO_POSE_REVIEW_MODEL || 'gemma-4-26b-a4b-it-4bit').trim(),
+        sceneName,
+        environmentAnchors,
+        imageDataUrl: small ? `data:image/png;base64,${small.toString('base64')}` : `data:${sniff.contentType};base64,${buf.toString('base64')}`
+      })
+      return { status: 'completed', passed: out.passed, score: out.score, summary: out.summary, issues: out.issues, provider: out.meta?.provider || 'local_vl', model: out.meta?.model || '', reviewedAt }
+    }
+    const out = await reviewSceneBackgroundWithAi({
+      apiKey: moonshotKey,
+      baseUrl: process.env.MOONSHOT_BASE_URL || 'https://api.kimi.com/coding/v1',
+      model: 'kimi-for-coding',
+      sceneName,
+      environmentAnchors,
+      imageDataUrl: `data:${sniff.contentType};base64,${buf.toString('base64')}`
+    })
+    return { status: 'completed', passed: out.passed, score: out.score, summary: out.summary, issues: out.issues, provider: out.meta?.provider || 'moonshot', model: out.meta?.model || '', reviewedAt }
+  } catch (e) {
+    return unavailable(e && e.message ? e.message : String(e))
+  }
 }
 
 // 审核记录查询与决策
@@ -8486,7 +9055,9 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
   // 背景-only 模式（背景+立绘分层合成）：mode='background' 或 backgroundOnly=true 时，
   // 场景只出背景（人物/事物由立绘 placements 合成），不再要求角色锁定引用
   const backgroundOnly = String(body?.mode || '').trim() === 'background' || body?.backgroundOnly === true
-  const renderSpec = buildStorySceneRenderSpec({ plan, sceneId, mode: backgroundOnly ? 'background' : '' })
+  // 2026-09-28 风格预设接入：背景排除词等从 settings 预设读取（缺省内置兜底）
+  const sceneStylePreset = resolveStoryStylePreset(await getEffectiveStudioConfig(ROOT).catch(() => null))
+  const renderSpec = buildStorySceneRenderSpec({ plan, sceneId, mode: backgroundOnly ? 'background' : '', stylePreset: sceneStylePreset })
   if (!renderSpec) return c.json({ success: false, error: 'scene_not_found', message: `未找到场景：${sceneId}` }, 404)
 
   // 任务进度：render-all 传入 taskId 时共享批量任务，否则为本场景建独立任务
@@ -8595,15 +9166,17 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
   // prompt 顺序改为「场景内容 → 资产锚点 → 风格基调」，避免 worldAnchor 支配画面导致全场景同质跑题。
   let sceneContentPrompt = bodyPrompt || ''
   // 背景-only（2026-08-30 最终修正）：不再使用剧情叙事文本——人名剥离后残留的"三个孩子/三人"类叙事
-  // 翻译后仍会画出人物/狼（实测三轮）。背景内容只由「非角色资产的英文锚点」构成，无锚点时退回通用山谷村庄。
+  // 翻译后仍会画出人物/狼（实测三轮）。背景内容只由「地点资产的英文锚点」构成，无锚点时退回通用山谷村庄。
+  // 2026-09-27 环境化：锚点来源从 promptLocks（含 prop/character）收窄为 environmentLocks（仅 location）——
+  // 道具/角色由分层立绘合成提供，锚点进背景会把主体烘进背景图（并与负面词 animal 禁则自相矛盾）。
   const anchorOnlyBackground = !bodyPrompt && backgroundOnly
   if (anchorOnlyBackground) {
-    const anchorParts = (Array.isArray(renderSpec.promptLocks) ? renderSpec.promptLocks : [])
+    const anchorParts = (Array.isArray(renderSpec.environmentLocks) ? renderSpec.environmentLocks : [])
       .map((line) => String(line || '').split(': ').slice(1).join(': ').trim())
       .filter(Boolean)
     sceneContentPrompt = anchorParts.length
-      ? `storybook scene background featuring ${anchorParts.join('; ')}`
-      : 'storybook rural valley village scene background'
+      ? `empty picture book forest or place background featuring ${anchorParts.join('; ')}, scenery only, no characters, no animals`
+      : 'empty rural valley village scene background, scenery only, no characters, no animals'
   } else if (!sceneContentPrompt) {
     sceneContentPrompt = backgroundOnly ? String(renderSpec.backgroundPrompt || '').trim() : String(renderSpec.summary || '').trim()
   }
@@ -8628,13 +9201,18 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
   }
   const prompt = [
     sceneContentPrompt,
-    ...((Array.isArray(renderSpec.promptLocks) ? renderSpec.promptLocks : []).slice(0, 20)),
+    // 2026-09-27 去重：背景-only 时环境锚点已并入 sceneContentPrompt，不再二次拼接（同一锚点只出现一次）；
+    // 全量模式（非背景-only）保留全部锚点拼接——人物/道具直接画进场景，锚点与正文不重复；
+    // 显式 bodyPrompt 时行为与此前一致（仍拼 promptLocks）。
+    ...(anchorOnlyBackground ? [] : (Array.isArray(renderSpec.promptLocks) ? renderSpec.promptLocks : []).slice(0, 20)),
     // 2026-09-08：显式自定义 prompt（body.scenePrompt/body.prompt）时不再拼 worldAnchor——
     // 锚点里的村庄/建筑词会把背景-only 空景拉回出房子（场景4实测夜景+小屋）。
     // 与下部安静区同规则：显式覆盖即全权生效。
     ...(bodyPrompt ? [] : [String(renderSpec.worldAnchor || plan.worldAnchor || '').trim()]),
     // 2026-08-28：H5 文本叠加在场景图上——拼装路径统一要求下部留安静区（显式自定义 prompt 原样尊重不追加）
-    ...(bodyPrompt ? [] : ['composition keeps a calm low-detail low-contrast quiet zone in the lower third for H5 text overlay readability'])
+    // 2026-09-27：措辞避开 "text"——"text overlay readability" 会被模型读成"画一片写字区"，
+    // 在画面下部反复画出打开的书本（结局二三连中招，AI 评审与人工目检双重证实）
+    ...(bodyPrompt ? [] : ['composition keeps the lower third as a calm empty low-detail area with soft ground or water only, no objects, no text, no letters'])
   ]
     .map((x) => String(x || '').trim())
     .filter(Boolean)
@@ -8670,52 +9248,86 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
 
   try {
     updateAiTask(sceneTaskId, { stage: 'generating', message: 'ComfyUI 生成中…' })
-    const gen = await generateBackgroundImage({
-      prompt,
-      negativePrompt,
-      width,
-      height,
-      style,
-      steps: body?.steps ?? draft.steps,
-      cfgScale: body?.cfgScale ?? draft.cfgScale,
-      sampler: body?.sampler ?? draft.sampler,
-      scheduler: body?.scheduler ?? draft.scheduler,
-      continuity: {
-        ipadapterEnabled: referenceImages.length > 0,
-        requireCharacterRefs: false,
-        controlnetEnabled: false,
-        seedMode: 'random'
-      },
-      referenceImages,
-      workflowMode: String(renderSpec.workflow || '').trim() || undefined,
-      provider: imgProvider,
-      sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
-      comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
-      apiUrl: studio.effective.image.apiUrl,
-      model: requestedModel || studio.effective.image.model,
-      loras: requestedLoras.length ? requestedLoras : studio.effective.image.loras,
-      proxyUrl: studio.effective.network.proxyUrl,
-      timeoutMs: body?.timeoutMs
-    })
+    // 生成+写盘+压缩封装为可重试单元：AI 视觉评审未通过时换 seed（seedMode random）重渲 1 次（F5）
+    const generateAndPersist = async () => {
+      const gen = await generateBackgroundImage({
+        prompt,
+        negativePrompt,
+        width,
+        height,
+        style,
+        steps: body?.steps ?? draft.steps,
+        cfgScale: body?.cfgScale ?? draft.cfgScale,
+        sampler: body?.sampler ?? draft.sampler,
+        scheduler: body?.scheduler ?? draft.scheduler,
+        continuity: {
+          ipadapterEnabled: referenceImages.length > 0,
+          requireCharacterRefs: false,
+          controlnetEnabled: false,
+          seedMode: 'random'
+        },
+        referenceImages,
+        workflowMode: String(renderSpec.workflow || '').trim() || undefined,
+        provider: imgProvider,
+        sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
+        comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+        apiUrl: studio.effective.image.apiUrl,
+        model: requestedModel || studio.effective.image.model,
+        loras: requestedLoras.length ? requestedLoras : studio.effective.image.loras,
+        proxyUrl: studio.effective.network.proxyUrl,
+        timeoutMs: body?.timeoutMs
+      })
 
-    const buf = gen.bytes
-    const ext0 = String(gen.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
-    const sniff = sniffImageMetaFromBytes(buf)
-    const ext = (sniff && sniff.ext ? sniff.ext : ext0) || 'png'
-    const safeSceneSlug = String(renderSpec.sceneId || 'scene').replace(/[^a-z0-9_.-]+/gi, '_')
-    const relDir = path.join('assets', 'ai', 'story_scenes')
-    const outDir = path.join(dir, relDir)
-    await mkdir(outDir, { recursive: true })
-    const fname = `${safeSceneSlug}_${Date.now()}.${ext}`
-    const abs = path.join(outDir, fname)
-    await writeFile(abs, buf)
-    let assetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
-    { // 2026-09-09 出图即压：场景背景 JPEG q90
-      const opt = await optimizeGeneratedImage(abs, IMAGE_KIND.SCENE_BG).catch(() => null)
-      if (opt && opt.outPath && opt.outPath !== abs) assetPath = String(assetPathFromAbsolute(id, opt.outPath) || assetPath)
+      const buf = gen.bytes
+      const ext0 = String(gen.ext || 'png').replace(/[^a-z0-9]+/gi, '') || 'png'
+      const sniff = sniffImageMetaFromBytes(buf)
+      const ext = (sniff && sniff.ext ? sniff.ext : ext0) || 'png'
+      const safeSceneSlug = String(renderSpec.sceneId || 'scene').replace(/[^a-z0-9_.-]+/gi, '_')
+      const relDir = path.join('assets', 'ai', 'story_scenes')
+      const outDir = path.join(dir, relDir)
+      await mkdir(outDir, { recursive: true })
+      const fname = `${safeSceneSlug}_${Date.now()}.${ext}`
+      const abs = path.join(outDir, fname)
+      await writeFile(abs, buf)
+      let outAssetPath = `${relDir}/${fname}`.replace(/\\/g, '/')
+      { // 2026-09-09 出图即压：场景背景 JPEG q90
+        const opt = await optimizeGeneratedImage(abs, IMAGE_KIND.SCENE_BG).catch(() => null)
+        if (opt && opt.outPath && opt.outPath !== abs) outAssetPath = String(assetPathFromAbsolute(id, opt.outPath) || outAssetPath)
+      }
+      return { gen, assetPath: outAssetPath }
     }
 
-    // manual 模式：生成图先挂 scene_bind 审核，人工 approve 后才绑定到故事节点
+    const bindSceneId = String(renderSpec.sceneId || sceneId).trim()
+    let produced = await generateAndPersist()
+    // 2026-09-27 F5 场景绑定前 AI 视觉评审（fail-closed）：
+    // x-image-review-mode:off 只旁路人工门禁，AI 评审照常执行；
+    // 评审未通过换 seed 重渲 1 次，仍失败显式 blocked（不绑定失败图）；
+    // 视觉通道不可用挂 pending 待人工，禁止盲批 approved。
+    updateAiTask(sceneTaskId, { stage: 'ai_review', message: 'AI 视觉评审（纯环境/环境匹配/绘本画风）…' })
+    let aiReview = await reviewSceneBackgroundForBind({ id, dir, studio, renderSpec, sceneId: bindSceneId, assetPath: produced.assetPath })
+    if (reviewMode !== 'manual' && aiReview.status === 'completed' && aiReview.passed === false) {
+      logStage({ stage: 'story.scene.render', event: 'ai_review_failed', traceId, project: id, provider: imgProvider, item: `${sceneId} / score:${aiReview.score} / 换 seed 重渲 1 次` })
+      try { // 首图评审未通过 rejected 留痕（targetKey 含 assetPath，逐图唯一）
+        const first = await createImageReview(dir, {
+          phase: 'scene_bind',
+          targetKey: `scene_bind:${bindSceneId}:${produced.assetPath}`,
+          sceneId: bindSceneId,
+          prompt,
+          negativePrompt,
+          resultImagePath: produced.assetPath,
+          aiReview,
+          params: { sceneName: String(renderSpec.sceneName || '').trim(), mode: String(renderSpec.mode || 'full'), aiReviewAttempt: 1 }
+        })
+        await decideImageReview(dir, first.reviewId, { approved: false, decidedBy: 'ai', rejectReason: `AI 视觉评审未通过（首图，已换 seed 重渲）：${aiReview.summary}` })
+      } catch (_) { /* 留痕失败不阻断重渲 */ }
+      updateAiTask(sceneTaskId, { stage: 'generating', message: 'AI 视觉评审未通过，换 seed 重渲 1 次…' })
+      produced = await generateAndPersist()
+      updateAiTask(sceneTaskId, { stage: 'ai_review', message: '重渲图 AI 视觉评审…' })
+      aiReview = await reviewSceneBackgroundForBind({ id, dir, studio, renderSpec, sceneId: bindSceneId, assetPath: produced.assetPath })
+    }
+    const { gen, assetPath } = produced
+
+    // manual 模式：生成图先挂 scene_bind 审核（附 AI 视觉评审结论），人工 approve 后才绑定到故事节点
     if (reviewMode === 'manual') {
       const review = await createImageReview(dir, {
         phase: 'scene_bind',
@@ -8724,6 +9336,7 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
         prompt,
         negativePrompt,
         resultImagePath: assetPath,
+        aiReview,
         params: {
           sceneName: String(renderSpec.sceneName || '').trim(),
           provider: String(gen?.meta?.provider || imgProvider || ''),
@@ -8744,8 +9357,67 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
         url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
         provider: String(gen?.meta?.provider || imgProvider || ''),
         prompt,
-        negativePrompt
+        negativePrompt,
+        aiReview
       })
+    }
+
+    // F5 fail-closed：视觉通道不可用（模型未加载/租约超时/配置关闭）→ 挂 pending 待人工审核，禁止盲批
+    if (aiReview.status !== 'completed') {
+      const review = await createImageReview(dir, {
+        phase: 'scene_bind',
+        targetKey: `scene_bind:${bindSceneId}:${assetPath}`,
+        sceneId: bindSceneId,
+        prompt,
+        negativePrompt,
+        resultImagePath: assetPath,
+        aiReview,
+        params: {
+          sceneName: String(renderSpec.sceneName || '').trim(),
+          provider: String(gen?.meta?.provider || imgProvider || ''),
+          remoteUrl: String(gen?.meta?.url || '').trim() || undefined,
+          references: referencesUsed,
+          mode: String(renderSpec.mode || 'full'),
+          aiReviewUnavailable: true
+        }
+      })
+      if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'waiting_review', done: true, current: 1, message: `AI 视觉评审不可用（${aiReview.reason}），场景图待人工审核绑定：${String(renderSpec.sceneName || sceneId).trim()}` })
+      logStage({ stage: 'story.scene.render', event: 'ok', traceId, project: id, provider: imgProvider, item: `${sceneId} / pending scene_bind (ai_review unavailable: ${aiReview.reason}) / ${assetPath}` })
+      return c.json({
+        success: true,
+        pendingReview: review,
+        renderSpec,
+        assetPath,
+        referencesUsed,
+        taskId: sceneTaskId,
+        url: `/project-assets/${encodeURIComponent(String(id))}/${assetPath}`,
+        provider: String(gen?.meta?.provider || imgProvider || ''),
+        prompt,
+        negativePrompt,
+        aiReview
+      }, 202)
+    }
+
+    // F5：AI 评审未通过（含换 seed 重渲 1 次后）→ 标记 rejected 并显式 blocked，不绑定失败图
+    if (aiReview.passed === false) {
+      try {
+        const rejectedRecord = await createImageReview(dir, {
+          phase: 'scene_bind',
+          targetKey: `scene_bind:${bindSceneId}:${assetPath}`,
+          sceneId: bindSceneId,
+          prompt,
+          negativePrompt,
+          resultImagePath: assetPath,
+          aiReview,
+          params: { sceneName: String(renderSpec.sceneName || '').trim(), mode: String(renderSpec.mode || 'full'), aiReviewAttempt: 2 }
+        })
+        await decideImageReview(dir, rejectedRecord.reviewId, { approved: false, decidedBy: 'ai', rejectReason: `AI 视觉评审未通过：${aiReview.summary}` })
+      } catch (_) { /* 留痕失败不阻断阻断结论 */ }
+      const message = `场景「${String(renderSpec.sceneName || sceneId).trim()}」AI 视觉评审未通过（含换 seed 重渲 1 次）：${aiReview.summary}。已阻断绑定，未绑定失败图。`
+      logStage({ stage: 'story.scene.render', event: 'blocked', traceId, project: id, provider: imgProvider, item: `${sceneId} / scene_ai_review_failed / score:${aiReview.score}` })
+      if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'blocked', done: true, error: 'scene_ai_review_failed', message })
+      else updateAiTask(sceneTaskId, { message })
+      return c.json({ success: false, error: 'scene_ai_review_failed', message, sceneId: bindSceneId, aiReview, taskId: sceneTaskId }, 409)
     }
 
     updateAiTask(sceneTaskId, { stage: 'writing', message: '写回项目与故事文档…' })
@@ -8761,14 +9433,14 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
       remoteUrl: String(gen?.meta?.url || '').trim() || undefined,
       references: referencesUsed
     })
-    // 结论留痕：非 manual 模式（control 旁路/全自动）绑定即补写 scene_bind approved 记录，
+    // 结论留痕：非 manual 模式（control 旁路/全自动）绑定即补写 scene_bind approved 记录（附 AI 视觉评审结论），
     // 否则出图总账的 bound 状态永远缺这批场景。
     try {
-      const bindSceneId = String(renderSpec.sceneId || sceneId).trim()
       const bindTargetKey = `scene_bind:${bindSceneId}:${assetPath}`
       const bindDecidedBy = reviewMode === 'off' ? 'control' : 'system'
       const pendingBind = await findPendingReview(dir, { phase: 'scene_bind', targetKey: bindTargetKey })
       if (pendingBind) {
+        await attachImageReviewResult(dir, pendingBind.reviewId, { aiReview })
         await decideImageReview(dir, pendingBind.reviewId, { approved: true, decidedBy: bindDecidedBy })
       } else {
         const bindRecord = await createImageReview(dir, {
@@ -8778,6 +9450,7 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
           prompt,
           negativePrompt,
           resultImagePath: assetPath,
+          aiReview,
           params: { sceneName: String(renderSpec.sceneName || '').trim(), mode: String(renderSpec.mode || 'full') }
         })
         await decideImageReview(dir, bindRecord.reviewId, { approved: true, decidedBy: bindDecidedBy })
@@ -8797,7 +9470,8 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
       provider: String(gen?.meta?.provider || imgProvider || ''),
       remoteUrl: String(gen?.meta?.url || '').trim() || undefined,
       prompt,
-      negativePrompt
+      negativePrompt,
+      aiReview
     })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
@@ -8862,9 +9536,13 @@ app.post('/api/projects/:id/ai/story/scenes/render-all', async (c) => {
   const task = createAiTask(id, 'story.scenes.render_all', { total: targets.length, message: `批量渲染 ${targets.length} 个场景` })
   const port = Number(process.env.PORT || 1999)
   const approvedToken = String(c.req.header('x-pre-generate-approved') || '').trim()
+  // 2026-10-06 根修：批次内部逐场景渲染必须透传调用方的审核模式（control/自动化旁路 off），
+  // 否则每场景按 manual 挂起 pre_generate 审核而批次报"完成 N/N"假完成（假日出游 6 场景零出图事故）
+  const reviewModeHeader = String(c.req.header('x-image-review-mode') || '').trim()
   ;(async () => {
     const results = []
     let okCount = 0
+    let pendingCount = 0
     for (let i = 0; i < targets.length; i += 1) {
       const sceneId = targets[i]
       updateAiTask(task.taskId, { stage: 'rendering', current: i + 1, message: `渲染场景 ${i + 1}/${targets.length}：${sceneId}` })
@@ -8873,7 +9551,8 @@ app.post('/api/projects/:id/ai/story/scenes/render-all', async (c) => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(approvedToken ? { 'x-pre-generate-approved': approvedToken } : {})
+            ...(approvedToken ? { 'x-pre-generate-approved': approvedToken } : {}),
+            ...(reviewModeHeader ? { 'x-image-review-mode': reviewModeHeader } : {})
           },
           body: JSON.stringify({
             width: body?.width,
@@ -8885,9 +9564,13 @@ app.post('/api/projects/:id/ai/story/scenes/render-all', async (c) => {
           })
         })
         const json = await resp.json().catch(() => ({}))
-        if (resp.ok && json.success) {
+        if (resp.ok && json.success && !json.pendingReview) {
           okCount += 1
           results.push({ sceneId, ok: true, assetPath: json.assetPath })
+        } else if (json.pendingReview) {
+          // 审核挂起不是成功：单独计数并明示，批次不再报假完成
+          pendingCount += 1
+          results.push({ sceneId, ok: false, pendingReview: true, error: 'pending_review' })
         } else {
           results.push({ sceneId, ok: false, error: String(json.message || json.error || `http_${resp.status}`) })
         }
@@ -8899,11 +9582,11 @@ app.post('/api/projects/:id/ai/story/scenes/render-all', async (c) => {
     let coverageAfter = null
     try { coverageAfter = await getStoryImageCoverage(dir) } catch (_) { /* 总账失败不影响渲染结果 */ }
     updateAiTask(task.taskId, {
-      stage: okCount === targets.length ? 'done' : 'partial',
-      done: true,
+      stage: okCount === targets.length ? 'done' : (pendingCount > 0 ? 'pending_review' : 'partial'),
+      done: pendingCount > 0 ? false : true,
       current: targets.length,
-      message: `批量渲染完成 ${okCount}/${targets.length}`,
-      result: { okCount, results, coverage: coverageAfter }
+      message: `批量渲染完成 ${okCount}/${targets.length}${pendingCount ? `（${pendingCount} 个待审核，批准后自动继续）` : ''}`,
+      result: { okCount, pendingCount, results, coverage: coverageAfter }
     })
   })().catch((e) => {
     updateAiTask(task.taskId, { stage: 'error', done: true, error: e && e.message ? String(e.message) : String(e) })
@@ -9346,11 +10029,12 @@ app.post('/api/projects/:id/ai/story/scenes/batch/resume', async (c) => {
 
 // ---------------------------------------------------------------------------
 // AUTO-E04：立绘 placements 生成（背景+立绘分层合成方向）
-// 按资产计划 sceneIds 判定各场景出场角色（仅 character；prop 暂不合成，属已知限制，如实报告），
-// 生成默认站位的 placements 写入 story.json 节点 visuals.placements，并把立绘 project asset id
-// 同步到 project.json characters[].imageAssetId（运行时解析 p.imageAssetId || ch.imageAssetId）。
-// 幂等：同角色已存在 placement 时保留其既有站位（编辑器可能已人工调整），仅刷新 imageAssetId；
-// 未锁定（无立绘引用）的角色跳过并报告，不伪造。
+// 按资产计划 sceneIds 判定各场景出场角色与道具，生成默认站位的 placements 写入 story.json
+// 节点 visuals.placements，并把立绘 project asset id 同步到 project.json characters[].imageAssetId
+// （运行时解析 p.imageAssetId || ch.imageAssetId；prop 摆位 characterId 置空 + imageAssetId，
+// 与编辑器手工拖入的道具摆位同构，编辑器预览与 storyPixi 导出均认 imageAssetId）。
+// 幂等：同角色/同道具已存在 placement 时保留其既有站位（编辑器可能已人工调整），仅刷新 imageAssetId；
+// 未锁定（无立绘引用）的角色/道具跳过并如实报告，不伪造。
 // 与批量入口一致不挂 storyInputGate（契约枚举未覆盖该类型）。
 // ---------------------------------------------------------------------------
 
@@ -9387,6 +10071,114 @@ function findProjectCharacterForStoryAsset(characters, asset) {
   )
   if (!keys.size) return null
   return list.find((ch) => keys.has(String(ch && ch.id || '').trim().toLowerCase()) || keys.has(String(ch && ch.name || '').trim().toLowerCase())) || null
+}
+
+// ---------------------------------------------------------------------------
+// prop 分层合成默认位姿（2026-09-27 F6）：确定性规则，不做语义猜测。
+// flying：飞虫类（butterfly/dragonfly 等 slender/small prop）放画面上三分之一、scale 0.10-0.18、x 错开角色；
+// ground：桶/盆类地面道具放角色侧前方、scale 0.15-0.25；
+// fish_near_bucket：结局场景的鱼放桶位置附近（找不到桶退化为 ground）。
+// ---------------------------------------------------------------------------
+const FLYING_PROP_PATTERN = /(butterfly|dragonfly|bee|beetle|firefl|insect|bug|moth|蝴蝶|蜻蜓|蜜蜂|甲虫|萤火|昆虫|飞蛾)/i
+const FISH_PROP_PATTERN = /(fish|鱼)/i
+const BUCKET_PROP_PATTERN = /(bucket|tub|barrel|pail|basin|木桶|水桶|桶|盆)/i
+
+function propAssetSignalText(asset) {
+  return [asset?.name, asset?.anchorPrompt, ...(Array.isArray(asset?.aliases) ? asset.aliases : [])].map((x) => String(x || '')).join(' ')
+}
+
+function propPlacementProfile(asset, { isEndingScene } = {}) {
+  const signal = propAssetSignalText(asset)
+  if (FLYING_PROP_PATTERN.test(signal)) return 'flying'
+  if (isEndingScene && FISH_PROP_PATTERN.test(signal)) return 'fish_near_bucket'
+  return 'ground'
+}
+
+function propPlacementTransform({ profile, index, characterXs, bucketTransform }) {
+  if (profile === 'flying') {
+    // 上三分之一（y≈0.30），x 从候选位中取与所有角色水平距离 ≥0.15 的第一个；都太近时取距离最远的
+    const xs = Array.isArray(characterXs) ? characterXs : []
+    const candidates = [0.2, 0.8, 0.35, 0.65, 0.5]
+    let best = candidates[0]
+    let bestDist = -1
+    for (const cx of candidates) {
+      const d = xs.length ? Math.min(...xs.map((x) => Math.abs(x - cx))) : 1
+      if (d >= 0.15) { best = cx; break }
+      if (d > bestDist) { best = cx; bestDist = d }
+    }
+    return { x: best, y: Number((0.3 + (index % 2) * 0.06).toFixed(3)), scale: 0.14, rotationDeg: 0 }
+  }
+  if (profile === 'fish_near_bucket' && bucketTransform) {
+    return {
+      x: Math.max(0.06, Math.min(0.94, Number((Number(bucketTransform.x) + 0.07 || 0.57).toFixed(3)))),
+      y: Math.max(0.3, Math.min(0.95, Number((Number(bucketTransform.y) - 0.05 || 0.83).toFixed(3)))),
+      scale: 0.12,
+      rotationDeg: 0
+    }
+  }
+  // ground：首个角色侧前方（交替向两侧错开），无角色时从左起横向铺开
+  const xs = Array.isArray(characterXs) ? characterXs : []
+  if (!xs.length) return { x: Math.max(0.15, Math.min(0.85, Number((0.3 + index * 0.2).toFixed(3)))), y: 0.88, scale: 0.2, rotationDeg: 0 }
+  const dir = index % 2 === 0 ? 1 : -1
+  const step = 0.16 * (Math.floor(index / 2) + 1)
+  return { x: Math.max(0.08, Math.min(0.92, Number((xs[0] + dir * step).toFixed(3)))), y: 0.88, scale: 0.2, rotationDeg: 0 }
+}
+
+// prop 摆位所需的「已关联项目资产 id」集合（幂等匹配用）：主参考 + 全部抽卡候选的 projectAssetId
+function associatedPropProjectAssetIds(asset) {
+  return new Set(
+    [
+      String(asset?.primaryReferenceAssetId || '').trim(),
+      ...(Array.isArray(asset?.generatedRefs) ? asset.generatedRefs : []).map((r) => String(r && r.projectAssetId || '').trim())
+    ].filter(Boolean)
+  )
+}
+
+// 解析 prop 摆位所需的项目图片资产 id：
+// primaryReferenceAssetId → 项目资产按 uri 反查 → generatedRefs 按 uri 反查；
+// 都解析不到但主参考文件真实存在时，登记一条项目资产（与 select 链路「故事资产立绘」登记同形），
+// 并由调用方回写计划 primaryReferenceAssetId。文件不真实返回 null（调用方跳过，不伪造引用）。
+async function resolvePropPlacementImageAsset({ dir, asset, projectAssets, sceneId }) {
+  const assetId = String(asset?.id || '').trim()
+  const assets = Array.isArray(projectAssets) ? projectAssets : []
+  const hasAsset = (aid) => Boolean(aid) && assets.some((a) => String(a && a.id || '').trim() === aid)
+
+  // 2026-09-30 状态变体优先：当前场景命中该资产的状态需求（stateRequirements[].sceneIds）
+  // 且对应 stateKey 已生成变体图时，摆位用变体而非主参考——乌鸦喝水「瓶水位低→渐升→满」
+  // 这类剧情状态由此上场（此前变体生成了却永远不上画布，全场景一张主参考图）。
+  const sid = String(sceneId || '').trim()
+  if (sid) {
+    const reqs = Array.isArray(asset?.stateRequirements) ? asset.stateRequirements : []
+    const hitReq = reqs.find((r) => Array.isArray(r?.sceneIds) && r.sceneIds.map((x) => String(x || '').trim()).includes(sid)) || null
+    if (hitReq) {
+      const stateKey = String(hitReq.stateKey || '').trim()
+      const variant = (Array.isArray(asset?.stateVariants) ? asset.stateVariants : [])
+        .find((v) => String(v?.stateKey || '').trim() === stateKey && (String(v?.projectAssetId || '').trim() || String(v?.projectAssetUri || '').trim())) || null
+      if (variant) {
+        const variantAssetId = String(variant.projectAssetId || '').trim()
+        if (hasAsset(variantAssetId)) return { imageAssetId: variantAssetId, viaStateKey: stateKey }
+        const vUri = String(variant.projectAssetUri || '').trim().replace(/^\/+/, '')
+        const byUri = vUri ? assets.find((a) => String(a && a.uri || '').trim().replace(/^\/+/, '') === vUri) : null
+        if (byUri) return { imageAssetId: String(byUri.id || '').trim(), viaStateKey: stateKey }
+      }
+    }
+  }
+
+  const uri = String(asset?.primaryReferenceAssetUri || '').trim().replace(/^\/+/, '')
+  const primaryId = String(asset?.primaryReferenceAssetId || '').trim()
+  if (hasAsset(primaryId)) return { imageAssetId: primaryId }
+  if (uri) {
+    const byUri = assets.find((a) => String(a && a.uri || '').trim().replace(/^\/+/, '') === uri)
+    if (byUri) return { imageAssetId: String(byUri.id || '').trim(), patchedPrimaryId: primaryId ? '' : String(byUri.id || '').trim() }
+  }
+  const refs = Array.isArray(asset?.generatedRefs) ? asset.generatedRefs : []
+  const refHit = refs.find((r) => String(r && r.projectAssetUri || '').trim().replace(/^\/+/, '') === uri && hasAsset(String(r && r.projectAssetId || '').trim()))
+  if (refHit) return { imageAssetId: String(refHit.projectAssetId || '').trim(), patchedPrimaryId: primaryId ? '' : String(refHit.projectAssetId || '').trim() }
+  if (!uri) return null
+  const fileGate = await verifyStoryAssetReferenceFile({ dir, assetPath: uri })
+  if (!fileGate.ok) return null
+  const created = { id: genId('asset'), kind: 'image', name: `故事资产立绘 ${String(asset?.name || assetId).trim()}`, uri, source: { type: 'ai', via: 'placements_prop_registration' } }
+  return { imageAssetId: created.id, createdAsset: created, patchedPrimaryId: created.id }
 }
 
 app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
@@ -9427,12 +10219,42 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
   // sceneId→story.json 节点映射：sceneId 即故事节点 id（编译产物约定，与场景渲染回填同源）
   const nodeById = new Map(storyNodes.map((n) => [String(n && n.id || '').trim(), n]))
 
+  // 2026-10-04 构图规格驱动：plan.scenes[].composition（AI 提取+审核的摆放需求单）存在时，
+  // 新建摆位按需求单（x/y/scale/zIndex/flipH/stateKey）执行，不再纯默认值兜底；
+  // body.applyComposition=true 时既有自动摆位也按需求单刷新（人工编辑器拖动的摆位不在此接口覆盖范围）。
+  const compositionByScene = new Map()
+  for (const s of planScenes) {
+    const comp = s && s.composition && typeof s.composition === 'object' ? s.composition : null
+    const items = Array.isArray(comp && comp.items) ? comp.items : []
+    if (!items.length) continue
+    compositionByScene.set(String(s && s.sceneId || '').trim(), new Map(items.map((it) => [String(it && it.subjectId || '').trim(), it])))
+  }
+  const applyComposition = body?.applyComposition === true
+  const compTransformFor = (sceneId, subjectId) => {
+    const item = compositionByScene.get(String(sceneId || '').trim())?.get(String(subjectId || '').trim()) || null
+    if (!item) return null
+    return {
+      transform: {
+        x: Math.max(0, Math.min(1, Number(item.x) || 0.5)),
+        y: Math.max(0, Math.min(1, Number(item.y) || 0.9)),
+        scale: Math.max(0.1, Math.min(2.5, Number(item.scale) || 1)),
+        rotationDeg: 0,
+        ...(item.flipH === true ? { flipX: true } : {})
+      },
+      zIndex: Math.max(1, Math.min(99, Math.round(Number(item.zIndex) || 3))),
+      stateKey: String(item.stateKey || '').trim()
+    }
+  }
+
   logStage({ stage: 'story.scenes.placements', event: 'start', traceId, project: id, item: `scenes:${targetSceneIds.length}` })
 
   try {
     const characters = (Array.isArray(bundle.rawProject?.characters) ? bundle.rawProject.characters : []).map((ch) => ({ ...ch }))
     let charactersChanged = false
+    const projectAssets = (Array.isArray(bundle.rawProject?.assets) ? bundle.rawProject.assets : []).map((a) => ({ ...a }))
+    let projectAssetsChanged = false
     const characterIdPatches = new Map() // planAssetId → projectCharacterId（新建/补链时写回计划）
+    const propAssetIdPatches = new Map() // planAssetId → primaryReferenceAssetId（补登记项目资产时写回计划）
     const storyPatches = new Map() // nodeId → placements 数组
     const sceneReports = []
     const skippedCharacters = []
@@ -9441,6 +10263,7 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
     let placementsUpdated = 0
     let charactersCreated = 0
     let charactersUpdated = 0
+    let propsPlaced = 0
 
     for (const sceneId of targetSceneIds) {
       const node = nodeById.get(sceneId)
@@ -9448,9 +10271,28 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         sceneReports.push({ sceneId, ok: false, reason: 'story_node_not_found' })
         continue
       }
-      // prop 暂不合成：仅如实报告（已知限制）
+      // prop 分层合成（2026-09-27 F6）：已锁定（referenceStatus=ready 且有主参考）prop 生成确定性默认摆位；
+      // 未锁定或引用不可解析（文件缺失/无法登记项目资产）仍跳过并如实进 skippedProps。
+      const placeableProps = []
       for (const prop of propAssets.filter((a) => assetSceneIds(a).includes(sceneId))) {
-        skippedProps.push({ sceneId, assetId: String(prop.id || '').trim(), name: String(prop.name || '').trim(), reason: 'prop_not_composited' })
+        const assetId = String(prop.id || '').trim()
+        const assetName = String(prop.name || assetId).trim()
+        const locked = String(prop.referenceStatus || '').trim() === 'ready' && Boolean(String(prop.primaryReferenceAssetUri || '').trim())
+        if (!locked) {
+          skippedProps.push({ sceneId, assetId, name: assetName, reason: 'prop_reference_missing' })
+          continue
+        }
+        const resolved = await resolvePropPlacementImageAsset({ dir, asset: prop, projectAssets, sceneId })
+        if (!resolved) {
+          skippedProps.push({ sceneId, assetId, name: assetName, reason: 'prop_reference_missing' })
+          continue
+        }
+        if (resolved.createdAsset) {
+          projectAssets.push(resolved.createdAsset)
+          projectAssetsChanged = true
+        }
+        if (resolved.patchedPrimaryId) propAssetIdPatches.set(assetId, resolved.patchedPrimaryId)
+        placeableProps.push({ assetId, name: assetName, imageAssetId: resolved.imageAssetId, associatedIds: associatedPropProjectAssetIds(prop), asset: prop })
       }
 
       const present = characterAssets.filter((a) => assetSceneIds(a).includes(sceneId))
@@ -9460,10 +10302,51 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         const assetName = String(asset.name || assetId).trim()
         let character = findProjectCharacterForStoryAsset(characters, asset)
         // 立绘 asset id 来源：select 后计划资产的 primaryReferenceAssetId → 角色 ai.referenceAssetId → 角色 imageAssetId
-        const imageAssetId =
+        // 角色主档写回（创建/回填）始终用主参考 id，姿势变体只影响本场景摆位
+        const baseImageAssetId =
           String(asset.primaryReferenceAssetId || '').trim() ||
           String(character?.ai?.referenceAssetId || '').trim() ||
           String(character?.imageAssetId || '').trim()
+        // 2026-09-30 剧情姿势上场：该场景已生成姿势/状态变体（poseVariants 或 stateVariants 的
+        // sceneId/sceneIds 命中）时，本场景摆位用变体图而非主参考——口渴/衔石/喝水随情节表达。
+        const variantPool = [
+          ...(Array.isArray(asset.poseVariants) ? asset.poseVariants : []),
+          ...(Array.isArray(asset.stateVariants) ? asset.stateVariants : [])
+        ]
+        const poseHit = variantPool
+          .filter((v) => {
+            if (!String(v?.projectAssetId || '').trim()) return false
+            const one = String(v?.sceneId || '').trim()
+            if (one && one === sceneId) return true
+            const many = Array.isArray(v?.sceneIds) ? v.sceneIds.map((x) => String(x || '').trim()) : []
+            return many.includes(sceneId)
+          })
+          .pop()
+        // 2026-10-04 构图 stateKey 优先：需求单指定本场景状态（如 pushing/crushed）时按状态键选变体，
+        // 不再仅靠 sceneIds 命中——同一角色多状态在同场景区的正确性由构图规格保证
+        const comp = compTransformFor(sceneId, assetId)
+        const compStateHit = comp && comp.stateKey
+          ? variantPool.find((v) => String(v?.stateKey || '').trim() === comp.stateKey && String(v?.projectAssetId || '').trim()) || null
+          : null
+        // 2026-10-06 简谱演绎·表情差分：无场景姿势变体时，按本场景剧情表情（poseRequirements[].expression）
+        // 匹配命名约定「表情·{expression}」的表情差分变体——立绘情绪随场景切换，零全身姿势重绘成本
+        let expressionHit = null
+        if (!compStateHit && !poseHit) {
+          const reqs = Array.isArray(asset.poseRequirements) ? asset.poseRequirements : []
+          const sceneReq = reqs.find((r) => String(r?.sceneId || '').trim() === sceneId)
+          const expr = String(sceneReq?.expression || '').trim()
+          if (expr) {
+            expressionHit = variantPool.find((v) => {
+              if (!String(v?.projectAssetId || '').trim()) return false
+              const nm = String(v?.name || '').trim()
+              return nm === `表情·${expr}` || nm === `表情:${expr}` || nm === expr
+            }) || null
+          }
+        }
+        const imageAssetId = compStateHit
+          ? String(compStateHit.projectAssetId || '').trim()
+          : (poseHit ? String(poseHit.projectAssetId || '').trim()
+            : (expressionHit ? String(expressionHit.projectAssetId || '').trim() : baseImageAssetId))
         if (!imageAssetId) {
           skippedCharacters.push({ sceneId, assetId, name: assetName, reason: 'reference_not_locked' })
           continue
@@ -9471,12 +10354,12 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         if (!character) {
           // 项目缺少该角色条目：按真实计划数据补建最小角色记录，并回写计划链接
           // 2026-08-30 修复：同步补 ai.referenceAssetId——体检的连续性绑定检查依赖它（缺了会报"缺少角色参考图"）
-          character = { id: genId('char'), name: assetName, imageAssetId, ai: { referenceAssetId: imageAssetId } }
+          character = { id: genId('char'), name: assetName, imageAssetId: baseImageAssetId, ai: { referenceAssetId: baseImageAssetId } }
           characters.push(character)
           charactersChanged = true
           charactersCreated += 1
         } else {
-          const needsImage = String(character.imageAssetId || '').trim() !== imageAssetId
+          const needsImage = String(character.imageAssetId || '').trim() !== baseImageAssetId
           // 2026-08-30 修复：referenceAssetId 缺失时回填（锁定在角色建立前完成时，select 的写回找不到角色条目）
           const needsRef = !String((character.ai && character.ai.referenceAssetId) || '').trim()
           if (needsImage || needsRef) {
@@ -9484,10 +10367,10 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
             if (idx >= 0) {
               characters[idx] = {
                 ...characters[idx],
-                ...(needsImage ? { imageAssetId } : {}),
+                ...(needsImage ? { imageAssetId: baseImageAssetId } : {}),
                 ai: {
                   ...((characters[idx].ai && typeof characters[idx].ai === 'object') ? characters[idx].ai : {}),
-                  referenceAssetId: imageAssetId
+                  referenceAssetId: baseImageAssetId
                 }
               }
               character = characters[idx]
@@ -9500,30 +10383,112 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         placeable.push({ assetId, name: assetName, characterId: String(character.id || '').trim(), imageAssetId })
       }
 
-      if (placeable.length) {
+      if (placeable.length || placeableProps.length) {
         const existing = Array.isArray(node.visuals?.placements) ? node.visuals.placements : []
         const nextPlacements = existing.map((p) => ({ ...p }))
         placeable.forEach((entry, index) => {
+          const comp = compTransformFor(sceneId, entry.assetId)
           const existingIdx = nextPlacements.findIndex((p) => String(p && p.characterId || '').trim() === entry.characterId)
           if (existingIdx >= 0) {
-            // 幂等/人工站位保护：保留既有 transform/zIndex/visible，仅刷新立绘引用
-            nextPlacements[existingIdx] = { ...nextPlacements[existingIdx], characterId: entry.characterId, imageAssetId: entry.imageAssetId }
+            // 幂等/人工站位保护：保留既有 transform/zIndex/visible，仅刷新立绘引用；
+            // applyComposition=true 时按构图需求单刷新 transform/zIndex（人工编辑器摆位不走本接口）
+            const refresh = applyComposition && comp ? { transform: comp.transform, zIndex: comp.zIndex } : {}
+            nextPlacements[existingIdx] = { ...nextPlacements[existingIdx], characterId: entry.characterId, imageAssetId: entry.imageAssetId, ...refresh }
             placementsUpdated += 1
           } else {
             const planAsset = planAssets.find((a) => String(a && a.id || '').trim() === entry.assetId)
             nextPlacements.push({
               characterId: entry.characterId,
               imageAssetId: entry.imageAssetId,
-              transform: { x: defaultPlacementX(index, placeable.length), y: 1, scale: defaultPlacementScale(planAsset), rotationDeg: 0 },
-              zIndex: index + 1,
+              transform: comp ? comp.transform : { x: defaultPlacementX(index, placeable.length), y: 1, scale: defaultPlacementScale(planAsset), rotationDeg: 0 },
+              zIndex: comp ? comp.zIndex : index + 1,
               visible: true
             })
             placementsCreated += 1
           }
         })
+
+        // prop 摆位写入（characterId 置空 + imageAssetId + propAssetId 链接，与编辑器手工拖入的道具摆位同构；
+        // 编辑器预览与 storyPixi 导出均按 p.imageAssetId || ch.imageAssetId 解析，运行态无需扩展）
+        if (placeableProps.length) {
+          const isEndingScene = String(node.kind || '').trim() === 'ending'
+          const characterXs = nextPlacements
+            .filter((p) => String(p && p.characterId || '').trim())
+            .map((p) => Number(p && p.transform && p.transform.x))
+            .filter((x) => Number.isFinite(x))
+          // 已摆道具（含人工摆位）信号池：供 fish_near_bucket 确定性找桶
+          const placedPropSignals = []
+          for (const p of nextPlacements) {
+            if (String(p && p.characterId || '').trim()) continue
+            const img = String(p && p.imageAssetId || '').trim()
+            const pa = projectAssets.find((a) => String(a && a.id || '').trim() === img)
+            const signal = [pa && pa.name, pa && pa.uri].map((x) => String(x || '')).join(' ')
+            if (signal.trim()) placedPropSignals.push({ signal, transform: (p && p.transform && typeof p.transform === 'object') ? p.transform : {} })
+          }
+          // 结局场景的鱼最后放，保证桶位姿已确定
+          const orderedProps = placeableProps.slice().sort((a, b) => {
+            const pa = propPlacementProfile(a.asset, { isEndingScene }) === 'fish_near_bucket' ? 1 : 0
+            const pb = propPlacementProfile(b.asset, { isEndingScene }) === 'fish_near_bucket' ? 1 : 0
+            return pa - pb
+          })
+          let propIndex = 0
+          for (const entry of orderedProps) {
+            const existingIdx = nextPlacements.findIndex((p) => {
+              if (!p || typeof p !== 'object') return false
+              if (String(p.propAssetId || '').trim() && String(p.propAssetId || '').trim() === entry.assetId) return true
+              if (String(p.characterId || '').trim()) return false
+              const img = String(p.imageAssetId || '').trim()
+              if (img && entry.associatedIds.has(img)) return true
+              // 人工摆位归队：摆位图片资产 uri 含计划资产 id 路径段（如 /prop.tool_bag/），确定性子串匹配
+              const pa = projectAssets.find((a) => String(a && a.id || '').trim() === img)
+              const puri = String(pa && pa.uri || '').trim()
+              return Boolean(puri && entry.assetId && puri.includes(`/${entry.assetId}/`))
+            })
+            if (existingIdx >= 0) {
+              // 幂等/人工站位保护：保留既有 transform/zIndex/visible，仅刷新立绘引用与 propAssetId 链接；
+              // applyComposition=true 时按构图需求单刷新 transform/zIndex
+              const comp = compTransformFor(sceneId, entry.assetId)
+              const refresh = applyComposition && comp ? { transform: comp.transform, zIndex: comp.zIndex } : {}
+              nextPlacements[existingIdx] = { ...nextPlacements[existingIdx], characterId: '', propAssetId: entry.assetId, imageAssetId: entry.imageAssetId, ...refresh }
+              placedPropSignals.push({ signal: propAssetSignalText(entry.asset), transform: (nextPlacements[existingIdx].transform && typeof nextPlacements[existingIdx].transform === 'object') ? nextPlacements[existingIdx].transform : {} })
+              placementsUpdated += 1
+              continue
+            }
+            let profile = propPlacementProfile(entry.asset, { isEndingScene })
+            let bucketTransform = null
+            if (profile === 'fish_near_bucket') {
+              const hit = placedPropSignals.find((x) => BUCKET_PROP_PATTERN.test(x.signal))
+              if (hit) bucketTransform = hit.transform
+              else profile = 'ground' // 找不到桶：退化为地面道具默认位
+            }
+            // 2026-10-04 构图规格优先：需求单指定了道具位置/大小/前后关系时按需求单摆放
+            const comp = compTransformFor(sceneId, entry.assetId)
+            const transform = comp ? comp.transform : propPlacementTransform({ profile, index: propIndex, characterXs, bucketTransform })
+            const zBase = nextPlacements.reduce((acc, p) => Math.max(acc, Number(p && p.zIndex) || 0), 0)
+            nextPlacements.push({
+              id: `pl_${sceneId}_${entry.assetId}`,
+              characterId: '',
+              propAssetId: entry.assetId,
+              imageAssetId: entry.imageAssetId,
+              transform,
+              zIndex: comp ? comp.zIndex : zBase + 1,
+              visible: true
+            })
+            placedPropSignals.push({ signal: propAssetSignalText(entry.asset), transform })
+            propIndex += 1
+            placementsCreated += 1
+            propsPlaced += 1
+          }
+        }
         storyPatches.set(sceneId, nextPlacements)
       }
-      sceneReports.push({ sceneId, ok: true, characters: placeable, placementsTotal: (storyPatches.get(sceneId) || (Array.isArray(node.visuals?.placements) ? node.visuals.placements : [])).length })
+      sceneReports.push({
+        sceneId,
+        ok: true,
+        characters: placeable,
+        props: placeableProps.map((x) => ({ assetId: x.assetId, name: x.name, imageAssetId: x.imageAssetId })),
+        placementsTotal: (storyPatches.get(sceneId) || (Array.isArray(node.visuals?.placements) ? node.visuals.placements : [])).length
+      })
     }
 
     const nextStory = {
@@ -9537,18 +10502,27 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
     }
     await writeJson(path.join(dir, 'story.json'), nextStory)
 
-    if (charactersChanged) {
-      const nextProject = { ...bundle.rawProject, characters, updatedAt: new Date().toISOString() }
+    if (charactersChanged || projectAssetsChanged) {
+      const nextProject = {
+        ...bundle.rawProject,
+        characters,
+        ...(projectAssetsChanged ? { assets: projectAssets } : {}),
+        updatedAt: new Date().toISOString()
+      }
       await writeJson(path.join(dir, 'project.json'), nextProject)
     }
 
-    if (characterIdPatches.size) {
+    if (characterIdPatches.size || propAssetIdPatches.size) {
       const nextPlan = {
         ...plan,
         generatedAt: new Date().toISOString(),
         assets: planAssets.map((a) => {
-          const patched = characterIdPatches.get(String(a && a.id || '').trim())
-          return patched ? { ...a, projectCharacterId: patched } : a
+          const aid = String(a && a.id || '').trim()
+          const patchedChar = characterIdPatches.get(aid)
+          const patchedPropRef = propAssetIdPatches.get(aid)
+          let next = patchedChar ? { ...a, projectCharacterId: patchedChar } : a
+          if (patchedPropRef) next = { ...next, primaryReferenceAssetId: patchedPropRef }
+          return next
         })
       }
       nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
@@ -9561,6 +10535,7 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
       placementsUpdated,
       charactersCreated,
       charactersUpdated,
+      propsPlaced,
       skippedCharacters: skippedCharacters.length,
       skippedProps: skippedProps.length
     }
@@ -9738,20 +10713,36 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/layered-produce', async (c)
       }
 
       updateAiTask(task.taskId, { stage: 'pose_sprite', current: cursor - 1, message: `生成姿势绿幕图：${label}` })
-      const spriteJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/sprite`, {
-        characterId,
-        fingerprintPrompt: String(planAsset.anchorPrompt || '').trim(),
-        globalPrompt: POSE_GLOBAL_PROMPT,
-        posePrompt,
-        negativePrompt: [String(pose.negativePrompt || '').trim(), String(planAsset.negativePrompt || '').trim()].filter(Boolean).join(', '),
-        style: 'picture_book',
-        width: 720,
-        height: 1280,
-        steps: 20,
-        cfgScale: 7,
-        ipadapter: { enabled: true }
-      })
-      const assetPath = String(spriteJson.assetPath || '').trim()
+      // 2026-10-08 骨架驱动姿势变体接入：spriteAssetPath 直接供给预生成姿势图（OpenPose 骨架+IPAdapter 链产物），
+      // 跳过绿幕 sprite 生成（绿幕 IPAdapter 会把姿势拉回主参考站姿，坐/骑/走类姿势必须走骨架驱动）。
+      // 路径守卫：必须解析在项目目录内（与 specPath 同款防越界）。
+      let assetPath = ''
+      const presetSprite = String(pose.spriteAssetPath || '').trim().replace(/^\/+/, '')
+      if (presetSprite) {
+        const rootAbs = path.resolve(dir)
+        const spriteAbs = path.resolve(rootAbs, presetSprite)
+        if (spriteAbs === rootAbs || !spriteAbs.startsWith(rootAbs + path.sep) || !(await existsFile(spriteAbs))) {
+          const err = new Error(`spriteAssetPath 越出项目目录或不存在，已拒绝：${presetSprite}`)
+          err.code = 'sprite_path_invalid'
+          throw err
+        }
+        assetPath = presetSprite
+      } else {
+        const spriteJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/sprite`, {
+          characterId,
+          fingerprintPrompt: String(planAsset.anchorPrompt || '').trim(),
+          globalPrompt: POSE_GLOBAL_PROMPT,
+          posePrompt,
+          negativePrompt: [String(pose.negativePrompt || '').trim(), String(planAsset.negativePrompt || '').trim()].filter(Boolean).join(', '),
+          style: 'picture_book',
+          width: 720,
+          height: 1280,
+          steps: 20,
+          cfgScale: 7,
+          ipadapter: { enabled: true }
+        })
+        assetPath = String(spriteJson.assetPath || '').trim()
+      }
 
       let score
       let reason = ''
@@ -9783,6 +10774,12 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/layered-produce', async (c)
         const variant = {
           id: genId('pose'),
           name: lockName,
+          // 2026-09-30：记录来源场景，placements 按场景选姿势变体（乌鸦喝水口渴/衔石/喝水随情节上场）
+          sceneId: String(c.req.param('sceneId') || '').trim(),
+          // 2026-10-08：支持一次绑定多场景（同一变体跨后果/结局复用，摆位 sceneIds 命中同样生效）
+          ...(Array.isArray(pose.sceneIds) && pose.sceneIds.length
+            ? { sceneIds: pose.sceneIds.map((x) => String(x || '').trim()).filter(Boolean) }
+            : {}),
           posePrompt,
           promptZh: String(pose.promptZh || '').trim(),
           promptEn: posePrompt,
@@ -10000,6 +10997,321 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/layered-produce', async (c)
   }, success ? 200 : 502)
 })
 
+// 2026-09-16 道具状态变体生成：同一道具的"剧情状态"立绘（水位/满空/破碎…）。
+// 链路：sprite(kind:'prop'，锚定词+状态描述) → pose-review（planAssetId 道具泛化评审，可选失败记 reviewUnavailable）
+//   → cutout → 登记 project.json → 计划资产 stateVariants 追加 → lock_confirm 审核留痕（decidedBy=control/editor 触发源）。
+// 全程经 /ai/tasks 暴露进度；内部转发统一带 x-image-review-mode: off（触发侧已有自己的审核门禁）。
+app.post('/api/projects/:id/ai/story/assets/:assetId/state-variants/generate', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const planAssetId = String(c.req.param('assetId') || '').trim()
+  if (!planAssetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+
+  const body = await c.req.json().catch(() => ({}))
+  const stateKey = String(body?.stateKey || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_')
+  const label = String(body?.label || body?.stateKey || '').trim()
+  const description = String(body?.description || body?.promptZh || '').trim()
+  const customPrompt = String(body?.prompt || '').trim()
+  const strategy = String(body?.strategy || 'ai').trim().toLowerCase() || 'ai'
+  if (!stateKey) return c.json({ success: false, error: 'missing_state_key', message: 'stateKey 不能为空' }, 400)
+  if (strategy === 'ai' && !description && !customPrompt) return c.json({ success: false, error: 'missing_description', message: 'description/prompt 至少提供一个' }, 400)
+  if (!['ai', 'fill_composite', 'transform'].includes(strategy)) return c.json({ success: false, error: 'invalid_strategy', message: 'strategy 仅支持 ai / fill_composite / transform' }, 400)
+
+  const plan = await readStoryAssetPlanIfExists(id)
+  const planAssets = plan && Array.isArray(plan.assets) ? plan.assets : []
+  const planAsset = planAssets.find((a) => String(a && a.id || '').trim() === planAssetId) || null
+  if (!planAsset) return c.json({ success: false, error: 'asset_not_found', message: '计划中未找到该事物资产。' }, 404)
+  const assetName = String(planAsset.name || planAssetId).trim()
+
+  const task = createAiTask(id, 'story.prop.state_variant', { total: 1, message: `生成状态变体：${assetName}·${label}` })
+  const internalHeaders = { 'Content-Type': 'application/json', 'x-image-review-mode': 'off' }
+  const postInternal = async (urlPath, payload) => {
+    const resp = await app.request(urlPath, { method: 'POST', headers: internalHeaders, body: JSON.stringify(payload || {}) })
+    const json = await resp.json().catch(() => ({}))
+    if (!resp.ok || !json || json.success !== true) {
+      const err = new Error(String((json && (json.message || json.error)) || `http_${resp.status}`))
+      err.code = String((json && json.error) || `http_${resp.status}`)
+      throw err
+    }
+    return json
+  }
+  const traceLockConfirm = async ({ resultImagePath, prompt }) => {
+    try {
+      const targetKey = `lock_confirm:${planAssetId}:${resultImagePath}`
+      const pending = await findPendingReview(dir, { phase: 'lock_confirm', targetKey })
+      if (pending) {
+        await decideImageReview(dir, pending.reviewId, { approved: true, decidedBy: 'control' })
+      } else {
+        const record = await createImageReview(dir, {
+          phase: 'lock_confirm',
+          targetKey,
+          assetId: planAssetId,
+          resultImagePath,
+          prompt: String(prompt || '')
+        })
+        await decideImageReview(dir, record.reviewId, { approved: true, decidedBy: 'control' })
+      }
+    } catch (_) { /* 留痕失败不阻断登记结果 */ }
+  }
+
+  // 状态提示词：身份锚定 + "同一个事物"声明 + 状态描述（中文稿，sprite 端点内自动翻译英文稿）
+  const statePrompt = customPrompt || `同一个${assetName}，${description}`
+  try {
+    let assetPath = ''
+    let cutoutPath = ''
+    let compositeMeta = null
+
+    if (strategy === 'fill_composite') {
+      // 2026-09-16 确定性填充合成：以锁定主参考为底，程序化叠加填充层（水位）与内容物抠图（石子等）。
+      // 背景：AI 生成对"同一容器+液位递进+内容物"不可靠（锚定压内容词/身份逐张漂移），
+      // 本地脚本黑盒合成违反出图可观测——合成收进服务端：/ai/tasks 进度 + 出图即压 + 评审 + lock_confirm 留痕。
+      updateAiTask(task.taskId, { stage: 'state_composite', current: 0, message: `确定性合成状态图：${assetName}·${label}` })
+      const refUri = String(planAsset.primaryReferenceAssetUri || planAsset.latestRecommendedReferenceAssetUri || '').trim()
+        .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+        .replace(/^\/project-assets\/[^/]+\//, '')
+      if (!refUri.startsWith('assets/')) {
+        const err = new Error('该事物没有可用的锁定主参考图，无法合成')
+        err.code = 'reference_not_found'
+        throw err
+      }
+      const refAbs = path.join(dir, refUri)
+      if (!(await existsFile(refAbs))) {
+        const err = new Error(`主参考图文件不存在：${refUri}`)
+        err.code = 'reference_not_found'
+        throw err
+      }
+      const overlaySpecs = []
+      for (const ov of (Array.isArray(body?.overlays) ? body.overlays : [])) {
+        const ovAssetId = String(ov?.planAssetId || '').trim()
+        const ovAsset = ovAssetId ? planAssets.find((a) => String(a && a.id || '').trim() === ovAssetId) : null
+        const ovUri = String(ov?.imagePath || (ovAsset && (ovAsset.primaryReferenceAssetUri || ovAsset.latestRecommendedReferenceAssetUri)) || '').trim()
+          .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+          .replace(/^\/project-assets\/[^/]+\//, '')
+        if (!ovUri.startsWith('assets/') || !(await existsFile(path.join(dir, ovUri)))) continue
+        overlaySpecs.push({
+          imagePath: path.join(dir, ovUri),
+          ...(Number.isFinite(Number(ov?.count)) ? { count: Number(ov.count) } : {}),
+          ...(Number.isFinite(Number(ov?.brightness)) ? { brightness: Number(ov.brightness) } : {}),
+          ...(Number.isFinite(Number(ov?.alpha)) ? { alpha: Number(ov.alpha) } : {}),
+          ...(Number.isFinite(Number(ov?.blueShift)) ? { blueShift: Number(ov.blueShift) } : {}),
+          ...(Array.isArray(ov?.spots) ? { spots: ov.spots } : {})
+        })
+      }
+      const waterLevel = Math.max(0, Math.min(1, Number(body?.fill?.level ?? body?.waterLevel ?? 0) || 0))
+      const relOut = `assets/ai/characters/ch_fill_${Date.now()}.webp`
+      const outAbs = path.join(dir, relOut)
+      // 2026-09-30 修复：合成输出目录可能不存在（未跑过姿势链的项目无 assets/ai/characters/），
+      // PIL save 直接 FileNotFoundError（乌鸦喝水实测 fill_composite_exit_1）
+      await mkdir(path.dirname(outAbs), { recursive: true })
+      const pyArgs = JSON.stringify({
+        refPath: refAbs,
+        outPath: outAbs,
+        waterLevel,
+        overlays: overlaySpecs,
+        ...(body?.fill && typeof body.fill === 'object' ? {
+          ...(Number.isFinite(Number(body.fill.insetL)) ? { insetL: Number(body.fill.insetL) } : {}),
+          ...(Number.isFinite(Number(body.fill.insetR)) ? { insetR: Number(body.fill.insetR) } : {}),
+          ...(Number.isFinite(Number(body.fill.insetB)) ? { insetB: Number(body.fill.insetB) } : {}),
+          ...(Number.isFinite(Number(body.fill.neckRatio)) ? { neckRatio: Number(body.fill.neckRatio) } : {})
+        } : {})
+      })
+      await new Promise((resolve, reject) => {
+        const py = spawn('python3', [path.join(__dirname, 'ai', 'fillComposite.py'), pyArgs])
+        let stderr = ''
+        py.stderr.on('data', (d) => { stderr += String(d || '') })
+        py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`fill_composite_exit_${code}: ${stderr.slice(0, 300)}`))))
+        py.on('error', reject)
+      })
+      if (!(await existsFile(outAbs))) throw new Error('fill_composite_no_output')
+      // 出图即压：状态立绘走无损 WebP（PIL 已无损落盘，此处经管线统一校验/转换）
+      let finalPath = relOut
+      const opt = await optimizeGeneratedImage(outAbs, IMAGE_KIND.SPRITE_LOSSLESS).catch(() => null)
+      if (opt && opt.outPath && opt.outPath !== outAbs) finalPath = String(assetPathFromAbsolute(id, opt.outPath) || relOut)
+      cutoutPath = finalPath
+      compositeMeta = {
+        waterLevel,
+        overlayCount: overlaySpecs.reduce((n, o) => n + Number(o.count || 3), 0),
+        overlayFromAssetIds: overlaySpecs.length ? 'plan' : ''
+      }
+    } else if (strategy === 'transform') {
+      // 2026-10-04 确定性变换合成（微主体/简单状态专用，transformComposite.py）：
+      // 背景——微主体（蚂蚁级）在纯文本与 IPAdapter 三档下身份/姿势双失控（实测 33 张全废：
+      // 鼠耳/翅膀/瓢虫裙），姿势词从不生效；变换合成不重画像素，只对锁定立绘做 倾斜/翻转/压扁/跃起/速度线/汗滴
+      // 的确定性变换，身份像素级零漂移。无 GPU/无评审调用（评审对本类无意义：身份由构造保证）。
+      updateAiTask(task.taskId, { stage: 'state_transform', current: 0, message: `确定性变换状态图：${assetName}·${label}` })
+      const refUri = String(planAsset.primaryReferenceAssetUri || planAsset.latestRecommendedReferenceAssetUri || '').trim()
+        .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+        .replace(/^\/project-assets\/[^/]+\//, '')
+      if (!refUri.startsWith('assets/')) {
+        const err = new Error('该事物没有可用的锁定主参考图，无法变换合成')
+        err.code = 'reference_not_found'
+        throw err
+      }
+      const refAbs = path.join(dir, refUri)
+      if (!(await existsFile(refAbs))) {
+        const err = new Error(`主参考图文件不存在：${refUri}`)
+        err.code = 'reference_not_found'
+        throw err
+      }
+      const tr = body?.transform && typeof body.transform === 'object' ? body.transform : {}
+      const relOut = `assets/ai/characters/ch_tr_${Date.now()}.webp`
+      const outAbs = path.join(dir, relOut)
+      await mkdir(path.dirname(outAbs), { recursive: true })
+      const pyArgs = JSON.stringify({
+        refPath: refAbs,
+        outPath: outAbs,
+        ...(Number.isFinite(Number(tr.rotateDeg)) ? { rotateDeg: Number(tr.rotateDeg) } : {}),
+        ...(tr.flipH === true ? { flipH: true } : {}),
+        ...(Number.isFinite(Number(tr.squashY)) ? { squashY: Number(tr.squashY) } : {}),
+        ...(Number.isFinite(Number(tr.jumpRatio)) ? { jumpRatio: Number(tr.jumpRatio) } : {}),
+        ...(Number.isFinite(Number(tr.motionLines)) ? { motionLines: Number(tr.motionLines) } : {}),
+        ...(Number.isFinite(Number(tr.sweat)) ? { sweat: Number(tr.sweat) } : {})
+      })
+      await new Promise((resolve, reject) => {
+        const py = spawn('python3', [path.join(__dirname, 'ai', 'transformComposite.py'), pyArgs])
+        let stderr = ''
+        py.stderr.on('data', (d) => { stderr += String(d || '') })
+        py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`transform_composite_exit_${code}: ${stderr.slice(0, 300)}`))))
+        py.on('error', reject)
+      })
+      if (!(await existsFile(outAbs))) throw new Error('transform_composite_no_output')
+      let finalPath = relOut
+      const opt = await optimizeGeneratedImage(outAbs, IMAGE_KIND.SPRITE_LOSSLESS).catch(() => null)
+      if (opt && opt.outPath && opt.outPath !== outAbs) finalPath = String(assetPathFromAbsolute(id, opt.outPath) || relOut)
+      cutoutPath = finalPath
+      compositeMeta = {
+        transform: {
+          ...(Number.isFinite(Number(tr.rotateDeg)) ? { rotateDeg: Number(tr.rotateDeg) } : {}),
+          ...(tr.flipH === true ? { flipH: true } : {}),
+          ...(Number.isFinite(Number(tr.squashY)) ? { squashY: Number(tr.squashY) } : {}),
+          ...(Number.isFinite(Number(tr.jumpRatio)) ? { jumpRatio: Number(tr.jumpRatio) } : {}),
+          ...(Number.isFinite(Number(tr.motionLines)) ? { motionLines: Number(tr.motionLines) } : {}),
+          ...(Number.isFinite(Number(tr.sweat)) ? { sweat: Number(tr.sweat) } : {})
+        }
+      }
+    } else {
+      const spriteJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/sprite`, {
+        kind: 'prop',
+        planAssetId,
+        ipadapter: {
+          enabled: true,
+          ...(Number.isFinite(Number(body?.ipadapter?.weight)) ? { weight: Number(body.ipadapter.weight) } : {}),
+          ...(Number.isFinite(Number(body?.ipadapter?.startAt)) ? { startAt: Number(body.ipadapter.startAt) } : {}),
+          ...(Number.isFinite(Number(body?.ipadapter?.endAt)) ? { endAt: Number(body.ipadapter.endAt) } : {})
+        },
+        fingerprintPrompt: String(planAsset.anchorPrompt || '').trim(),
+        globalPrompt: 'cartoon fairy tale picture book style, flat 2D illustration, bold clean outlines, cel shading, warm soft color palette',
+        posePrompt: statePrompt,
+        negativePrompt: [String(body?.negativePrompt || '').trim(), String(planAsset.negativePrompt || '').trim()].filter(Boolean).join(', '),
+        style: 'picture_book',
+        width: 720,
+        height: 1280,
+        steps: 20,
+        cfgScale: 7
+      })
+      assetPath = String(spriteJson.assetPath || '').trim()
+      updateAiTask(task.taskId, { stage: 'state_cutout', current: 0, message: `状态抠图：${assetName}·${label}` })
+      const cutoutJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/cutout`, { assetPath })
+      cutoutPath = String(cutoutJson.assetPath || '').trim()
+    }
+
+    let score
+    let reason = ''
+    let reviewUnavailable = ''
+    if (strategy === 'transform') {
+      // 变换合成身份由构造保证（同一锁定立绘的像素级变换），AI 姿势评审对本类无意义，跳过
+      reason = 'deterministic_transform'
+    } else try {
+      updateAiTask(task.taskId, { stage: 'state_review', current: 0, message: `状态一致性评审：${assetName}·${label}` })
+      const reviewJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/pose-review`, { planAssetId, assetPath: cutoutPath })
+      if (Number.isFinite(Number(reviewJson.score))) score = Number(reviewJson.score)
+      reason = String(reviewJson.reason || '').trim()
+    } catch (e) {
+      reviewUnavailable = String((e && e.code) || 'review_unavailable')
+    }
+
+    // 产物登记：project.json assets 追加（读最新盘再写回）
+    const projectAssetId = genId('asset')
+    const proj = await readJson(path.join(dir, 'project.json'))
+    const nextProject = {
+      ...proj,
+      assets: [...(Array.isArray(proj?.assets) ? proj.assets : []), {
+        id: projectAssetId,
+        kind: 'image',
+        name: `AI 状态 ${assetName}·${label}`,
+        uri: cutoutPath,
+        source: strategy === 'fill_composite'
+          ? { type: 'composite', prompt: statePrompt, provider: 'deterministic', postprocess: 'ref_water_overlay' }
+          : strategy === 'transform'
+            ? { type: 'composite', prompt: statePrompt, provider: 'deterministic', postprocess: 'ref_transform' }
+            : { type: 'ai', prompt: statePrompt, provider: 'comfyui', postprocess: 'rmbg_alpha' }
+      }],
+      updatedAt: nowIso(),
+      _rev: Number(proj?._rev || 0) + 1
+    }
+    await writeJson(path.join(dir, 'project.json'), nextProject)
+
+    // 计划资产 stateVariants 追加（读最新 plan 再写回，mergeAssetsById 保并发安全）
+    const curPlan = await readStoryAssetPlanIfExists(id)
+    if (curPlan) {
+      const variant = {
+        id: genId('state'),
+        stateKey,
+        name: label,
+        prompt: statePrompt,
+        promptZh: String(body?.promptZh || description || customPrompt || '').trim(),
+        greenPath: assetPath,
+        cutoutPath,
+        projectAssetId,
+        projectAssetUri: cutoutPath,
+        ...(strategy === 'fill_composite' ? { composite: 'ref_water_overlay', compositeMeta } : {}),
+        ...(strategy === 'transform' ? { composite: 'ref_transform', compositeMeta } : {}),
+        ...(score !== undefined ? { score } : {}),
+        ...(reason ? { reason } : {}),
+        createdAt: nowIso()
+      }
+      const nextPlan = {
+        ...curPlan,
+        generatedAt: nowIso(),
+        assets: (Array.isArray(curPlan.assets) ? curPlan.assets : []).map((a) =>
+          String(a && a.id || '').trim() === planAssetId
+            ? { ...a, stateVariants: [...(Array.isArray(a.stateVariants) ? a.stateVariants : []), variant] }
+            : a
+        )
+      }
+      nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+      await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+    }
+
+    await traceLockConfirm({ resultImagePath: cutoutPath, prompt: statePrompt })
+    updateAiTask(task.taskId, {
+      stage: 'done',
+      done: true,
+      current: 1,
+      message: `状态变体完成：${assetName}·${label}${score !== undefined ? `（${score} 分）` : ''}`,
+      result: { planAssetId, stateKey, label, projectAssetId, ...(score !== undefined ? { score } : {}) }
+    })
+    return c.json({
+      success: true,
+      taskId: task.taskId,
+      planAssetId,
+      stateKey,
+      label,
+      projectAssetId,
+      cutoutPath,
+      ...(score !== undefined ? { score } : {}),
+      ...(reason ? { reason } : {}),
+      ...(reviewUnavailable ? { reviewUnavailable } : {})
+    })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    updateAiTask(task.taskId, { stage: 'error', done: true, current: 1, error: msg, message: `状态变体失败：${assetName}·${label}（${msg}）` })
+    return c.json({ success: false, error: String((e && e.code) || 'ai_failed'), message: msg, taskId: task.taskId }, 502)
+  }
+})
+
 // 重启恢复：扫描所有项目的 per-scene checkpoint，未完成批次从断点继续（已成功场景由成功保护跳过）
 async function resumeInterruptedSceneBatchesAfterRestart() {
   const interrupted = await findInterruptedSceneBatches(PROJECTS_DIR)
@@ -10125,24 +11437,40 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
     ? true
     : String(process.env.STUDIO_SPRITE_IPADAPTER || '').trim().toLowerCase() === 'on'
   let referenceImages = []
-  if (characterId && ipadapterOn) {
+  // 2026-09-16 道具泛化：body.planAssetId（道具状态变体）同样经 IPAdapter 锚定计划资产锁定主参考。
+  // 实测无图锚时道具文本锚点会被模型先验带跑（细颈圆腹瓶变红盖圆柱瓶、评分 0）。
+  const planAssetIdIn = String(body?.planAssetId || '').trim()
+  let ipaRel = ''
+  if (ipadapterOn && characterId) {
     try {
       const proj = await readJson(path.join(dir, 'project.json'))
       const ch = (proj && Array.isArray(proj.characters) ? proj.characters : []).find((x) => x && x.id === characterId) || null
       const refId = String((ch && ch.ai && ch.ai.referenceAssetId) || (ch && ch.imageAssetId) || '').trim()
       const asset = refId && proj && Array.isArray(proj.assets) ? proj.assets.find((a) => a && a.id === refId) || null : null
-      const uri = String((asset && asset.uri) || '').trim()
-      const rel = uri
-        .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
-        .replace(/^\/project-assets\/[^/]+\//, '')
+      ipaRel = String((asset && asset.uri) || '').trim()
+    } catch (_) {}
+  } else if (ipadapterOn && planAssetIdIn) {
+    try {
+      const planDoc = await readStoryAssetPlanIfExists(id)
+      const pa = (planDoc && Array.isArray(planDoc.assets) ? planDoc.assets : []).find((a) => String(a && a.id || '').trim() === planAssetIdIn) || null
+      ipaRel = String((pa && (pa.primaryReferenceAssetUri || pa.latestRecommendedReferenceAssetUri)) || '').trim()
+    } catch (_) {}
+  }
+  ipaRel = ipaRel
+    .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+    .replace(/^\/project-assets\/[^/]+\//, '')
+  if (ipaRel && ipadapterOn) {
+    try {
+      const rel = ipaRel
       if (rel.startsWith('assets/')) {
         // 2026-09-01 实测根因：锁定主参考是 RMBG 透明底 cutout，CLIP vision 对透明区的编码是脏的，
         // IPAdapter 身份锚定完全失效（候选变成人类女性、评分 5/100）。喂给 IPAdapter 前一律合成白底
         // （python3+PIL 本机可用；失败回退原图）。产物缓存为 <原名>_flatwhite.png，源文件较新才重算。
+        // 2026-09-16 修复：webp 透明 cutout 同样要合成白底（原仅 .png 生效，乌鸦主参考 webp 直通导致锚定失效生成人类少女）。
         let refAbs = path.join(dir, rel)
-        if (/\.png$/i.test(refAbs)) {
+        if (/\.(png|webp)$/i.test(refAbs)) {
           try {
-            const flatAbs = refAbs.replace(/\.png$/i, '') + '_flatwhite.png'
+            const flatAbs = refAbs.replace(/\.(png|webp)$/i, '') + '_flatwhite.png'
             const s0 = await stat(refAbs)
             const s1 = await stat(flatAbs).catch(() => null)
             if (!(s1 && s1.mtimeMs >= s0.mtimeMs)) {
@@ -10166,7 +11494,7 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
         const endAt = ipaBody && Number.isFinite(Number(ipaBody.endAt)) ? Number(ipaBody.endAt) : Number(process.env.STUDIO_SPRITE_IPADAPTER_END_AT || 0.9)
         referenceImages = [{
           bytes,
-          filename: `${characterId}_reference.png`,
+          filename: `${characterId || planAssetIdIn || 'ref'}_reference.png`,
           characterId,
           weight: Number.isFinite(w) ? w : 0.7,
           startAt: Number.isFinite(startAt) ? startAt : 0.25,
@@ -10175,7 +11503,7 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
       }
     } catch (e) {
       try {
-        console.log(`[gamestudio] ch.sprite:ipadapter_ref_fail project=${id} ch=${characterId} err=${e && e.message ? e.message : e}`)
+        console.log(`[gamestudio] ch.sprite:ipadapter_ref_fail project=${id} ch=${characterId || planAssetIdIn} err=${e && e.message ? e.message : e}`)
       } catch (_) {}
     }
   }
@@ -10210,16 +11538,39 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
     } catch (_) { /* 翻译失败保留原文，不阻断生成 */ }
   }
 
+  // 2026-09-16 修复：身份指纹为中文时同样先翻译成英文。
+  // 实测根因（乌鸦喝水 2026-09-16）：plan 锚定词是中文「一只普通的黑色乌鸦…」，
+  // 生图模型读不懂中文 → 身份锚点失效，姿势候选直接漂移成人类少女。
+  let fingerprintUse = fingerprintPrompt
+  if (/[一-鿿]/.test(fingerprintUse)) {
+    try {
+      const { result: tr } = await translatePromptText({
+        provider: studio.effective.prompt.provider,
+        model: studio.effective.prompt.model || undefined,
+        apiUrl: studio.effective.prompt.apiUrl || undefined,
+        proxyUrl: studio.effective.network.proxyUrl || undefined,
+        timeoutMs: 60_000,
+        text: fingerprintUse,
+        sourceLang: 'zh',
+        targetLang: 'en',
+        mode: 'prompt'
+      })
+      const t = String(tr && tr.translatedText || '').trim()
+      if (t) fingerprintUse = t
+    } catch (_) { /* 翻译失败保留原文，不阻断生成 */ }
+  }
+
   // 2026-09-01 去人类化 + 动物主语包裹（拟人动物角色专用）。
   // 实测根因：指纹/动作里的 "eldest brother" 等人类称谓 + 缺主语的动作句（"pointing at the haystack"），
   // 会把组合构图拉向人类（生成人类少年+宠物猪）。称谓替换为动物角色，动作句补上动物主语。
-  const speciesHit = String(fingerprintPrompt || '').match(/pig|wolf|cat|dog|rabbit|fox|bear|duck|chicken|goat|mouse|lion|tiger|panda|monkey/i)
+  // 2026-09-16：物种词表补鸟类（crow/raven/bird 等）——原词表无 crow，乌鸦喝水项目主语只剩 "the character"。
+  const speciesHit = String(fingerprintUse || '').match(/pig|wolf|cat|dog|rabbit|fox|bear|duck|chicken|goat|mouse|lion|tiger|panda|monkey|crow|raven|bird|sparrow|owl|eagle|goose|parrot|penguin|swan|crane/i)
   const species = speciesHit ? speciesHit[0].toLowerCase() : ''
   const dehumanize = (s) =>
     String(s || '')
       .replace(/eldest\s+brother|oldest\s+brother|second\s+brother|third\s+brother|big\s+brother|little\s+brother|younger\s+brother/gi, species || 'character')
       .replace(/\b(brother|sister|boy|girl|man|woman|kid|child|children)\b/gi, species ? `${species} character` : 'character')
-  const fpUse = isPropSprite ? fingerprintPrompt : dehumanize(fingerprintPrompt)
+  const fpUse = isPropSprite ? fingerprintUse : dehumanize(fingerprintUse)
   if (poseUse && !isPropSprite) {
     poseUse = dehumanize(poseUse)
     // 2026-09-01 动作强调：去掉 "pig:" 标签头，动作句加 (…:1.25) 权重（ComfyUI 支持权重语法）。
@@ -10227,7 +11578,38 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
     poseUse = poseUse.replace(/^[^:：]{1,40}[:：]\s*/, '').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim()
     if (poseUse) {
       const subject = species ? `the ${species} character` : 'the character'
-      poseUse = `${subject} (${poseUse}:1.25)`
+      // 2026-09-16 物种解剖锚点：动作句内补物种解剖词，防止无鸟类词的动作（盘旋/撞击等）被动漫模型先验拽成人类少女
+      // （实测乌鸦「原地盘旋」出人类女孩、评审 0 分；带 wings 的动作句则稳定出鸟）。
+      const SPECIES_ANATOMY = {
+        crow: 'crow wings, black beak, feathered body, bird claws',
+        raven: 'raven wings, black beak, feathered body, bird claws',
+        bird: 'bird wings, beak, feathered body, bird claws',
+        sparrow: 'sparrow wings, small beak, feathered body',
+        owl: 'owl wings, hooked beak, feathered body, owl eyes',
+        eagle: 'eagle wings, hooked beak, feathered body, talons',
+        goose: 'goose wings, flat beak, feathered body',
+        duck: 'duck wings, flat beak, feathered body, webbed feet',
+        chicken: 'chicken wings, small beak, feathered body, comb',
+        parrot: 'parrot wings, curved beak, colorful feathers',
+        penguin: 'penguin flippers, beak, feathered body',
+        swan: 'swan wings, long neck, feathered body',
+        crane: 'crane wings, long legs, long beak, feathered body',
+        pig: 'pig snout, pig ears, hooves, curly tail',
+        wolf: 'wolf snout, wolf ears, fur, tail',
+        cat: 'cat ears, cat tail, fur, whiskers',
+        dog: 'dog ears, dog snout, fur, tail',
+        rabbit: 'long rabbit ears, rabbit tail, fur',
+        fox: 'fox ears, fox snout, bushy tail, fur',
+        bear: 'bear ears, bear snout, fur, paws',
+        mouse: 'mouse ears, long tail, fur',
+        lion: 'lion mane, lion tail, fur, paws',
+        tiger: 'tiger stripes, tiger tail, fur, paws',
+        panda: 'panda ears, black-and-white fur, round body',
+        monkey: 'monkey tail, fur, monkey face',
+        goat: 'goat horns, goat beard, hooves, fur'
+      }
+      const anatomy = species ? (SPECIES_ANATOMY[species] || `${species} anatomy, species-correct body`) : ''
+      poseUse = `${subject} (${[poseUse, anatomy].filter(Boolean).join(', ')}:1.25)`
     }
   }
 
@@ -10393,8 +11775,9 @@ app.post('/api/projects/:id/ai/character/pose-review', async (c) => {
 
   const body = await c.req.json().catch(() => ({}))
   const characterId = String(body?.characterId || '').trim()
+  const planAssetId = String(body?.planAssetId || '').trim()
   const relIn = String(body?.assetPath || '').trim().replace(/^\/+/, '')
-  if (!characterId) return c.json({ success: false, error: 'missing_characterId', message: 'characterId 不能为空' }, 400)
+  if (!characterId && !planAssetId) return c.json({ success: false, error: 'missing_characterId', message: 'characterId/planAssetId 至少提供一个' }, 400)
   if (!relIn || !relIn.startsWith('assets/')) {
     return c.json({ success: false, error: 'missing_assetPath', message: 'assetPath 必须是项目内 assets/ 相对路径' }, 400)
   }
@@ -10402,34 +11785,52 @@ app.post('/api/projects/:id/ai/character/pose-review', async (c) => {
   if (!candAbs.startsWith(dir)) return c.json({ success: false, error: 'invalid_path', message: 'assetPath 越界' }, 400)
   if (!(await existsFile(candAbs))) return c.json({ success: false, error: 'file_not_found', message: '候选图不存在' }, 404)
 
-  // 解析角色锁定主参考（与 ch.sprite 同款逻辑：characterId → ch.ai.referenceAssetId，回退 imageAssetId → uri 转项目内路径）
+  // 解析锁定主参考（与 ch.sprite 同款逻辑：characterId → ch.ai.referenceAssetId，回退 imageAssetId → uri 转项目内路径）
+  // 2026-09-16 道具泛化：planAssetId → 计划资产 primaryReferenceAssetUri（回退 latestRecommended），供道具状态变体评审复用同一链路。
   let refBytes = null
   let refAbsPath = null
   let characterName = ''
   try {
-    const proj = await readJson(path.join(dir, 'project.json'))
-    const ch = (proj && Array.isArray(proj.characters) ? proj.characters : []).find((x) => x && x.id === characterId) || null
-    characterName = String((ch && ch.name) || '').trim()
-    const refId = String((ch && ch.ai && ch.ai.referenceAssetId) || (ch && ch.imageAssetId) || '').trim()
-    const asset = refId && proj && Array.isArray(proj.assets) ? proj.assets.find((a) => a && a.id === refId) || null : null
-    const uri = String((asset && asset.uri) || '').trim()
-    const rel = uri
-      .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
-      .replace(/^\/project-assets\/[^/]+\//, '')
-    if (rel.startsWith('assets/')) {
-      const refAbs = path.join(dir, rel)
-      if (refAbs.startsWith(dir) && (await existsFile(refAbs))) {
-        refBytes = await readFile(refAbs)
-        refAbsPath = refAbs
+    if (planAssetId) {
+      const plan = await readStoryAssetPlanIfExists(id)
+      const pa = (plan && Array.isArray(plan.assets) ? plan.assets : []).find((a) => String(a && a.id || '').trim() === planAssetId) || null
+      characterName = String((pa && pa.name) || planAssetId).trim()
+      const uri = String((pa && (pa.primaryReferenceAssetUri || pa.latestRecommendedReferenceAssetUri)) || '').trim()
+      const rel = uri
+        .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+        .replace(/^\/project-assets\/[^/]+\//, '')
+      if (rel.startsWith('assets/')) {
+        const refAbs = path.join(dir, rel)
+        if (refAbs.startsWith(dir) && (await existsFile(refAbs))) {
+          refBytes = await readFile(refAbs)
+          refAbsPath = refAbs
+        }
+      }
+    } else {
+      const proj = await readJson(path.join(dir, 'project.json'))
+      const ch = (proj && Array.isArray(proj.characters) ? proj.characters : []).find((x) => x && x.id === characterId) || null
+      characterName = String((ch && ch.name) || '').trim()
+      const refId = String((ch && ch.ai && ch.ai.referenceAssetId) || (ch && ch.imageAssetId) || '').trim()
+      const asset = refId && proj && Array.isArray(proj.assets) ? proj.assets.find((a) => a && a.id === refId) || null : null
+      const uri = String((asset && asset.uri) || '').trim()
+      const rel = uri
+        .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+        .replace(/^\/project-assets\/[^/]+\//, '')
+      if (rel.startsWith('assets/')) {
+        const refAbs = path.join(dir, rel)
+        if (refAbs.startsWith(dir) && (await existsFile(refAbs))) {
+          refBytes = await readFile(refAbs)
+          refAbsPath = refAbs
+        }
       }
     }
   } catch (e) {
     try {
-      console.log(`[gamestudio] ch.pose_review:ref_fail project=${id} ch=${characterId} err=${e && e.message ? e.message : e}`)
+      console.log(`[gamestudio] ch.pose_review:ref_fail project=${id} ch=${characterId || planAssetId} err=${e && e.message ? e.message : e}`)
     } catch (_) {}
   }
   if (!refBytes) {
-    return c.json({ success: false, error: 'reference_not_found', message: '该角色没有可用的锁定主参考图，无法评分' }, 400)
+    return c.json({ success: false, error: 'reference_not_found', message: '该角色/事物没有可用的锁定主参考图，无法评分' }, 400)
   }
 
   const apiKey = String(process.env.MOONSHOT_API_KEY || '').trim()
@@ -10726,7 +12127,21 @@ app.post('/api/projects/:id/ai/character/reference', async (c) => {
   }
 })
 
-app.get('/', (c) => c.text('gamestudio_server'))
+// 2026-10-05 编辑器生产构建托管：apps/editor/dist 由本服务直接伺服（入口 / 与 /assets/*）。
+// 以后编辑器改动 = 构建 + 本服务重启；前端 buildId 探针发现变化即自动刷新——
+// 日常不再需要 Vite dev 服务器，也不再有"改了界面浏览器不更新"的缓存纠缠。
+const EDITOR_DIST = path.resolve(__dirname, '..', '..', 'editor', 'dist')
+const editorDistReady = existsSync(path.join(EDITOR_DIST, 'index.html'))
+if (editorDistReady) {
+  app.use('/assets/*', serveStatic({ root: EDITOR_DIST }))
+  app.get('/', async (c) => {
+    const html = await readFile(path.join(EDITOR_DIST, 'index.html'), 'utf-8').catch(() => null)
+    if (!html) return c.text('gamestudio_server')
+    return c.html(html)
+  })
+} else {
+  app.get('/', (c) => c.text('gamestudio_server'))
+}
 
 export default app
 

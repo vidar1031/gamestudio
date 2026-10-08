@@ -4,6 +4,7 @@ import {
   analyzeProjectScripts,
   createProjectWithAiDetailed,
   deleteProject,
+  confirmProjectDraft,
   fixScriptsWithAi,
   generateStoryPromptTemplateWithAi,
   saveStoryPromptTemplate,
@@ -33,6 +34,36 @@ import {
 const AI_PROMPT_KEY = 'gamestudio.ai.prompt'
 const AI_TITLE_KEY = 'gamestudio.ai.title'
 const AI_CHOICE_POINTS_KEY = 'gamestudio.ai.choicePoints'
+// 2026-10-05 最近草稿历史：AI 生成成功后记录 projectId，弹窗重开可载入继续生成或打开项目，
+// 防止意外/主动放弃后找不到上次的生成入口（此前 aiResult 仅存于组件态，关弹窗即丢）。
+const AI_DRAFT_HISTORY_KEY = 'gamestudio.ai.draftHistory'
+const AI_DRAFT_HISTORY_MAX = 8
+type AiDraftHistoryItem = {
+  projectId: string
+  title: string
+  choicePoints: number
+  optionsPerChoice: number
+  createdAt: string
+  // 2026-10-05 生成结果快照：退出/关闭后可从草稿箱直接回到"脚本预览/结构分析"界面，
+  // 不必重新生成。毕业（进入创建）后保留无妨，记录上限 8 条、单条约几十 KB。
+  result?: any
+}
+function readAiDraftHistory(): AiDraftHistoryItem[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(AI_DRAFT_HISTORY_KEY) || '[]')
+    return Array.isArray(raw) ? raw.filter((x) => x && x.projectId) : []
+  } catch {
+    return []
+  }
+}
+function recordAiDraftHistory(item: AiDraftHistoryItem) {
+  const list = readAiDraftHistory().filter((x) => x.projectId !== item.projectId)
+  list.unshift(item)
+  try { localStorage.setItem(AI_DRAFT_HISTORY_KEY, JSON.stringify(list.slice(0, AI_DRAFT_HISTORY_MAX))) } catch { /* ignore */ }
+}
+function removeAiDraftHistory(projectId: string) {
+  try { localStorage.setItem(AI_DRAFT_HISTORY_KEY, JSON.stringify(readAiDraftHistory().filter((x) => x.projectId !== projectId))) } catch { /* ignore */ }
+}
 const AI_OPTIONS_PER_CHOICE_KEY = 'gamestudio.ai.optionsPerChoice'
 const AI_ENDINGS_KEY = 'gamestudio.ai.endings'
 
@@ -173,6 +204,10 @@ export default function Hub(props: Props) {
   const [aiOptionsPerChoice, setAiOptionsPerChoice] = useState(draft.optionsPerChoice)
   const [aiEndings, setAiEndings] = useState(draft.endings)
   const [aiResult, setAiResult] = useState<AiCreateResult | null>(null)
+  const [aiDraftHistory, setAiDraftHistory] = useState<AiDraftHistoryItem[]>([])
+  const [draftsBoxOpen, setDraftsBoxOpen] = useState(false)
+  const [resumeDraftId, setResumeDraftId] = useState('')
+  const [resumeNote, setResumeNote] = useState('')
   const [aiTab, setAiTab] = useState<'preview' | 'analysis'>('preview')
   const [analysis, setAnalysis] = useState<AiScriptAnalysis | null>(null)
   const [analysisBusy, setAnalysisBusy] = useState(false)
@@ -230,6 +265,23 @@ export default function Hub(props: Props) {
 
   useEffect(() => () => stopAiTimer(), [])
 
+  // 草稿历史在 Hub 挂载时即加载（草稿箱卡片常显，不能依赖打开创建弹窗才加载）
+  useEffect(() => {
+    setAiDraftHistory(readAiDraftHistory())
+  }, [])
+
+  // 2026-10-05 死条目自动清理：项目列表加载后，草稿历史里 projectId 已不存在的条目直接 prune
+  // （覆盖"项目被外部删除/换库"等草稿箱与列表脱耦的情况）
+  useEffect(() => {
+    if (!projects.length) return
+    const alive = new Set(projects.map((p) => p.id))
+    const pruned = readAiDraftHistory().filter((x) => alive.has(x.projectId))
+    if (pruned.length !== readAiDraftHistory().length) {
+      try { localStorage.setItem(AI_DRAFT_HISTORY_KEY, JSON.stringify(pruned)) } catch { /* ignore */ }
+      setAiDraftHistory(pruned)
+    }
+  }, [projects])
+
   useEffect(() => {
     return () => {
       if (inlineConfirmResolverRef.current) {
@@ -263,6 +315,9 @@ export default function Hub(props: Props) {
   function openAiCreateStoryModal() {
     setAiModalOpen(true)
     setError('')
+    setAiDraftHistory(readAiDraftHistory())
+    setResumeDraftId('')
+    setResumeNote('')
     const d = loadAiDraft()
     setAiPrompt(d.prompt)
     setAiTitle(d.title)
@@ -429,7 +484,7 @@ export default function Hub(props: Props) {
     }
 
     const normalizedTitle = normalizeStoryTitle(title)
-    const sameTitleProjects = projects.filter((p) => normalizeStoryTitle(String(p.title || '')) === normalizedTitle)
+    const sameTitleProjects = resumeDraftId ? [] : projects.filter((p) => normalizeStoryTitle(String(p.title || '')) === normalizedTitle)
     if (sameTitleProjects.length) {
       const ok = await askInlineConfirm({
         title: '替换同名草稿',
@@ -446,6 +501,39 @@ export default function Hub(props: Props) {
     startAiTimer()
     setError('')
     try {
+      // 2026-10-05 载入续作模式：对历史草稿覆盖重新生成（结构不变，入口可找回）
+      if (resumeDraftId) {
+        const res2 = await regenerateProjectScriptsWithAiDetailed(resumeDraftId, prompt, title, {
+          choicePoints: aiChoicePoints,
+          optionsPerChoice: aiOptionsPerChoice,
+          endings: aiEndings
+        })
+        setAiResult(res2)
+        setAiTab('preview')
+        setAnalysis(null)
+        setPromptReview(null)
+        setPromptReviewError('')
+        setBlueprintReview(null)
+        setBlueprintReviewMeta(null)
+        setSelfCheckError('')
+        setSelfFixNote('')
+        setRulesText('')
+        setRulesError('')
+        recordAiDraftHistory({
+          projectId: resumeDraftId,
+          title,
+          choicePoints: aiChoicePoints,
+          optionsPerChoice: aiOptionsPerChoice,
+          createdAt: new Date().toISOString(),
+          result: res2
+        })
+        setAiDraftHistory(readAiDraftHistory())
+        setResumeDraftId('')
+        setResumeNote('')
+        await refresh()
+        setSelectedId(res2?.project?.id || resumeDraftId)
+        return
+      }
       const res = await createProjectWithAiDetailed(prompt, title, {
         choicePoints: aiChoicePoints,
         optionsPerChoice: aiOptionsPerChoice,
@@ -462,15 +550,30 @@ export default function Hub(props: Props) {
       setSelfFixNote('')
       setRulesText('')
       setRulesError('')
+      // 2026-10-05 记录草稿历史：重开弹窗/刷新后可找回上次生成入口；附带生成结果快照，可回到预览/结构分析界面
+      if (res?.project?.id) {
+        recordAiDraftHistory({
+          projectId: res.project.id,
+          title,
+          choicePoints: aiChoicePoints,
+          optionsPerChoice: aiOptionsPerChoice,
+          createdAt: new Date().toISOString(),
+          result: res
+        })
+        setAiDraftHistory(readAiDraftHistory())
+      }
       if (sameTitleProjects.length) {
         await Promise.all(
           sameTitleProjects
             .filter((item) => item.id !== res.project?.id)
             .map(async (item) => {
               await deleteProject(item.id).catch(() => null)
+              // 同名旧稿被替换：同步清草稿历史，避免死条目
+              removeAiDraftHistory(item.id)
               if (selectedId === item.id) setSelectedId('')
             })
         )
+        setAiDraftHistory(readAiDraftHistory())
       }
       await refresh()
       if (res?.project?.id) setSelectedId(res.project.id)
@@ -669,6 +772,122 @@ export default function Hub(props: Props) {
     persistAiDraft(String(item.title || aiTitle || ''), nextPrompt, cp, op, en)
   }
 
+  // 2026-10-05 载入历史草稿到表单：可覆盖重新生成（resumeDraftId 模式），防止放弃后找不到入口。
+  // opts.openModal：从草稿箱调用时，填完表单后自动打开创建弹窗。
+  async function loadAiDraftIntoForm(item: AiDraftHistoryItem, opts?: { openModal?: boolean }) {
+    setError('')
+    setBusy(true)
+    try {
+      let prompt = ''
+      try {
+        const scriptsData = await getScripts(item.projectId)
+        const cards = Array.isArray((scriptsData as any)?.cards) ? (scriptsData as any).cards : []
+        prompt = cards.map((c: any) => String(c?.text || '').trim()).filter(Boolean).join('\n')
+      } catch (_) { /* getScripts 不可用时回退 story 节点 */ }
+      if (!prompt) {
+        const data = await getProject(item.projectId)
+        prompt = ((data?.story?.nodes || []) as any[])
+          .map((n) => String(n?.body?.text || '').trim())
+          .filter(Boolean)
+          .join('\n')
+      }
+      setAiTitle(item.title)
+      setAiPrompt(prompt)
+      setAiChoicePoints(item.choicePoints)
+      setAiOptionsPerChoice(item.optionsPerChoice)
+      setAiEndings(item.optionsPerChoice)
+      persistAiDraft(item.title, prompt, item.choicePoints, item.optionsPerChoice, item.optionsPerChoice)
+      setResumeDraftId(item.projectId)
+      setResumeNote(`已载入草稿「${item.title}」：点击"生成"将覆盖该草稿按当前公式重新生成；点"打开项目"可直接继续编辑。`)
+      if (opts?.openModal) {
+        setAiResult(null)
+        setAiTab('preview')
+        setAiModalOpen(true)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // 从草稿箱直接回到"生成结果"界面（脚本预览/结构分析/自检），不重新生成
+  function openDraftResult(item: AiDraftHistoryItem) {
+    if (!item.result) return
+    setAiTitle(item.title)
+    setAiChoicePoints(item.choicePoints)
+    setAiOptionsPerChoice(item.optionsPerChoice)
+    setAiEndings(item.optionsPerChoice)
+    setAiResult(item.result)
+    setAiTab('preview')
+    setAnalysis(null)
+    setPromptReview(null)
+    setPromptReviewError('')
+    setBlueprintReview(null)
+    setBlueprintReviewMeta(null)
+    setSelfCheckError('')
+    setSelfFixNote('')
+    setResumeDraftId(item.projectId)
+    setResumeNote(`已恢复草稿「${item.title}」的生成结果：可查看脚本预览/结构分析，或点"进入创建"确认毕业。`)
+    setDraftsBoxOpen(false)
+    setAiModalOpen(true)
+  }
+
+  // 草稿行渲染：创建弹窗与主界面草稿箱共用（opts.openModal 区分来源）
+  function renderAiDraftRows(opts?: { openModal?: boolean }) {
+    return (
+      <div style={{ display: 'grid', gap: 6 }}>
+        {aiDraftHistory.map((item) => {
+          const alive = projects.some((p) => p.id === item.projectId)
+          return (
+            <div key={item.projectId} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ color: alive ? '#e5e7eb' : '#94a3b8', fontSize: 13, minWidth: 0, flex: 1 }}>
+                {item.title || '（未命名）'}
+                <span className="hint" style={{ marginLeft: 8 }}>
+                  {item.choicePoints}选点/{item.optionsPerChoice}选 · {String(item.createdAt || '').slice(5, 16).replace('T', ' ')}
+                  {alive ? '' : ' · 项目已删除'}
+                </span>
+              </span>
+              {alive ? (
+                <>
+                  {item.result ? (
+                    <button className="btn secondary" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={() => openDraftResult(item)}>
+                      查看生成结果
+                    </button>
+                  ) : null}
+                  <button className="btn secondary" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={() => { if (opts?.openModal) setDraftsBoxOpen(false); void loadAiDraftIntoForm(item, opts) }}>
+                    载入继续生成
+                  </button>
+                  <button
+                    className="btn secondary"
+                    style={{ padding: '4px 10px', fontSize: 12 }}
+                    disabled={busy}
+                    onClick={() => {
+                      // 打开项目 = 用户确认草稿毕业：之后出现在工作台项目列表，同时从草稿箱毕业
+                      void confirmProjectDraft(item.projectId)
+                        .catch(() => null)
+                        .then(() => { removeAiDraftHistory(item.projectId); setAiDraftHistory(readAiDraftHistory()) })
+                        .finally(() => { void refresh() })
+                      setAiModalOpen(false)
+                      setDraftsBoxOpen(false)
+                      setAiResult(null)
+                      props.onOpenProject(item.projectId, 'script')
+                    }}
+                  >
+                    打开项目
+                  </button>
+                </>
+              ) : null}
+              <button className="btn secondary" style={{ padding: '4px 10px', fontSize: 12 }} disabled={busy} onClick={() => { removeAiDraftHistory(item.projectId); setAiDraftHistory(readAiDraftHistory()) }}>
+                移除
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
   async function regenerateAiOverwrite() {
     if (aiRequestLockRef.current) {
       setError('已有生成请求进行中，请等待当前请求返回后再试。')
@@ -721,6 +940,17 @@ export default function Hub(props: Props) {
       setSelfFixNote('')
       setRulesText('')
       setRulesError('')
+      if (res?.project?.id) {
+        recordAiDraftHistory({
+          projectId: res.project.id,
+          title,
+          choicePoints: aiChoicePoints,
+          optionsPerChoice: aiOptionsPerChoice,
+          createdAt: new Date().toISOString(),
+          result: res
+        })
+        setAiDraftHistory(readAiDraftHistory())
+      }
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -862,6 +1092,9 @@ export default function Hub(props: Props) {
     setError('')
     try {
       await deleteProject(id)
+      // 2026-10-05 删除项目同步清理草稿历史：否则草稿箱留下死条目，且"从列表删了草稿就打不开"的耦合 BUG
+      removeAiDraftHistory(id)
+      setAiDraftHistory(readAiDraftHistory())
       if (selectedId === id) setSelectedId('')
       await refresh()
     } catch (e) {
@@ -972,10 +1205,28 @@ export default function Hub(props: Props) {
                   <div className="hub-card-title">＋ 新建互动故事</div>
                   <div className="hub-card-sub">一句话创意，AI 生成脚本层草稿，生成后进入蓝图结构审阅</div>
                 </div>
+                <div
+                  className="hub-card"
+                  role="button"
+                  tabIndex={0}
+                  style={{ opacity: busy ? 0.7 : 1, borderColor: 'rgba(94,204,255,0.45)' }}
+                  onClick={() => {
+                    if (busy) return
+                    setAiDraftHistory(readAiDraftHistory())
+                    setDraftsBoxOpen(true)
+                  }}
+                >
+                  <div className="hub-card-title">🗂 草稿箱（{aiDraftHistory.length}）</div>
+                  <div className="hub-card-sub">
+                    {aiDraftHistory.length
+                      ? `最近：${aiDraftHistory[0]?.title || '（未命名）'} · 生成到一半的故事都在这里，可载入继续生成或直接打开`
+                      : '暂无草稿：AI 生成中途放弃或待确认的故事会收进这里，不会丢失'}
+                  </div>
+                </div>
               </div>
 
               <div className="hub-gallery">
-                {summaries.map((s) => (
+                {summaries.filter((s) => (s as any).aiDraftStatus !== 'pending').map((s) => (
                   <div
                     key={s.id}
                     className="hub-project-card"
@@ -1066,6 +1317,27 @@ export default function Hub(props: Props) {
           </div>
         </div>
       </div>
+
+      {draftsBoxOpen ? (
+        <div className="ai-modal" role="dialog" aria-modal="true" aria-label="草稿箱">
+          <div className="ai-modal-card" style={{ width: 'min(760px, calc(100vw - 32px))', maxHeight: 'calc(100vh - 24px)' }}>
+            <div className="ai-modal-title">草稿箱（{aiDraftHistory.length}）</div>
+            <div className="hint" style={{ marginBottom: 10 }}>
+              AI 生成中途放弃或待确认的故事都收在这里：载入继续生成（覆盖重出）或打开项目（确认毕业进项目列表）。
+            </div>
+            {aiDraftHistory.length ? (
+              renderAiDraftRows({ openModal: true })
+            ) : (
+              <div className="hint">暂无草稿。生成后未确认的故事会自动收进草稿箱。</div>
+            )}
+            <div className="ai-modal-actions">
+              <button className="btn secondary" onClick={() => setDraftsBoxOpen(false)} disabled={busy}>
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {aiModalOpen ? (
         <div className="ai-modal" role="dialog" aria-modal="true" aria-label="AI 生成新故事">
@@ -1388,7 +1660,7 @@ export default function Hub(props: Props) {
                     {selfCheckBusy
                       ? '正在执行结构分析 + AI 自检，请先确认结果。'
                       : selfCheckNeedsAttention
-                        ? '发现需要确认或修改的风险。当前草稿已保留，建议先看“结构分析”，再决定继续 AI 修复或进入脚本人工修改。'
+                        ? '发现需要确认或修改的风险。当前草稿已保留，建议先看“结构分析”，再决定继续 AI 修复或进入创建。'
                         : blueprintReviewIsFallback
                           ? '结构分析已通过。AI 自检本轮暂不可用，但不影响继续进入后续处理。'
                           : '本轮自检未发现明显风险。你仍可查看分析结果后再进入脚本。'}
@@ -1519,6 +1791,19 @@ export default function Hub(props: Props) {
               </div>
             ) : null}
 
+            {!aiResult && aiDraftHistory.length ? (
+              <div style={{ margin: '4px 0 12px', padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.6)' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#e5e7eb', marginBottom: 8 }}>
+                  最近草稿（可找回上次生成，继续编辑或覆盖重新生成）
+                </div>
+                {renderAiDraftRows()}
+              </div>
+            ) : null}
+
+            {!aiResult && resumeNote ? (
+              <div className="hint" style={{ marginBottom: 8, color: '#93c5fd' }}>{resumeNote}</div>
+            ) : null}
+
             <div className="ai-modal-actions">
               <button
                 className="btn secondary"
@@ -1543,6 +1828,8 @@ export default function Hub(props: Props) {
                   onClick={() => {
                     setAiPrompt('')
                     setAiResult(null)
+                    setResumeDraftId('')
+                    setResumeNote('')
                     setBlueprintReview(null)
                     setBlueprintReviewMeta(null)
                     setSelfCheckError('')
@@ -1560,7 +1847,7 @@ export default function Hub(props: Props) {
               ) : null}
               {!aiResult ? (
                 <button className="btn" onClick={() => void createNewWithAi()} disabled={busy}>
-                  {busy ? '生成中…' : '生成'}
+                  {busy ? '生成中…' : resumeDraftId ? '覆盖生成（该草稿）' : '生成'}
                 </button>
               ) : (
                 <>
@@ -1581,10 +1868,17 @@ export default function Hub(props: Props) {
                       setBlueprintReviewMeta(null)
                       setSelfCheckError('')
                       setSelfFixNote('')
-                      if (id) props.onOpenProject(id, 'script')
+                      if (id) {
+                        // 进入创建 = 确认草稿毕业：项目卡片从此出现在工作台列表，同时从草稿箱毕业（消除双入口）
+                        void confirmProjectDraft(id)
+                          .catch(() => null)
+                          .then(() => { removeAiDraftHistory(id); setAiDraftHistory(readAiDraftHistory()) })
+                          .finally(() => { void refresh() })
+                        props.onOpenProject(id, 'script')
+                      }
                     }}
                   >
-                    进入脚本人工修改
+                    进入创建
                   </button>
                 </>
               )}

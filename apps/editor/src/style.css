@@ -523,6 +523,70 @@ code {
   padding: 14px;
 }
 
+/* 2026-10-04 用户指令：去背景化——字幕直接显示在画面上，无暗幕、无 backdrop-filter（该滤镜会导致文字发灰） */
+
+.dialog-card.subtitle {
+  width: min(820px, 92%);
+  margin: 0 auto 10px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+  padding: 0 8px;
+  text-align: center;
+}
+
+.dialog-card.subtitle .dialog-meta {
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.dialog-card.subtitle .dialog-node {
+  font-size: 13px;
+  opacity: 0.85;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.dialog-card.subtitle .dialog-wait {
+  font-size: 11px;
+  opacity: 0.7;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.dialog-card.subtitle .dialog-text {
+  border: none;
+  background: transparent !important;
+  padding: 0;
+  text-align: center;
+  font-size: 24px;
+  line-height: 1.6;
+  max-height: 30vh;
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85), 0 0 5px rgba(0, 0, 0, 0.55);
+}
+
+.dialog-card.subtitle .dialog-choices {
+  justify-content: flex-end;
+}
+
+.dialog-card.subtitle .dialog-actions {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  margin-top: 0;
+}
+
+.dialog-card.subtitle .choice-btn {
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(2, 6, 23, 0.58);
+  padding: 8px 16px;
+  font-size: 15px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
 .dialog-meta {
   display: flex;
   justify-content: space-between;
@@ -551,16 +615,26 @@ code {
 }
 
 .dialog-text {
-  font-size: 18px;
-  line-height: 1.65;
+  /* 2026-09-30 编辑器预览可读性：stage-ui 缩放 ~0.55，19px 实渲染仅 ~10px 会糊成灰，
+     预览字号提到 24px（导出播放器按真尺寸仍 19px）；纯白 + 轻量黑影 */
+  font-size: 24px;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  border-radius: 14px;
-  padding: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(2, 6, 23, 0.35);
-  max-height: min(42vh, 360px);
+  max-height: 30vh;
   overflow: auto;
+  color: #fff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85), 0 0 5px rgba(0, 0, 0, 0.55);
+}
+
+/* 2026-09-30 继续按钮全局右下侧（相对舞台区定位；transform 的 stage-ui 天然成为定位上下文） */
+.stage-ui .dialog-actions,
+.compose-overlay .dialog-actions {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  margin-top: 0;
+  z-index: 5;
 }
 
 .dialog-text {
@@ -4117,6 +4191,63 @@ code {
 .story-lock-plan-row .hint {
   flex: 1;
 }
+/* 2026-10-06 第 3 步场景主视图：场景组块 + 元素姿态/状态行 */
+.story-lock-scene-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.story-lock-scene-group {
+  border: 1px solid var(--c-border, rgba(148, 163, 184, 0.14));
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.story-lock-scene-group-warn {
+  border-color: rgba(255, 176, 32, 0.45);
+}
+.story-lock-scene-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.story-lock-scene-title {
+  font-weight: 700;
+  color: var(--c-text, #e2e8f0);
+}
+.story-lock-scene-cat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.story-lock-scene-cat-label {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 700;
+}
+.story-lock-element-row {
+  padding: 6px 10px;
+}
+.story-lock-element-state {
+  flex: 1;
+  text-align: right;
+}
+/* 2026-10-06 分析进度行：阶段 + 已用时，长模型调用不再沉默 */
+.story-lock-analysis-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(94, 204, 255, 0.35);
+  background: rgba(94, 204, 255, 0.08);
+  margin-top: 8px;
+}
+
 .story-lock-check-result {
   padding: 8px 10px;
   border-radius: 8px;

@@ -122,11 +122,25 @@ function inferSceneIdsFromText(nodes, entity) {
     ...uniqStrings(entity && entity.aliases, 12)
   ].filter(Boolean)
   if (!names.length) return []
+  // 2026-10-05 分词级模糊匹配：纯包含匹配漏掉"乒乓球馆 vs 乒乓球台"、"Running Shoes vs 跑鞋"这类
+  // 名称变体——对每个名称取 2 字以上的连续中文/字母片段做兜底子串匹配，命中率显著提升（假日出游 4 资产 0 场景事件）。
+  const looseFrags = []
+  for (const nm of names) {
+    const parts = String(nm).split(/[\s\-_，,、/（）()]+/).map((x) => x.trim()).filter((x) => x.length >= 2)
+    looseFrags.push(...parts.map((x) => x.toLowerCase()))
+    // 中文名取核心名词片段（去"馆/场/处/口"等尾缀）
+    const trimmed = String(nm).replace(/[馆场口处]$/, '').trim().toLowerCase()
+    if (trimmed.length >= 2 && trimmed !== String(nm).toLowerCase()) looseFrags.push(trimmed)
+  }
   const out = []
   for (let i = 0; i < nodes.length; i += 1) {
     const node = nodes[i]
     const hay = `${asStr(node && node.name)} ${asStr(node && node.body && node.body.title)} ${asStr(node && node.body && node.body.text)}`.toLowerCase()
-    if (names.some((x) => hay.includes(x.toLowerCase()))) out.push(asStr(node && node.id).trim() || `scene_${i + 1}`)
+    if (names.some((x) => hay.includes(x.toLowerCase()))) {
+      out.push(asStr(node && node.id).trim() || `scene_${i + 1}`)
+      continue
+    }
+    if (looseFrags.length && looseFrags.some((frag) => hay.includes(frag))) out.push(asStr(node && node.id).trim() || `scene_${i + 1}`)
   }
   return uniqStrings(out, 80)
 }
@@ -145,15 +159,20 @@ function inferCharacterSceneIdsFromPlacements(nodes, projectCharacterId) {
 
 export function normalizeSceneRefs(storyBible) {
   const sceneRefsIn = asObj(storyBible && storyBible.sceneRefs)
+  // 2026-09-27：LLM 常把实体引用写成 "id(名字)" 复合格式（违抗"只用 id"指令），
+  // 归一化时剥掉括号尾巴，保证后续 id 解析命中
+  const cleanRefs = (list, max) => uniqStrings(list, max)
+    .map((x) => x.replace(/\s*[（(][^）)]*[）)]\s*$/, '').trim())
+    .filter(Boolean)
   const out = new Map()
   for (const [key, raw] of Object.entries(sceneRefsIn)) {
     const value = asObj(raw)
     out.set(normalizeLooseKey(key), {
       key,
       value: {
-        characters: uniqStrings(value.characters, 40),
-        props: uniqStrings(value.props, 60),
-        locations: uniqStrings(value.locations, 40)
+        characters: cleanRefs(value.characters, 40),
+        props: cleanRefs(value.props, 60),
+        locations: cleanRefs(value.locations, 40)
       }
     })
   }
@@ -208,7 +227,15 @@ function cleanupReferenceAnchorText(text) {
 
 function cleanupPropReferenceAnchorText(text) {
   // 通用清洗：道具锚点同样只做空白规整，穿戴/语境纠偏交给负向词与审核
+  // 2026-10-07 升级：剥掉展示语境从句（hanging on rack / holding garments / worn by…）——
+  // 负向词压不住锚点里的展示载体（公主穿衣：裙锚点"hanging on clothes rack"把衣架画进裙子参考图，
+  // 衣架锚点"holding multiple garments"把两件 T 恤画进空衣架参考图），锚点只留物件本体。
   const out = asStr(text)
+    .replace(/,?\s*\b(hanging|hung|displayed|presented|mounted|placed|shown)\s+(on|in|at|from|against)\s+[^,;]+/gi, '')
+    .replace(/,?\s*\bholding\s+[^,;]+/gi, '')
+    .replace(/,?\s*\b(worn|carried|held)\s+by\s+[^,;]+/gi, '')
+    .replace(/,?\s*\b(on|on a|on the|from a|from the)\s+(clothes\s+)?(rack|hanger|mannequin|stand|display|hook)\b[^,;]*/gi, '')
+    .replace(/(悬挂于|挂在|挂于|穿在|佩戴在|穿戴在|展示于|陈列于)[^，；,;]+/g, '')
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+,/g, ',')
     .replace(/,,+/g, ',')
@@ -268,14 +295,17 @@ function inferPropLockProfile(asset) {
   ])) return 'slender_prop'
   if (hasKeyword(hay, [
     'toilet', 'toilet bowl', 'commode', 'chair', 'table', 'bucket', 'pail', 'cup', 'bottle', 'box', 'lamp', 'clock',
-    '马桶', '坐便器', '厕所', '椅子', '桌子', '水桶', '杯子', '瓶子', '箱子', '台灯', '闹钟'
+    'bobber', 'fishing float', 'cork float', 'fishing reel', 'reel',
+    '马桶', '坐便器', '厕所', '椅子', '桌子', '水桶', '杯子', '瓶子', '箱子', '台灯', '闹钟', '浮漂', '浮标', '鱼漂'
   ])) return 'rigid_prop'
   if (hasKeyword(hay, [
     'pillow', 'blanket', 'quilt', 'balloon', 'cotton', 'fabric bundle', 'marshmallow',
     '枕头', '被子', '棉被', '气球', '棉花', '布团'
   ])) return 'soft_prop'
-  if (hasKeyword(hay, [
-    'fish', 'butterfly', 'flower', 'leaf', 'feather', 'shell', 'fruit', 'apple', 'pear',
+  // 2026-09-27：fish 必须整词匹配——"fishing float/reel" 里的 fish 是钓鱼修饰语，
+  // 子串匹配会把浮漂/鱼线轮等人造物误归 organic_prop（标本模板诱导模型画鱼，实测 8/8 候选全画成鱼）
+  if (/\bfish\b/.test(hay) || hasKeyword(hay, [
+    'butterfly', 'flower', 'leaf', 'feather', 'shell', 'fruit', 'apple', 'pear',
     '鱼', '蝴蝶', '花', '叶子', '羽毛', '贝壳', '果子', '苹果', '梨'
   ])) return 'organic_prop'
   return 'generic_prop'
@@ -302,33 +332,39 @@ export function lockWorkflowForAsset(asset) {
   return 'prop_product'
 }
 
-export function getStoryAssetRenderProfile(asset) {
+export function getStoryAssetRenderProfile(asset, stylePreset) {
   const profile = asStr(asset && asset.lockProfile).trim() || inferAssetLockProfile(asset)
+  // 2026-09-28 尺寸预设（settings 风格预设 sizes[profile]），缺省用内置兜底
+  const presetSizes = (stylePreset && stylePreset.sizes && typeof stylePreset.sizes === 'object') ? stylePreset.sizes : null
+  const sizeOf = (key, w, h, workflowMode, suffixProfile) => {
+    const hit = presetSizes && Array.isArray(presetSizes[key]) && presetSizes[key].length >= 2 ? presetSizes[key] : null
+    return { width: Number(hit ? hit[0] : w), height: Number(hit ? hit[1] : h), workflowMode, profile: suffixProfile || profile }
+  }
   if (profile === 'character_core') {
-    return { width: 768, height: 1152, workflowMode: 'story_asset_character_sheet', profile }
+    return sizeOf('character_core', 768, 1152, 'story_asset_character_sheet')
   }
   if (profile === 'location_anchor') {
-    return { width: 960, height: 544, workflowMode: 'story_asset_location_anchor', profile }
+    return sizeOf('location_anchor', 960, 544, 'story_asset_location_anchor')
   }
   if (profile === 'slender_prop') {
-    return { width: 640, height: 1024, workflowMode: 'story_asset_prop_slender', profile }
+    return sizeOf('slender_prop', 640, 1024, 'story_asset_prop_slender')
   }
   if (profile === 'ambient_prop') {
-    return { width: 896, height: 896, workflowMode: 'story_asset_prop_ambient', profile }
+    return sizeOf('ambient_prop', 896, 896, 'story_asset_prop_ambient')
   }
   if (profile === 'soft_prop') {
-    return { width: 896, height: 896, workflowMode: 'story_asset_prop_soft', profile }
+    return sizeOf('soft_prop', 896, 896, 'story_asset_prop_soft')
   }
   if (profile === 'organic_prop') {
-    return { width: 768, height: 768, workflowMode: 'story_asset_prop_specimen', profile }
+    return sizeOf('organic_prop', 768, 768, 'story_asset_prop_specimen')
   }
   if (profile === 'wearable_prop') {
     if (isHatLikeProp(asset)) {
-      return { width: 1024, height: 768, workflowMode: 'story_asset_prop_hat', profile }
+      return sizeOf('wearable_prop_hat', 1024, 768, 'story_asset_prop_hat')
     }
-    return { width: 768, height: 768, workflowMode: 'story_asset_prop_wearable', profile }
+    return sizeOf('wearable_prop', 768, 768, 'story_asset_prop_wearable')
   }
-  return { width: 832, height: 832, workflowMode: 'story_asset_prop_product', profile }
+  return sizeOf('generic_prop', 832, 832, 'story_asset_prop_product')
 }
 
 function choosePropStrategy(sceneCount, lockProfile) {
@@ -535,9 +571,10 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
     const entity = asObj(raw)
     const id = asStr(entity.id).trim() || `char.${normalizeIdLike(entity.name, 'character')}`
     const projectCharacter = matchProjectCharacter(safeProject, entity)
+    const bibleRefScenes = sceneUsage.characters.get(id) || []
     const placementScenes = inferCharacterSceneIdsFromPlacements(nodes, asStr(projectCharacter && projectCharacter.id).trim())
     const textScenes = inferSceneIdsFromText(nodes, entity)
-    const sceneIds = uniqStrings([...(sceneUsage.characters.get(id) || []), ...placementScenes, ...textScenes], 80)
+    const sceneIds = uniqStrings([...bibleRefScenes, ...placementScenes, ...textScenes], 80)
     const refAssetId =
       asStr(projectCharacter && projectCharacter.ai && projectCharacter.ai.referenceAssetId).trim() ||
       asStr(projectCharacter && projectCharacter.imageAssetId).trim()
@@ -558,6 +595,12 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       forbiddenSubstitutes: [],
       sceneIds,
       sceneCount: sceneIds.length,
+      // 2026-10-06 分配证据：三路来源各自的场景命中（圣经绑定/摆位记录/正文文本），供编辑器日志向用户解释分配依据
+      sceneEvidence: {
+        bibleRefs: uniqStrings(bibleRefScenes, 80),
+        placements: uniqStrings(placementScenes, 80),
+        text: uniqStrings(textScenes, 80)
+      },
       projectCharacterId: asStr(projectCharacter && projectCharacter.id).trim() || '',
       primaryReferenceAssetId: refAsset ? asStr(refAsset.id).trim() : '',
       primaryReferenceAssetUri: refAsset ? asStr(refAsset.uri).trim() : '',
@@ -571,7 +614,9 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
   for (const raw of asList(safeBible.props)) {
     const entity = asObj(raw)
     const id = asStr(entity.id).trim() || `prop.${normalizeIdLike(entity.name, 'prop')}`
-    const sceneIds = uniqStrings([...(sceneUsage.props.get(id) || []), ...inferSceneIdsFromText(nodes, entity)], 80)
+    const bibleRefScenes = sceneUsage.props.get(id) || []
+    const textScenes = inferSceneIdsFromText(nodes, entity)
+    const sceneIds = uniqStrings([...bibleRefScenes, ...textScenes], 80)
     const lockProfile = inferAssetLockProfile({ category: 'prop', ...entity })
     const lockWorkflow = lockWorkflowForAsset({ category: 'prop', lockProfile, ...entity })
     const strategy = choosePropStrategy(sceneIds.length, lockProfile)
@@ -589,6 +634,10 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       forbiddenSubstitutes: uniqStrings(entity.forbiddenSubstitutes, 40),
       sceneIds,
       sceneCount: sceneIds.length,
+      sceneEvidence: {
+        bibleRefs: uniqStrings(bibleRefScenes, 80),
+        text: uniqStrings(textScenes, 80)
+      },
       projectCharacterId: '',
       primaryReferenceAssetId: '',
       primaryReferenceAssetUri: '',
@@ -602,7 +651,9 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
   for (const raw of asList(safeBible.locations)) {
     const entity = asObj(raw)
     const id = asStr(entity.id).trim() || `loc.${normalizeIdLike(entity.name, 'location')}`
-    const sceneIds = uniqStrings([...(sceneUsage.locations.get(id) || []), ...inferSceneIdsFromText(nodes, entity)], 80)
+    const bibleRefScenes = sceneUsage.locations.get(id) || []
+    const textScenes = inferSceneIdsFromText(nodes, entity)
+    const sceneIds = uniqStrings([...bibleRefScenes, ...textScenes], 80)
     const strategy = chooseLocationStrategy(sceneIds.length)
     const lockProfile = inferAssetLockProfile({ category: 'location', ...entity })
     const lockWorkflow = lockWorkflowForAsset({ category: 'location', lockProfile, ...entity })
@@ -620,6 +671,10 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       forbiddenSubstitutes: [],
       sceneIds,
       sceneCount: sceneIds.length,
+      sceneEvidence: {
+        bibleRefs: uniqStrings(bibleRefScenes, 80),
+        text: uniqStrings(textScenes, 80)
+      },
       projectCharacterId: '',
       primaryReferenceAssetId: '',
       primaryReferenceAssetUri: '',
@@ -705,7 +760,18 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
   }
 }
 
-export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPrompt, assetPrompt }) {
+// 2026-09-28 出图风格预设：读取 settings.image.stylePresets[activeStylePreset]（《小猫钓鱼》样本沉淀，物理记录在设置中）。
+// 所有消费端均以代码内置值为兜底——预设缺失或字段缺失时，行为与此前完全一致（向后兼容）。
+export function resolveStoryStylePreset(studio) {
+  const img = (studio && (studio.effective?.image || studio.image)) || {}
+  const presets = img.stylePresets && typeof img.stylePresets === 'object' ? img.stylePresets : null
+  const key = asStr(img.activeStylePreset).trim()
+  if (!presets || !key) return null
+  const preset = presets[key]
+  return preset && typeof preset === 'object' ? preset : null
+}
+
+export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPrompt, assetPrompt, stylePreset }) {
   const safePlan = asObj(plan)
   const safeAsset = asObj(asset)
   const category = asStr(safeAsset.category).trim()
@@ -723,14 +789,15 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
     baseParts.push(asStr(safePlan.worldAnchor).trim())
   }
   if (category === 'character' || category === 'location') {
-    baseParts.push(`style lock: ${asStr(style).trim() || 'picture_book'}`)
+    baseParts.push(`style lock: ${asStr(style).trim() || asStr(stylePreset && stylePreset.styleLock).trim() || 'picture_book'}`)
   } else if (category === 'prop') {
     baseParts.push(
       // 2026-08-29 统一画风：卡通童话绘本（用户指令：杜绝写实/卡通混杂）
-      'reference render style: cartoon fairy tale picture book illustration, flat 2D cartoon, bold clean outlines, cel shading, warm soft colors',
-      'object-lock workflow, not a story scene',
-      'not a character illustration',
-      'not a portrait'
+      // 2026-09-28 该风格句沉淀进 settings 风格预设（propStylePrompt/propStyleSuffix），预设缺省时用内置兜底
+      asStr(stylePreset && stylePreset.propStylePrompt).trim() || 'reference render style: cartoon fairy tale picture book illustration, flat 2D cartoon, bold clean outlines, cel shading, warm soft colors',
+      ...(Array.isArray(stylePreset && stylePreset.propStyleSuffix) && stylePreset.propStyleSuffix.length
+        ? stylePreset.propStyleSuffix.map((x) => asStr(x).trim()).filter(Boolean)
+        : ['object-lock workflow, not a story scene', 'not a character illustration', 'not a portrait'])
     )
   }
   const cleanedAnchorPrompt = category === 'character'
@@ -1015,11 +1082,12 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
 
 // 背景-only 模式（背景+立绘分层合成方向）：人物/事物由独立透明立绘经运行时 placements 合成，
 // 场景图只出背景。以下为背景图负提示词的通用人物/事物排除词（不含具体故事专有词）。
-// 2026-08-30：补 animal/pig/wolf（角色是动物形态）与 open book/pages（"绘本风"反复画出字面书本的穿帮）。
+// 2026-09-27：移除三只小猪时期遗留的 pig/piglet/wolf 动物名硬编码（项目级污染，改由 plan.forbiddenSubstitutes 驱动）；
+// 但保留 open book/book/pages——"picture book" 风格词会诱导模型画出实体书本（项目无关的风格词副作用，实测 3/10 场景中招被 AI 评审拦下）。
 const BACKGROUND_ONLY_SUBJECT_EXCLUSIONS = [
   'person', 'people', 'human', 'character', 'portrait', 'face',
   'man', 'woman', 'boy', 'girl', 'child', 'kid', 'crowd', 'figure',
-  'animal', 'pig', 'piglet', 'wolf', 'open book', 'book', 'pages', 'readable text'
+  'animal', 'open book', 'book', 'pages', 'readable text'
 ]
 
 // 从场景描述文本中剥离出场角色/道具的名字与别名（立绘层承担人物事物，背景图不再描述）。
@@ -1036,7 +1104,7 @@ export function stripSubjectMentionsFromSceneText(text, subjects) {
   return cleanupReferenceAnchorText(out)
 }
 
-export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
+export function buildStorySceneRenderSpec({ plan, sceneId, mode, stylePreset }) {
   const safePlan = asObj(plan)
   const scenes = asList(safePlan.scenes)
   const scene = scenes.find((item) => asStr(item && item.sceneId).trim() === asStr(sceneId).trim()) || null
@@ -1078,8 +1146,10 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
   // 因此这里以 live 资产记录为准，避免「已锁定仍误判缺失」或「引用被清空仍误判就绪」。
   // 背景-only 模式不喂图像参考（见上注释），ref_required 门禁也随之不适用于背景图。
   const requiredAssets = backgroundOnly ? [] : promptAssets.filter((asset) => asStr(asset.renderStrategy).trim() === 'ref_required')
+  // 2026-10-07 门禁硬化：以 primaryReferenceAssetUri 为唯一真相——referenceStatus 是派生缓存，
+  // 会被过期合并写回脏（公主穿衣 7 资产已锁仍被拦事故）。uri 在=已锁，uri 空=未锁。
   const missingRequiredAssets = requiredAssets
-    .filter((asset) => asStr(asset.referenceStatus).trim() !== 'ready' || !asStr(asset.primaryReferenceAssetUri).trim())
+    .filter((asset) => !asStr(asset.primaryReferenceAssetUri).trim())
     .map((asset) => ({
       id: asStr(asset.id).trim(),
       name: asStr(asset.name).trim(),
@@ -1088,6 +1158,22 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
       reason: 'reference_not_locked'
     }))
   const promptLocks = promptAssets
+    .map((asset) => `${asStr(asset.name).trim()}: ${asStr(asset.anchorPrompt).trim()}`)
+    .filter((line) => !/: $/.test(line))
+    .slice(0, 30)
+  // 2026-09-27 背景 prompt 环境化：location 锚点与 prop/character 锚点分流。
+  // 背景图只拼 environmentLocks（纯环境）；prop/character 锚点（subjectLocks，仅留痕）不进背景 prompt——
+  // 道具/角色由分层立绘合成提供，锚点进背景会把主体烘进背景图（还会与负面词打架）。
+  // 注意：背景-only + layeredComposition 时 promptAssets 已被清空（道具全剥离），
+  // 环境锚点必须从 allPromptAssets 取——地点永远属于背景层。
+  const isLocationAsset = (asset) => asStr(asset && asset.category).trim() === 'location'
+  const environmentLocks = (backgroundOnly ? allPromptAssets : promptAssets)
+    .filter(isLocationAsset)
+    .map((asset) => `${asStr(asset.name).trim()}: ${asStr(asset.anchorPrompt).trim()}`)
+    .filter((line) => !/: $/.test(line))
+    .slice(0, 20)
+  const subjectLocks = promptAssets
+    .filter((asset) => !isLocationAsset(asset))
     .map((asset) => `${asStr(asset.name).trim()}: ${asStr(asset.anchorPrompt).trim()}`)
     .filter((line) => !/: $/.test(line))
     .slice(0, 30)
@@ -1112,7 +1198,11 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
   const negativeParts = uniqStrings([
     ...globalForbidden,
     ...promptAssets.flatMap((asset) => uniqStrings(asset.forbiddenSubstitutes, 12)),
-    ...(backgroundOnly ? BACKGROUND_ONLY_SUBJECT_EXCLUSIONS : [])
+    ...(backgroundOnly
+      ? (Array.isArray(stylePreset && stylePreset.backgroundSubjectExclusions) && stylePreset.backgroundSubjectExclusions.length
+          ? stylePreset.backgroundSubjectExclusions.map((x) => asStr(x).trim()).filter(Boolean)
+          : BACKGROUND_ONLY_SUBJECT_EXCLUSIONS)
+      : [])
   ], 120)
   const summary = asStr(scene.summary).trim()
   return {
@@ -1131,6 +1221,8 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode }) {
       category: asStr(asset.category).trim()
     })),
     promptLocks,
+    environmentLocks,
+    subjectLocks,
     negativePrompt: negativeParts.join(', '),
     // 2026-09-09 分层场景：worldAnchor 同样剥离道具/角色提及（乌鸦喝水实测 worldAnchor 含"玻璃瓶内水面倒影"
     // 导致瓶子烘进全部背景）；非分层场景保持原锚点不动

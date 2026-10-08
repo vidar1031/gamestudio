@@ -127,16 +127,17 @@ function renderIndexHtml({ title }) {
       #overlay{position:fixed;inset:0;pointer-events:none;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:#e5e7eb}
       #stageUI{position:absolute;left:0;top:0;pointer-events:none;transform-origin:0 0}
 
-      #dialogWrap{position:absolute;inset:0;padding:18px;box-sizing:border-box;display:flex;justify-content:center;align-items:flex-end}
-      .card{pointer-events:auto;width:min(920px,calc(100% - 36px));border-radius:18px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.74);backdrop-filter:blur(10px);box-shadow:0 16px 50px rgba(0,0,0,.35);padding:14px}
-      .metaRow{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
-      .nodeName{font-weight:900;font-size:16px}
-      .waitHint{font-size:12px;opacity:.82}
-      .textBox{font-size:18px;line-height:1.65;white-space:pre-wrap;word-break:break-word;border-radius:14px;padding:12px;border:1px solid rgba(148,163,184,.14);background:rgba(2,6,23,.35);max-height:min(42vh,360px);overflow:auto}
-      .choices{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;justify-content:flex-end}
-      .choiceBtn{pointer-events:auto;padding:10px 12px;border-radius:12px;border:1px solid rgba(148,163,184,.22);background:rgba(59,130,246,.9);color:#fff;cursor:pointer}
-      .choiceBtn:disabled{opacity:.55;cursor:not-allowed}
-      .actions{display:flex;justify-content:flex-end;margin-top:12px}
+      #dialogWrap{position:absolute;inset:0;box-sizing:border-box;display:flex;justify-content:center;align-items:flex-end;pointer-events:none}
+      /* 2026-10-04 用户指令：去背景化——字幕与结局文字直接显示在画面上，无暗幕无底卡无 backdrop-filter */
+      .card{pointer-events:auto;width:min(820px,92%);padding:0 8px 14px;text-align:center}
+      .metaRow{display:flex;justify-content:center;align-items:center;gap:10px;margin-bottom:6px}
+      .nodeName{font-weight:700;font-size:13px;opacity:.85;text-shadow:0 1px 3px rgba(0,0,0,.85)}
+      .waitHint{font-size:11px;opacity:.7;text-shadow:0 1px 3px rgba(0,0,0,.85)}
+      .textBox{display:inline-block;font-size:19px;line-height:1.6;white-space:pre-wrap;word-break:break-word;text-align:center;max-height:30vh;overflow:auto;color:#fff !important;text-shadow:0 1px 3px rgba(0,0,0,.9),0 0 6px rgba(0,0,0,.6)}
+      .choices{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;justify-content:flex-end}
+      .choiceBtn{pointer-events:auto;padding:8px 16px;border-radius:999px;border:1px solid rgba(255,255,255,.3);background:rgba(2,6,23,.58);color:#fff;cursor:pointer;font-size:15px;text-shadow:0 1px 2px rgba(0,0,0,.8)}
+      .choiceBtn:disabled{opacity:.5;cursor:not-allowed}
+      .actions{position:absolute;right:16px;bottom:12px}
 
       #endingWrap{position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
       #endingCard{width:min(760px,calc(100% - 36px));border-radius:18px;border:1px solid rgba(148,163,184,.22);background:rgba(2,6,23,.84);backdrop-filter:blur(10px);box-shadow:0 18px 70px rgba(0,0,0,.5);padding:18px;pointer-events:auto}
@@ -205,6 +206,8 @@ function renderIndexHtml({ title }) {
       rootEl.appendChild(app.canvas)
       const textureCache = new Map()
       let renderSeq = 0
+      // 2026-10-06 简谱演绎·运镜：场景入场背景轻微推近 + 立绘淡入（Ken Burns 式，零素材成本）
+      let camTick = null
 
       async function loadJson(p) {
         const r = await fetch(p, { cache: 'no-store' })
@@ -324,15 +327,6 @@ function renderIndexHtml({ title }) {
           if (!dialogWrapEl || !dialogNodeNameEl) return
           const d = node && node.visuals && node.visuals.ui && node.visuals.ui.dialog ? node.visuals.ui.dialog : {}
           const preset = normalizeDialogPreset(d && d.preset)
-
-          // 2026-08-31：对话框底板透明度（节点 visuals.ui.dialog.opacity，0-1，缺省 1）
-          try {
-            const op = Math.max(0, Math.min(1, Number(d && d.opacity != null ? d.opacity : 1)))
-            const cardEl = dialogEl && dialogEl.classList && dialogEl.classList.contains('card') ? dialogEl : (dialogEl && dialogEl.querySelector ? dialogEl.querySelector('.card') : null)
-            if (cardEl && cardEl.style) cardEl.style.background = 'rgba(2,6,23,' + (0.74 * op).toFixed(3) + ')'
-            const textBoxEl = dialogTextEl && dialogTextEl.closest ? (dialogTextEl.closest('.textBox') || dialogTextEl) : dialogTextEl
-            if (textBoxEl && textBoxEl.style) textBoxEl.style.background = 'rgba(2,6,23,' + (0.35 * op).toFixed(3) + ')'
-          } catch (_) {}
 
           // reset
           dialogWrapEl.style.display = 'flex'
@@ -623,6 +617,7 @@ function renderIndexHtml({ title }) {
 
       async function renderStage(node) {
         const seq = ++renderSeq
+        if (camTick) { try { app.ticker.remove(camTick) } catch (_) {} camTick = null }
         app.stage.removeChildren()
         const viewW = app.renderer.width
         const viewH = app.renderer.height
@@ -639,6 +634,7 @@ function renderIndexHtml({ title }) {
         root.y = offsetY
         root.scale.set(scale)
         app.stage.addChild(root)
+        const camAnim = { bg: null, sprites: [] }
 
         // background
         try {
@@ -654,8 +650,15 @@ function renderIndexHtml({ title }) {
             if (seq !== renderSeq) return
             if (tex) {
               const s = new Sprite(tex)
-              s.x = 0; s.y = 0; s.width = stageW; s.height = stageH
+              // 运镜起始态：背景以中心为锚 1.08 倍轻微放大，入场时缓动回 1.0（推近感）
+              s.anchor.set(0.5)
+              s.x = stageW / 2
+              s.y = stageH / 2
+              s.width = stageW
+              s.height = stageH
+              s.scale.set(1.08)
               root.addChild(s)
+              camAnim.bg = s
             }
           } else {
             // 缺图占位：场景图像未生成时，给统一的占位样式，避免空白/破图，让用户明确当前是仅文字可玩
@@ -706,9 +709,28 @@ function renderIndexHtml({ title }) {
             // anchor (0.5,1) 底中：水平反转围绕中心稳定（与编辑器 renderStage 同一语义）
             sp.scale.set(scale * flipX, scale * flipY)
             sp.rotation = (rot * Math.PI) / 180
+            sp.alpha = 0 // 运镜起始态：立绘从透明淡入
             root.addChild(sp)
+            camAnim.sprites.push(sp)
           }
         } catch (_) {}
+        // 运镜播放：900ms 缓出（背景 1.08→1.0 推近 + 立绘 0→1 淡入）；场景切换时由 renderSeq/camTick 复位
+        if (camAnim.bg || camAnim.sprites.length) {
+          const t0 = performance.now()
+          const tickFn = () => {
+            const el = performance.now() - t0
+            const k = Math.min(1, el / 900)
+            const ease = 1 - Math.pow(1 - k, 3)
+            if (camAnim.bg) camAnim.bg.scale.set(1.08 - 0.08 * ease)
+            for (const sp of camAnim.sprites) sp.alpha = ease
+            if (k >= 1) {
+              try { app.ticker.remove(tickFn) } catch (_) {}
+              if (camTick === tickFn) camTick = null
+            }
+          }
+          camTick = tickFn
+          app.ticker.add(tickFn)
+        }
       }
 
       function renderOverlay(node) {

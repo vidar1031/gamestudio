@@ -5,6 +5,7 @@ import ScriptStudio from './studios/ScriptStudio'
 import BlueprintStudio from './studios/BlueprintStudio'
 import ComposeStudio from './studios/ComposeStudio'
 import StudioSettingsModal from './StudioSettingsModal'
+import { DialogHost } from './dialog'
 
 type Stage = 'hub' | 'script' | 'blueprint' | 'compose'
 
@@ -78,6 +79,7 @@ export default function App() {
         设置
       </button>
       <StudioSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <DialogHost />
     </div>
   )
 }

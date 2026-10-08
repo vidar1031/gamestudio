@@ -61,6 +61,37 @@ function looksLikeConsequence(name) {
   return m ? String(m[1]).toUpperCase() : null
 }
 
+// 2026-09-27 文本层清理：选择点卡片正文残留"选项1：…"（编译出 choices 后读者会看两遍）。
+// 分行情形：逐行解析出 ≥2 个选项行才剥离；内联情形（"…？选项1：…选项2：…"同段）：
+// 出现 ≥2 个选项标记时截掉首个标记起的尾巴（本函数仅在已成功解析出 choices 的选择点分支调用，
+// 选项按约定位于正文末尾，截断不会误删叙事）。
+function stripParsedOptionLines(text) {
+  const lines = splitLines(text)
+  const isOptLine = (ln) => /^选项\s*([A-Z]|\d{1,2})\s*[:：]/.test(ln.trim())
+  let out = String(text || '')
+  if (lines.filter(isOptLine).length >= 2) {
+    out = lines
+      .filter((ln) => !isOptLine(ln))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  }
+  const inlineMarkers = out.match(/选项\s*(?:[A-Z]|\d{1,2})\s*[:：]/g) || []
+  if (inlineMarkers.length >= 2) {
+    const cut = out.search(/选项\s*(?:[A-Z]|\d{1,2})\s*[:：]/)
+    if (cut > 0) out = out.slice(0, cut).trim()
+  }
+  return out
+}
+
+// 2026-09-27 节点名美化用中文数字（≤10，超出回退阿拉伯数字）
+const CN_NUMERALS = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十']
+function cnNumeral(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v < 1) return ''
+  return v <= 10 ? CN_NUMERALS[v] : String(v)
+}
+
 function numericConsequenceKey(name, choicePointNo) {
   const s = String(name || '').trim()
   const m = s.match(/^(\d{1,2})后果(\d{1,2})(?:[:：]\s*)?/)
@@ -255,6 +286,8 @@ export function compileBlueprintFromScripts({ scripts, prevBlueprint, expectedFo
 
   // Consequence nodes are assigned by a choice point; do not re-overwrite their choices later in the main loop.
   const consequenceCardIds = new Set()
+  // 2026-09-27：后果节点更名按编译顺序全图递增（后果一~后果四），避免不同选择点的分支重名
+  let consequenceNameSeq = 0
 
   let choicePointNo = 0
   const detectedChoicePoints = []
@@ -275,6 +308,10 @@ export function compileBlueprintFromScripts({ scripts, prevBlueprint, expectedFo
 
     if (opts.length >= 2) {
       choicePointNo += 1
+      // 2026-09-27 节点名美化："1选择点"→「选择点一」（仅精确匹配工程化命名）
+      if (/^\d+选择点$/.test(String(node.name || '').trim())) {
+        node.name = `选择点${cnNumeral(choicePointNo) || choicePointNo}`
+      }
       detectedChoicePoints.push({ index: choicePointNo, cardIndex: i + 1, nodeName: node.name, options: optionKeys.slice() })
       const isLastChoicePoint = expChoicePoints ? (choicePointNo === expChoicePoints) : (i === lastChoiceCardIndex)
       const endingIndexByKey = isLastChoicePoint ? buildEndingIndexMap({ cards, fromIndex: i + 1, maxLookahead: 120 }) : new Map()
@@ -328,6 +365,8 @@ export function compileBlueprintFromScripts({ scripts, prevBlueprint, expectedFo
       }
 
       node.choices = preserveOrReplaceChoices({ prevNode: prev, cardId, nodeName: node.name, nextChoices: choices, report })
+      // 2026-09-27：选项行已编译为 choices，正文剥离避免读者看两遍（仅逐行解析成功时剥离）
+      node.textDraft = stripParsedOptionLines(node.textDraft)
 
       // Force consequence cards to skip over other consequences and converge to joinNodeId.
       for (const [k, idx] of group.consequenceIndexByKey.entries()) {
@@ -336,6 +375,11 @@ export function compileBlueprintFromScripts({ scripts, prevBlueprint, expectedFo
         const consNode = nodeByCardId.get(consId)
         if (!consNode) continue
         consequenceCardIds.add(consId)
+        // 2026-09-27 节点名美化："1后果1"→按编译顺序「后果一~后果四」（仅精确匹配工程化命名，全图唯一）
+        if (/^\d+后果\d+$/.test(String(consNode.name || '').trim())) {
+          consequenceNameSeq += 1
+          consNode.name = `后果${cnNumeral(consequenceNameSeq) || consequenceNameSeq}`
+        }
         if (consNode.kind === 'ending') continue
 
         const consPrev = prevById.get(consNode.id) || null
@@ -355,6 +399,12 @@ export function compileBlueprintFromScripts({ scripts, prevBlueprint, expectedFo
     const toNodeId = nextCard && nextCard.id ? nodeIdForCard(String(nextCard.id)) : terminalNodeId
     const nextChoices = [makeContinueChoice(cardId, toNodeId)]
     node.choices = preserveOrReplaceChoices({ prevNode: prev, cardId, nodeName: node.name, nextChoices, report })
+  }
+
+  // 2026-09-27 节点名美化："结局1"→「结局一」（保持编号映射，仅精确匹配工程化命名）
+  for (const n of nodes) {
+    const m = String(n?.name || '').trim().match(/^结局(\d{1,2})$/)
+    if (m) n.name = `结局${cnNumeral(m[1]) || m[1]}`
   }
 
   // Keep existing extra nodes (manual branch scenes, manual endings) without deleting user work.

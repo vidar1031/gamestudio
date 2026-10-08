@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { dlgAlert, dlgConfirm } from './dialog'
 import {
   resolveUrl,
   listImageReviewsAi,
@@ -502,7 +503,7 @@ export default function AiStoryboardBatchModal(props: {
       if (approved && review.phase === 'scene_bind') props.onReloadProject?.()
       await refreshReviewsAndCoverage()
     } catch (e: any) {
-      window.alert(`审核操作失败：${e && e.message ? e.message : String(e)}`)
+      void dlgAlert(`审核操作失败：${e && e.message ? e.message : String(e)}`)
     } finally {
       setReviewBusyIds((prev) => prev.filter((x) => x !== review.reviewId))
     }
@@ -611,7 +612,7 @@ export default function AiStoryboardBatchModal(props: {
 
   const handleDeleteSceneImage = async (it: StoryboardBatchItem, item: StorySceneImageItem) => {
     if (!projectId || galleryBusy[it.nodeId]) return
-    const ok = window.confirm(`确认删除该场景图版本？删除后不可恢复。\n${item.assetPath}`)
+    const ok = await dlgConfirm(`确认删除该场景图版本？删除后不可恢复。\n${item.assetPath}`, { danger: true, okText: '删除' })
     if (!ok) return
     setGalleryBusy((prev) => ({ ...prev, [it.nodeId]: true }))
     setGalleryHint((prev) => ({ ...prev, [it.nodeId]: '' }))

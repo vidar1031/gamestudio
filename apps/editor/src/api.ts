@@ -455,6 +455,14 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 /**
+ * 2026-10-05 草稿毕业：用户确认进入编辑后，项目才出现在工作台项目列表
+ */
+export async function confirmProjectDraft(id: string): Promise<{ success: boolean }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(id)}/confirm-draft`, { method: 'POST' })
+  return json as { success: boolean }
+}
+
+/**
  * 导出项目
  * @param id - 项目 ID
  * @returns 构建 ID 和分发 URL
@@ -823,7 +831,7 @@ export type StoryAssetPlanAsset = {
 export type StoryAssetGalleryEntry = {
   assetPath: string
   url: string
-  kind: 'reference' | 'selected_white_bg' | 'lineart_hint' | 'lineart_final' | 'unknown'
+  kind: 'reference' | 'selected_white_bg' | 'lineart_hint' | 'lineart_final' | 'pose_variant' | 'pose_variant_green' | 'state_variant' | 'state_variant_green' | 'unknown'
   label: string
   createdAt?: string
   seed?: number
@@ -834,6 +842,11 @@ export type StoryAssetGalleryEntry = {
   isCurrentLineart?: boolean
   recommended?: boolean
   inLatestBatch?: boolean
+  variantId?: string
+  variantName?: string
+  variantScore?: number
+  variantComposite?: string
+  variantPart?: 'green' | 'cutout'
   analysis?: any
 }
 
@@ -858,6 +871,71 @@ export async function persistStoryAssetPlanAi(
   })
   // 2026-09-03 透传服务端最新 _rev（保存即版本递增，编辑器采信以免误报外部更新）
   return { ...(json.plan as StoryAssetPlan), _rev: Number(json._rev) || 0 } as StoryAssetPlan & { _rev?: number }
+}
+
+// 2026-09-16 资产计划真删除：persist 合并链会保留磁盘独有条目删不掉，删除走专用端点（服务端全量覆盖写）
+export async function removeStoryboardAssetFromPlanAi(
+  projectId: string,
+  assetId: string
+): Promise<{ plan: StoryAssetPlan; _rev: number; removedAssetId: string; removedAssetName: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/plan/remove-asset`, {
+    method: 'POST',
+    body: JSON.stringify({ assetId })
+  })
+  return {
+    plan: json.plan as StoryAssetPlan,
+    _rev: Number(json._rev) || 0,
+    removedAssetId: String(json.removedAssetId || ''),
+    removedAssetName: String(json.removedAssetName || '')
+  }
+}
+
+// 2026-09-16 道具状态需求提取（候选制不写盘）：识别跨场景视觉状态变化的道具与状态时间线
+export type StoryPropStateItem = {
+  stateKey: string
+  label: string
+  description: string
+  sceneIds: string[]
+}
+
+export type StoryPropStateProp = {
+  propId: string
+  hasStateChanges: boolean
+  states: StoryPropStateItem[]
+  mergeInto: { containerPropId: string; note?: string } | null
+}
+
+export async function extractStoryPropStatesAi(
+  projectId: string
+): Promise<{ propStates: { props: StoryPropStateProp[] }; assetByPropId: Record<string, { assetId: string; assetName: string }> }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/prop-states`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  })
+  return {
+    propStates: (json.propStates as any) || { props: [] },
+    assetByPropId: (json.assetByPropId as any) || {}
+  }
+}
+
+// 2026-09-16 道具状态变体生成：sprite(prop) → 评审 → 抠图 → 登记 → 计划 stateVariants → lock_confirm 留痕
+export async function generatePropStateVariantAi(
+  projectId: string,
+  assetId: string,
+  payload: { stateKey: string; label: string; description?: string; prompt?: string; promptZh?: string; negativePrompt?: string }
+): Promise<{ taskId: string; projectAssetId: string; cutoutPath: string; score?: number; reason?: string; reviewUnavailable?: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(assetId)}/state-variants/generate`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return {
+    taskId: String(json.taskId || ''),
+    projectAssetId: String(json.projectAssetId || ''),
+    cutoutPath: String(json.cutoutPath || ''),
+    score: Number.isFinite(Number(json.score)) ? Number(json.score) : undefined,
+    reason: typeof json.reason === 'string' ? json.reason : undefined,
+    reviewUnavailable: typeof json.reviewUnavailable === 'string' ? json.reviewUnavailable : undefined
+  }
 }
 
 export async function generateStoryAssetReferenceAi(

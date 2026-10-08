@@ -332,7 +332,7 @@ function normalizeStoryBible(obj) {
 
   return {
     schemaVersion: '1.0',
-    worldAnchor: clampStr(input.worldAnchor || input.world_anchor || '', 600),
+    worldAnchor: sanitizeWorldAnchorText(input.worldAnchor || input.world_anchor || ''),
     characters,
     props,
     locations,
@@ -340,6 +340,20 @@ function normalizeStoryBible(obj) {
     forbiddenSubstitutes: uniqStrings(input.forbiddenSubstitutes || input.forbidden_substitutes || [], 120),
     sceneRefs
   }
+}
+
+// 2026-09-27 确定性兜底：worldAnchor 只允许纯风格锚点。
+// LLM 可能无视指令写入时间/光照/天气变化描述（如 "Soft morning mist transitions to golden hour sunlight"），
+// 该句会被拼进每个场景背景导致全场景光照自相矛盾；这里按句剔除，剔空则回退安全风格句。
+const WORLD_ANCHOR_FORBIDDEN_CLAUSE = /\b(morning|sunrise|dawn|daybreak|noon|midday|afternoon|sunset|golden hour|evening|dusk|twilight|night|nightfall|lighting transitions?|transitions? to|weather|rain|rainy|snow|snowy|storm|stormy|mist|fog|foggy|overcast)\b/i
+const WORLD_ANCHOR_SAFE_FALLBACK = 'warm pastel picture book illustration style, flat 2D cartoon, soft edges, consistent visual designs'
+export function sanitizeWorldAnchorText(text) {
+  const raw = clampStr(text || '', 600)
+  if (!raw) return raw
+  const sentences = raw.split(/(?<=[.!?。！？])\s+|\n+/)
+  const kept = sentences.filter((s) => s.trim() && !WORLD_ANCHOR_FORBIDDEN_CLAUSE.test(s))
+  const joined = kept.join(' ').replace(/\s{2,}/g, ' ').trim()
+  return joined || WORLD_ANCHOR_SAFE_FALLBACK
 }
 
 function validateStoryBible(obj) {
@@ -395,7 +409,7 @@ function buildDeterministicStoryBibleFallback(input, draft) {
     .map((item) => normalizeFallbackEntityEntry(item, 'location'))
     .filter(Boolean)
 
-  const fallbackSceneName = clampStr((input?.scenes || []).map((scene) => scene?.name || scene?.sceneId || '').find(Boolean) || '', 80)
+  const fallbackSceneName = clampStr((input?.scenes || []).map((scene) => scene?.name || scene?.nodeName || scene?.sceneId || scene?.nodeId || '').find(Boolean) || '', 80)
   const minimumLocation = fallbackSceneName
     ? [{ id: `loc.${normalizeIdLike(fallbackSceneName).slice(0, 40)}`, name: fallbackSceneName, aliases: [], anchorPrompt: fallbackSceneName, locked: true }]
     : []
@@ -505,7 +519,7 @@ function buildStoryBibleGenerationInstructions() {
     `要求：\n` +
     `- 输出必须是唯一 JSON 对象，不要解释文字。\n` +
     `- candidateWorldHints、candidateEntities、scenePresenceRules 只是候选与提示，不是真相源；你必须以 scenes / scripts 的实际内容为准，可以丢弃错误候选。\n` +
-    `- worldAnchor：一句到两句英文，包含时代/地域/建筑语言/光照色调/镜头语言。\n` +
+    `- worldAnchor：纯视觉风格锚点（英文，≤60 词）：只写画风/色彩体系/笔触/镜头感（如 flat 2D 绘本插画、暖色柔和、粗描边、柔和镜头）。禁止写时间、光照变化、天气变化类描述（如 morning、sunset、lighting transitions、rain、snow）——光照与天气归各场景 location 锚点表达，写进 worldAnchor 会让所有场景光照自相矛盾。\n` +
     `- characters：只保留后续连续出图真正需要稳定复用的角色核心身份。anchorPrompt 只写“角色本体 + 稳定基础穿着/物种特征”，不要把临时状态、姿势、情绪、受伤、流血、拿着某物写成核心身份。\n` +
     `- 如果故事里某角色只在单一事件里以临时状态出现，例如“受伤的狼”，角色核心仍应是“狼”本体；受伤属于单场景状态，不应固化进角色 id、name 或 anchorPrompt。\n` +
     `- 群体对象只有在后续场景确实需要稳定复用视觉身份时才保留。例如固定羊群、固定村民群像；否则可以弱化或不纳入核心锁定。\n` +
@@ -770,13 +784,13 @@ function bibleChunkSchema(kind) {
 function buildBibleChunkInstructions(kind) {
   const common = '你是"交互故事制作工具"的连续分镜一致性助手。输出必须是唯一 JSON 对象，不要解释文字、不要 markdown。候选实体只是提示不是真相源，以场景实际内容为准。'
   if (kind === 'global') {
-    return `${common}\n本块任务：产出全局锚定。worldAnchor：一句到两句英文，包含时代/地域/建筑语言/光照色调/镜头语言。eventChain：按场景编号列出可见动作与状态变化（英文短句）。forbiddenSubstitutes：全局容易误画的替代物（英文短词）。`
+    return `${common}\n本块任务：产出全局锚定。worldAnchor：一句到两句英文纯视觉风格锚点，只写画风/色彩体系/笔触/镜头感；禁止时间、光照变化、天气类描述（morning/sunset/lighting transitions/rain 等）——光照归各场景 location 锚点表达。eventChain：按场景编号列出可见动作与状态变化（英文短句）。forbiddenSubstitutes：全局容易误画的替代物（英文短词）。`
   }
   if (kind === 'characters') {
     return `${common}\n本块任务：只保留后续连续出图真正需要稳定复用的角色核心身份。anchorPrompt 只写"角色本体 + 稳定基础穿着/物种特征"，不要把临时状态、姿势、情绪、受伤、拿着某物写成核心身份。单一事件里的临时状态（如受伤的狼）不固化进 id/name/anchorPrompt。群体对象只有确实需要稳定复用视觉身份才保留。每个角色输出 id（英文短横线小写）、name、aliases、anchorPrompt、negativePrompt（可为 null）、locked（默认 true）。`
   }
   if (kind === 'props') {
-    return `${common}\n本块任务：逐道具输出结构级 anchorPrompt（英文一行：部件/材质/形状/尺寸感/连接方式/典型摆放）。只保留会在后续场景反复作为独立视觉对象出现的道具；一次性动作/伤口状态不算长期道具。可穿戴可拆卸物（hat/bag/shoes 等）必须是 props 而不是角色外观的一部分，描述以物件本身为中心。每个道具输出 id、name、aliases、anchorPrompt、forbiddenSubstitutes（易误替代物）、locked（默认 true）。`
+    return `${common}\n本块任务：逐道具输出结构级 anchorPrompt（英文一行：部件/材质/形状/尺寸感/连接方式）。只保留会在后续场景反复作为独立视觉对象出现的道具；一次性动作/伤口状态不算长期道具。可穿戴可拆卸物（hat/bag/shoes 等）必须是 props 而不是角色外观的一部分，描述以物件本身为中心。anchorPrompt 只写物件本体——禁止写展示方式与载体（悬挂/穿戴/衣架/模特/底座等，如 hanging on rack / worn by / on mannequin），参考图按纯白底独立物件出图。每个道具输出 id、name、aliases、anchorPrompt、forbiddenSubstitutes（易误替代物）、locked（默认 true）。`
   }
   if (kind === 'locations') {
     return `${common}\n本块任务：只输出可复用地点锚点（时代/地域/建筑风格/光照一句英文 anchorPrompt）。每个地点输出 id、name、aliases、anchorPrompt、locked（默认 true）。`
@@ -786,10 +800,13 @@ function buildBibleChunkInstructions(kind) {
 }
 
 function summarizeInputForBibleChunks(input) {
+  // 2026-10-06 字段别名容忍：编辑器发 {nodeId, nodeName, summary}，control 链发 {sceneId, name, text}。
+  // 此前只认 sceneId/name/text，编辑器形状被 filter 全灭——所有分块零场景上下文，
+  // sceneRefs 必空、实体名英文化（假日出游圣经两次重生均空 sceneRefs 的确定性根因）。
   const sceneSummaries = (Array.isArray(input?.scenes) ? input.scenes : []).map((scene) => ({
-    sceneId: String(scene?.sceneId || '').trim(),
-    name: String(scene?.name || '').trim(),
-    summary: clampStr(scene?.text || '', 200)
+    sceneId: String(scene?.sceneId || scene?.nodeId || scene?.id || scene?.key || '').trim(),
+    name: String(scene?.name || scene?.nodeName || scene?.title || '').trim(),
+    summary: clampStr(scene?.text || scene?.summary || '', 200)
   })).filter((scene) => scene.sceneId)
   const candidateEntities = input?.candidateEntities && typeof input.candidateEntities === 'object' ? input.candidateEntities : {}
   const slimEntity = (item) => ({
@@ -893,7 +910,7 @@ export async function generateStoryBible({
           instructions: buildStoryBibleRepairInstructions(),
           input: {
             draftStoryBible: chunked,
-            sceneIds: (Array.isArray(input?.scenes) ? input.scenes : []).map((scene) => String(scene?.sceneId || scene?.key || '')).filter(Boolean)
+            sceneIds: (Array.isArray(input?.scenes) ? input.scenes : []).map((scene) => String(scene?.sceneId || scene?.nodeId || scene?.key || '')).filter(Boolean)
           },
           maxRetriesOpenAi: 1,
           maxRetriesOther: 1

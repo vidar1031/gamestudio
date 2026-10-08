@@ -114,6 +114,13 @@
 - S0（系统启动）→ L1（交互测试）→ L4（文本闭环）→ P1（图片资产）阶段必须依次通过。
 - 前一阶段未通过，不得进入下一阶段。
 
+### 5. 云端模型调用强制确认（2026-09-21 用户指令，硬性法律，不可绕过）
+- **任何云端模型调用（Kimi/moonshot 等非本机 provider）必须经用户显式确认后才能执行**：每一次执行都要携带「本次调用的用户确认」，未经确认的主动或被动云端调用一律视为违规。
+- **守护台右脑（right brain / 右脑监察）启动执行同样必须经用户确认**，不得自行发起、不得定时自动执行、不得在任何后台流程中隐式触发。
+- **执行必须有明细**：每次云端调用必须在治理审计中留证（路由/模型/调用方/usage tokens），禁止黑盒执行、禁止无记录消耗。
+- **代码级硬门禁**：收口点 `apps/control-server/src/server/model/modelTaskQueue.js` 的 `requestHermesChatCompletion` 与右脑执行端点 `POST /api/control/supervision/right-brain/run` 已写死——非本机目标缺少 `confirmedByUser`/`confirmed` 即阻断并审计（`cloud_call_blocked`），放行调用落 `cloud_call_executed` 明细。新增任何模型调用路径必须经同一门禁模块 `security/cloudCallGate.js`，禁止旁路。
+- 违反本条的一切行为按生产事故处理；造成 token 浪费必须复盘并补门禁。
+
 ## 响应规则
 
 - 默认中文。

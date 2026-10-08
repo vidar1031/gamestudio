@@ -190,6 +190,20 @@ export async function openaiResponsesJsonForTools({ body, provider, timeoutMs: c
     : cfg.timeoutMs
   const startedAt = Date.now()
   const merged = { ...(body || {}), model: String((body && body.model) || model) }
+  // 2026-09-26：localoxml/OMLX 上 gpt-oss 系模型走 /responses + json_schema 会把 max_tokens 全耗在
+  // reasoning_content（实测每次 8192 tokens/~140s 后 content 为空），随后回退 chat/completions 才出活——
+  // 每次调用白烧 ~2.5 分钟，圣经分块 6 连调直接超 600s 超时。本地通道改为直接用 chat/completions
+  // （schema 内嵌 system prompt），与既有 script draft 路径同款处理；失败仍走原回退逻辑。
+  if (cfg.provider === 'localoxml') {
+    const directChatBody = buildChatCompletionsBodyFromResponsesBody(merged)
+    if (directChatBody) {
+      const chatJson = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: directChatBody, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+      return {
+        json: chatJson,
+        meta: { provider: cfg.provider, api: 'chat.completions', model: merged.model, durationMs: Math.max(0, Date.now() - startedAt), localoxmlDirect: true }
+      }
+    }
+  }
   const json = await openaiRequestJson({ method: 'POST', path: '/responses', body: merged, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
 
   // Fallback to chat/completions if responses returns empty content (e.g. localoxml/OMLX with complex schemas)

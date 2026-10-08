@@ -38,7 +38,8 @@ function poseStatesSchema() {
                   pose: { type: 'string', maxLength: 40 },
                   view: { type: 'string', maxLength: 12 },
                   action: { type: 'string', maxLength: 48 },
-                  expression: { type: 'string', maxLength: 24 }
+                  expression: { type: 'string', maxLength: 24 },
+                  evidence: { type: 'string', maxLength: 120 }
                 },
                 required: ['characterId', 'pose', 'view', 'action', 'expression']
               }
@@ -59,12 +60,18 @@ function buildInstructions() {
     '为每个场景、每个出场角色提取一条"姿势状态"，供后续姿势变体立绘生成使用。\n' +
     '输出要求：\n' +
     '- 只输出一个可 JSON.parse 的 JSON 对象，不要 markdown、不要代码块、不要分析过程。\n' +
-    '- 结构：{"scenes":[{"sceneId":"…","characterStates":[{"characterId":"…","pose":"…","view":"…","action":"…","expression":"…"}]}]}\n' +
+    '- 结构：{"scenes":[{"sceneId":"…","characterStates":[{"characterId":"…","pose":"…","view":"…","action":"…","expression":"…","evidence":"…"}]}]}\n' +
     '- sceneId、characterId 必须原样照抄输入值，禁止编造输入中没有的场景或角色。\n' +
     '- pose：身体姿态关键词（≤8字），如 站立/弯腰/蹲下/衔物/探头/飞行/俯身/抬头。\n' +
     `- view：镜头朝向，从 ${VIEW_OPTIONS.join('/')} 中选一个。\n` +
+    '- view 镜头语言规则（2026-10-06 补充：视角是导演决策，依据该场景的动作性质选择，不要无理由重复正面）：\n' +
+    '  · 行走/奔跑/离去/远去类动作：优先 背面 或 微侧（角色朝向画面深处，观众跟随其行进方向）。\n' +
+    '  · 指向/远眺/观察/对话类动作：优先 侧面 或 微侧（展现视线方向与互动对象）。\n' +
+    '  · 情绪特写/结局感叹/直视观众类：正面 或 微侧。\n' +
+    '  · 同一角色连续场景的 view 禁止超过 2 镜连续重复正面；动作性质相同则保持视角一致。\n' +
     '- action：该场景中角色的可见动作短语（≤16字），必须与剧情摘要语义一致，禁止脱离剧情编造。\n' +
     '- expression：神态/情绪关键词（≤6字），如 急切/专注/开心/沮丧；无明确情绪时输出空字符串。\n' +
+    '- evidence：该姿势判断的原文依据——从本场景剧情摘要里照抄支撑该姿势的那一句（≤40字），禁止自己改写。这是姿势变体生成的凭据，没有原文依据的判断不允许输出。\n' +
     '- 每个角色在每个场景恰好一条；某场景无出场角色时 characterStates 输出空数组。\n' +
     '- 同一角色的姿势设计要考虑跨场景连续性：同一连续动作链的场景保持姿势一致。'
   )
@@ -89,7 +96,8 @@ function normalizePoseStates(parsed, { scenes, resolveCharacterId }) {
         pose: clampText(rawState && rawState.pose, 24),
         view: clampText(rawState && rawState.view, 8),
         action: clampText(rawState && rawState.action, 32),
-        expression: clampText(rawState && rawState.expression, 12)
+        expression: clampText(rawState && rawState.expression, 12),
+        evidence: clampText(rawState && rawState.evidence, 60)
       })
       if (states.length >= 8) break
     }
@@ -153,6 +161,7 @@ export async function extractStoryPoseStates({ provider, model, apiUrl, proxyUrl
         instructions: attempt === 0 ? instructions : `${instructions}\n再次强调：只输出一个可直接 JSON.parse 的 JSON 对象，不要输出任何其他内容。`,
         input: user,
         ...(model ? { model: String(model).trim() } : {}),
+        max_output_tokens: 2048,
         text: { format: { type: 'json_schema', name: 'story_pose_states', strict: true, schema: poseStatesSchema() } }
       }
       try {

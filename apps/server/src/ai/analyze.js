@@ -129,15 +129,24 @@ export function defaultGlobalRulesSkeleton() {
   }
 }
 
-export function analyzeScriptsForBlueprint(scriptsDoc) {
+export function analyzeScriptsForBlueprint(scriptsDoc, formula) {
   const cards = Array.isArray(scriptsDoc?.cards) ? scriptsDoc.cards : []
   const checks = []
   const suggestions = []
 
+  // 2026-10-05 公式感知：阈值取自项目结构公式（aiFormula），不再用写死的"至少2选择点/结局2~3"。
+  // 公式缺省时回退旧阈值（cp≥2、结局2~3、卡片8~12）。
+  const cpTarget = Math.max(1, Number(formula?.choicePoints) || 0)
+  const optTarget = Math.max(2, Number(formula?.optionsPerChoice) || 0)
+  const endTarget = Math.max(1, Number(formula?.endings) || 0)
+  const hasFormula = cpTarget > 0 && endTarget > 0
+  const minCards = hasFormula ? 2 + cpTarget + cpTarget * optTarget + endTarget : 8
+  const maxCards = hasFormula ? minCards + 3 : 12
+
   // 1) card count
-  const countOk = cards.length >= 8 && cards.length <= 12
-  checks.push(makeCheck('card_count', countOk, countOk ? 'info' : 'warn', `卡片数量：${cards.length}（建议 8~12）`))
-  if (!countOk) suggestions.push('将卡片数量收敛到 8~12，避免过长或过短。')
+  const countOk = cards.length >= minCards && cards.length <= maxCards
+  checks.push(makeCheck('card_count', countOk, countOk ? 'info' : 'warn', `卡片数量：${cards.length}（建议 ${minCards}~${maxCards}${hasFormula ? '，按公式推导' : ''}）`))
+  if (!countOk) suggestions.push(`将卡片数量收敛到 ${minCards}~${maxCards}（铺垫2~5 + 选择点${hasFormula ? cpTarget : 'N'} + 后果 + 结局），避免过长或过短。`)
 
   // 2) choice points
   const choiceIdx = []
@@ -151,9 +160,27 @@ export function analyzeScriptsForBlueprint(scriptsDoc) {
     }
   }
 
-  const choiceCountOk = choiceIdx.length >= 2
-  checks.push(makeCheck('choice_count', choiceCountOk, choiceCountOk ? 'info' : 'error', `选择点数量：${choiceIdx.length}（至少 2 个）`))
-  if (!choiceCountOk) suggestions.push('至少加入 2 个选择点，才能形成可用的蓝图分支。')
+  const choiceCountOk = hasFormula ? choiceIdx.length === cpTarget : choiceIdx.length >= 2
+  checks.push(makeCheck(
+    'choice_count',
+    choiceCountOk,
+    choiceCountOk ? 'info' : 'error',
+    hasFormula
+      ? `选择点数量：${choiceIdx.length}（公式要求 ${cpTarget} 个）`
+      : `选择点数量：${choiceIdx.length}（至少 2 个）`
+  ))
+  if (!choiceCountOk) suggestions.push(hasFormula ? `本公式为 ${cpTarget} 个选择点，请调整卡片使选择点数量与公式一致。` : '至少加入 2 个选择点，才能形成可用的蓝图分支。')
+
+  // 2b) 每选择点选项数（公式感知：必须恰好等于 optionsPerChoice）
+  if (hasFormula) {
+    const badOptionCh = []
+    for (const ch of choiceCards) {
+      if (ch.options.length !== optTarget) badOptionCh.push(`第${ch.index}卡(${ch.options.length}选)`)
+    }
+    const optionCountOk = badOptionCh.length === 0
+    checks.push(makeCheck('option_count', optionCountOk, optionCountOk ? 'info' : 'error', optionCountOk ? `每点选项数：OK（每点 ${optTarget} 选）` : `选项数与公式不符：${badOptionCh.join('、')}（公式要求每点 ${optTarget} 选）`))
+    if (!optionCountOk) suggestions.push(`每个选择点必须恰好 ${optTarget} 个选项（选项1${optTarget > 1 ? '、选项2' : ''}${optTarget > 2 ? '、选项3' : ''}），多删少补。`)
+  }
 
   const firstChoice = choiceIdx.length ? (choiceIdx[0] + 1) : null
   const earlyChoiceOk = firstChoice != null && firstChoice >= 3 && firstChoice <= 5
@@ -257,9 +284,14 @@ export function analyzeScriptsForBlueprint(scriptsDoc) {
 
   // 5) endings
   const endings = cards.filter((c) => isEndingCard(c))
-  const endingOk = endings.length >= 2 && endings.length <= 3
-  checks.push(makeCheck('endings', endingOk, endingOk ? 'info' : 'warn', `结局数量：${endings.length}（建议 2~3）`))
-  if (!endingOk) suggestions.push('结局建议控制在 2~3 个，并确保与前面选择的因果一致、可追溯。')
+  const endingOk = hasFormula ? endings.length === endTarget : (endings.length >= 2 && endings.length <= 3)
+  checks.push(makeCheck(
+    'endings',
+    endingOk,
+    endingOk ? 'info' : 'warn',
+    hasFormula ? `结局数量：${endings.length}（公式要求 ${endTarget} 个）` : `结局数量：${endings.length}（建议 2~3）`
+  ))
+  if (!endingOk) suggestions.push(hasFormula ? `本公式要求 ${endTarget} 个结局，请调整结局卡数量。` : '结局建议控制在 2~3 个，并确保与前面选择的因果一致、可追溯。')
 
   // 6) duplicative choices heuristic
   let dupWarn = false
@@ -276,7 +308,7 @@ export function analyzeScriptsForBlueprint(scriptsDoc) {
   const proposedRules = defaultGlobalRulesSkeleton()
   // If we detect issues, emphasize the failing checks as hard rules
   if (!earlyChoiceOk) proposedRules.hardRules.unshift('第 1 个选择点必须在第 3~5 张卡内出现。')
-  if (!choiceCountOk) proposedRules.hardRules.unshift('至少 2 个选择点。')
+  if (!choiceCountOk) proposedRules.hardRules.unshift(hasFormula ? `选择点数量必须恰好 ${cpTarget} 个（当前公式）。` : '至少 2 个选择点。')
   if (!newlineOk) proposedRules.hardRules.unshift('选择点选项必须换行输出（选项A/选项B/选项C）。')
   if (!consequenceOk) proposedRules.hardRules.unshift('每个选择点后必须紧跟 1~2 张后果卡，并标注 A后果/B后果。')
   if (!endingOk) proposedRules.hardRules.unshift('结局数量控制在 2~3 个，且可追溯到选择。')

@@ -129,7 +129,9 @@ export const StoryBibleGeneratePayloadSchema = z.object({
     scenePresenceRules: z.array(z.string()).optional(),
     source: z.string().optional(),
   }).strict(),
-  timeoutMs: z.number().int().min(1000).max(600000).optional(),
+  // timeoutMs 允许 0：服务端路由约定 <=0 表示无限等待（本地 27B 圣经生成可能超过 10 分钟档位），
+  // 此前 min(1000) 与处理器语义矛盾，编辑器发 timeoutMs:0 被门禁整包 400（假日出游锁定向导第2步卡死事件 2026-10-06）
+  timeoutMs: z.number().int().min(0).max(600000).optional(),
 })
 
 export const StoryAssetsPlanPayloadSchema = z.object({

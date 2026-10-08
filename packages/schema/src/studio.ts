@@ -196,6 +196,8 @@ export type CharacterPlacementV1 = {
   id: string
   characterId: string
   imageAssetId?: string
+  /** 2026-09-27 prop 分层合成：道具摆位链接的计划资产 id（characterId 置空，渲染认 imageAssetId） */
+  propAssetId?: string
   transform: Transform2DV1
   visible?: boolean
   zIndex?: number

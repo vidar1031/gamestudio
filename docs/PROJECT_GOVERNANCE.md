@@ -103,6 +103,11 @@
 - Agent 运行时只读取 `ai/` 下的契约文件和 `ai/memory/` 下的记忆文件。
 - Agent **禁止**读取 `memory/` 根目录、`docs/` 中的历史版本、或 `state/` 中的原始事件流。
 
+**原则 4：云端模型调用必须经用户显式确认（2026-09-21 用户指令，硬性法律）**
+- 任何云端模型调用（Kimi/moonshot 等非本机 provider）必须携带本次执行的用户显式确认；未经确认的主动/被动云端调用一律违规，守护台右脑启动执行同样适用。
+- 每次云端执行必须落治理审计明细（路由/模型/调用方/usage tokens），禁止黑盒执行。
+- 代码级硬门禁写死在 `local-agent-control`：模型调用收口 `modelTaskQueue.requestHermesChatCompletion` + 右脑执行端点 + 门禁模块 `security/cloudCallGate.js`；新增模型调用路径必须过同一门禁，禁止旁路。
+
 ---
 
 ## 2. 记忆文件管理规则

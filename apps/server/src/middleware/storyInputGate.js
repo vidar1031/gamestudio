@@ -31,14 +31,17 @@ export function storyInputGate(type, payloadExtractor) {
       validateStoryOutput(type, payload)
     } catch (error) {
       if (error instanceof StoryOutputContractError) {
+        const issues = error.issues.map((issue) => ({
+          message: issue.message,
+          path: issue.path.map((p) => String(p)).join('.'),
+        }))
+        // 2026-10-06 可诊断性：门禁拒绝必须落服务端日志（此前只回包不记录，前端只能看到笼统一句话，无法定位违规字段）
+        console.error(`${LOG_PREFIX} rejected ${type}: ${issues.map((i) => `${i.path || '(root)'}=${i.message}`).join(' | ')}`)
         return c.json({
           success: false,
           error: 'story_input_contract_violation',
           message: `${LOG_PREFIX} Input rejected for ${type}`,
-          issues: error.issues.map((issue) => ({
-            message: issue.message,
-            path: issue.path.map((p) => String(p)).join('.'),
-          })),
+          issues,
         }, 400)
       }
       return c.json({

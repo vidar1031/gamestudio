@@ -1,6 +1,6 @@
 {
   "registryVersion": "1.0.0",
-  "generatedAt": "2026-09-09T04:35:00.000Z",
+  "generatedAt": "2026-09-16T09:46:43.934981Z",
   "provider": {
     "id": "gamestudio",
     "name": "GameStudio 互动故事生产能力层",
@@ -3033,6 +3033,86 @@
         "重启项目",
         "重启工作室"
       ],
+      "chatArgs": []
+    },
+    {
+      "code": "GS-47",
+      "eventId": "asset.propState.generate",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "道具状态变体生成",
+      "description": "为计划内道具资产生成单个剧情状态变体：strategy=ai 走 sprite→评审→抠图；strategy=fill_composite 走主参考确定性水位/内容物合成（零漂移）；登记 stateVariants + lock_confirm 留痕，进度经 GS-35 查询。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "assetId",
+          "stateKey",
+          "label"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "assetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "stateKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "promptZh": {
+            "type": "string"
+          },
+          "negativePrompt": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "ai",
+              "fill_composite"
+            ],
+            "description": "ai=扩散模型生成；fill_composite=主参考确定性填充合成（水位/内容物叠加）"
+          },
+          "fill": {
+            "type": "object",
+            "description": "fill_composite：{level:0-1, insetL/insetR/insetB/neckRatio}"
+          },
+          "overlays": {
+            "type": "array",
+            "description": "fill_composite：内容物叠加 [{planAssetId|imagePath, count, brightness, alpha, blueShift, spots}]"
+          }
+        },
+        "additionalProperties": true
+      },
+      "sideEffects": [
+        "project_files",
+        "image_review_records"
+      ],
+      "idempotent": false,
+      "reviewRequired": true,
+      "timeoutMs": 1800000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/assets/:assetId/state-variants/generate"
+        }
+      },
+      "aliases": [],
       "chatArgs": []
     }
   ]

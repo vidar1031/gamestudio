@@ -100,7 +100,7 @@ function parsePoseReviewContent(rawContent, meta) {
   }
   const scoreNum = Number(parsed && parsed.score)
   if (!Number.isFinite(scoreNum)) {
-    console.log(`[ch.pose_review][debug] VALIDATE_FAIL keys=${Object.keys(parsed || {}).join(',')} score=${String(parsed?.score)}`)
+    console.log(`[ch.pose_review][debug] VALIDATE_FAIL keys=${Object.keys(parsed || {}).join(',')} score=${String(parsed?.score)} content_head=${content.slice(0, 160).replace(/\n/g, ' ')}`)
     throw new Error('invalid_pose_review_output')
   }
   const score = Math.max(0, Math.min(100, Math.round(scoreNum)))
@@ -125,32 +125,37 @@ export async function reviewCharacterPoseConsistencyWithLocalVl({
   const timeout = setTimeout(() => controller.abort(), 180_000)
   try {
     // 本地 VL 评审经 control 资源调度器 vision 租约准入（与 LLM/出图互斥换入换出）
-    const res = await withResourceLease('vision', `gs:pose_review:${asStr(characterName) || '-'}`, () => fetch(url, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(asStr(apiKey).trim() ? { Authorization: `Bearer ${asStr(apiKey).trim()}` } : {})
-      },
-      body: JSON.stringify({
-        model: reviewModel,
-        messages: [
-          { role: 'system', content: buildPoseReviewInstructions({ characterName }) },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: '第一张：角色锁定主参考（身份基准）。第二张：待评分的新姿势候选立绘。请输出 JSON 评分。' },
-              { type: 'image_url', image_url: { url: asStr(referenceImageDataUrl).trim() } },
-              { type: 'image_url', image_url: { url: asStr(candidateImageDataUrl).trim() } }
-            ]
-          }
-        ],
-        // OMLX 按 max_tokens 预留 KV：评审输出只有一句话 JSON，给有限值防止撞内存护栏
-        max_tokens: 2048,
-        temperature: 0.2
+    // 2026-09-16 修复：响应体消费必须留在租约内——fetch 在响应头到达即 resolve，
+    // 此前租约提前释放 → 调度器 settle 换回 LLM → gemma 生成中途被卸载 → 180s 空响应。
+    const { res, json } = await withResourceLease('vision', `gs:pose_review:${asStr(characterName) || '-'}`, async () => {
+      const r = await fetch(url, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(asStr(apiKey).trim() ? { Authorization: `Bearer ${asStr(apiKey).trim()}` } : {})
+        },
+        body: JSON.stringify({
+          model: reviewModel,
+          messages: [
+            { role: 'system', content: buildPoseReviewInstructions({ characterName }) },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '第一张：角色锁定主参考（身份基准）。第二张：待评分的新姿势候选立绘。请输出 JSON 评分。' },
+                { type: 'image_url', image_url: { url: asStr(referenceImageDataUrl).trim() } },
+                { type: 'image_url', image_url: { url: asStr(candidateImageDataUrl).trim() } }
+              ]
+            }
+          ],
+          // OMLX 按 max_tokens 预留 KV：评审输出只有一句话 JSON，给有限值防止撞内存护栏
+          max_tokens: 2048,
+          temperature: 0.2
+        })
       })
-    }))
-    const json = await res.json().catch(() => null)
+      const j = await r.json().catch(() => null)
+      return { res: r, json: j }
+    })
     if (!res.ok) {
       throw new Error(json?.error?.message || `local_vl_http_${res.status}`)
     }
