@@ -2124,6 +2124,19 @@
           },
           "height": {
             "type": "integer"
+          },
+          "backgroundOnly": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "background"
+            ]
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000
           }
         },
         "additionalProperties": true
@@ -3114,6 +3127,85 @@
       },
       "aliases": [],
       "chatArgs": []
+    },
+    {
+      "code": "GS-48",
+      "eventId": "asset.inherit",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "继承基底项目已锁定资产",
+      "description": "按《xxxx2》命名约定（或显式 sourceId）把基底项目已锁定的参考图/提示词/姿势变体/线稿/全局提示词继承到本项目，跳过抽卡/锁定/线稿环节。缺资产计划时返回 missing_plan。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "inherited": {
+            "type": "array"
+          },
+          "unmatched": {
+            "type": "array"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/story-assets/plan.json",
+        "fs:write:storage/projects/{projectId}/project.json",
+        "fs:write:storage/projects/{projectId}/assets/ai/"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 300000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/assets/inherit"
+        }
+      },
+      "aliases": [
+        "继承资产",
+        "故事2继承",
+        "资产继承"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "目标项目 ID"
+        },
+        {
+          "name": "sourceId",
+          "required": false,
+          "description": "基底项目 ID（省略时按《xxxx2》命名解析）"
+        }
+      ]
     }
   ]
 }
