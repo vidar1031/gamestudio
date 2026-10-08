@@ -6900,18 +6900,43 @@ async function inheritStoryAssetsFromProject({ id, dir, sourceId, force = false 
     if (key.endsWith('|')) continue
     if (!srcByName.has(key)) srcByName.set(key, a)
   }
+  // 2026-10-08 近名模糊匹配（故事2 圣经命名漂移实证：黄色骑手服 vs 黄色外卖骑手服、外卖头盔 vs 骑行头盔）：
+  // ①包含匹配（长名含短名且短名 ≥3 字）；②共享 ≥2 字尾缀（头盔/街道/西服类）。
+  // 仅当同类别下候选唯一才采纳，多候选/零候选一律未匹配（错配比漏配更糟——错配会锁错参考图）。
+  const sharedTailLen = (a, b) => {
+    let n = 0
+    while (n < Math.min(a.length, b.length) && a[a.length - 1 - n] === b[b.length - 1 - n]) n += 1
+    return n
+  }
+  const fuzzyMatchSource = (tCat, tName) => {
+    const tn = normName(tName)
+    if (tn.length < 2) return null
+    const candidates = []
+    for (const a of srcPlan.assets) {
+      if (String(a?.category || '').trim() !== tCat) continue
+      const sn = normName(a?.name)
+      if (!sn || sn === tn) continue
+      const shorter = tn.length <= sn.length ? tn : sn
+      const longer = tn.length <= sn.length ? sn : tn
+      if (shorter.length >= 3 && longer.includes(shorter)) { candidates.push(a); continue }
+      if (sharedTailLen(tn, sn) >= 2) candidates.push(a)
+    }
+    return candidates.length === 1 ? candidates[0] : null
+  }
 
   const summary = { sourceId, inherited: [], skipped: [], unmatched: [] }
   const newProjectAssets = []
   const lockTraces = []
   const nextAssets = []
+  const matchedSrcByTargetId = new Map()
 
   for (const target of plan.assets) {
     const tCat = String(target?.category || '').trim()
     const tId = String(target?.id || '').trim()
     const tName = String(target?.name || '').trim()
     if (!tId) { nextAssets.push(target); continue }
-    const src = srcByName.get(`${tCat}|${normName(tName)}`) || null
+    const srcExact = srcByName.get(`${tCat}|${normName(tName)}`) || null
+    const src = srcExact || fuzzyMatchSource(tCat, tName)
     if (!src) {
       if (tCat === 'character' || tCat === 'prop') summary.unmatched.push({ assetId: tId, name: tName, category: tCat })
       nextAssets.push(target)
@@ -6925,6 +6950,7 @@ async function inheritStoryAssetsFromProject({ id, dir, sourceId, force = false 
 
     const label = `${tName}(${tCat})`
     const patch = { inheritedFrom: String(sourceId) }
+    matchedSrcByTargetId.set(tId, src)
     let copied = 0
     // 1) 锁定参考图
     const srcRefUri = String(src?.primaryReferenceAssetUri || '').trim()
@@ -6948,7 +6974,11 @@ async function inheritStoryAssetsFromProject({ id, dir, sourceId, force = false 
       }
     }
     // 2) 提示词四套（锚点 + 参考图提示词，与参考图同一证据链，必须整套继承）
+    // 2026-10-08 地点锚点不继承（故事2 实证缺陷）：地点锚点含时间/氛围语境（晨光照 vs 夜晚霓虹），
+    // 继承会把基底故事的时间覆盖故事2 自有圣经锚点——地点锚点始终保留目标项目圣经原文。
+    const skipAnchor = tCat === 'location'
     for (const [sk, tk] of [['anchorPrompt', 'anchorPrompt'], ['negativePrompt', 'negativePrompt'], ['referencePromptZh', 'referencePromptZh'], ['referencePromptEn', 'referencePromptEn'], ['referenceNegativePromptZh', 'referenceNegativePromptZh'], ['referenceNegativePrompt', 'referenceNegativePrompt'], ['referencePromptHint', 'referencePromptHint']]) {
+      if (skipAnchor && (sk === 'anchorPrompt' || sk === 'negativePrompt')) continue
       const v = String(src?.[sk] || '').trim()
       if (v) patch[tk] = v
     }
@@ -7013,7 +7043,7 @@ async function inheritStoryAssetsFromProject({ id, dir, sourceId, force = false 
     if (String(src?.lineartNegativePrompt || '').trim()) patch.lineartNegativePrompt = String(src.lineartNegativePrompt).trim()
 
     nextAssets.push({ ...target, ...patch })
-    summary.inherited.push({ assetId: tId, name: tName, category: tCat, filesCopied: copied, variants: Array.isArray(patch.poseVariants) ? patch.poseVariants.length : 0 })
+    summary.inherited.push({ assetId: tId, name: tName, category: tCat, matchedName: String(src?.name || '').trim(), matchType: srcExact ? 'exact' : 'fuzzy', filesCopied: copied, variants: Array.isArray(patch.poseVariants) ? patch.poseVariants.length : 0 })
   }
 
   // 5) 全局提示词 + worldAnchor + 提示词闸（基底已批准 → 直接置闸）
@@ -7032,8 +7062,8 @@ async function inheritStoryAssetsFromProject({ id, dir, sourceId, force = false 
   if (String(srcBg.storyboardGlobalNegativePrompt || '').trim()) bg.storyboardGlobalNegativePrompt = String(srcBg.storyboardGlobalNegativePrompt).trim()
   const promptMap = bg.storyboardLockAssetPrompts && typeof bg.storyboardLockAssetPrompts === 'object' ? { ...bg.storyboardLockAssetPrompts } : {}
   for (const item of summary.inherited) {
-    // 源提示词按目标 assetId 重映射（键是 assetId 不是名称）
-    const srcAsset = srcPlan.assets.find((a) => String(a?.category || '').trim() === item.category && normName(a?.name) === normName(item.name))
+    // 源提示词按目标 assetId 重映射（键是 assetId 不是名称）；匹配源复用循环内已定的 exact/fuzzy 结果
+    const srcAsset = matchedSrcByTargetId.get(String(item.assetId || '').trim()) || null
     const sp = srcAsset ? srcAssetPrompts[String(srcAsset.id || '').trim()] : null
     if (sp && typeof sp === 'object') {
       promptMap[item.assetId] = {
@@ -8993,11 +9023,35 @@ app.post('/api/projects/:id/ai/reviews/:reviewId/approve', async (c) => {
       references: review.params && review.params.references
     })
     const decided = await decideImageReview(dir, review.reviewId, { approved: true })
+    await maybeCloseRenderAllBatchTask(id, dir)
     return c.json({ success: true, review: decided, projectAsset })
   }
 
   return c.json({ success: false, error: 'unknown_review_phase' }, 400)
 })
+
+// 2026-10-08 渲染批次收敛钩子（故事2 实证：批次 7 场景全部挂 scene_bind 审核后任务停留 pending_review、
+// done=false——2 过 5 拒后批次永久悬挂，后续 render-all 一律 409 render_all_running）。
+// scene_bind 审核每决断一条调用一次：当项目已无待决 scene_bind 审核且批次仍开着，收敛批次任务。
+async function maybeCloseRenderAllBatchTask(id, dir) {
+  try {
+    const open = listAiTasks(id, { includeDone: false }).find((t) => t.kind === 'story.scenes.render_all' && String(t.stage || '') === 'pending_review')
+    if (!open) return
+    const pending = await listImageReviews(dir, { status: 'pending' })
+    if ((pending || []).some((r) => r.phase === 'scene_bind')) return
+    let coverage = null
+    try { coverage = await getStoryImageCoverage(dir) } catch (_) { /* 总账失败不影响收敛 */ }
+    const bound = coverage && coverage.scenes && Array.isArray(coverage.scenes.items)
+      ? coverage.scenes.items.filter((s) => s.status !== 'pending').length
+      : null
+    updateAiTask(open.taskId, {
+      done: true,
+      stage: 'done',
+      message: `批量渲染审核全部决断${bound != null ? `，已绑定 ${bound}/${coverage.scenes.items.length}` : ''}（被拒场景可重新渲染）`,
+      result: { ...(open.result && typeof open.result === 'object' ? open.result : {}), reviewClosed: true, coverage }
+    })
+  } catch (_) { /* 收敛失败不阻断审核结果 */ }
+}
 
 app.post('/api/projects/:id/ai/reviews/:reviewId/reject', async (c) => {
   const id = c.req.param('id')
@@ -9008,6 +9062,7 @@ app.post('/api/projects/:id/ai/reviews/:reviewId/reject', async (c) => {
   if (!review) return c.json({ success: false, error: 'review_not_found' }, 404)
   if (review.status !== 'pending') return c.json({ success: false, error: 'review_already_decided' }, 409)
   const decided = await decideImageReview(dir, review.reviewId, { approved: false, rejectReason: String(body?.reason || '') })
+  await maybeCloseRenderAllBatchTask(id, dir)
   return c.json({ success: true, review: decided })
 })
 

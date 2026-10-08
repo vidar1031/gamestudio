@@ -2662,6 +2662,9 @@
           },
           "sceneIds": {
             "type": "array"
+          },
+          "applyComposition": {
+            "type": "boolean"
           }
         },
         "additionalProperties": true
@@ -3204,6 +3207,77 @@
           "name": "sourceId",
           "required": false,
           "description": "基底项目 ID（省略时按《xxxx2》命名解析）"
+        }
+      ]
+    },
+    {
+      "code": "GS-49",
+      "eventId": "story.composition.extract",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "提取场景构图需求单",
+      "description": "导演层构图：按场景提取元素的状态/位置/大小/层级/关系，persist=true 时落盘 plan.scenes[].composition，供摆位按需求单执行。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "persist": {
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 5000,
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": "object"
+          },
+          "persisted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 600000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/composition"
+        }
+      },
+      "aliases": [
+        "构图",
+        "构图需求单",
+        "导演构图"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
         }
       ]
     }
