@@ -4148,7 +4148,8 @@ app.post('/api/projects/ai/create', storyInputGate('story.project.create'), asyn
   const dir = projectDir(id)
 
   const startedAt = Date.now()
-  const aiTimeoutMs = 90_000
+  // 调用方传入的预算生效（Control 长脚本给 300s），缺省仍为 90s
+  const aiTimeoutMs = clampInt(body?.timeoutMs, 90_000, 300_000, 90_000)
 
   // 模型路由：受控模式使用 modelExecution，独立模式使用 Studio Settings
   const requestedProvider = isControlledMode
@@ -4298,7 +4299,8 @@ app.post('/api/projects/:id/ai/regenerate', async (c) => {
   const titleIn = String(body?.title || '').trim()
   const formula = normalizeAiStoryFormula(body)
   const startedAt = Date.now()
-  const aiTimeoutMs = 90_000
+  // 调用方传入的预算生效（Control 长脚本给 300s），缺省仍为 90s
+  const aiTimeoutMs = clampInt(body?.timeoutMs, 90_000, 300_000, 90_000)
   const requestedProvider = String(studio.effective.scripts.provider || 'local').toLowerCase()
   const requestedModel = studio.effective.scripts.model || null
   if (!requestedProvider || requestedProvider === 'none') {
@@ -6707,6 +6709,9 @@ app.post('/api/projects/:id/ai/story/composition', async (c) => {
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
+    // 2026-10-09 构图 500 可诊断（白雪公主 9 人设批次失败一度只能靠猜）：真实错误落日志
+    console.error(`[story.composition] project=${id} error=${msg}`)
+    logStage({ stage: 'story.composition', event: 'error', traceId: createTraceId(), project: id, item: msg.slice(0, 300) })
     return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
 })
