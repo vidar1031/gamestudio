@@ -3280,6 +3280,79 @@
           "description": "项目 ID"
         }
       ]
+    },
+    {
+      "code": "GS-50",
+      "eventId": "story.bible.qc",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "圣经质检（sceneRefs 校验与自动修正）",
+      "description": "确定性规则检查 + 逐场景 LLM 对照复核 bible.sceneRefs 与剧情一致性；persist=true 时回写修正并作废旧资产计划。返回逐场景差异报告。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "persist": {
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 10000,
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "changedCount": {
+            "type": "integer"
+          },
+          "report": {
+            "type": "array"
+          },
+          "persisted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/project.json"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 600000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/bible/qc"
+        }
+      },
+      "aliases": [
+        "圣经质检",
+        "场景绑定质检"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
     }
   ]
 }

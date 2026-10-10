@@ -27,7 +27,8 @@ import { buildPoseStateExtractionInput, extractStoryPoseStates } from './ai/stor
 import { buildPropStateExtractionInput, extractStoryPropStates } from './ai/storyPropStates.js'
 import { buildCompositionInput, extractStoryComposition } from './ai/storyComposition.js'
 import { translatePromptText } from './ai/translate.js'
-import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, buildStorySceneRenderSpec, getStoryAssetRenderProfile, repairStoryAssetPlanSceneLinks, resolveStoryStylePreset, summarizeStoryAssetPlan } from './ai/storyAssets.js'
+import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, buildStorySceneRenderSpec, getStoryAssetRenderProfile, matchSceneRef, normalizeSceneRefs, repairStoryAssetPlanSceneLinks, resolveStoryStylePreset, summarizeStoryAssetPlan } from './ai/storyAssets.js'
+import { qcSceneRefsDeterministic, qcStoryBibleSceneRefsWithAi } from './ai/storyBibleQc.js'
 import { buildStoryboardLockTestNegativePrompt, buildStoryboardLockTestPrompt, buildStoryboardLockTestWorkflow, pickStoryboardLockTestAsset, reviewStoryboardLockImageWithAi } from './ai/storyLock.js'
 import { evaluateStoryAssetReferenceReview, sniffImageMetaFromBytes, verifyStoryAssetReferenceFile } from './ai/storyAssetReferenceGate.js'
 import { reviewCharacterPoseConsistencyWithAi, reviewCharacterPoseConsistencyWithLocalVl } from './ai/characterPoseReview.js'
@@ -6480,6 +6481,110 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
       },
       mapped.httpStatus
     )
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 2026-10-10 圣经质检步（GS-50）：sceneRefs 与剧情一致性校验+自动修正。
+// 背景：LLM 生成的 bible 顶层 sceneRefs 错绑是最高频生产事故（白雪公主 7/11 场景错绑、
+// 小明2 结局错绑、龟兔漏绑），此前全靠人工读剧情修正。本端点：确定性规则检查 +
+// 逐场景 LLM 对照复核（1 场 1 调用）+ persist=true 时回写 bible.sceneRefs（写盘带 _rev）。
+// 写盘后旧资产计划作废（plan 由 sceneRefs 派生，修正后必须重建）。
+// ---------------------------------------------------------------------------
+app.post('/api/projects/:id/ai/story/bible/qc', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.prompt) return c.json({ success: false, error: 'disabled', message: '“提示词生成”已在设置中关闭' }, 503)
+  if (!studio.effective.prompt.provider || studio.effective.prompt.provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“提示词生成”并选择 Provider/Model' }, 400)
+  }
+
+  const bundle = await readProjectBundle(id)
+  const bible = readStoryBibleFromProjectDoc(bundle.project)
+  if (!bible || typeof bible !== 'object') return c.json({ success: false, error: 'missing_story_bible', message: '请先生成 Story Bible。' }, 400)
+  const storyNodes = (Array.isArray(bundle.story?.nodes) ? bundle.story.nodes : []).filter((n) => ['scene', 'ending'].includes(String(n && n.kind || '')))
+  if (!storyNodes.length) return c.json({ success: false, error: 'missing_story', message: '未找到故事场景节点。' }, 400)
+
+  const traceId = createTraceId()
+  const task = createAiTask(id, 'story.bible.qc', { total: storyNodes.length, message: '圣经质检：逐场景核对绑定' })
+  logStage({ stage: 'story.bible.qc', event: 'start', traceId, project: id, item: `scenes:${storyNodes.length}` })
+
+  try {
+    const refsMap = normalizeSceneRefs(bible)
+    const entities = {
+      characters: (Array.isArray(bible.characters) ? bible.characters : []).map((x) => ({ id: String(x?.id || '').trim(), name: String(x?.name || '').trim(), aliases: x?.aliases })).filter((x) => x.id),
+      props: (Array.isArray(bible.props) ? bible.props : []).map((x) => ({ id: String(x?.id || '').trim(), name: String(x?.name || '').trim(), aliases: x?.aliases })).filter((x) => x.id),
+      locations: (Array.isArray(bible.locations) ? bible.locations : []).map((x) => ({ id: String(x?.id || '').trim(), name: String(x?.name || '').trim(), aliases: x?.aliases })).filter((x) => x.id)
+    }
+    const scenesInput = storyNodes.map((node, index) => {
+      const hit = matchSceneRef(refsMap, node, index)
+      return {
+        sceneId: String(node.id || '').trim(),
+        sceneName: String(node.name || node.body?.title || '').trim(),
+        summary: String(node.body?.text || '').trim().slice(0, 400),
+        bound: hit && hit.value ? hit.value : { characters: [], props: [], locations: [] }
+      }
+    })
+
+    const deterministicIssues = qcSceneRefsDeterministic({ scenes: scenesInput, entities })
+    const timeoutMs = clampInt(body?.timeoutMs, 10_000, 600_000, 120_000)
+    const { scenes: fixedScenes } = await qcStoryBibleSceneRefsWithAi({
+      provider: studio.effective.prompt.provider,
+      model: studio.effective.prompt.model,
+      apiUrl: studio.effective.prompt.apiUrl,
+      proxyUrl: studio.effective.network.proxyUrl,
+      timeoutMs,
+      input: { storyTitle: String(bundle.project?.title || '').trim(), entities, scenes: scenesInput },
+      onProgress: (i, total, sid) => updateAiTask(task.taskId, { stage: 'reviewing', current: i + 1, message: `质检场景 ${i + 1}/${total}：${sid}` })
+    })
+
+    // 差异报告：逐场景 added/removed
+    const report = []
+    const fixedRefs = {}
+    for (const fix of fixedScenes) {
+      const before = (scenesInput.find((s) => s.sceneId === fix.sceneId) || {}).bound || { characters: [], props: [], locations: [] }
+      const diff = (a, b) => ({ added: b.filter((x) => !a.includes(x)), removed: a.filter((x) => !b.includes(x)) })
+      const dChars = diff(before.characters || [], fix.characters)
+      const dProps = diff(before.props || [], fix.props)
+      const dLocs = diff(before.locations || [], fix.locations)
+      const changed = dChars.added.length + dChars.removed.length + dProps.added.length + dProps.removed.length + dLocs.added.length + dLocs.removed.length > 0
+      report.push({ sceneId: fix.sceneId, changed, reason: fix.reason, characters: dChars, props: dProps, locations: dLocs, ...(fix.qcFailed ? { qcFailed: true } : {}) })
+      fixedRefs[fix.sceneId] = { characters: fix.characters, props: fix.props, locations: fix.locations }
+    }
+    const changedCount = report.filter((r) => r.changed).length
+    const qcFailedCount = report.filter((r) => r.qcFailed).length
+
+    let persisted = false
+    if (body?.persist === true && changedCount > 0) {
+      const projectPath = path.join(dir, 'project.json')
+      const projectDoc = await readJson(projectPath)
+      const bg = projectDoc.state && typeof projectDoc.state.aiBackground === 'object' ? projectDoc.state.aiBackground : (projectDoc.state = { ...(projectDoc.state || {}) }, projectDoc.state.aiBackground = {})
+      const nextBible = { ...bible, sceneRefs: fixedRefs }
+      bg.storyBible = nextBible
+      bg.storyBibleJson = JSON.stringify(nextBible)
+      projectDoc.updatedAt = nowIso()
+      projectDoc._rev = Number(projectDoc._rev || 0) + 1
+      await writeJson(projectPath, projectDoc)
+      // 旧资产计划作废：sceneRefs 变了，plan 必须重建（与 bible 重新生成同款语义）
+      await rm(projectStoryAssetsPlanPath(id), { force: true }).catch(() => {})
+      persisted = true
+    }
+
+    updateAiTask(task.taskId, { stage: 'done', done: true, current: storyNodes.length, message: `质检完成：${changedCount} 场景修正${qcFailedCount ? `，${qcFailedCount} 场景 LLM 复核失败保留原绑定` : ''}${persisted ? '，已回写并作废旧计划' : ''}`, result: { changedCount, qcFailedCount, deterministicIssueCount: deterministicIssues.length, persisted } })
+    logStage({ stage: 'story.bible.qc', event: 'ok', traceId, project: id, item: `changed:${changedCount} failed:${qcFailedCount} persisted:${persisted}` })
+    return c.json({ success: true, taskId: task.taskId, changedCount, qcFailedCount, deterministicIssues, report, persisted })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    console.error(`[story.bible.qc] project=${id} error=${msg}`)
+    updateAiTask(task.taskId, { stage: 'error', done: true, error: msg, message: `圣经质检失败：${msg}` })
+    logStage({ stage: 'story.bible.qc', event: 'error', traceId, project: id, item: msg.slice(0, 300) })
+    const mapped = classifyAiError(e)
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
 })
 

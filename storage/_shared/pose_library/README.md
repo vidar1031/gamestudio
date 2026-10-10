@@ -60,3 +60,9 @@ POST /api/projects/:id/ai/story/scenes/:sceneId/layered-produce
 **检测器选择（实测对照）**：DWPose（新）对真实比例人形精度高，但对大头绘本卡通/横躺姿态会**零检测出全黑图**（拟人兔跑/睡姿源图实测全黑）；OpenPose（旧）反而能检出卡通角色。**默认 DW，出全黑（文件 <2KB）立即换 OpenPose 重试**——`extractComfyuiPoseSkeleton` 已支持 `preprocessor:'openpose'` 参数。
 
 **动物角色结论**：拟人双足动物（绘本兔/熊一类站立造型）骨架链完全适用（姿势对+身份守住）；四足动物（乌龟）主参考天然行走姿态，简谱档即可，AnimalPosePreprocessor 已注册可用但 union openpose 控制网不兼容四足骨架格式（未验通，勿用）。绿幕姿势词对动物的对照失败模式：姿势能出但身份/服装漂移（红袖跑兔事故）——骨架驱动仍是唯一正路。
+
+## 拟人动物变体配方（2026-10-10 三只小猪实证）
+
+人形骨架驱动拟人动物时，身份保持取决于物种标记强度：
+- **强标记**（兔耳/鹿角等大轮廓）：常规参数（ipadapterWeight 0.85）即可。
+- **弱标记**（猪鼻/粉皮等细节）：v1 常规档会把头拉成人形（猪变人类小孩事故）；必须用显性物种词（"big pig head with round snout and big pig ears, pink pig skin, NOT a human face"）+ `ipadapterWeight=0.95`、`ipadapterStartAt=0.2`。

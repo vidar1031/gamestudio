@@ -13,6 +13,8 @@ function asStr(v) { return String(v == null ? '' : v).trim() }
 function asList(v) { return Array.isArray(v) ? v : [] }
 function clampNum(v, lo, hi, dflt) { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt }
 
+const MAX_COMPOSITION_ITEMS = 24
+
 function compositionSchema() {
   return {
     type: 'object',
@@ -29,7 +31,7 @@ function compositionSchema() {
             cameraNote: { type: 'string', maxLength: 80 },
             items: {
               type: 'array',
-              maxItems: 10,
+              maxItems: MAX_COMPOSITION_ITEMS,
               items: {
                 type: 'object',
                 additionalProperties: false,
@@ -78,8 +80,8 @@ function buildInstructions() {
     '输出要求：\n' +
     '- 只输出一个可 JSON.parse 的 JSON 对象，不要 markdown、不要代码块、不要分析过程。\n' +
     '- 结构：{"scenes":[{"sceneId":"…","cameraNote":"…","items":[{"subjectId":"…","kind":"character","stateKey":"…","x":0.5,"y":0.9,"scale":0.5,"zIndex":3,"flipH":false,"blocking":"…","evidence":"…"}]}]}\n' +
-    '- sceneId、subjectId 必须原样照抄输入值；items 必须恰好覆盖输入清单里该场景的全部元素，不多不少。\n' +
-    '- 同一元素在同场景只出现一次；数值必须落在约定区间内。'
+    `- sceneId、subjectId 必须原样照抄输入值；items 必须恰好覆盖输入清单里该场景的全部元素，不多不少（每场最多 ${MAX_COMPOSITION_ITEMS} 项）。\n` +
+    `- 同一元素在同场景只出现一次；单场元素超过 ${MAX_COMPOSITION_ITEMS} 项时无法构图，应完整输出而非静默省略。数值必须落在约定区间内。`
   )
 }
 
@@ -112,7 +114,7 @@ function normalizeComposition(parsed, { scenes }) {
         blocking: clampText2(rawItem && rawItem.blocking, 60),
         evidence: clampText2(rawItem && rawItem.evidence, 80)
       })
-      if (items.length >= 10) break
+      if (items.length >= MAX_COMPOSITION_ITEMS) break
     }
     // 2026-10-05 导演后处理（确定性纪律，不依赖模型自觉）：
     // ①scale 硬顶 0.85（单元素不得撑满画幅）；②≥3 元素的群像场景主元素 ≤0.7；
@@ -146,9 +148,37 @@ function normalizeComposition(parsed, { scenes }) {
 
 function clampText2(v, max) { return asStr(v).slice(0, max) }
 
-function validateComposition(normalized) {
-  if (!normalized || !Array.isArray(normalized.scenes) || !normalized.scenes.length) return false
-  return normalized.scenes.some((scene) => scene.items.length > 0)
+export function validateCompositionCoverage(normalized, expectedScenes) {
+  const issues = []
+  if (!normalized || !Array.isArray(normalized.scenes) || !normalized.scenes.length) return ['composition_empty']
+
+  const actualByScene = new Map()
+  for (const scene of normalized.scenes) {
+    const sceneId = asStr(scene && scene.sceneId)
+    if (actualByScene.has(sceneId)) {
+      issues.push(`duplicate_scene:${sceneId}`)
+      continue
+    }
+    actualByScene.set(sceneId, scene)
+  }
+  for (const expected of asList(expectedScenes)) {
+    const sceneId = asStr(expected && expected.sceneId)
+    const actual = actualByScene.get(sceneId)
+    if (!actual) {
+      issues.push(`missing_scene:${sceneId}`)
+      continue
+    }
+    const actualIds = new Set(asList(actual.items).map((item) => asStr(item && item.subjectId)))
+    for (const subject of asList(expected && expected.subjects)) {
+      const subjectId = asStr(subject && subject.subjectId)
+      if (subjectId && !actualIds.has(subjectId)) issues.push(`missing_subject:${sceneId}:${subjectId}`)
+    }
+  }
+  return issues
+}
+
+function validateComposition(normalized, expectedScenes) {
+  return validateCompositionCoverage(normalized, expectedScenes)
 }
 
 // 从故事文档+资产计划构建构图输入：逐场景（scene/ending 节点）+ 出场元素（计划资产 sceneIds 命中）+ 各自可用状态变体
@@ -200,6 +230,11 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
   const instructions = buildInstructions()
   const normArgsFor = (scenes) => ({ scenes })
 
+  const oversizedScene = input.scenes.find((scene) => scene.subjects.length > MAX_COMPOSITION_ITEMS)
+  if (oversizedScene) {
+    throw new Error(`too_many_composition_items:${oversizedScene.sceneId}:${oversizedScene.subjects.length}`)
+  }
+
   // 2026-10-04 分批提取：全场景一次调用的 prompt 随场景数线性膨胀（15 场景 ≈ 8K+ tokens），
   // OMLX 8K 窗口下 prefill 内存护栏按 prompt 体积拒绝（KV+SDPA ~4GB，环境 GPU 压力浮动时必撞）。
   // 每批 1 场景（prompt ~1.2K + 输出预留 2048 ≈ 1.7GB KV），逐批串行后合并——批间互不依赖（构图按场景独立）。
@@ -236,7 +271,8 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
           const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, timeoutMs: t })
           const parsed = parseModelJsonLenient(extractResponseOutputText(json))
           const normalized = normalizeComposition(parsed, normArgs)
-          if (!validateComposition(normalized)) throw new Error('invalid_composition')
+          const issues = validateComposition(normalized, batchScenes)
+          if (issues.length) throw new Error(`incomplete_composition:${issues.join(',')}`)
           return { result: normalized, meta }
         } catch (e) {
           lastErr = e
@@ -252,7 +288,7 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
         model: model || undefined,
         timeoutMs: t,
         maxRetries: 2,
-        validate: (x) => validateComposition(normalizeComposition(x, normArgs)),
+        validate: (x) => validateComposition(normalizeComposition(x, normArgs), batchScenes).length === 0,
         proxyUrl
       })
       return { result: normalizeComposition(parsed, normArgs), meta }
@@ -265,7 +301,7 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
         model: model || undefined,
         timeoutMs: t,
         maxRetries: 2,
-        validate: (x) => validateComposition(normalizeComposition(x, normArgs)),
+        validate: (x) => validateComposition(normalizeComposition(x, normArgs), batchScenes).length === 0,
         proxyUrl
       })
       return { result: normalizeComposition(parsed, normArgs), meta }
@@ -283,6 +319,7 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
     merged.push(...(Array.isArray(result?.scenes) ? result.scenes : []))
   }
   const result = { scenes: merged }
-  if (!validateComposition(result)) throw new Error('invalid_composition')
+  const issues = validateComposition(result, input.scenes)
+  if (issues.length) throw new Error(`incomplete_composition:${issues.join(',')}`)
   return { result, meta: firstMeta }
 }
