@@ -1680,12 +1680,18 @@ export async function extractComfyuiPoseSkeleton({
   imageFilename,
   comfyuiBaseUrl,
   timeoutMs,
-  prefix
+  prefix,
+  preprocessor
 }) {
   const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
   const effectiveTimeoutMs = parseComfyTimeoutMs(timeoutMs)
   const loadImageSpec = await fetchComfyNodeSpec(baseUrl, 'LoadImage', 5000)
-  const dwSpec = (await fetchComfyNodeSpec(baseUrl, 'DWPreprocessor', 5000)) || (await fetchComfyNodeSpec(baseUrl, 'OpenposePreprocessor', 5000))
+  // preprocessor 可指定（'dw' | 'openpose'）：DWPose 对大头卡通/横躺姿态可能零检测（实测拟人兔跑/睡全黑），
+  // 此时换 OpenposePreprocessor 旧检测器或换源图；缺省 auto 优先 DWPose（精度更高）。
+  const prefer = String(preprocessor || '').trim().toLowerCase()
+  const dwSpec = prefer === 'openpose'
+    ? (await fetchComfyNodeSpec(baseUrl, 'OpenposePreprocessor', 5000)) || (await fetchComfyNodeSpec(baseUrl, 'DWPreprocessor', 5000))
+    : (await fetchComfyNodeSpec(baseUrl, 'DWPreprocessor', 5000)) || (await fetchComfyNodeSpec(baseUrl, 'OpenposePreprocessor', 5000))
   const saveImageSpec = await fetchComfyNodeSpec(baseUrl, 'SaveImage', 5000)
   if (!loadImageSpec || !dwSpec || !saveImageSpec) {
     const e = new Error('comfyui_pose_preprocessor_not_ready: 缺少 DWPose/OpenPose 预处理节点（需 comfyui_controlnet_aux）')

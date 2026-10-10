@@ -49,3 +49,14 @@ POST /api/projects/:id/ai/story/scenes/:sceneId/layered-produce
 
 自动完成：pose-review（可选）→ rmbg 抠图 → project.json 登记 → plan poseVariants 追加 → lock_confirm 留痕。
 摆位选择优先级：compStateHit > poseHit(sceneId/sceneIds) > 表情差分 > 主参考。
+
+## 2026-10-10 增补：跑/睡骨架 + 检测器选择经验
+
+| 文件 | 姿势 | 检测器 | 验证场景 |
+| --- | --- | --- | --- |
+| `running_side.png` | 全力冲刺跑（前倾分腿） | OpenPose | 龟兔赛跑·兔子领先/后果二 |
+| `lying_sleep_side.png` | 侧躺睡觉 | OpenPose | 龟兔赛跑·后果一（乌龟爬过睡兔） |
+
+**检测器选择（实测对照）**：DWPose（新）对真实比例人形精度高，但对大头绘本卡通/横躺姿态会**零检测出全黑图**（拟人兔跑/睡姿源图实测全黑）；OpenPose（旧）反而能检出卡通角色。**默认 DW，出全黑（文件 <2KB）立即换 OpenPose 重试**——`extractComfyuiPoseSkeleton` 已支持 `preprocessor:'openpose'` 参数。
+
+**动物角色结论**：拟人双足动物（绘本兔/熊一类站立造型）骨架链完全适用（姿势对+身份守住）；四足动物（乌龟）主参考天然行走姿态，简谱档即可，AnimalPosePreprocessor 已注册可用但 union openpose 控制网不兼容四足骨架格式（未验通，勿用）。绿幕姿势词对动物的对照失败模式：姿势能出但身份/服装漂移（红袖跑兔事故）——骨架驱动仍是唯一正路。
