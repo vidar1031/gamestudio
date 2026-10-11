@@ -10759,12 +10759,40 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         sceneReports.push({ sceneId, ok: false, reason: 'story_node_not_found' })
         continue
       }
+      // 2026-10-11 A1 冗余摆位确定性规则（四个故事手工清理同款垃圾的沉淀）：
+      // ① 道具已被本场景角色变体穿/含（变体提示词含道具名）→ 跳过（穿着西服又摆一件西服事故）
+      // ② 道具已被本场景地点锚点烘进背景（锚点含道具名）→ 跳过（背景有软垫又摆软垫事故）
+      const sceneVariantTexts = []
+      for (const ca of characterAssets) {
+        const pool = [...(Array.isArray(ca.poseVariants) ? ca.poseVariants : []), ...(Array.isArray(ca.stateVariants) ? ca.stateVariants : [])]
+        for (const v of pool) {
+          const inScene = String(v?.sceneId || '').trim() === sceneId || (Array.isArray(v?.sceneIds) && v.sceneIds.map((x) => String(x || '').trim()).includes(sceneId))
+          if (inScene) sceneVariantTexts.push(`${String(v?.name || '')} ${String(v?.posePrompt || '')} ${String(v?.promptEn || '')}`.toLowerCase())
+        }
+      }
+      const scenePlanEntry = (Array.isArray(plan.scenes) ? plan.scenes : []).find((s) => String(s && s.sceneId || '').trim() === sceneId)
+      const sceneLocAnchors = (Array.isArray(scenePlanEntry?.promptAssets) ? scenePlanEntry.promptAssets : [])
+        .filter((pa) => String(pa?.category || '') === 'location')
+        .map((pa) => String(pa?.anchorPrompt || '').toLowerCase())
+      const isRedundantProp = (propName) => {
+        const words = String(propName || '').toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4)
+        if (!words.length) return null
+        const hitIn = (text) => words.every((w) => text.includes(w))
+        if (sceneVariantTexts.some(hitIn)) return 'included_in_character_variant'
+        if (sceneLocAnchors.some(hitIn)) return 'baked_in_location_anchor'
+        return null
+      }
       // prop 分层合成（2026-09-27 F6）：已锁定（referenceStatus=ready 且有主参考）prop 生成确定性默认摆位；
       // 未锁定或引用不可解析（文件缺失/无法登记项目资产）仍跳过并如实进 skippedProps。
       const placeableProps = []
       for (const prop of propAssets.filter((a) => assetSceneIds(a).includes(sceneId))) {
         const assetId = String(prop.id || '').trim()
         const assetName = String(prop.name || assetId).trim()
+        const redundantReason = isRedundantProp(assetName)
+        if (redundantReason) {
+          skippedProps.push({ sceneId, assetId, name: assetName, reason: redundantReason })
+          continue
+        }
         const locked = String(prop.referenceStatus || '').trim() === 'ready' && Boolean(String(prop.primaryReferenceAssetUri || '').trim())
         if (!locked) {
           skippedProps.push({ sceneId, assetId, name: assetName, reason: 'prop_reference_missing' })
