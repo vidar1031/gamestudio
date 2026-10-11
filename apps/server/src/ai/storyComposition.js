@@ -271,7 +271,10 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
           const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, timeoutMs: t })
           const parsed = parseModelJsonLenient(extractResponseOutputText(json))
           const normalized = normalizeComposition(parsed, normArgs)
-          const issues = validateComposition(normalized, batchScenes)
+          // 2026-10-11 降级规则：missing_subject 降级为 warn 不阻断——漏点元素由摆位默认规格兜底（公主穿衣9人设
+          // 与杰克金鹅两连验证：全元素覆盖校验把 LLM 偶发漏点变成整批 500，重试纯碰运气）。
+          // duplicate_scene（同场景输出两遍）仍是 error（数据损坏级）。
+          const issues = validateComposition(normalized, batchScenes).filter((x) => !String(x).startsWith('missing_subject:'))
           if (issues.length) throw new Error(`incomplete_composition:${issues.join(',')}`)
           return { result: normalized, meta }
         } catch (e) {
@@ -319,7 +322,7 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
     merged.push(...(Array.isArray(result?.scenes) ? result.scenes : []))
   }
   const result = { scenes: merged }
-  const issues = validateComposition(result, input.scenes)
-  if (issues.length) throw new Error(`incomplete_composition:${issues.join(',')}`)
+  const finalIssues = validateComposition(result, input.scenes).filter((x) => !String(x).startsWith('missing_subject:'))
+  if (finalIssues.length) throw new Error(`incomplete_composition:${finalIssues.join(',')}`)
   return { result, meta: firstMeta }
 }
