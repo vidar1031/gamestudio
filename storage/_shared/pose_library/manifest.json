@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-11",
+  "poses": {
+    "standing": {
+      "file": "standing_front.png",
+      "view": "front",
+      "en": "standing naturally, front view",
+      "cn": [
+        "站",
+        "站立",
+        "站直",
+        "看着",
+        "面对",
+        "驻足",
+        "观望",
+        "凝视",
+        "思考",
+        "目视",
+        "看着",
+        "盯"
+      ],
+      "skipVariant": true
+    },
+    "walking": {
+      "file": "walking_side.png",
+      "view": "side",
+      "en": "walking briskly, mid-stride, side view",
+      "cn": [
+        "走",
+        "行走",
+        "走路",
+        "散步",
+        "下山",
+        "回家走",
+        "前行",
+        "赶路",
+        "走去"
+      ]
+    },
+    "running": {
+      "file": "running_side.png",
+      "view": "side",
+      "en": "running fast, dynamic sprint pose leaning forward, side view",
+      "cn": [
+        "跑",
+        "奔跑",
+        "冲刺",
+        "逃",
+        "追",
+        "逃离",
+        "逃跑"
+      ]
+    },
+    "sitting": {
+      "file": "sitting_desk.png",
+      "view": "side",
+      "en": "sitting on a chair, side view",
+      "cn": [
+        "坐",
+        "坐下",
+        "瘫坐",
+        "坐着"
+      ]
+    },
+    "riding": {
+      "file": "riding_ebike.png",
+      "view": "side",
+      "en": "riding a scooter, holding handlebars, side view",
+      "cn": [
+        "骑",
+        "骑车",
+        "骑行"
+      ]
+    },
+    "lying_sleep": {
+      "file": "lying_sleep_side.png",
+      "view": "side",
+      "en": "lying down on side sleeping peacefully, eyes closed, side view",
+      "cn": [
+        "睡",
+        "躺",
+        "侧卧",
+        "睡觉",
+        "熟睡",
+        "躺下"
+      ]
+    },
+    "reaching_up": {
+      "file": "reaching_up_side.png",
+      "view": "side",
+      "en": "reaching up high with one arm fully extended, on tiptoes, side view",
+      "cn": [
+        "摘",
+        "掰",
+        "够",
+        "够取",
+        "伸手",
+        "取"
+      ]
+    },
+    "holding": {
+      "file": "holding_front.png",
+      "view": "front",
+      "en": "holding a round object with both arms in front, front view",
+      "cn": [
+        "抱",
+        "怀抱",
+        "抱着",
+        "端",
+        "捧",
+        "扛",
+        "端",
+        "拿",
+        "搬"
+      ],
+      "experimental": true
+    }
+  }
+}

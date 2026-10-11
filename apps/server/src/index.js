@@ -10,6 +10,9 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import pluginStoryPixi from './plugins/storyPixi.js'
 import { genId, generateScriptDraft, guessTitleFromPrompt, repairScriptDraft } from './ai/scripts.js'
+// 通用小工具（本文件历史代码未集中定义，2026-10-10 姿势编排端点引入）
+const asList = (v) => (Array.isArray(v) ? v : [])
+const asStr = (v) => String(v == null ? '' : v)
 import { getAiStatusSnapshot, runAiDiagnostics } from './ai/diagnostics.js'
 import { analyzeScriptsForBlueprint } from './ai/analyze.js'
 import { optimizeGeneratedImage, optimizeDirectoryTree, IMAGE_KIND } from './ai/imageOptimize.js'
@@ -24,6 +27,7 @@ import { enhanceStoryAssetPromptWithAi } from './ai/storyAssetPromptEnhance.js'
 import { generateCharacterFingerprint, generateCharacterPosePrompt } from './ai/characterPrompt.js'
 import { generateStoryBible } from './ai/storyBible.js'
 import { buildPoseStateExtractionInput, extractStoryPoseStates } from './ai/storyPoseStates.js'
+import { buildPoseVariantPrompt, generatePoseVariantForGroup, groupPoseRequirements, isAnimalLikeAnchor, loadPoseLibraryManifest } from './ai/storyPoseVariants.js'
 import { buildPropStateExtractionInput, extractStoryPropStates } from './ai/storyPropStates.js'
 import { buildCompositionInput, extractStoryComposition } from './ai/storyComposition.js'
 import { translatePromptText } from './ai/translate.js'
@@ -11037,6 +11041,153 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
     logStage({ stage: 'story.scenes.placements', event: 'fail', traceId, project: id, item: msg })
     return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
   }
+})
+
+// ---------------------------------------------------------------------------
+// 2026-10-10 姿势变体自动编排（asset.poseVariants.autoGenerate，GS-51；自动化②落地）：
+// 提取剧情姿势需求（storyPoseStates LLM）→ 按（角色×姿势）分组 → 匹配公共姿势库骨架
+// → 骨架驱动生成变体（generateComfyuiPoseVariantSprite）→ layered-produce 登记绑场景。
+// 全程 aiTask 进度 + logStage；站立类不出变体；无骨架匹配记 unmatched（姿势库扩展线索）。
+// 幂等：同名「自动·<poseKey>」变体已存在则跳过。审图留痕 lock_confirm decidedBy=auto-pose。
+// ---------------------------------------------------------------------------
+app.post('/api/projects/:id/ai/story/pose-variants/auto', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.prompt) return c.json({ success: false, error: 'disabled', message: '“提示词生成”已在设置中关闭' }, 503)
+
+  const bundle = await readProjectBundle(id)
+  const storyBible = readStoryBibleFromProjectDoc(bundle.project)
+  if (!storyBible || typeof storyBible !== 'object') return c.json({ success: false, error: 'missing_story_bible', message: '请先生成 Story Bible。' }, 400)
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+
+  const body = await c.req.json().catch(() => ({}))
+  const traceId = createTraceId()
+  const task = createAiTask(id, 'story.pose_variants.auto', { total: 1, message: '姿势需求提取中…' })
+  logStage({ stage: 'story.pose_variants.auto', event: 'start', traceId, project: id })
+
+  ;(async () => {
+    const errors = []
+    const generated = []
+    try {
+      // 1) LLM 提取逐场景姿势需求
+      const input = buildPoseStateExtractionInput({ project: bundle.project, story: bundle.story, storyBible })
+      if (!input.scenes.length) throw new Error('no_scenes_with_characters')
+      const { result: poseStates } = await extractStoryPoseStates({
+        provider: studio.effective.prompt.provider,
+        model: studio.effective.prompt.model,
+        apiUrl: studio.effective.prompt.apiUrl,
+        proxyUrl: studio.effective.network.proxyUrl,
+        timeoutMs: clampInt(body?.timeoutMs, 60_000, 600_000, 300_000),
+        input
+      })
+
+      // 2) 分组 + 骨架匹配
+      const { libDir, poses } = await loadPoseLibraryManifest(ROOT)
+      if (!Object.keys(poses).length) throw new Error('pose_library_manifest_missing')
+      const { groups, unmatched } = groupPoseRequirements(poseStates, poses)
+      updateAiTask(task.taskId, { total: groups.length, stage: 'generating', message: `姿势需求 ${groups.length} 组（未匹配 ${unmatched.length}），开始生成变体` })
+      logStage({ stage: 'story.pose_variants.auto', event: 'extracted', traceId, project: id, item: `groups:${groups.length} unmatched:${unmatched.length}` })
+
+      const bibleNameByCharId = new Map((Array.isArray(storyBible.characters) ? storyBible.characters : []).map((x) => [String(x && x.id || '').trim(), String(x && x.name || '').trim()]))
+      const normKey = (s) => asStr(s).trim().toLowerCase().replace(/[\s《》「」]/g, '')
+      const planAssets = Array.isArray(plan.assets) ? plan.assets : []
+      const findPlanCharacter = (characterId) => {
+        const name = bibleNameByCharId.get(characterId) || ''
+        return planAssets.find((a) => String(a?.category || '') === 'character' && (String(a?.id || '').trim() === characterId || (name && normKey(a?.name) === normKey(name)))) || null
+      }
+
+      const globalStyleEn = String(plan.worldAnchor || '').trim()
+      let cursor = 0
+      for (const group of groups) {
+        cursor += 1
+        const asset = findPlanCharacter(group.characterId)
+        const label = `${asset ? asset.name : group.characterId}·${group.poseKey}`
+        if (!asset) { errors.push({ group: label, error: 'character_not_in_plan' }); continue }
+        const lockName = `自动·${group.poseKey}`
+        if (asList(asset.poseVariants).some((v) => String(v?.name || '').trim() === lockName)) {
+          updateAiTask(task.taskId, { current: cursor, message: `已存在跳过：${label}` })
+          continue
+        }
+        const identityRel = asStr(asset.primaryReferenceAssetUri).trim()
+        const identityAbs = identityRel ? path.resolve(dir, identityRel) : ''
+        if (!identityAbs || !identityAbs.startsWith(path.resolve(dir) + path.sep) || !(await existsFile(identityAbs))) {
+          errors.push({ group: label, error: 'identity_reference_missing' })
+          updateAiTask(task.taskId, { current: cursor, message: `缺主参考跳过：${label}` })
+          continue
+        }
+        const poseDef = poses[group.poseKey]
+        try {
+          updateAiTask(task.taskId, { stage: 'generating', current: cursor - 1, message: `生成姿势变体：${label}（${group.sceneIds.length} 场景）` })
+          const identityBytes = await readFile(identityAbs)
+          const prompt = buildPoseVariantPrompt({ asset, poseDef, group, globalStyleEn })
+          const animalBoost = isAnimalLikeAnchor(`${prompt} ${asStr(asset.name)}`)
+          const gen = await generatePoseVariantForGroup({
+            root: ROOT,
+            libDir,
+            poseDef,
+            identityBytes,
+            identityFilename: path.basename(identityAbs),
+            prompt,
+            comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+            timeoutMs: 300_000,
+            prefix: `gamestudio_pose/auto_${String(asset.id).replace(/[^a-z0-9_-]/gi, '_')}`,
+            ipadapterWeight: animalBoost ? 0.95 : 0.85
+          })
+          // 产物落项目资产目录 → layered-produce 正式链登记（抠图/审核留痕/场景绑定）
+          const outRel = `assets/ai/story_assets/character/${String(asset.id).replace(/[^a-z0-9_-]/gi, '_')}/pose_auto_${group.poseKey}_${Date.now()}.png`
+          const outAbs = path.resolve(dir, outRel)
+          await mkdir(path.dirname(outAbs), { recursive: true })
+          await writeFile(outAbs, gen.bytes)
+          const resp = await app.request(`/api/projects/${encodeURIComponent(id)}/ai/story/scenes/${encodeURIComponent(group.sceneIds[0])}/layered-produce`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-image-review-mode': 'off' },
+            body: JSON.stringify({
+              poses: [{
+                lockName,
+                planAssetId: String(asset.id).trim(),
+                characterId: String(asset.id).trim(),
+                spriteAssetPath: outRel,
+                posePrompt: prompt,
+                promptZh: `${asStr(group.action).trim()} ${asStr(group.expression).trim()}`.trim(),
+                sceneIds: group.sceneIds
+              }]
+            })
+          })
+          const json = await resp.json().catch(() => ({}))
+          const okEntry = Array.isArray(json?.poses) && json.poses[0] && json.poses[0].projectAssetId
+          if (!resp.ok || !okEntry) throw new Error(`register_failed:${String(json?.poses?.[0]?.error || json?.error || resp.status)}`)
+          generated.push({ group: label, poseKey: group.poseKey, scenes: group.sceneIds.length, projectAssetId: json.poses[0].projectAssetId })
+          updateAiTask(task.taskId, { current: cursor, message: `完成：${label}` })
+          logStage({ stage: 'story.pose_variants.auto', event: 'generated', traceId, project: id, item: label })
+        } catch (e) {
+          const msg = e && e.message ? String(e.message) : String(e)
+          errors.push({ group: label, error: msg.slice(0, 200) })
+          updateAiTask(task.taskId, { current: cursor, message: `失败：${label}（${msg.slice(0, 60)}）` })
+          logStage({ stage: 'story.pose_variants.auto', event: 'fail', traceId, project: id, item: `${label} / ${msg.slice(0, 160)}` })
+        }
+      }
+      updateAiTask(task.taskId, {
+        stage: 'done',
+        done: true,
+        current: groups.length,
+        message: `姿势变体编排完成：生成 ${generated.length}，失败 ${errors.length}，未匹配骨架 ${unmatched.length}`,
+        result: { generated, errors, unmatched }
+      })
+      logStage({ stage: 'story.pose_variants.auto', event: 'done', traceId, project: id, item: `generated:${generated.length} failed:${errors.length} unmatched:${unmatched.length}` })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      console.error('[story.pose_variants.auto]', e && e.stack ? e.stack : msg)
+      updateAiTask(task.taskId, { stage: 'error', done: true, error: msg, message: `姿势变体编排失败：${msg}` })
+      logStage({ stage: 'story.pose_variants.auto', event: 'error', traceId, project: id, item: msg.slice(0, 300) })
+    }
+  })()
+
+  return c.json({ success: true, taskId: task.taskId, message: '姿势变体自动编排已启动，进度见 /ai/tasks' }, 202)
 })
 
 // ---------------------------------------------------------------------------

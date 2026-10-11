@@ -66,3 +66,14 @@ POST /api/projects/:id/ai/story/scenes/:sceneId/layered-produce
 人形骨架驱动拟人动物时，身份保持取决于物种标记强度：
 - **强标记**（兔耳/鹿角等大轮廓）：常规参数（ipadapterWeight 0.85）即可。
 - **弱标记**（猪鼻/粉皮等细节）：v1 常规档会把头拉成人形（猪变人类小孩事故）；必须用显性物种词（"big pig head with round snout and big pig ears, pink pig skin, NOT a human face"）+ `ipadapterWeight=0.95`、`ipadapterStartAt=0.2`。
+
+## 2026-10-11 增补：走/摘/抱骨架 + 编排自动化
+
+| 文件 | 姿势 | 检测器 | 注意 |
+| --- | --- | --- | --- |
+| `walking_side.png` | 行走 | DWPose | 正常 |
+| `reaching_up_side.png` | 踮脚伸臂摘取 | OpenPose | **手部关键点簇会被读成第二个角色（两猴分身实证）——慎用，待编辑手簇后转正** |
+| `holding_front.png` | 抱物（正面） | OpenPose | 偏弱（无头部关键点），实验档 |
+
+姿势源图规范：人物必须**满幅全身**（占画面 80%+，白底）——半身/远景小人都检测不到。
+自动编排（GS-51）从本目录 manifest.json 读骨架映射，中文别名命中即选用。

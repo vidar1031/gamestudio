@@ -3353,6 +3353,71 @@
           "description": "项目 ID"
         }
       ]
+    },
+    {
+      "code": "GS-51",
+      "eventId": "asset.poseVariants.autoGenerate",
+      "version": 1,
+      "category": "asset",
+      "kind": "command",
+      "title": "姿势变体自动编排",
+      "description": "提取剧情姿势需求（LLM）→ 匹配公共姿势库骨架 → 骨架驱动生成变体 → 登记绑场景。站立类不出变体，未匹配骨架记 unmatched。返回 taskId，进度见 asset.task.list。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 60000,
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "type": "string"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/story-assets/plan.json",
+        "fs:write:storage/projects/{projectId}/assets/ai/"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 1800000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/pose-variants/auto"
+        }
+      },
+      "aliases": [
+        "姿势变体自动生成",
+        "自动姿势"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
     }
   ]
 }
