@@ -2664,6 +2664,9 @@ async function pruneMissingStoryAssetGalleryEntries({ id, dir, plan, asset }) {
   }
 }
 
+// 2026-10-12 角色模板身份注入配套：动物锚点判定（耳朵/毛色词只对动物有意义）
+const ANIMAL_ANCHOR_RE = /兔|rabbit|猪|pig|狼|wolf|猫|cat|狗|dog|猴|monkey|龟|turtle|熊|bear|狐|fox|羊|sheep|鸟|bird|鸭|duck|鸡|chick|鼠|mouse|鹿|deer|马|horse|兽|毛/i
+
 function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalNegativePromptZh, currentPromptZh, currentPromptEn, currentNegativePromptZh, currentNegativePrompt }) {
   const category = storyAssetStr(asset && asset.category).trim()
   const lockProfile = storyAssetStr(asset && asset.lockProfile).trim()
@@ -2701,11 +2704,16 @@ function buildStoryAssetPromptEnhancement({ asset, plan, globalPromptZh, globalN
     if (lockProfile === 'character_core' || category === 'character') {
       promptZh = [
         `${name}角色参考表，单主体，全身，正面站姿，居中构图`,
+        // 2026-10-12 灰姑娘事故：模板丢失身份锚点（anchor 读了没用）→ checkpoint 默认兔耳娘占位图；
+        // 身份锚点必须进模板。且"耳朵/毛色花纹"仅对动物角色有意义——人类角色按发型发色写。
+        anchor ? `角色身份特征：${anchor}` : '',
+        ANIMAL_ANCHOR_RE.test(anchor)
+          ? '重点锁定脸型、耳朵、眼睛颜色、毛色花纹、服装版型、腰带、鞋子和整体比例'
+          : '重点锁定脸型、发型发色、眼睛颜色、服装版型、腰带、鞋子和整体比例',
         '纯白无缝背景，无地面线，无投影，无场景环境',
         '双手自然下垂且空手，不拿任何道具，不戴帽子',
-        '重点锁定脸型、耳朵、眼睛颜色、毛色花纹、服装版型、腰带、鞋子和整体比例',
         '卡通童话绘本风格，扁平 2D 卡通插画，粗净轮廓线，赛璐璐上色，配色温暖柔和，不能画成真人小孩或拟人猫娘，不能写实'
-      ].join('，')
+      ].filter(Boolean).join('，')
     } else if (lockProfile === 'wearable_prop') {
       promptZh = [
         `${name}道具设计图，单一物件，居中展示，仅画物件本身`,
@@ -7864,6 +7872,9 @@ function storyAssetReviewScore(analysis) {
 }
 
 function shouldDiscardStoryAssetReferenceCandidate(analysis) {
+  // 2026-10-12 修复：评审跳过（skipped：配额耗尽/视觉不可用）不等于差评，不丢弃——
+  // 灰姑娘批次实证：Kimi 周配额耗尽导致评审 skipped，7 张候选被误全丢。
+  if (analysis && analysis.skipped) return false
   const score = storyAssetReviewScore(analysis)
   if (score >= 0 && score < 20) return true
   const summary = String(analysis && analysis.summary || '').trim()

@@ -56,6 +56,12 @@ export function qcSceneRefsDeterministic({ scenes, entities }) {
   for (const c of asList(entities.characters)) {
     if (!charCoverage.get(c.id)) issues.push({ sceneId: '', level: 'warn', code: 'character_never_appears', detail: `${c.name}(${c.id}) 全故事零出场` })
   }
+  // 2026-10-12 灰姑娘实证：QC 只修场景内错绑，漏掉"地点零使用"（舞会大厅 0 场景，全场绑厨房）——补地点覆盖检查
+  const locCoverage = new Map()
+  for (const scene of scenes) for (const id of asList(scene.bound && scene.bound.locations)) locCoverage.set(id, (locCoverage.get(id) || 0) + 1)
+  for (const l of asList(entities.locations)) {
+    if (!locCoverage.get(l.id)) issues.push({ sceneId: '', level: 'warn', code: 'location_never_used', detail: `${l.name}(${l.id}) 未被任何场景使用——若剧情有明显对应场景，绑定可能错位` })
+  }
   return issues
 }
 
