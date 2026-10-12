@@ -197,6 +197,11 @@ if [ "${DETACHED}" = "1" ]; then
   echo "Mode:      detached"
 else
   echo "Mode:      foreground"
+  # 2026-10-12 前台模式事故警示：前台模式与终端窗口同生共死（Ctrl-C/关窗即杀双服务），
+  # 且与守护台 detached 托管互不知情。日常使用请 --detached 或由守护台「Studio 编辑器」入口拉起。
+  echo ""
+  echo "⚠️  前台模式：本窗口 Ctrl-C 或关闭将终止 server+editor，守护台打开的页面会随之失效。"
+  echo "   日常使用推荐：./start_project.sh --detached（后台托管），或从守护台入口打开。"
 fi
 echo ""
 
