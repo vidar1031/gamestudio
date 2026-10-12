@@ -3418,6 +3418,81 @@
           "description": "项目 ID"
         }
       ]
+    },
+    {
+      "code": "GS-52",
+      "eventId": "story.walkthrough.run",
+      "version": 1,
+      "category": "story",
+      "kind": "command",
+      "title": "走查验证（headless 全结局路径）",
+      "description": "对最新导出构建自动跑全结局路径走查：逐屏截图+<project>/walkthrough/report_*.json 验收报告。前置需 GS-08 导出。有问题不静默：ok=false + issues 明示。",
+      "payloadSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxPaths": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          }
+        },
+        "additionalProperties": false
+      },
+      "resultSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "ok"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "paths": {
+            "type": "integer"
+          },
+          "issues": {
+            "type": "integer"
+          },
+          "reportFile": {
+            "type": "string"
+          }
+        }
+      },
+      "sideEffects": [
+        "fs:write:storage/projects/{projectId}/walkthrough/"
+      ],
+      "idempotent": true,
+      "reviewRequired": false,
+      "timeoutMs": 600000,
+      "transport": {
+        "http": {
+          "method": "POST",
+          "path": "/api/projects/:id/ai/story/walkthrough"
+        }
+      },
+      "aliases": [
+        "走查",
+        "验收走查",
+        "自动验收"
+      ],
+      "chatArgs": [
+        {
+          "name": "projectId",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ]
     }
   ]
 }

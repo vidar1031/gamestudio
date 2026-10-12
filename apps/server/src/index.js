@@ -5460,6 +5460,62 @@ app.post('/api/projects/:id/export', storyInputGate('story.export.project', (c) 
   })
 })
 
+// ---------------------------------------------------------------------------
+// 2026-10-12 ⑤ 走查入链（GS-52）：导出后自动 headless 全结局路径走查 + 截图存档 + 验收报告。
+// 脱离监控的最后一道闸：不再人工打开浏览器点——链路自动跑，产出 walkthrough/report_*.json +
+// 每屏截图（<project>/walkthrough/）；有破图/空文本/按钮缺失即 issues 明示，不静默放行。
+// 前置：必须先有导出构建（先跑 GS-08）。
+// ---------------------------------------------------------------------------
+app.post('/api/projects/:id/ai/story/walkthrough', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  // 前置检查：导出构建存在
+  const distPath = path.join(dir, 'builds', 'latest', 'dist', 'index.html')
+  if (!(await existsFile(distPath))) {
+    return c.json({ success: false, error: 'missing_export', message: '请先导出项目（GS-08），再走查。' }, 400)
+  }
+  const story = await readJson(path.join(dir, 'story.json')).catch(() => null)
+  if (!story || !Array.isArray(story.nodes) || !story.nodes.length) {
+    return c.json({ success: false, error: 'missing_story', message: '未找到故事文档。' }, 400)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const port = Number(process.env.PORT || 1999)
+  const demoBaseUrl = `http://127.0.0.1:${port}/demos/${encodeURIComponent(id)}/latest/dist/index.html`
+  const task = createAiTask(id, 'story.walkthrough', { total: 1, message: '走查中：headless 全结局路径' })
+  const traceId = createTraceId()
+  logStage({ stage: 'story.walkthrough', event: 'start', traceId, project: id })
+  try {
+    const { runStoryWalkthrough } = await import('./ai/storyWalkthrough.js')
+    const { report, reportFile, outDir } = await runStoryWalkthrough({
+      dir,
+      projectId: id,
+      story,
+      demoBaseUrl,
+      maxPaths: clampInt(body?.maxPaths, 1, 8, 4)
+    })
+    updateAiTask(task.taskId, {
+      stage: report.ok ? 'done' : 'partial',
+      done: true,
+      current: 1,
+      message: report.ok ? `走查通过：${report.paths} 条路径零问题` : `走查完成：${report.paths} 条路径，发现 ${report.issues} 个问题`,
+      result: { ok: report.ok, paths: report.paths, issues: report.issues, reportFile: `${outDir}/${reportFile}` }
+    })
+    logStage({ stage: 'story.walkthrough', event: report.ok ? 'ok' : 'partial', traceId, project: id, item: `paths:${report.paths} issues:${report.issues}` })
+    return c.json({ success: true, taskId: task.taskId, ok: report.ok, paths: report.paths, issues: report.issues, reportFile: `${outDir}/${reportFile}`, report })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    updateAiTask(task.taskId, { stage: 'error', done: true, error: msg, message: `走查失败：${msg}` })
+    logStage({ stage: 'story.walkthrough', event: 'error', traceId, project: id, item: msg.slice(0, 200) })
+    const mapped = classifyAiError(e)
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
+
 app.post('/api/projects/:id/export/publish', async (c) => {
   await ensureDirs()
   const id = c.req.param('id')
@@ -8056,9 +8112,43 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
       recommendedReferenceAssetUri: recommendedAssetPath
     })
     const currentAsset = (Array.isArray(currentPlan.assets) ? currentPlan.assets.find((item) => String(item && item.id || '').trim() === assetId) : null) || null
-    updateAiTask(refTask.taskId, { stage: 'done', done: true, current: candidates.length, message: `抽卡完成：${candidates.length} 张候选（${String(asset.name || assetId).trim()}）` })
+    // 2026-10-12 ④ 抽卡自动选优（脱离监控）：autoSelect=true 时批次结束后自动锁定最优过审候选。
+    // 策略：仅接受 AI 评审 passed 且分 ≥50 的候选（取最高分）；无合格候选不自动锁——标 needs_manual 挂人工队列，
+    // 绝不自动锁垃圾参考图污染整个故事。选定走内部 select 链（抠图+lock_confirm 留痕同源）。
+    let autoSelect = null
+    if (body?.autoSelect === true && candidates.length) {
+      const qualified = candidates.filter((item) => Boolean(item && item.analysis && item.analysis.passed) && storyAssetReviewScore(item.analysis) >= 50)
+      const chosen = qualified.length
+        ? qualified.reduce((a, b) => (storyAssetReviewScore(b.analysis) > storyAssetReviewScore(a.analysis) ? b : a))
+        : null
+      if (chosen) {
+        try {
+          const selResp = await app.request(`/api/projects/${encodeURIComponent(id)}/ai/story/assets/reference/select`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-image-review-mode': 'off' },
+            body: JSON.stringify({ assetId, assetPath: String(chosen.assetPath || '').trim() })
+          })
+          const selJson = await selResp.json().catch(() => null)
+          const selOk = selResp.ok && (!selJson || selJson.success !== false)
+          autoSelect = { picked: String(chosen.assetPath || '').trim(), score: storyAssetReviewScore(chosen.analysis), success: selOk, decidedBy: 'auto-select' }
+          logStage({ stage: 'asset.reference.batch', event: 'auto_select', traceId, project: id, item: assetId, ok: selOk, detail: String(chosen.assetPath || '') })
+        } catch (e) {
+          autoSelect = { picked: String(chosen.assetPath || '').trim(), success: false, error: e && e.message ? String(e.message) : String(e) }
+        }
+      } else {
+        autoSelect = { picked: '', reason: 'no_qualified_candidate', message: '无过审候选（AI 评审通过且 ≥50 分），留待人工选定', decidedBy: 'auto-select' }
+      }
+    }
+    updateAiTask(refTask.taskId, {
+      stage: autoSelect && !autoSelect.picked ? 'needs_manual' : 'done',
+      done: true,
+      current: candidates.length,
+      message: autoSelect
+        ? (autoSelect.picked ? `抽卡完成并自动锁定：${candidates.length} 张候选，选定最优过审（${autoSelect.score} 分）` : `抽卡完成：${candidates.length} 张候选，无过审合格项，待人工选定`)
+        : `抽卡完成：${candidates.length} 张候选（${String(asset.name || assetId).trim()}）`
+    })
     logStage({ stage: 'asset.reference.batch', event: 'ok', traceId, project: id, item: assetId, ok: true, detail: 'generate_candidates_only', count: candidates.length })
-    return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, candidates, model: effectiveModel || undefined, modelSource: modelResolution.source, ...(bestResult || {}), plan: currentPlan })
+    return c.json({ success: true, asset: currentAsset, analysis: bestReview, recommendedAssetPath, candidates, ...(autoSelect ? { autoSelect } : {}), model: effectiveModel || undefined, modelSource: modelResolution.source, ...(bestResult || {}), plan: currentPlan })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
