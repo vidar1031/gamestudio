@@ -88,10 +88,12 @@ function buildInstructions() {
 function normalizeComposition(parsed, { scenes }) {
   const sceneById = new Map(scenes.map((s) => [s.sceneId, s]))
   const sceneByLoose = new Map(scenes.map((s) => [s.sceneId.toLowerCase(), s]))
+  // 短别名映射（sc_N）：模型只需照抄输入里的短代号，杜绝长 id 抄错丢场景
+  const sceneByAlias = new Map(scenes.filter((s) => s && s.alias).map((s) => [s.alias, s]))
   const out = []
   for (const rawScene of asList(parsed && parsed.scenes)) {
     const sceneIdIn = asStr(rawScene && rawScene.sceneId)
-    const scene = sceneById.get(sceneIdIn) || sceneByLoose.get(sceneIdIn.toLowerCase()) || null
+    const scene = sceneById.get(sceneIdIn) || sceneByAlias.get(sceneIdIn) || sceneByLoose.get(sceneIdIn.toLowerCase()) || null
     if (!scene) continue
     const allowed = new Map(scene.subjects.map((s) => [s.subjectId, s]))
     const items = []
@@ -195,6 +197,9 @@ export function buildCompositionInput({ project, story, plan }) {
     })
   const scenes = nodes.map((node, index) => {
     const sceneId = asStr(node && node.id) || `scene_${index + 1}`
+    // 2026-10-13 LLM 抄号缺陷实测：长 opaque id（bn_sc_1791806862431_fv1y4q）会被模型抄错抄漏位，
+    // 构图 normalize 匹配不上直接丢场景（composition_empty）。下发短别名 sc_N 给模型照抄，服务端确定性映射回真实 sceneId。
+    const alias = `sc_${index + 1}`
     const summary = clampText2(`${asStr(node && node.body && node.body.title) || asStr(node && node.name)}：${asStr(node && node.body && node.body.text)}`, 600)
     const subjects = []
     for (const a of planAssets) {
@@ -212,6 +217,7 @@ export function buildCompositionInput({ project, story, plan }) {
     }
     return {
       sceneId,
+      alias,
       sceneName: asStr(node && node.body && node.body.title) || asStr(node && node.name) || sceneId,
       summary,
       subjects,
@@ -247,7 +253,7 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
     const user = JSON.stringify({
       storyTitle: input.storyTitle,
       scenes: batchScenes.map((s) => ({
-        sceneId: s.sceneId,
+        sceneId: s.alias || s.sceneId,
         sceneName: s.sceneName,
         summary: s.summary,
         subjects: s.subjects.map((x) => ({ subjectId: x.subjectId, name: x.name, kind: x.kind, anchorHint: x.anchorHint, stateKeys: x.stateKeys }))
@@ -263,8 +269,10 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
           input: user,
           ...(model ? { model: String(model).trim() } : {}),
           // 构图输出有界（1 场景 × ≤10 元素 ≈ 0.5-1K tokens），显式压 max_output_tokens 预算——
-          // 缺省 8192 会让 OMLX 按上限预留 KV，撞 prefill 内存护栏
-          max_output_tokens: 2048,
+          // 缺省 8192 会让 OMLX 按上限预留 KV，撞 prefill 内存护栏。
+          // 2026-10-13 实测：2048 在思考型模型上会被 reasoning_content 吃掉导致 JSON 截断
+          // （青蛙王子构图两连失败：Expected ',' or ']' after array element），提到 4096 给思考留余量。
+          max_output_tokens: 4096,
           text: { format: { type: 'json_schema', name: 'story_composition', strict: true, schema: compositionSchema() } }
         }
         try {

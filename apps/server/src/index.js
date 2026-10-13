@@ -52,6 +52,7 @@ import { compileBlueprintFromScripts, normalizeScriptCardsForBlueprint } from '.
 import { validateBlueprintDoc } from './blueprint/validate.js'
 import { loadEnv } from './env.js'
 import { diagnoseOpenAI, isOpenAICompatibleProvider, reviewBlueprintViaOpenAI } from './ai/openai.js'
+import { readStudioModelDialogs } from './ai/modelDialogs.js'
 import { reviewBlueprintLocally } from './ai/blueprintReviewLocal.js'
 import dns from 'node:dns/promises'
 import { getEffectiveStudioConfig, redactEffectiveStudioConfigForClient, redactStudioSettingsForClient, writeStudioSettings } from './studio/settings.js'
@@ -9311,6 +9312,16 @@ app.get('/api/projects/:id/ai/tasks', async (c) => {
   await loadAiTasksFromDisk(id)
   const includeDone = String(c.req.query('includeDone') || '1') !== '0'
   return c.json({ success: true, tasks: listAiTasks(id, { includeDone }) })
+})
+
+// 模型对话明细（只读，2026-10-12）：本地 oMLX 调用按日落盘（state/model-dialogs/），
+// 守护台「模型交互」视图经 control 代理合并消费；记录不带项目归属，按时间窗返回最近 N 条
+app.get('/api/projects/:id/ai/model-dialogs', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const { entries, scope, note } = readStudioModelDialogs({ limit: Number(c.req.query('limit') || 50) })
+  return c.json({ success: true, projectId: id, scope, note, entries })
 })
 
 app.get('/api/projects/:id/ai/tasks/:taskId', async (c) => {

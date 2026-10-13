@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt } from './storyAssets.js'
 import { extractResponseOutputText, openaiResponsesJsonForTools } from './openai.js'
+import { withResourceLease } from './resourceLease.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -363,6 +364,71 @@ async function reviewStoryboardLockImageWithMoonshot({
   }
 }
 
+// 2026-10-12 本地 VL 评审通道（gemma-4-26b-a4b-it-4bit 经 OMLX 多模态）。
+// 与姿势评审 local_vl 同款：vision 租约准入（与 LLM/出图互斥换入换出）、响应体消费留在租约内、
+// 有限 max_tokens 防 KV 护栏；同一套评审指令与 JSON 契约，评分语义与 moonshot 路径一致。
+async function reviewStoryboardLockImageWithLocalVl({
+  baseUrl,
+  apiKey,
+  model,
+  asset,
+  prompt,
+  negativePrompt,
+  imageDataUrl,
+  attempt,
+  maxAttempts
+}) {
+  const instructions = buildLockReviewInstructions({ asset, attempt, maxAttempts })
+  const reviewModel = asStr(model).trim() || 'gemma-4-26b-a4b-it-4bit'
+  const url = `${asStr(baseUrl).trim().replace(/\/+$/, '') || 'http://127.0.0.1:18888/v1'}/chat/completions`
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 180_000)
+  try {
+    const { res, json } = await withResourceLease('vision', `gs:lock_review:${asStr(asset && asset.id) || '-'}`, async () => {
+      const r = await fetch(url, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(asStr(apiKey).trim() ? { Authorization: `Bearer ${asStr(apiKey).trim()}` } : {})
+        },
+        body: JSON.stringify({
+          model: reviewModel,
+          messages: [
+            { role: 'system', content: `${instructions}\n\n重要：只输出一个合法 JSON 对象，不要 markdown 代码块，不要任何额外文字。` },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text:
+                    `请审核这张锁定测试图是否通过。\n` +
+                    `当前正向提示词：${asStr(prompt).trim()}\n` +
+                    `当前负向提示词：${asStr(negativePrompt).trim()}`
+                },
+                { type: 'image_url', image_url: { url: asStr(imageDataUrl).trim() } }
+              ]
+            }
+          ],
+          max_tokens: 2048,
+          temperature: 0.2
+        })
+      })
+      const j = await r.json().catch(() => null)
+      return { res: r, json: j }
+    })
+    if (!res.ok) {
+      throw new Error(json?.error?.message || `local_vl_http_${res.status}`)
+    }
+    const content = asStr(json?.choices?.[0]?.message?.content).trim()
+    const parsed = normalizeStoryLockReviewOutput(JSON.parse(extractJsonObjectString(content) || '{}'), { prompt, negativePrompt })
+    if (!validateStoryLockReview(parsed)) throw new Error('invalid_story_lock_review_output')
+    return { ...parsed, meta: { provider: 'local_vl', api: 'omlx.chat.completions', model: reviewModel } }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 export async function reviewStoryboardLockImageWithAi({
   provider,
   model,
@@ -394,15 +460,35 @@ export async function reviewStoryboardLockImageWithAi({
       })
     } catch (error) {
       const detail = asStr(error && error.message).trim() || 'visual_review_failed'
-      return {
-        passed: false,
-        score: 0,
-        summary: `锁定测试图已生成，但视觉评审失败，需人工复核。原因：${detail}`,
-        issues: ['visual_review_failed', detail],
-        revisedPrompt: asStr(prompt).trim(),
-        revisedNegativePrompt: asStr(negativePrompt).trim(),
-        skipped: true,
-        reviewError: detail
+      // 2026-10-12 Kimi 配额兜底：moonshot 评审失败（配额/网络/超时）时自动回退本地 VL
+      // （gemma-4-26b-a4b-it-4bit 经 OMLX，vision 租约互斥换入），与姿势评审的 local_vl 通道同款。
+      // 本地也失败才返回评审失败——S4-01 门禁语义不变（假通过依然禁止写入主参考）。
+      try {
+        const fallback = await reviewStoryboardLockImageWithLocalVl({
+          baseUrl: process.env.HERMES_VISION_BASE_URL || process.env.LOCALOXML_BASE_URL || apiUrl,
+          apiKey: process.env.LOCALOXML_API_KEY || process.env.OPENAI_API_KEY || '',
+          model: process.env.HERMES_VISION_MODEL || '',
+          asset,
+          prompt,
+          negativePrompt,
+          imageDataUrl,
+          attempt,
+          maxAttempts
+        })
+        console.log(`[story.lock.review] moonshot 失败已回退本地 VL 评审：${detail} -> local_vl passed=${fallback?.passed}`)
+        return { ...fallback, fallbackFrom: 'moonshot', fallbackReason: detail }
+      } catch (fallbackError) {
+        const fallbackDetail = asStr(fallbackError && fallbackError.message).trim() || 'local_vl_failed'
+        return {
+          passed: false,
+          score: 0,
+          summary: `锁定测试图已生成，但视觉评审失败（Kimi 与本地 VL 均不可用），需人工复核。原因：${detail}；本地回退：${fallbackDetail}`,
+          issues: ['visual_review_failed', detail, `local_vl_fallback: ${fallbackDetail}`],
+          revisedPrompt: asStr(prompt).trim(),
+          revisedNegativePrompt: asStr(negativePrompt).trim(),
+          skipped: true,
+          reviewError: detail
+        }
       }
     }
   }

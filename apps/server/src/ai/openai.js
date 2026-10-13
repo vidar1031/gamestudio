@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { getProxyInfo, getProxyUrl } from '../net/proxy.js'
 import { getStudioSecret } from '../studio/secrets.js'
 import { withResourceLease, isLocalOmlxUrl } from './resourceLease.js'
+import { appendStudioModelDialog, extractDialogResponseText } from './modelDialogs.js'
 
 const OFFICIAL_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
@@ -268,6 +269,10 @@ function buildChatCompletionsBodyFromResponsesBody(responsesBody) {
   if (messages.length === 0) return null
 
   const chatBody = { model: responsesBody.model || 'unknown', messages }
+  // 2026-10-13 实测：Qwen3.6-27B-4bit thinking_default=true，思考会吃掉 max_tokens 预算导致
+  // JSON 截断/空输出（青蛙王子构图 2048→4096 仍 composition_empty）。结构化输出调用一律关思考——
+  // 本路径全是机器面向的 JSON 任务（脚本/修复/构图/圣经分块），不需要推理过程；实测 2.4s 直出干净 JSON。
+  chatBody.chat_template_kwargs = { enable_thinking: false }
   // Only use response_format for non-localoxml providers, or when no schema is required
   if (!needsSchemaInPrompt && responsesBody.text && typeof responsesBody.text === 'object') {
     const fmt = responsesBody.text.format
@@ -298,12 +303,34 @@ async function openaiRequestJson(params) {
   return withResourceLease('llm', `gs:omlx:${cfg.model || params?.model || '-'}`, () => openaiRequestJsonInner(params))
 }
 
-async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, provider, apiUrl, model, proxyUrl: proxyUrlOverride }) {
+async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, provider, apiUrl, model, proxyUrl: proxyUrlOverride, caller }) {
   const cfg = getOpenAIConfig(provider, { apiUrl, model })
   const { apiKey, baseUrl } = cfg
   const allowMissingKey = cfg.provider === 'localoxml'
   if (!apiKey && !allowMissingKey) throw new Error('missing_openai_api_key')
   const url = `${baseUrl}${apiPath.startsWith('/') ? apiPath : `/${apiPath}`}`
+
+  // 模型对话留证（2026-10-12）：仅本地 localoxml 的 POST 带 body 调用记录；
+  // GET 探测/远程 provider 不记录。记录失败静默，不影响主链路（模块内部 catch）。
+  const recordDialog = (cfg.provider === 'localoxml' || isLocalOmlxUrl(cfg.baseUrl))
+    && String(method || 'POST').toUpperCase() !== 'GET'
+    && body && typeof body === 'object'
+  const dialogStartedAt = Date.now()
+  let dialogWritten = false
+  const writeDialog = (ok, json, error) => {
+    if (!recordDialog || dialogWritten) return
+    dialogWritten = true
+    appendStudioModelDialog({
+      caller: caller || apiPath,
+      model: json?.model || cfg.model,
+      body,
+      response: ok ? extractDialogResponseText(json) : '',
+      usage: json?.usage || null,
+      durationMs: Date.now() - dialogStartedAt,
+      ok,
+      error: error ? String(error instanceof Error ? error.message : error) : null
+    })
+  }
 
   const proxyUrlRaw = String(proxyUrlOverride || getProxyUrl() || '').trim()
   const proxyUrl = shouldBypassProxyForTarget(url) ? '' : proxyUrlRaw
@@ -314,7 +341,7 @@ async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, 
     // If a proxy is configured, use curl to ensure proxy support even when Node fetch doesn't.
     // This avoids confusing "browser works but CLI fails" setups (e.g. Clash Verge).
     if (proxyUrl) {
-      return await curlRequestJson({
+      const json = await curlRequestJson({
         url,
         method,
         headers: {
@@ -325,6 +352,8 @@ async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, 
         timeoutMs,
         proxyUrl
       })
+      writeDialog(true, json, null)
+      return json
     }
 
     const resp = await fetch(url, {
@@ -345,9 +374,15 @@ async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, 
       const err = new Error(String(msg))
       err.status = resp.status
       err.body = json
+      writeDialog(false, json, err)
       throw err
     }
+    writeDialog(true, json, null)
     return json
+  } catch (error) {
+    // 网络层异常（连接拒绝/超时/代理失败等）同样留 ok:false 记录
+    writeDialog(false, null, error)
+    throw error
   } finally {
     if (t) clearTimeout(t)
   }
@@ -606,9 +641,11 @@ export async function repairScriptsViaOpenAI({
 }) {
   const cfg = getOpenAIConfig(provider, { apiUrl, model })
   const useModel = String(model || cfg.model).trim() || cfg.model
+  // localoxml/OMLX 27B 实测修复生成约 60s（2026-10-12 蓝图修复实测），默认 20s 必中止；
+  // 本地通道 caller 未显式给超时时下限提到 180s。
   const timeoutMs = Number.isFinite(Number(callerTimeoutMs))
     ? Number(callerTimeoutMs)
-    : cfg.timeoutMs
+    : (cfg.provider === 'localoxml' ? Math.max(cfg.timeoutMs, 180000) : cfg.timeoutMs)
   const startedAt = Date.now()
 
   const rulesText = formatRulesForInstructions(rules)
@@ -709,13 +746,46 @@ export async function repairScriptsViaOpenAI({
     }
   }
 
+  // 与 generateScriptsViaOpenAI 同款处理：localoxml/OMLX 走 /responses + json_schema 会把
+  // max_tokens 全耗在 reasoning_content 导致空输出（empty_ai_output），本地通道直接用 chat/completions。
+  const isLocalOxml = cfg.provider === 'localoxml'
+  if (isLocalOxml) {
+    const bodyChat = buildChatCompletionsBodyFromResponsesBody(bodyResponses)
+    if (bodyChat) {
+      const resp = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+      const content = resp && resp.choices && resp.choices[0] && resp.choices[0].message && resp.choices[0].message.content
+      const reasoning = resp && resp.choices && resp.choices[0] && resp.choices[0].message && resp.choices[0].message.reasoning_content
+      const text = typeof content === 'string' ? content.trim() : (typeof reasoning === 'string' ? reasoning.trim() : '')
+      if (!text) throw new Error('empty_ai_output')
+      return {
+        draft: parseModelJsonLenient(text),
+        meta: { provider: cfg.provider, api: 'chat.completions', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
+      }
+    }
+  }
+
   const resp = await openaiRequestJson({ method: 'POST', path: '/responses', body: bodyResponses, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
   const text = extractResponseOutputText(resp)
-  if (!text) throw new Error('empty_ai_output')
-  return {
-    draft: parseModelJsonLenient(text),
-    meta: { provider: cfg.provider, api: 'responses', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
+  if (text) {
+    return {
+      draft: parseModelJsonLenient(text),
+      meta: { provider: cfg.provider, api: 'responses', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
+    }
   }
+
+  // /responses 空输出回退 chat/completions（schema 内嵌 system prompt）
+  const bodyChat = buildChatCompletionsBodyFromResponsesBody(bodyResponses)
+  if (bodyChat) {
+    const resp2 = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: bodyChat, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+    const content = resp2 && resp2.choices && resp2.choices[0] && resp2.choices[0].message && resp2.choices[0].message.content
+    const text2 = typeof content === 'string' ? content.trim() : ''
+    if (!text2) throw new Error('empty_ai_output')
+    return {
+      draft: parseModelJsonLenient(text2),
+      meta: { provider: cfg.provider, api: 'chat.completions', model: useModel, durationMs: Math.max(0, Date.now() - startedAt) }
+    }
+  }
+  throw new Error('empty_ai_output')
 }
 
 function errToPlain(e) {

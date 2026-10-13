@@ -450,7 +450,9 @@ function normalizeStoryboardLockAssetPromptDrafts(
     const assetId = String(asset && asset.id ? asset.id : '').trim()
     if (!assetId) continue
     const prev = incoming[assetId] && typeof incoming[assetId] === 'object' ? incoming[assetId] : { promptZh: '', promptEn: '' }
-    const fallbackPromptEn = String(asset?.referencePromptEn || asset?.referencePromptHint || '').trim()
+    // 2026-10-13 兜底链补 anchorPrompt：存量计划（生产链只写了出图锚点、未写向导字段）在向导里立即可见，
+    // 新计划由生产侧直接填齐 referencePromptEn/referencePromptZh（字段语义不变，仅回退读取）
+    const fallbackPromptEn = String(asset?.referencePromptEn || asset?.anchorPrompt || asset?.referencePromptHint || '').trim()
     const preferredPromptEn = chooseEnglishAssetPrompt(hasOwn(prev, 'promptEn') ? prev.promptEn : (asset?.referencePromptEn || ''), fallbackPromptEn)
     const safePromptEn = isProtectedAssetLockProfile(asset) && looksContaminatedProtectedAssetPrompt(preferredPromptEn, asset)
       ? fallbackPromptEn

@@ -469,6 +469,103 @@ function mergePrevAssetState(asset, prevAsset) {
   }
 }
 
+const CJK_RE = /[\u4e00-\u9fff]/
+
+// 2026-10-13 字段对齐（青蛙王子实测错位）：向导「锁定事物」读写的 referencePromptEn/
+// referencePromptZh 由生产侧在计划构建时填齐——英文稿与出图锚点 anchorPrompt 同源；
+// 中文稿以圣经中文名/中文别名为种子（圣经无实体级中文描述，进一步润色走向导的
+// 「AI 生成提示词」/人工编辑，不在这里编造内容）。
+function chinesePromptSeedForEntity(entity) {
+  const parts = []
+  const name = asStr(entity && entity.name).trim()
+  if (name && CJK_RE.test(name)) parts.push(name)
+  for (const alias of asList(entity && entity.aliases)) {
+    const text = asStr(alias).trim()
+    if (text && CJK_RE.test(text) && !parts.includes(text)) parts.push(text)
+  }
+  return parts.join('、')
+}
+
+// 2026-10-13 计划去重合并（bible_qc 质检重写圣经后，同一事物可能被不同 id 双建档——
+// 实测 characters.frog「青蛙」与 props.frog_char_01「The Frog」(aliases 含 frog) 并存）：
+// 按规范化名称/别名交集判同一事物，合并进类别优先级高的条目（character > location > prop），
+// sceneIds/aliases/提示词/主参考/生成态并入保留条目；被合并 id 经返回 idMap 改写到场景引用。
+const CATEGORY_MERGE_PRIORITY = { character: 0, location: 1, prop: 2 }
+
+function normalizeEntityToken(text) {
+  return asStr(text).trim().toLowerCase().replace(/\s+/g, ' ').replace(/^(?:the|a|an)\s+/i, '')
+}
+
+function mergeAssetInto(target, source) {
+  target.sceneIds = uniqStrings([...asList(target.sceneIds), ...asList(source.sceneIds)], 80)
+  target.sceneCount = target.sceneIds.length
+  target.aliases = uniqStrings([...asList(target.aliases), ...asList(source.aliases)], 20)
+  const prevEvidence = target.sceneEvidence && typeof target.sceneEvidence === 'object' ? target.sceneEvidence : {}
+  const srcEvidence = source.sceneEvidence && typeof source.sceneEvidence === 'object' ? source.sceneEvidence : {}
+  target.sceneEvidence = {
+    bibleRefs: uniqStrings([...asList(prevEvidence.bibleRefs), ...asList(srcEvidence.bibleRefs)], 80),
+    placements: uniqStrings([...asList(prevEvidence.placements), ...asList(srcEvidence.placements)], 80),
+    text: uniqStrings([...asList(prevEvidence.text), ...asList(srcEvidence.text)], 80)
+  }
+  if (!asStr(target.anchorPrompt).trim()) target.anchorPrompt = asStr(source.anchorPrompt).trim()
+  if (!asStr(target.negativePrompt).trim()) target.negativePrompt = asStr(source.negativePrompt).trim()
+  if (!asStr(target.referencePromptEn).trim()) target.referencePromptEn = asStr(source.referencePromptEn).trim()
+  if (!asStr(target.referencePromptZh).trim()) target.referencePromptZh = asStr(source.referencePromptZh).trim()
+  // 主参考与生成态：保留条目缺失时继承被合并条目（不覆盖已有真相）
+  if (!asStr(target.primaryReferenceAssetUri).trim() && asStr(source.primaryReferenceAssetUri).trim()) {
+    target.primaryReferenceAssetId = asStr(source.primaryReferenceAssetId).trim()
+    target.primaryReferenceAssetUri = asStr(source.primaryReferenceAssetUri).trim()
+    target.referenceStatus = asStr(source.referenceStatus).trim() || 'ready'
+  }
+  const seenRefs = new Set(asList(target.generatedRefs).map((x) => asStr(x && (x.assetId || x.uri || x.assetPath)).trim()).filter(Boolean))
+  for (const ref of asList(source.generatedRefs)) {
+    const key = asStr(ref && (ref.assetId || ref.uri || ref.assetPath)).trim()
+    if (key && seenRefs.has(key)) continue
+    if (key) seenRefs.add(key)
+    target.generatedRefs = [...asList(target.generatedRefs), ref]
+  }
+  if (!asList(target.latestReferenceBatch).length && asList(source.latestReferenceBatch).length) {
+    target.latestReferenceBatch = source.latestReferenceBatch
+  }
+  return target
+}
+
+function dedupeStoryAssetDefs(defs) {
+  const kept = []
+  const idMap = new Map()
+  const tokenIndex = new Map()
+  for (const asset of Array.isArray(defs) ? defs : []) {
+    // token 集 = id（含去序号变体）+ 名称 + 别名（规范化）：
+    // id 必入集——bible_qc 重写后 prop 的 aliases 常含角色 id（实测 prop frog_char_01 aliases 含 'frog'）
+    const rawId = asStr(asset && asset.id).trim()
+    const tokens = [rawId, rawId.replace(/_\d+$/, ''), asset && asset.name, ...asList(asset && asset.aliases)]
+      .map(normalizeEntityToken)
+      .filter(Boolean)
+    let hitIdx = -1
+    for (const token of tokens) {
+      if (tokenIndex.has(token)) { hitIdx = tokenIndex.get(token); break }
+    }
+    if (hitIdx === -1) {
+      for (const token of tokens) tokenIndex.set(token, kept.length)
+      kept.push(asset)
+      continue
+    }
+    const target = kept[hitIdx]
+    const targetPriority = CATEGORY_MERGE_PRIORITY[asStr(target.category).trim()] ?? 3
+    const sourcePriority = CATEGORY_MERGE_PRIORITY[asStr(asset.category).trim()] ?? 3
+    // 新条目类别优先级更高时换保留身份（id/name/category/提示词以新条目为准，旧条目状态并入）
+    const winner = sourcePriority < targetPriority ? asset : target
+    const loser = winner === asset ? target : asset
+    mergeAssetInto(winner, loser)
+    if (winner === asset) kept[hitIdx] = asset
+    for (const token of tokens) tokenIndex.set(token, hitIdx)
+    if (asStr(loser.id).trim() && asStr(loser.id).trim() !== asStr(winner.id).trim()) {
+      idMap.set(asStr(loser.id).trim(), asStr(winner.id).trim())
+    }
+  }
+  return { assets: kept, idMap }
+}
+
 function referenceHintForCategory(category) {
   if (category === 'character') {
     return 'single full-body front view of one adult character only, pure white background, centered single view, stable face and outfit, one single pose'
@@ -591,6 +688,9 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       renderStrategy: 'ref_required',
       anchorPrompt: asStr(entity.anchorPrompt).trim(),
       negativePrompt: asStr(entity.negativePrompt).trim(),
+      // 2026-10-13 字段对齐：向导可见可编字段与生产同源填齐（英文稿=出图锚点；中文稿=中文名/别名种子）
+      referencePromptEn: asStr(entity.anchorPrompt).trim(),
+      referencePromptZh: chinesePromptSeedForEntity(entity),
       aliases: uniqStrings(entity.aliases, 20),
       forbiddenSubstitutes: [],
       sceneIds,
@@ -630,6 +730,9 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       renderStrategy: strategy.renderStrategy,
       anchorPrompt: asStr(entity.anchorPrompt).trim(),
       negativePrompt: '',
+      // 2026-10-13 字段对齐：向导可见可编字段与生产同源填齐
+      referencePromptEn: asStr(entity.anchorPrompt).trim(),
+      referencePromptZh: chinesePromptSeedForEntity(entity),
       aliases: uniqStrings(entity.aliases, 20),
       forbiddenSubstitutes: uniqStrings(entity.forbiddenSubstitutes, 40),
       sceneIds,
@@ -667,6 +770,9 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       renderStrategy: strategy.renderStrategy,
       anchorPrompt: asStr(entity.anchorPrompt).trim(),
       negativePrompt: '',
+      // 2026-10-13 字段对齐：向导可见可编字段与生产同源填齐
+      referencePromptEn: asStr(entity.anchorPrompt).trim(),
+      referencePromptZh: chinesePromptSeedForEntity(entity),
       aliases: uniqStrings(entity.aliases, 20),
       forbiddenSubstitutes: [],
       sceneIds,
@@ -685,7 +791,13 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
     if (!excludedAssetIds.has(id)) assetDefs.push(mergePrevAssetState(asset, prevAssetsById.get(id)))
   }
 
-  const assetsById = new Map(assetDefs.map((asset) => [asset.id, asset]))
+  // 2026-10-13 去重合并：同一事物（名称/别名规范化后相交）不得双建档；
+  // 被合并 id 经 dedupeIdMap 改写到场景资产引用，场景不缺资产
+  const deduped = dedupeStoryAssetDefs(assetDefs)
+  const dedupeIdMap = deduped.idMap
+  const assetDefsFinal = deduped.assets
+
+  const assetsById = new Map(assetDefsFinal.map((asset) => [asset.id, asset]))
   const scenes = nodes.map((node, index) => {
     const matched = matchSceneRef(sceneRefsMap, node, index)
     const ref = asObj(matched.value)
@@ -694,7 +806,7 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
     const characterIds = uniqStrings([...(ref.characters || []).map(resolveCharacterId), ...placementCharacterIds], 40)
     const propIds = uniqStrings((ref.props || []).map(resolvePropId), 60)
     const locationIds = uniqStrings((ref.locations || []).map(resolveLocationId), 40)
-    const assetIds = uniqStrings([...characterIds, ...propIds, ...locationIds], 120)
+    const assetIds = uniqStrings([...characterIds, ...propIds, ...locationIds].map((assetId) => dedupeIdMap.get(asStr(assetId).trim()) || assetId), 120)
       .filter((assetId) => !excludedAssetIds.has(asStr(assetId).trim()))
     const sceneAssets = assetIds.map((assetId) => assetsById.get(assetId)).filter(Boolean)
     const workflow = buildSceneWorkflow(sceneAssets)
@@ -725,7 +837,7 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
     }
   })
 
-  const assets = assetDefs
+  const assets = assetDefsFinal
     .map((asset) => {
       const sceneIds = uniqStrings(asset.sceneIds, 80)
       return {
