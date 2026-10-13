@@ -8972,7 +8972,7 @@ function ensureNode(n: NodeV1): NodeV1 {
 
 	            <div className="fold">
 	              <div className="fold-head" onClick={() => toggleRightFold('timeline')}>
-	                <div className="fold-title">时间线（P0）</div>
+	                <div className="fold-title">时间线</div>
 	                <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
 	                  <button
                     type="button"
@@ -10648,7 +10648,7 @@ function ensureNode(n: NodeV1): NodeV1 {
     <div className="app">
       <div className="topbar">
         <div className="left">
-          <div className="title">gamestudio · 节点式交互故事编辑器（P0）</div>
+          <div className="title">gamestudio · 节点式交互故事编辑器</div>
           {showProjectManager ? (
             <>
               <button className="btn secondary" onClick={() => refreshProjects()} disabled={busy}>
