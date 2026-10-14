@@ -287,9 +287,12 @@ function buildChatCompletionsBodyFromResponsesBody(responsesBody) {
       }
     }
   }
-  // OMLX needs more output tokens for complex schemas; caller 可用 max_output_tokens 压预算（默认 8192）
+  // OMLX needs more output tokens for complex schemas; caller 可用 max_output_tokens 压预算。
+  // 2026-10-13 实测 prefill 护栏：oMLX metal_cap 22.76GB，27B 权重+运行时 ~18.6GB，
+  // max_tokens=8192 需 KV+SDPA ~4.33GB → 峰值 22.93GB 超线被整包拒答（丑小鸭圣经步两连 400）。
+  // 缺省压到 6144（KV ~3.3GB，峰值 ~22.0GB 留 ~0.8GB 余量）；已知大包调用应显式给更小值。
   const callerMax = Number(responsesBody.max_output_tokens)
-  chatBody.max_tokens = Number.isFinite(callerMax) && callerMax > 0 ? Math.floor(callerMax) : 8192
+  chatBody.max_tokens = Number.isFinite(callerMax) && callerMax > 0 ? Math.floor(callerMax) : 6144
   return chatBody
 }
 

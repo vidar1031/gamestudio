@@ -575,6 +575,8 @@ async function requestStoryBibleStructuredOutput({
         instructions: attemptInstructions,
         input: user,
         ...(model ? { model: String(model).trim() } : {}),
+        // prefill 护栏：8K 窗口 prompt+max_tokens 需留 KV 余量，整本圣经输出给 4096
+        max_output_tokens: 4096,
         text: {
           format: {
             type: 'json_schema',
@@ -830,6 +832,9 @@ async function callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutM
     instructions: buildBibleChunkInstructions(kind),
     input: JSON.stringify(input || {}, null, 2),
     ...(model ? { model: String(model).trim() } : {}),
+    // 2026-10-13 prefill 护栏实测：8K 窗口下 prompt+max_tokens 必须留 KV 余量，
+    // 圣经分块输出有界（单块 1-2K tokens），给 4096 保过闸（丑小鸭圣经 400 根修）
+    max_output_tokens: 4096,
     text: {
       format: {
         type: 'json_schema',
@@ -847,10 +852,15 @@ async function callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutM
 
 async function generateStoryBibleChunked({ provider, model, apiUrl, proxyUrl, timeoutMs, input }) {
   const slim = summarizeInputForBibleChunks(input)
-  const globalPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'global', input: slim })
-  const characterPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'characters', input: slim })
-  const propPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'props', input: slim })
-  const locationPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'locations', input: slim })
+  // 2026-10-13 prefill 护栏实测：KV 由 prompt 驱动（~1MB/token），整块 slim 仍有 4-6KB → 丑小鸭圣经四连 400。
+  // 每个分块只给该块需要的字段（实体清单+场景名），prompt 压到 ~1-2K tokens 保过闸；global 块摘要再压 120 字。
+  const sceneLite = slim.sceneSummaries.map((scene) => ({ sceneId: scene.sceneId, name: scene.name, summary: clampStr(scene.summary, 120) }))
+  const sceneNames = sceneLite.map((scene) => scene.name).filter(Boolean)
+  const base = { title: slim.title, brief: slim.brief, candidateWorldHints: slim.candidateWorldHints }
+  const globalPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'global', input: { ...base, sceneSummaries: sceneLite } })
+  const characterPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'characters', input: { ...base, candidateCharacters: slim.candidateCharacters, sceneNames } })
+  const propPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'props', input: { ...base, candidateProps: slim.candidateProps, sceneNames } })
+  const locationPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'locations', input: { ...base, candidateLocations: slim.candidateLocations, sceneNames } })
   const sceneRefsPart = await callStoryBibleChunk({
     provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'sceneRefs',
     input: {

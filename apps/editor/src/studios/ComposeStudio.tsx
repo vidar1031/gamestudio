@@ -82,6 +82,11 @@ import {
   type StoryboardPromptQualityReview,
   type StoryAssetGalleryEntry,
   type StoryAssetPlan,
+  type SceneReviewRecord,
+  type SceneReviewRound,
+  startStorySceneReview,
+  getLatestStorySceneReview,
+  submitSceneReviewFeedback,
   compileCompose
 } from '../api'
 
@@ -1311,6 +1316,16 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [ccReport, setCcReport] = useState<StoryCompletenessReport | null>(null)
   const [ccReportFile, setCcReportFile] = useState('')
   const ccReportLoadedTaskRef = useRef<string>('')
+
+  // GS-53 场景图审核（2026-10-14，守护台审图中心接入）：逐场景整图评审（分数/问题清单/改图建议），
+  // 面板打开期间轮询任务进度，完成后拉取最新一轮记录；打回重出把建议合入重出提示词。
+  const [srOpen, setSrOpen] = useState(false)
+  const [srBusy, setSrBusy] = useState(false)
+  const [srError, setSrError] = useState('')
+  const [srTask, setSrTask] = useState<AiTaskProgress | null>(null)
+  const [srRound, setSrRound] = useState<SceneReviewRound | null>(null)
+  const [srReworkBusy, setSrReworkBusy] = useState('')
+  const srLoadedRef = useRef<string>('')
 
 	  const [rightFold, setRightFold] = useState<{
 	    nodeProps: boolean
@@ -2800,6 +2815,112 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     const timer = window.setInterval(pull, 2000)
     return () => { stopped = true; window.clearInterval(timer) }
   }, [ccOpen, doc.mode, doc.id])
+
+  // GS-53 场景图审核：面板打开期间轮询 story.scene.review 任务进度；任务终结后拉最新一轮记录
+  useEffect(() => {
+    if (!srOpen || doc.mode !== 'project' || !doc.id) return undefined
+    let stopped = false
+    const pull = async () => {
+      try {
+        const tasks = await listProjectAiTasks(doc.id)
+        if (stopped) return
+        const task = tasks.find((t) => t.kind === 'story.scene.review') || null
+        setSrTask(task)
+        const active = Boolean(task && !task.done)
+        const loadedKey = task ? `${task.taskId}:${task.done ? 'done' : 'active'}` : 'none'
+        if (!active && srLoadedRef.current !== loadedKey) {
+          srLoadedRef.current = loadedKey
+          const latest = await getLatestStorySceneReview(doc.id).catch(() => null)
+          if (stopped) return
+          if (latest?.latest) setSrRound(latest.latest)
+        }
+      } catch (_) { /* 轮询失败忽略，下轮重试 */ }
+    }
+    void pull()
+    const timer = window.setInterval(pull, 2000)
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [srOpen, doc.mode, doc.id])
+
+  async function openSceneReviewPanel() {
+    setSrError('')
+    setSrOpen(true)
+    srLoadedRef.current = ''
+    // 打开即拉已有记录（空态也在面板内提示）
+    try {
+      const latest = await getLatestStorySceneReview(doc.id)
+      if (latest?.latest) setSrRound(latest.latest)
+    } catch (e) {
+      setSrError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function runSceneReview() {
+    if (srBusy || doc.mode !== 'project' || !doc.id) return
+    setSrBusy(true)
+    setSrError('')
+    try {
+      await startStorySceneReview(doc.id)
+      // 任务进度由面板轮询接管（taskId 下一拍经列表出现）
+    } catch (e) {
+      setSrError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSrBusy(false)
+    }
+  }
+
+  function srVerdictColor(verdict?: string) {
+    if (verdict === 'pass') return '#86efac'
+    if (verdict === 'suspect') return '#fbbf24'
+    return '#fca5a5'
+  }
+
+  function srVerdictLabel(verdict?: string) {
+    if (verdict === 'pass') return '通过'
+    if (verdict === 'suspect') return '存疑'
+    return '不合格'
+  }
+
+  function srFeedbackStatusOf(sceneId: string) {
+    const feedback = (srRound?.feedback || []).filter((f) => f.sceneId === sceneId)
+    const latest = feedback.length ? feedback[feedback.length - 1] : null
+    return latest?.kind || ''
+  }
+
+  async function reworkScene(record: SceneReviewRecord) {
+    if (!doc.id || srReworkBusy) return
+    setSrReworkBusy(record.sceneId)
+    setSrError('')
+    try {
+      const suggestions = (record.suggestions || []).filter(Boolean)
+      const note = suggestions.length ? `打回重出（建议合入重出提示词）：${suggestions.join('；')}` : '打回重出'
+      // 先留痕（feedback_pending），再调单场景重出端点（建议合入重出提示词 scenePrompt）
+      await submitSceneReviewFeedback(doc.id, { sceneId: record.sceneId, sceneName: record.sceneName, action: 'feedback_pending', note })
+      await renderStorySceneAi(doc.id, record.sceneId, {
+        scenePrompt: suggestions.length ? `重出修正：${suggestions.join('；')}` : undefined
+      })
+      const latest = await getLatestStorySceneReview(doc.id).catch(() => null)
+      if (latest?.latest) setSrRound(latest.latest)
+    } catch (e) {
+      setSrError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSrReworkBusy('')
+    }
+  }
+
+  async function confirmScenePass(record: SceneReviewRecord) {
+    if (!doc.id || srReworkBusy) return
+    setSrReworkBusy(record.sceneId)
+    setSrError('')
+    try {
+      await submitSceneReviewFeedback(doc.id, { sceneId: record.sceneId, sceneName: record.sceneName, action: 'human_confirmed', note: '人工确认通过' })
+      const latest = await getLatestStorySceneReview(doc.id).catch(() => null)
+      if (latest?.latest) setSrRound(latest.latest)
+    } catch (e) {
+      setSrError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSrReworkBusy('')
+    }
+  }
 
   function backToStart() {
     if (!doc.story) return
@@ -10760,6 +10881,18 @@ function ensureNode(n: NodeV1): NodeV1 {
                 场景出图
               </button>
             ) : null}
+            {doc.mode === 'project' && doc.story ? (
+              <button
+                className="btn secondary"
+                title="场景图审核：把每个场景的整图提交守护台审图中心评审（分数/问题/改图建议），不合格可一键打回重出"
+                onClick={() => {
+                  void openSceneReviewPanel()
+                }}
+                disabled={busy}
+              >
+                场景图审核
+              </button>
+            ) : null}
             {doc.mode === 'project' ? (
               <button
                 className="btn secondary"
@@ -11422,6 +11555,142 @@ function ensureNode(n: NodeV1): NodeV1 {
                 直接覆盖并继续
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* GS-53 场景图审核面板：逐场景评审卡片（缩略图/分数/判定/问题/建议）+ 打回重出/确认通过 */}
+      {srOpen ? (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 80,
+            display: 'grid',
+            placeItems: 'center',
+            background: 'rgba(2,6,23,0.82)'
+          }}
+        >
+          <div
+            style={{
+              width: 'min(980px, calc(100vw - 32px))',
+              maxHeight: 'calc(100vh - 64px)',
+              overflow: 'auto',
+              background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
+              border: '1px solid rgba(96,165,250,0.35)',
+              borderRadius: 16,
+              boxShadow: '0 24px 60px rgba(0,0,0,0.45)',
+              padding: 18
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#e5e7eb' }}>场景图审核</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn secondary" disabled={srBusy || Boolean(srTask && !srTask.done)} onClick={() => void runSceneReview()}>
+                  {srBusy ? '提交中…' : '重新审核全部场景'}
+                </button>
+                <button className="btn secondary" onClick={() => setSrOpen(false)}>关闭</button>
+              </div>
+            </div>
+
+            {srError ? <div className="hint" style={{ color: '#fca5a5', marginBottom: 10 }}>{srError}</div> : null}
+
+            {srTask && !srTask.done ? (
+              <div style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.75)', color: '#bfdbfe', fontSize: 13, marginBottom: 10 }}>
+                正在审核：{srTask.message || '准备中…'}
+              </div>
+            ) : null}
+
+            {!srRound && !(srTask && !srTask.done) ? (
+              <div className="hint" style={{ marginBottom: 10 }}>
+                暂无审核记录。点「重新审核全部场景」把每个场景的整图提交守护台审图中心评审（走查截图优先，无走查用绑定背景图）。
+              </div>
+            ) : null}
+
+            {srRound ? (
+              <>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#e5e7eb' }}>
+                    最新一轮：通过 {srRound.summary?.pass ?? 0} · 存疑 {srRound.summary?.suspect ?? 0} · 不合格 {srRound.summary?.fail ?? 0}
+                  </div>
+                  <div className="hint">{srRound.at ? `评审时间：${srRound.at}` : ''}</div>
+                </div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {(srRound.records || []).map((record) => {
+                    const feedbackStatus = srFeedbackStatusOf(record.sceneId)
+                    return (
+                      <div
+                        key={record.sceneId}
+                        style={{ display: 'flex', gap: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.75)' }}
+                      >
+                        {record.thumbnailDataUrl ? (
+                          <img
+                            src={record.thumbnailDataUrl}
+                            alt={record.sceneName || record.sceneId}
+                            style={{ width: 96, height: 128, objectFit: 'cover', borderRadius: 8, flexShrink: 0, border: '1px solid rgba(148,163,184,0.2)' }}
+                          />
+                        ) : (
+                          <div style={{ width: 96, height: 128, borderRadius: 8, border: '1px dashed rgba(148,163,184,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', fontSize: 11, flexShrink: 0, textAlign: 'center' }}>
+                            无缩略图
+                          </div>
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <span style={{ fontWeight: 700, color: '#e5e7eb' }}>{record.sceneName || record.sceneId}</span>
+                            <span style={{ color: srVerdictColor(record.verdict), fontWeight: 700 }}>
+                              {srVerdictLabel(record.verdict)}{Number.isFinite(Number(record.score)) ? ` ${record.score} 分` : ''}
+                            </span>
+                            {record.imageSource === 'background_only' ? <span className="hint">背景图（未合成摆位）</span> : null}
+                            {feedbackStatus === 'feedback_pending' ? <span style={{ color: '#fbbf24', fontSize: 12 }}>已打回，重出中/待重出</span> : null}
+                            {feedbackStatus === 'human_confirmed' ? <span style={{ color: '#86efac', fontSize: 12 }}>已人工确认通过</span> : null}
+                          </div>
+                          {(record.issues || []).length ? (
+                            <div style={{ marginTop: 6 }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 2 }}>问题清单</div>
+                              {(record.issues || []).map((issue, i) => (
+                                <div key={i} style={{ fontSize: 12, color: '#fca5a5', lineHeight: 1.6 }}>{issue}</div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {(record.suggestions || []).length ? (
+                            <div style={{ marginTop: 6 }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 2 }}>改图建议</div>
+                              {(record.suggestions || []).map((suggestion, i) => (
+                                <div key={i} style={{ fontSize: 12, color: '#93c5fd', lineHeight: 1.6 }}>{suggestion}</div>
+                              ))}
+                            </div>
+                          ) : null}
+                          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                            {record.verdict !== 'pass' ? (
+                              <button
+                                className="btn secondary"
+                                style={{ fontSize: 12, padding: '4px 10px' }}
+                                disabled={Boolean(srReworkBusy)}
+                                title="把改图建议合入重出提示词，重新渲染该场景"
+                                onClick={() => void reworkScene(record)}
+                              >
+                                {srReworkBusy === record.sceneId ? '处理中…' : '打回重出'}
+                              </button>
+                            ) : null}
+                            {record.verdict !== 'pass' || feedbackStatus !== 'human_confirmed' ? (
+                              <button
+                                className="btn secondary"
+                                style={{ fontSize: 12, padding: '4px 10px' }}
+                                disabled={Boolean(srReworkBusy)}
+                                title="人工确认该场景图通过验收"
+                                onClick={() => void confirmScenePass(record)}
+                              >
+                                {srReworkBusy === record.sceneId ? '处理中…' : '确认通过'}
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
       ) : null}

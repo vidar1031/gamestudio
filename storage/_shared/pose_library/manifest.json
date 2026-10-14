@@ -115,6 +115,19 @@
         "搬"
       ],
       "experimental": true
+    },
+    "climbing": {
+      "file": "climbing_side.png",
+      "view": "side",
+      "en": "climbing up with both arms gripping above head, body stretched upward, side view",
+      "cn": [
+        "攀爬",
+        "爬",
+        "爬上",
+        "攀",
+        "攀上",
+        "向上爬"
+      ]
     }
   }
 }

@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "1.0",
+  "updatedAt": "2026-09-16T05:03:26.190007Z",
+  "enabled": {
+    "scripts": true,
+    "prompt": true,
+    "image": true,
+    "tts": false
+  },
+  "scripts": {
+    "provider": "localoxml",
+    "model": "gpt-oss-20b-MXFP4-Q8",
+    "apiUrl": "http://127.0.0.1:18888/v1"
+  },
+  "prompt": {
+    "provider": "localoxml",
+    "model": "gpt-oss-20b-MXFP4-Q8",
+    "apiUrl": "http://127.0.0.1:18888/v1"
+  },
+  "translation": {
+    "provider": "localoxml",
+    "model": "gpt-oss-20b-MXFP4-Q8",
+    "apiUrl": "http://127.0.0.1:18888/v1"
+  },
+  "image": {
+    "provider": "comfyui",
+    "model": "ivisionIllustration_ivision10.safetensors",
+    "loras": [
+      "flat_childrenXX.safetensors:0.7"
+    ],
+    "apiUrl": "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+    "size": "1024x1024",
+    "sdwebuiBaseUrl": "http://127.0.0.1:7860",
+    "comfyuiBaseUrl": "http://127.0.0.1:8188",
+    "comfyuiModelsRoot": "/Volumes/ovokit2t/ComfyUI/models"
+  },
+  "tts": {
+    "provider": "doubao",
+    "model": null,
+    "apiUrl": null
+  },
+  "review": {
+    "provider": "omlx",
+    "model": "gemma-4-26b-a4b-it-4bit",
+    "apiUrl": "http://127.0.0.1:18888/v1",
+    "poseReviewProvider": "local_vl",
+    "poseReviewModel": "gemma-4-26b-a4b-it-4bit",
+    "poseReviewBaseUrl": "http://127.0.0.1:18888/v1"
+  },
+  "secrets": {
+    "openaiApiKey": null,
+    "localoxmlApiKey": null,
+    "doubaoArkApiKey": null
+  },
+  "network": {
+    "proxyUrl": "http://127.0.0.1:7897"
+  }
+}

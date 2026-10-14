@@ -161,7 +161,9 @@ export async function extractStoryPoseStates({ provider, model, apiUrl, proxyUrl
         instructions: attempt === 0 ? instructions : `${instructions}\n再次强调：只输出一个可直接 JSON.parse 的 JSON 对象，不要输出任何其他内容。`,
         input: user,
         ...(model ? { model: String(model).trim() } : {}),
-        max_output_tokens: 2048,
+        // 2026-10-13 丑小鸭实测：2048 装不下全故事姿势需求 JSON（9 资产×场景），截断即
+        // Expected ',' or ']' after array element（position 5292）；与构图同型根因，提到 4096。
+        max_output_tokens: 4096,
         text: { format: { type: 'json_schema', name: 'story_pose_states', strict: true, schema: poseStatesSchema() } }
       }
       try {

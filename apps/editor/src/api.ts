@@ -1815,3 +1815,50 @@ export async function preflightStudioImage(payload?: {
   const message = json && (json.message || json.error) ? String(json.message || json.error) : (!resp.ok ? `HTTP ${resp.status}` : '')
   return { ok, checks, message: message || undefined }
 }
+
+// ===== GS-53 场景图审核（守护台审图中心接入，2026-10-14） =====
+export type SceneReviewRecord = {
+  at?: string
+  kind?: string
+  reviewId?: string
+  sceneId: string
+  sceneName?: string
+  score?: number
+  verdict?: 'pass' | 'suspect' | 'fail'
+  issues?: string[]
+  suggestions?: string[]
+  thumbnailDataUrl?: string | null
+  imageSource?: string
+  note?: string
+}
+
+export type SceneReviewRound = {
+  reviewId: string
+  at?: string | null
+  records: SceneReviewRecord[]
+  feedback?: SceneReviewRecord[]
+  summary?: { pass: number; suspect: number; fail: number }
+}
+
+/** 发起场景图审核（后台任务，经 /ai/tasks 轮询进度）；返回 taskId */
+export async function startStorySceneReview(projectId: string, sceneIds?: string[]): Promise<{ taskId: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scene-review`, {
+    method: 'POST',
+    body: JSON.stringify(sceneIds && sceneIds.length ? { sceneIds } : {})
+  })
+  return { taskId: String(json.taskId || '') }
+}
+
+/** 读取最新一轮场景图审核记录（含人工处置记录） */
+export async function getLatestStorySceneReview(projectId: string): Promise<{ latest: SceneReviewRound | null; rounds: string[] }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scene-review`, { method: 'GET' })
+  return { latest: (json.latest || null) as SceneReviewRound | null, rounds: Array.isArray(json.rounds) ? json.rounds : [] }
+}
+
+/** 场景图审核人工处置：feedback_pending=打回重出待处理 / human_confirmed=确认通过 */
+export async function submitSceneReviewFeedback(projectId: string, payload: { sceneId: string; sceneName?: string; action: 'feedback_pending' | 'human_confirmed'; note?: string }): Promise<void> {
+  await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scene-review/feedback`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+}

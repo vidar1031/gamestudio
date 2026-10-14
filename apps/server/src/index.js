@@ -53,6 +53,7 @@ import { validateBlueprintDoc } from './blueprint/validate.js'
 import { loadEnv } from './env.js'
 import { diagnoseOpenAI, isOpenAICompatibleProvider, reviewBlueprintViaOpenAI } from './ai/openai.js'
 import { readStudioModelDialogs } from './ai/modelDialogs.js'
+import { runStorySceneReview, appendSceneReviewFeedback, readLatestSceneReviewRound } from './ai/storySceneReview.js'
 import { reviewBlueprintLocally } from './ai/blueprintReviewLocal.js'
 import dns from 'node:dns/promises'
 import { getEffectiveStudioConfig, redactEffectiveStudioConfigForClient, redactStudioSettingsForClient, writeStudioSettings } from './studio/settings.js'
@@ -5521,6 +5522,89 @@ app.post('/api/projects/:id/ai/story/walkthrough', async (c) => {
     logStage({ stage: 'story.walkthrough', event: 'error', traceId, project: id, item: msg.slice(0, 200) })
     const mapped = classifyAiError(e)
     return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
+// GS-53 场景图审核（2026-10-14，守护台审图中心接入）：逐场景整图（走查截图优先/背景图回退）
+// 提交 control 审图中心评审，结果落 reviews/scene_reviews.jsonl，编辑器「场景图审核」面板消费。
+// 长任务经 /ai/tasks 暴露进度（kind story.scene.review）；control 不可达/评审失败显式 failed，不写假结论。
+app.post('/api/projects/:id/ai/story/scene-review', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const bundle = await readProjectBundle(id)
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan || !Array.isArray(plan.scenes) || !plan.scenes.length) {
+    return c.json({ success: false, error: 'missing_asset_plan', message: '未找到资产计划（plan.json），请先完成资产计划与场景绑定。' }, 400)
+  }
+  const story = bundle.story
+  if (!story || !Array.isArray(story.nodes) || !story.nodes.length) {
+    return c.json({ success: false, error: 'missing_story', message: '未找到故事文档。' }, 400)
+  }
+  const sceneIds = Array.isArray(body?.sceneIds) ? body.sceneIds.map((x) => String(x || '').trim()).filter(Boolean) : null
+
+  const task = createAiTask(id, 'story.scene.review', { total: 1, message: '场景图审核：收集整图中…' })
+  const traceId = createTraceId()
+  logStage({ stage: 'story.scene.review', event: 'start', traceId, project: id })
+  // 后台执行（VL 评审逐张约 27s，长任务经任务进度轮询）
+  void (async () => {
+    try {
+      const { results, summary, reviewIds, roundId, reviewLogFile } = await runStorySceneReview({
+        id,
+        dir,
+        story,
+        plan,
+        project: bundle.project,
+        sceneIds,
+        onProgress: (message) => updateAiTask(task.taskId, { message })
+      })
+      updateAiTask(task.taskId, {
+        stage: 'done',
+        done: true,
+        current: 1,
+        message: `场景图审核完成：通过 ${summary.pass} · 存疑 ${summary.suspect} · 不合格 ${summary.fail}`,
+        result: { reviewIds, roundId, summary, results, reviewLogFile: path.relative(dir, reviewLogFile) }
+      })
+      logStage({ stage: 'story.scene.review', event: 'ok', traceId, project: id, item: `pass:${summary.pass} suspect:${summary.suspect} fail:${summary.fail}` })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      updateAiTask(task.taskId, { stage: 'error', done: true, error: msg, message: `场景图审核失败：${msg}` })
+      logStage({ stage: 'story.scene.review', event: 'error', traceId, project: id, item: msg.slice(0, 200) })
+    }
+  })()
+  return c.json({ success: true, taskId: task.taskId }, 202)
+})
+
+// GS-53 读取最新一轮审核记录（含后续人工处置 feedback_pending/human_confirmed）
+app.get('/api/projects/:id/ai/story/scene-review', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const { latest, rounds } = readLatestSceneReviewRound({ dir })
+  return c.json({ success: true, latest, rounds })
+})
+
+// GS-53 人工处置记录：打回重出待处理（feedback_pending，附建议合入说明）/ 确认通过（human_confirmed）
+app.post('/api/projects/:id/ai/story/scene-review/feedback', async (c) => {
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const body = await c.req.json().catch(() => ({}))
+  try {
+    const record = appendSceneReviewFeedback({
+      dir,
+      sceneId: body?.sceneId,
+      sceneName: body?.sceneName,
+      action: body?.action,
+      note: body?.note
+    })
+    return c.json({ success: true, record })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    return c.json({ success: false, error: e && e.code || 'scene_review_feedback_failed', message: msg }, 400)
   }
 })
 
