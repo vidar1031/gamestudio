@@ -6905,9 +6905,11 @@ app.post('/api/projects/:id/ai/story/assets/plan', storyInputGate('story.assets.
     return c.json({ success: false, error: 'missing_story_bible', message: '未找到 Story Bible。请先生成 Story Bible，或在请求中传入 storyBible。' }, 400)
   }
 
-  const prevManifest = body && body.rebuild ? null : await readStoryAssetPlanIfExists(id)
-  // 2026-08-30 修复：rebuild:false 且已有持久化计划时直接返回磁盘真相，不再 rebuild 派生——
+  // V1.1 重建保真：rebuild:true 也从磁盘真相继承既有锁定/变体状态（prevManifest 不再传 null）——
+  // 此前 rebuild 全量丢失 primaryReferenceAssetUri/generatedRefs/线稿/状态变体（青蛙王子 63MB 孤儿文件事故）。
+  // rebuild:false 且已有持久化计划时直接返回磁盘真相，不再 rebuild 派生——
   // 派生会把人工补充的资产（如猪妈妈）与 repair-links 的场景关联丢掉，编辑器看到并与真相不一致。
+  const prevManifest = await readStoryAssetPlanIfExists(id)
   if (!body?.rebuild && prevManifest) {
     return c.json({ success: true, plan: prevManifest })
   }

@@ -465,7 +465,17 @@ function mergePrevAssetState(asset, prevAsset) {
     lineartPrompt: asStr(prevAsset.lineartPrompt),
     lineartNegativePrompt: asStr(prevAsset.lineartNegativePrompt),
     lineartMeta: prevAsset.lineartMeta && typeof prevAsset.lineartMeta === 'object' ? prevAsset.lineartMeta : null,
-    lineartGeneratedAt: asStr(prevAsset.lineartGeneratedAt).trim()
+    lineartGeneratedAt: asStr(prevAsset.lineartGeneratedAt).trim(),
+    // V1.1 重建保留（63MB 孤儿文件事故：重建清空锁定/变体状态）——状态变体、姿势草稿、
+    // 向导提示词草稿（referencePrompt*）非空时一律继承，新构建默认值仅作缺省
+    stateVariants: Array.isArray(prevAsset.stateVariants) ? prevAsset.stateVariants : asset.stateVariants,
+    stateRequirements: Array.isArray(prevAsset.stateRequirements) ? prevAsset.stateRequirements : asset.stateRequirements,
+    stateMergeInto: prevAsset.stateMergeInto && typeof prevAsset.stateMergeInto === 'object' ? prevAsset.stateMergeInto : asset.stateMergeInto,
+    poseDraft: prevAsset.poseDraft && typeof prevAsset.poseDraft === 'object' ? prevAsset.poseDraft : asset.poseDraft,
+    referencePromptEn: asStr(prevAsset.referencePromptEn).trim() || asset.referencePromptEn || '',
+    referencePromptZh: asStr(prevAsset.referencePromptZh).trim() || asset.referencePromptZh || '',
+    referenceNegativePromptZh: asStr(prevAsset.referenceNegativePromptZh).trim() || asset.referenceNegativePromptZh || '',
+    referenceNegativePrompt: asStr(prevAsset.referenceNegativePrompt).trim() || asset.referenceNegativePrompt || ''
   }
 }
 

@@ -106,3 +106,58 @@ test('去重合并：被合并条目的既有主参考/生成态并入保留条�
   assert.equal(frog.referenceStatus, 'ready')
   assert.ok(frog.generatedRefs.some((r) => r.assetId === 'ref_frog_a'), '生成候选并入保留条目')
 })
+
+// V1.1 重建保真（63MB 孤儿文件事故修复验证）：计划重建（rebuild/重生）后
+// 既有锁定状态（主参考/生成候选/评审/状态变体/线稿/向导草稿）按 id 全量继承，不再全失
+test('V1.1 重建保真：既有资产的锁定与变体状态在重建后全量继承', () => {
+  const lockState = (id, i) => ({
+    id,
+    name: id,
+    category: i < 2 ? 'character' : (i < 4 ? 'prop' : 'location'),
+    generatedRefs: [{ assetId: `ref_${id}_a`, uri: `assets/ai/story_assets/${id}/a.png` }, { assetId: `ref_${id}_b`, uri: `assets/ai/story_assets/${id}/b.png` }],
+    latestReferenceBatch: [{ assetId: `ref_${id}_b`, uri: `assets/ai/story_assets/${id}/b.png` }],
+    latestReferenceReview: { score: 88, passed: true, at: '2026-10-13T00:00:00.000Z' },
+    primaryReferenceAssetId: `ref_${id}_b`,
+    primaryReferenceAssetUri: `assets/ai/story_assets/${id}/b.png`,
+    primaryReferenceSelectedAt: '2026-10-13T01:00:00.000Z',
+    referenceStatus: 'ready',
+    lineartFinalAssetUri: `assets/ai/story_assets/${id}/lineart.png`,
+    lineartStatus: 'ready',
+    stateVariants: [{ stateId: `${id}_wet`, assetUri: `assets/ai/story_assets/${id}/wet.png` }],
+    stateRequirements: [{ stateId: `${id}_wet`, scenes: ['scene_1'] }],
+    stateMergeInto: { base: `${id}` },
+    poseDraft: { promptZh: `中文稿${i}`, promptEn: `english draft ${i}` },
+    referencePromptEn: `user edited prompt ${i}`,
+    referencePromptZh: `用户改过的中文稿${i}`,
+    referenceNegativePromptZh: `反向中文${i}`,
+    referenceNegativePrompt: `negative ${i}`
+  })
+  const prevManifest = {
+    assets: [
+      lockState('frog', 0),
+      lockState('princess', 1),
+      lockState('gold_ball_01', 2),
+      { ...lockState('loc_well', 3), id: 'loc_well', name: 'Royal Garden Well' }
+    ]
+  }
+  const plan = buildStoryAssetPlan({ project: {}, story: makeStory(), storyBible: makeBible(), prevManifest })
+  const ids = ['frog', 'princess', 'gold_ball_01', 'loc_well']
+  assert.equal(ids.length, 4)
+  for (const id of ids) {
+    const asset = plan.assets.find((a) => a.id === id)
+    assert.ok(asset, `资产 ${id} 存在`)
+    assert.equal(asset.primaryReferenceAssetUri, `assets/ai/story_assets/${id}/b.png`, `${id} 主参考保留`)
+    assert.equal(asset.referenceStatus, 'ready', `${id} referenceStatus=ready`)
+    assert.equal(asset.generatedRefs.length, 2, `${id} 生成候选保留`)
+    assert.equal(asset.latestReferenceReview?.score, 88, `${id} 评审保留`)
+    assert.equal(asset.lineartFinalAssetUri, `assets/ai/story_assets/${id}/lineart.png`, `${id} 线稿保留`)
+    assert.equal(asset.lineartStatus, 'ready')
+    assert.deepEqual(asset.stateVariants, [{ stateId: `${id}_wet`, assetUri: `assets/ai/story_assets/${id}/wet.png` }], `${id} 状态变体保留`)
+    assert.deepEqual(asset.stateRequirements, [{ stateId: `${id}_wet`, scenes: ['scene_1'] }], `${id} 状态需求保留`)
+    assert.deepEqual(asset.stateMergeInto, { base: `${id}` })
+    assert.equal(asset.poseDraft?.promptEn, `english draft ${ids.indexOf(id)}`, `${id} 姿势草稿保留`)
+    assert.equal(asset.referencePromptEn, `user edited prompt ${ids.indexOf(id)}`, `${id} 向导英文稿（用户改过的）保留`)
+    assert.equal(asset.referencePromptZh, `用户改过的中文稿${ids.indexOf(id)}`, `${id} 向导中文稿保留`)
+    assert.equal(asset.referenceNegativePrompt, `negative ${ids.indexOf(id)}`, `${id} 反向英文稿保留`)
+  }
+})
