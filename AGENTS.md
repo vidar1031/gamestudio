@@ -233,7 +233,7 @@ node --check apps/server/src/index.js
 ### 安全边界
 - 模型输出只能作为候选，不是事实。
 - 写入、删除、导出、脚本和外部服务动作必须受 review gate 约束。
-- **正式工作流强制（2026-09-09 用户指令，硬性法律，不可绕过）**：任何故事生产（创建/脚本/蓝图/圣经/资产计划/锁定事物/线稿/场景出图/摆位/校验/导出）**必须走正式生产工作流链**（control reasoning `story_workflow_execute` 的分步计划），每一步必须有可观测记录（reasoning session 事件流 + `/ai/tasks` 进度 + 审核记录），**任何一步失败必须显式停止**（failed/blocked 等待处置），禁止带病继续执行后续步骤。**禁止用零散 API/事件的即席组合替代正式工作流**——事件分发只用于正式链内的确定性步骤与经批准的修补动作，不得作为生产主路径。生产任务默认 reviewMode=manual（计划先审、逐步骤可审），只有用户明确授权才可用 full-auto。
+- **正式工作流强制（2026-09-09 用户指令，硬性法律，不可绕过）**：任何故事生产（创建/脚本/蓝图/圣经/资产计划/锁定事物/线稿/场景出图/摆位/校验/导出）**必须走正式生产工作流链**（control reasoning `story_workflow_execute` 的分步计划），每一步必须有可观测记录（reasoning session 事件流 + `/ai/tasks` 进度 + 审核记录），**任何一步失败必须显式停止**（failed/blocked 等待处置），禁止带病继续执行后续步骤。**禁止用零散 API/事件的即席组合替代正式工作流**——事件分发只用于正式链内的确定性步骤与经批准的修补动作，不得作为生产主路径。生产任务自 2026-10-14 起**默认托管全自动**（新会话默认 managed=on，计划/步骤/门禁/写盘类审核均由 Guardian 自动批准；创建时显式 `managed:false` 可关闭）。失败即停语义保留：操作类失败按策略表自动处置，内容类失败限次重试、超限或死锁仍停摆等处置。
 - 图片生成实行三级审核门禁（`STUDIO_IMAGE_REVIEW_MODE=manual` 时）：出图前审核（`pre_generate`）→ AI 评审后人工确认锁定（`lock_confirm`）→ 场景图人工确认绑定（`scene_bind`）。审核记录存 `<project>/reviews/image_reviews.jsonl`；`approve` 后才执行生成或写回。Control 驱动的调用默认带 `x-image-review-mode: off` 旁路（control 已有自己的步骤级审核）。**2026-09-27 起 `scene_bind` 绑定前一律先经 AI 视觉评审**（纯环境无烤入角色/环境匹配地点锚点/绘本画风，`apps/server/src/ai/sceneBackgroundReview.js`）：`off` 旁路只免人工门禁，AI 评审 fail-closed 照常执行——失败换 seed 重渲 1 次，仍失败显式 blocked，评审通道不可用挂 pending 不盲批。
 - 长任务（锁定测试、场景渲染、批量渲染）必须经 `/api/projects/:id/ai/tasks` 暴露进度，禁止黑盒同步调用。
 - 出图可观测（强制规则，2026-08-29 用户指令）：ComfyUI 只能经 `ensureComfyUiRunning` / `openComfyUiInTerminal`（Terminal.app 可见窗口）启动，禁止 `nohup` 等黑盒静默启动；一切出图动作（参考图抽卡、锁定测试、线稿、场景渲染）必须创建 `/api/projects/:id/ai/tasks` 进度条目并在锁定事物向导 UI 可见，禁止无进度黑盒跑图。
