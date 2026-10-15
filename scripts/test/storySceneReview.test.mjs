@@ -50,13 +50,14 @@ const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9
 
 test('整图收集：走查截图映射优先（sceneId ↔ 截图序号）；不在走查路径的场景回退背景图', () => {
   const dir = makeProjectDir()
-  // 走查：报告 + 截图（p1_01_start ↔ 路径第 1 节点 scene_a；p1_02_choice_1 ↔ scene_b）
+  // 走查：报告 + 截图（内容截图对位：p1_01_start↔场景甲，p1_03_hold_2↔场景乙；choice 截图为选项界面不入评）
   fs.writeFileSync(path.join(dir, 'walkthrough', 'report_2026.json'), JSON.stringify({
     paths: 1,
-    reports: [{ pathId: 'p1', screenshots: ['p1_01_start.png', 'p1_02_choice_1.png'], issues: [], pathNames: ['场景甲', '场景乙'] }]
+    reports: [{ pathId: 'p1', screenshots: ['p1_01_start.png', 'p1_02_choice_1.png', 'p1_03_hold_2.png'], issues: [], pathNames: ['场景甲', '场景乙'] }]
   }))
   fs.writeFileSync(path.join(dir, 'walkthrough', 'p1_01_start.png'), Buffer.from(PNG_B64, 'base64'))
   fs.writeFileSync(path.join(dir, 'walkthrough', 'p1_02_choice_1.png'), Buffer.from(PNG_B64, 'base64'))
+  fs.writeFileSync(path.join(dir, 'walkthrough', 'p1_03_hold_2.png'), Buffer.from(PNG_B64, 'base64'))
   // 背景图回退：scene_c 走 story.visuals.backgroundAssetId -> project.assets[].uri
   fs.mkdirSync(path.join(dir, 'assets', 'ai'), { recursive: true })
   fs.writeFileSync(path.join(dir, 'assets', 'ai', 'bg_c.png'), Buffer.from(PNG_B64, 'base64'))
@@ -77,7 +78,7 @@ test('整图收集：走查截图映射优先（sceneId ↔ 截图序号）；�
   assert.equal(byId.get('scene_a').imageSource, 'walkthrough')
   assert.ok(byId.get('scene_a').imagePath.endsWith('p1_01_start.png'))
   assert.equal(byId.get('scene_b').imageSource, 'walkthrough')
-  assert.ok(byId.get('scene_b').imagePath.endsWith('p1_02_choice_1.png'))
+  assert.ok(byId.get('scene_b').imagePath.endsWith('p1_03_hold_2.png'), '场景乙取内容截图（hold），不得取 choice 界面截图')
   assert.equal(byId.get('scene_c').imageSource, 'background_only', '不在走查路径的场景回退背景图并标注')
   assert.ok(byId.get('scene_c').imagePath.endsWith('bg_c.png'))
   assert.ok(byId.get('scene_a').description.includes('导演构图'), '描述含构图布局')

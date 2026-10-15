@@ -11511,9 +11511,13 @@ app.post('/api/projects/:id/ai/story/craft/carrier-variant', async (c) => {
   const slots = {
     characterAnchor,
     propAnchor,
-    propOnTray: propAnchor,
+    // 2026-10-15 根修：propOnTray 优先用调用方显式给的内容物锚点（盘内梨≠盘本身），
+    // 此前恒被道具锚点覆盖（孔融"盘内炸物代梨"根因）
+    propOnTray: String(body?.propOnTray || '').trim() || propAnchor,
     giverAnchor: characterAnchor,
-    receiverAnchor: String(body?.receiverAnchor || '').trim()
+    receiverAnchor: String(body?.receiverAnchor || '').trim(),
+    // 情绪槽：技能模板（如手持单物）可带表情要求，缺省为自然中性
+    expressionHint: String(body?.expressionHint || '').trim() || 'natural relaxed expression'
   }
   let prompt = String(skill.generation?.promptTemplate || '').trim()
   for (const [key, value] of Object.entries(slots)) {

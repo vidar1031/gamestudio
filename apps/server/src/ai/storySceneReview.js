@@ -142,19 +142,21 @@ function collectWalkthroughShotsByScene({ dir, story, sceneIds }) {
     return new Map()
   }
   const reports = asList(report && report.reports)
-  const maxPaths = Math.max(1, Number(report && report.paths) || reports.length || 4)
-  const pathDefs = enumerateStoryPaths(asList(story && story.nodes), maxPaths)
   const sceneSet = new Set(sceneIds)
   const bySceneId = new Map()
   for (let i = 0; i < reports.length; i += 1) {
     const shots = asList(reports[i] && reports[i].screenshots)
-    const pathDef = pathDefs[i]
-    if (!pathDef) continue
-    for (const shot of shots) {
-      const match = /^p\d+_(\d+)_/.exec(String(shot || ''))
-      if (!match) continue
-      const nodeIndex = Number(match[1]) - 1 // 截图序号 NN ↔ pathDef[NN-1]
-      const nodeId = asStr(pathDef[nodeIndex] && pathDef[nodeIndex].nodeId).trim()
+    // 2026-10-15 根修 v2：按路径节点名对位（报告的 pathNames 与内容截图天然同序同数），
+    // 不再依赖 pathDef 重枚举（枚举会带中间节点导致错位；实证四岁抉择被错配到 hold_6）。
+    // choice 截图为选项界面不入评（只取 start/hold 内容截图）。
+    const contentShots = shots.filter((shot) => !String(shot || '').includes('_choice_'))
+    const pathNames = asList(reports[i] && reports[i].pathNames)
+    const nameToNode = new Map(asList(story && story.nodes).map((n) => [asStr(n && n.name || '').trim(), n]).filter(([nm]) => nm))
+    for (let k = 0; k < contentShots.length; k += 1) {
+      const shot = contentShots[k]
+      const sceneName = asStr(pathNames[k] || '').trim()
+      const node = sceneName ? nameToNode.get(sceneName) : null
+      const nodeId = asStr(node && node.id).trim()
       if (!nodeId || !sceneSet.has(nodeId) || bySceneId.has(nodeId)) continue
       const absPath = path.join(outDir, shot)
       if (!fs.existsSync(absPath)) continue
