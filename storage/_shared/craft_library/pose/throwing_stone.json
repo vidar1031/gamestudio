@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0",
+  "id": "pose.throwing_stone",
+  "category": "pose",
+  "name": "投掷",
+  "nameEn": "throwing",
+  "description": "角色挥臂投掷（砸缸掷石类），持物臂挥起、身体侧转蓄力",
+  "appliesTo": ["character"],
+  "generation": {
+    "mode": "carrier_variant",
+    "promptTemplate": "{characterAnchor}, throwing a stone with full arm swing, body twisted sideways, one arm raised high back ready to throw, {propAnchor} clearly in the raised hand, dynamic action pose, feet planted wide apart",
+    "negativeExtra": "standing still, arms down, relaxed idle pose, stone on ground, stone floating"
+  },
+  "placement": { "mode": "replace_prop_with_carrier", "anchor": "character_feet_wide" },
+  "acceptance": [
+    "持物臂明显挥起（非垂放）",
+    "石/物在手中",
+    "身体有侧转蓄力感（非正面静站）",
+    "目标物（缸/窗等）在投掷方向上"
+  ],
+  "aliases": ["投掷", "砸", "掷", "扔", "挥石"],
+  "sourceStories": ["司马光砸缸"]
+}

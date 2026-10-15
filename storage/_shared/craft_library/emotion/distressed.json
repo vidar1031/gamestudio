@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0",
+  "id": "emotion.distressed",
+  "category": "emotion",
+  "name": "沮丧难过",
+  "nameEn": "distressed",
+  "description": "角色沮丧难过：低头垂目、嘴角下撇、肩膀塌下，或含泪",
+  "appliesTo": ["character"],
+  "generation": {
+    "mode": "expression_overlay",
+    "promptTemplate": "{characterAnchor}, sad and dejected: head lowered, eyes downcast teary, mouth corners turned down, shoulders slumped, dim mood",
+    "negativeExtra": "smiling, happy, cheerful, excited, sparkling eyes"
+  },
+  "acceptance": ["表情为沮丧/难过（低头垂目/嘴角下撇）", "不得为微笑/开心"],
+  "aliases": ["难过", "沮丧", "伤心", "委屈", "灰心"],
+  "sourceStories": ["小壁虎借尾巴", "丑小鸭"]
+}

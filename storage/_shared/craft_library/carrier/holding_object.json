@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0",
+  "id": "carrier.holding_object",
+  "category": "carrier",
+  "name": "手持单物",
+  "nameEn": "holding object",
+  "description": "角色单手持/握一个小物件（梨/球/石头/信封等），手与物接触",
+  "appliesTo": ["character"],
+  "requires": "一个小型手持道具",
+  "generation": {
+    "mode": "carrier_variant",
+    "promptTemplate": "{characterAnchor}, holding {propAnchor} in one hand at chest height, fingers visibly wrapped around the object, object clearly in hand (not floating, not on ground), natural grip, {expressionHint}",
+    "negativeExtra": "object floating, object on ground, object without hand, hand empty, object behind body",
+    "note": "物与人烘成一张图"
+  },
+  "placement": { "mode": "replace_prop_with_carrier", "anchor": "character_feet", "note": "载体变体替换，道具不单独摆位" },
+  "acceptance": [
+    "物在角色手中（非浮空/落地）",
+    "手与物有接触（握/托）",
+    "物的朝向/数量与剧情一致",
+    "角色表情与剧情情绪一致"
+  ],
+  "aliases": ["拿着", "手捧", "握", "手持", "取", "拿起"],
+  "sourceStories": ["孔融让梨", "司马光砸缸", "小壁虎借尾巴"]
+}

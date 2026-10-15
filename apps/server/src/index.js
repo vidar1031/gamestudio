@@ -17,7 +17,7 @@ import { getAiStatusSnapshot, runAiDiagnostics } from './ai/diagnostics.js'
 import { analyzeScriptsForBlueprint } from './ai/analyze.js'
 import { optimizeGeneratedImage, optimizeDirectoryTree, IMAGE_KIND } from './ai/imageOptimize.js'
 import { readGlobalRules, writeGlobalRules } from './ai/globalRules.js'
-import { generateBackgroundImage, generateComfyuiLineartFromReference, generateComfyuiCutoutFromReference, mapComfySampler, mapComfyScheduler, normalizeComfyCheckpointName, parseComfyTimeoutMs, runComfyuiPromptWorkflow } from './ai/background.js'
+import { generateBackgroundImage, generateComfyuiLineartFromReference, generateComfyuiCutoutFromReference, generateComfyuiPoseVariantSprite, mapComfySampler, mapComfyScheduler, normalizeComfyCheckpointName, parseComfyTimeoutMs, runComfyuiPromptWorkflow } from './ai/background.js'
 import { generateBackgroundPrompt } from './ai/imagePrompt.js'
 import { reviewStoryPromptLocally, reviewStoryPromptWithAi } from './ai/promptReview.js'
 import { normalizeStoryboardPromptReviewInput, reviewStoryboardPromptLocally, reviewStoryboardPromptWithAi } from './ai/storyboardPromptReview.js'
@@ -54,6 +54,7 @@ import { loadEnv } from './env.js'
 import { diagnoseOpenAI, isOpenAICompatibleProvider, reviewBlueprintViaOpenAI } from './ai/openai.js'
 import { readStudioModelDialogs } from './ai/modelDialogs.js'
 import { runStorySceneReview, appendSceneReviewFeedback, readLatestSceneReviewRound } from './ai/storySceneReview.js'
+import { getCraftSkill, resolveCarrierPlacementPlan } from './ai/craftLibrary.js'
 import { reviewBlueprintLocally } from './ai/blueprintReviewLocal.js'
 import dns from 'node:dns/promises'
 import { getEffectiveStudioConfig, redactEffectiveStudioConfigForClient, redactStudioSettingsForClient, writeStudioSettings } from './studio/settings.js'
@@ -10980,12 +10981,34 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         if (sceneLocAnchors.some(hitIn)) return 'baked_in_location_anchor'
         return null
       }
+      // V1.3 工艺库载体消费：构图项带 carrier 类 skillIds 且资产已注册同 skillId 载体变体时——
+      // 角色摆位用载体变体；被承载道具不再独立摆位（skip reason='covered_by_carrier'，非阻断语义同
+      // included_in_character_variant）；双人载体（replace_both_with_pair）另一端角色不再独立摆位。
+      // 无技能件的场景行为零变化。
+      const carrierVariantByAssetId = new Map()
+      const carrierCoveredPropIds = new Set()
+      const carrierPairSkipAssetIds = new Set()
+      {
+        const compItems = compositionByScene.get(sceneId)
+        if (compItems && compItems.size) {
+          const presentNow = characterAssets.filter((a) => assetSceneIds(a).includes(sceneId))
+          const carrierPlan = resolveCarrierPlacementPlan({ compItems, presentAssets: presentNow })
+          carrierPlan.variantByAssetId.forEach((variant, assetId) => carrierVariantByAssetId.set(assetId, variant))
+          carrierPlan.coveredPropIds.forEach((propId) => carrierCoveredPropIds.add(propId))
+          carrierPlan.pairSkipAssetIds.forEach((assetId) => carrierPairSkipAssetIds.add(assetId))
+        }
+      }
       // prop 分层合成（2026-09-27 F6）：已锁定（referenceStatus=ready 且有主参考）prop 生成确定性默认摆位；
       // 未锁定或引用不可解析（文件缺失/无法登记项目资产）仍跳过并如实进 skippedProps。
       const placeableProps = []
       for (const prop of propAssets.filter((a) => assetSceneIds(a).includes(sceneId))) {
         const assetId = String(prop.id || '').trim()
         const assetName = String(prop.name || assetId).trim()
+        // V1.3 载体覆盖分支在 isRedundantProp 之前：被承载道具不再独立摆位
+        if (carrierCoveredPropIds.has(assetId)) {
+          skippedProps.push({ sceneId, assetId, name: assetName, reason: 'covered_by_carrier' })
+          continue
+        }
         const redundantReason = isRedundantProp(assetName)
         if (redundantReason) {
           skippedProps.push({ sceneId, assetId, name: assetName, reason: redundantReason })
@@ -11014,6 +11037,11 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
       for (const asset of present) {
         const assetId = String(asset.id || '').trim()
         const assetName = String(asset.name || assetId).trim()
+        // V1.3 双人载体：载体对另一端角色不再独立摆位（合并在载体对摆位里）
+        if (carrierPairSkipAssetIds.has(assetId)) {
+          skippedCharacters.push({ sceneId, assetId, name: assetName, reason: 'covered_by_carrier_pair' })
+          continue
+        }
         let character = findProjectCharacterForStoryAsset(characters, asset)
         // 立绘 asset id 来源：select 后计划资产的 primaryReferenceAssetId → 角色 ai.referenceAssetId → 角色 imageAssetId
         // 角色主档写回（创建/回填）始终用主参考 id，姿势变体只影响本场景摆位
@@ -11057,10 +11085,14 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
             }) || null
           }
         }
-        const imageAssetId = compStateHit
-          ? String(compStateHit.projectAssetId || '').trim()
-          : (poseHit ? String(poseHit.projectAssetId || '').trim()
-            : (expressionHit ? String(expressionHit.projectAssetId || '').trim() : baseImageAssetId))
+        // V1.3 载体变体优先：构图项带 carrier skillIds 且已注册同 skillId 变体时，摆位用载体变体
+        const carrierHit = carrierVariantByAssetId.get(assetId) || null
+        const imageAssetId = carrierHit
+          ? String(carrierHit.projectAssetId || '').trim()
+          : (compStateHit
+            ? String(compStateHit.projectAssetId || '').trim()
+            : (poseHit ? String(poseHit.projectAssetId || '').trim()
+              : (expressionHit ? String(expressionHit.projectAssetId || '').trim() : baseImageAssetId)))
         if (!imageAssetId) {
           skippedCharacters.push({ sceneId, assetId, name: assetName, reason: 'reference_not_locked' })
           continue
@@ -11414,6 +11446,188 @@ app.post('/api/projects/:id/ai/story/pose-variants/auto', async (c) => {
   })()
 
   return c.json({ success: true, taskId: task.taskId, message: '姿势变体自动编排已启动，进度见 /ai/tasks' }, 202)
+})
+
+// ---------------------------------------------------------------------------
+// V1.3 工艺库载体变体生成（持物关系的根治）：
+// 技能件（carrier 类）的 generation.promptTemplate 填 {characterAnchor}/{propOnTray}/{propAnchor} 等占位，
+// 取角色主参考做身份锁定，经既有姿势变体生成链（骨架不必须：空白骨架+低控制强度，提示词驱动）
+// 生成绿幕图，走 layered-produce 登记（抠图/评审/计划写回同 GS-51），回写 poseKey=skillId。
+// 幂等：该资产已有同 skillId 变体且已登记项目资产时直接返回。进度经 /ai/tasks。
+// ---------------------------------------------------------------------------
+// 空白骨架（载体变体纯提示词驱动：低控制强度下骨架不主导姿势，仅为满足通道输入）
+const BLANK_SKELETON_PNG_BYTES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+
+app.post('/api/projects/:id/ai/story/craft/carrier-variant', async (c) => {
+  await ensureDirs()
+  const id = c.req.param('id')
+  const dir = projectDir(id)
+  if (!(await existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const studio = await getEffectiveStudioConfig(ROOT)
+  if (!studio.effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = String(body?.assetId || '').trim()
+  const skillId = String(body?.skillId || '').trim()
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+  if (!skillId) return c.json({ success: false, error: 'missing_skill_id', message: 'skillId 不能为空' }, 400)
+
+  const skill = getCraftSkill(skillId)
+  if (!skill || String(skill.category || '') !== 'carrier') {
+    return c.json({ success: false, error: 'carrier_skill_not_found', message: `工艺库中未找到载体技能件：${skillId}` }, 404)
+  }
+  const plan = await readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+  const planAssets = Array.isArray(plan.assets) ? plan.assets : []
+  const asset = planAssets.find((a) => String(a && a.id || '').trim() === assetId) || null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `资产不存在：${assetId}` }, 404)
+  if (String(asset.category || '') !== 'character') {
+    return c.json({ success: false, error: 'carrier_requires_character', message: '载体变体仅适用于角色资产' }, 400)
+  }
+
+  // 幂等：已有同 skillId 且已登记项目资产的变体直接返回
+  const existing = (Array.isArray(asset.poseVariants) ? asset.poseVariants : [])
+    .find((v) => String(v?.poseKey || '').trim() === skillId && String(v?.projectAssetId || '').trim())
+  if (existing) {
+    return c.json({ success: true, existed: true, assetId, skillId, poseKey: skillId, projectAssetId: String(existing.projectAssetId) })
+  }
+
+  // 主参考（锁定）为身份输入
+  const identityRel = String(asset.primaryReferenceAssetUri || '').trim()
+  const identityAbs = identityRel ? path.resolve(dir, identityRel) : ''
+  if (!identityAbs || !identityAbs.startsWith(path.resolve(dir) + path.sep) || !(await existsFile(identityAbs))) {
+    return c.json({ success: false, error: 'identity_reference_missing', message: `资产「${asset.name || assetId}」缺少已锁定的主参考图，请先完成锁定。` }, 409)
+  }
+
+  // 模板填槽：角色锚点 + 道具锚点（propAssetId 取道具锚点，或显式 propAnchor 文本覆盖）
+  const characterAnchor = String(asset.referencePromptEn || asset.anchorPromptEn || asset.anchorPrompt || '').trim()
+  const propAsset = String(body?.propAssetId || '').trim()
+    ? planAssets.find((a) => String(a && a.id || '').trim() === String(body.propAssetId).trim()) || null
+    : null
+  const propAnchor = String(body?.propAnchor || '').trim() || String(propAsset && (propAsset.referencePromptEn || propAsset.anchorPrompt)).trim()
+  const slots = {
+    characterAnchor,
+    propAnchor,
+    propOnTray: propAnchor,
+    giverAnchor: characterAnchor,
+    receiverAnchor: String(body?.receiverAnchor || '').trim()
+  }
+  let prompt = String(skill.generation?.promptTemplate || '').trim()
+  for (const [key, value] of Object.entries(slots)) {
+    prompt = prompt.split(`{${key}}`).join(value)
+  }
+  const unfilled = prompt.match(/\{[a-zA-Z]+\w*\}/)
+  if (unfilled) {
+    return c.json({ success: false, error: 'carrier_template_unresolved', message: `技能模板占位未填满（${unfilled[0]}）：请提供对应锚点（如 propAssetId/propAnchor/receiverAnchor）。` }, 400)
+  }
+  const negativePrompt = [
+    'multiple people, duplicate, text, watermark, realistic, photo, deformed, extra limbs',
+    String(skill.generation?.negativeExtra || '').trim()
+  ].filter(Boolean).join(', ')
+
+  const task = createAiTask(id, 'story.craft.carrier_variant', { total: 1, message: `载体变体生成：${asset.name || assetId} × ${skill.name}` })
+  const traceId = createTraceId()
+  logStage({ stage: 'story.craft.carrier_variant', event: 'start', traceId, project: id, item: `${assetId} x ${skillId}` })
+
+  void (async () => {
+    try {
+      updateAiTask(task.taskId, { stage: 'generating', message: `载体变体出图：${skill.name}（提示词驱动）` })
+      const identityBytes = await readFile(identityAbs)
+      const gen = await generateComfyuiPoseVariantSprite({
+        identityReferenceBytes: identityBytes,
+        identityFilename: path.basename(identityAbs),
+        poseSkeletonBytes: BLANK_SKELETON_PNG_BYTES,
+        comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+        prompt,
+        negativePrompt,
+        width: 768,
+        height: 1152,
+        steps: 24,
+        cfgScale: 6,
+        // 载体变体纯提示词驱动：空白骨架 + 低控制强度（骨架不主导姿势，模板文本驱动持物关系）
+        controlStrength: 0.3,
+        ipadapterWeight: 0.85,
+        timeoutMs: 300_000,
+        prefix: `gamestudio_craft/carrier_${String(assetId).replace(/[^a-z0-9_-]/gi, '_')}`
+      })
+      const outRel = `assets/ai/story_assets/character/${String(assetId).replace(/[^a-z0-9_-]/gi, '_')}/carrier_${skillId.replace(/[^a-z0-9_.-]/gi, '_')}_${Date.now()}.png`
+      const outAbs = path.resolve(dir, outRel)
+      await mkdir(path.dirname(outAbs), { recursive: true })
+      await writeFile(outAbs, gen.bytes)
+
+      // 登记：与 GS-51 同通道 layered-produce（抠图/评审/计划写回/审核留痕一致）；
+      // 审核模式控制面已做步骤级审核，内部转发带 off 旁路
+      updateAiTask(task.taskId, { stage: 'registering', message: '载体变体登记（抠图/评审/写回）' })
+      const sceneIds = (Array.isArray(asset.sceneIds) ? asset.sceneIds : []).map((x) => String(x || '').trim()).filter(Boolean)
+      const firstSceneId = sceneIds[0]
+      if (!firstSceneId) throw new Error('asset_has_no_scene')
+      const resp = await app.request(`/api/projects/${encodeURIComponent(id)}/ai/story/scenes/${encodeURIComponent(firstSceneId)}/layered-produce`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-image-review-mode': 'off' },
+        body: JSON.stringify({
+          poses: [{
+            lockName: `载体·${skill.name}`,
+            planAssetId: String(assetId).trim(),
+            characterId: String(assetId).trim(),
+            spriteAssetPath: outRel,
+            posePrompt: prompt,
+            promptZh: `${asset.name || assetId}·${skill.name}`,
+            sceneIds: sceneIds.length ? sceneIds : [firstSceneId]
+          }]
+        })
+      })
+      const json = await resp.json().catch(() => ({}))
+      const okEntry = Array.isArray(json?.poses) && json.poses[0] && json.poses[0].projectAssetId
+      if (!resp.ok || !okEntry) throw new Error(`register_failed:${String(json?.poses?.[0]?.error || json?.error || resp.status)}`)
+      const projectAssetId = String(json.poses[0].projectAssetId)
+
+      // 回写 poseKey=skillId（摆位消费按 skillId 选载体变体；carrierPropAssetId 供摆位跳过被承载道具）
+      const curPlan = await readStoryAssetPlanIfExists(id)
+      if (curPlan) {
+        const nextPlan = {
+          ...curPlan,
+          generatedAt: nowIso(),
+          assets: (Array.isArray(curPlan.assets) ? curPlan.assets : []).map((a) => {
+            if (String(a && a.id || '').trim() !== assetId) return a
+            const variants = (Array.isArray(a.poseVariants) ? a.poseVariants : []).map((v) =>
+              // 2026-10-15 根修：写回匹配按 projectAssetId 或 projectAssetUri 双键（layered-produce 登记条目两键可能错位）
+              (String(v && v.projectAssetId || '').trim() === projectAssetId
+                || String(v && v.projectAssetUri || '').trim().replace(/^\/+/, '') === String(json.poses[0].projectAssetUri || '').trim().replace(/^\/+/, ''))
+                ? {
+                    ...v,
+                    poseKey: skillId,
+                    skillId,
+                    skillCategory: 'carrier',
+                    ...(propAsset ? { carrierPropAssetId: String(propAsset.id || '').trim() } : {})
+                  }
+                : v
+            )
+            return { ...a, poseVariants: variants }
+          })
+        }
+        nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+        await saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+      }
+
+      updateAiTask(task.taskId, {
+        stage: 'done',
+        done: true,
+        current: 1,
+        message: `载体变体完成：${asset.name || assetId} × ${skill.name}`,
+        result: { assetId, skillId, poseKey: skillId, projectAssetId }
+      })
+      logStage({ stage: 'story.craft.carrier_variant', event: 'done', traceId, project: id, item: `${assetId} x ${skillId} -> ${projectAssetId}` })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      updateAiTask(task.taskId, { stage: 'error', done: true, error: msg, message: `载体变体生成失败：${msg}` })
+      logStage({ stage: 'story.craft.carrier_variant', event: 'error', traceId, project: id, item: msg.slice(0, 300) })
+    }
+  })()
+
+  return c.json({ success: true, taskId: task.taskId, message: '载体变体生成已启动，进度见 /ai/tasks' }, 202)
 })
 
 // ---------------------------------------------------------------------------

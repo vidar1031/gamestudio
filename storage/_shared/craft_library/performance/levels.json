@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "1.0",
+  "id": "performance.levels",
+  "category": "performance",
+  "name": "表现度规范",
+  "nameEn": "performance levels",
+  "description": "角色（尤其动物/幻想生物）的拟人化程度三档规范，由项目总监档案定默认、角色可覆盖",
+  "levels": {
+    "realistic": {
+      "label": "写实（不拟人）",
+      "anchorRule": "锚点必须写真动物形态：四足/羽/鳞/吻部；负向禁 human-like face/standing on two legs/hands/clothes",
+      "reviewRule": "出现人脸特征/直立行走/穿衣即不合格",
+      "examples": ["乌鸦喝水（真乌鸦）", "小壁虎借尾巴（真壁虎）"]
+    },
+    "lite": {
+      "label": "轻度拟人",
+      "anchorRule": "动物形态为主+仅表情拟人（眼睛神态可有情绪）；禁手脚化/禁服装（除标记性配饰）",
+      "reviewRule": "身体结构必须保持物种形态，仅面部表情可拟人",
+      "examples": ["乌鸦喝水绘本版", "狼和小羊"]
+    },
+    "full": {
+      "label": "完全拟人",
+      "anchorRule": "允许直立/穿衣/手势，但物种特征（耳/尾/毛色/吻部）必须保留",
+      "reviewRule": "物种特征丢失（看不出是狼/猪）即不合格",
+      "examples": ["三只小猪", "咕咚来了"]
+    }
+  },
+  "default": "lite",
+  "sourceStories": ["通用"]
+}

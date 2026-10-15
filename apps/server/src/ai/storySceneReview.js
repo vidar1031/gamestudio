@@ -17,6 +17,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { getCraftSkill } from './craftLibrary.js'
 
 const CONTROL_DEFAULT_BASE_URL = 'http://127.0.0.1:2099'
 const REVIEW_CHUNK_SIZE = 4 // 审图中心 ≤4 同步返回；>4 转 202 轮询
@@ -189,6 +190,7 @@ export function collectSceneReviewInputs({ dir, projectId, story, plan, project,
   const storyNodes = asList(story && story.nodes)
   const shotsBySceneId = collectWalkthroughShotsByScene({ dir, story, sceneIds: targetScenes.map((s) => asStr(s.sceneId).trim()) })
   const inputs = []
+  const acceptanceCriteriaSet = []
   for (const scene of targetScenes) {
     const sceneId = asStr(scene && scene.sceneId).trim()
     if (!sceneId) continue
@@ -209,6 +211,27 @@ export function collectSceneReviewInputs({ dir, projectId, story, plan, project,
           })
         ].filter(Boolean).join('；')
       : ''
+    // V1.3 验收标准注入：构图项带 skillIds 时，把对应技能件的 acceptance[] 逐条注入评审描述
+    const acceptanceLines = []
+    if (composition) {
+      const seenSkill = new Set()
+      for (const item of asList(composition.items)) {
+        for (const skillId of asList(item && item.skillIds).map((x) => asStr(x).trim()).filter(Boolean)) {
+          if (seenSkill.has(skillId)) continue
+          seenSkill.add(skillId)
+          const skill = getCraftSkill(skillId)
+          const acceptance = asList(skill && skill.acceptance).map((x) => asStr(x).trim()).filter(Boolean)
+          if (skill && acceptance.length) {
+            const line = `该场景使用了技能件：${asStr(skill.name).trim() || skillId}。验收标准：${acceptance.join('；')}`
+            acceptanceLines.push(line)
+            // V1.2 双通道：验收标准同时进 control context.acceptanceCriteria（批次级并集核查）
+            for (const criterion of acceptance) {
+              if (!acceptanceCriteriaSet.includes(criterion)) acceptanceCriteriaSet.push(criterion)
+            }
+          }
+        }
+      }
+    }
     inputs.push({
       sceneId,
       sceneName: asStr(scene.sceneName).trim() || asStr(body.title).trim() || sceneId,
@@ -217,7 +240,8 @@ export function collectSceneReviewInputs({ dir, projectId, story, plan, project,
       description: [
         `场景「${asStr(scene.sceneName).trim() || sceneId}」`,
         asStr(scene.summary).trim() || asStr(body.text).trim().slice(0, 600),
-        compositionText ? `导演构图：${compositionText}` : ''
+        compositionText ? `导演构图：${compositionText}` : '',
+        ...acceptanceLines
       ].filter(Boolean).join('。').slice(0, 1500)
     })
   }
@@ -235,7 +259,7 @@ export function collectSceneReviewInputs({ dir, projectId, story, plan, project,
     '统一画风：卡通童话绘本插画，平面 2D，干净粗描边，赛璐璐上色，温暖柔和色彩；无现代元素、无水印、无乱码文字'
   ].filter(Boolean).join('\n').slice(0, 3000)
 
-  return { inputs, anchors, globalRules }
+  return { inputs, anchors, globalRules, acceptanceCriteria: acceptanceCriteriaSet }
 }
 
 async function submitAndWaitReview({ projectId, images, context }) {
@@ -286,7 +310,7 @@ function appendJsonl(file, record) {
  * onProgress(message) 供 ai task 逐场景进度。失败显式抛出（不写假结论）。
  */
 export async function runStorySceneReview({ id, dir, story, plan, project, sceneIds, onProgress }) {
-  const { inputs, anchors, globalRules } = collectSceneReviewInputs({ dir, projectId: id, story, plan, project, sceneIds })
+  const { inputs, anchors, globalRules, acceptanceCriteria } = collectSceneReviewInputs({ dir, projectId: id, story, plan, project, sceneIds })
   if (!inputs.length) {
     const err = new Error('无可评审的场景图片（走查截图与场景背景图均缺失）')
     err.code = 'scene_review_no_images'
@@ -304,7 +328,7 @@ export async function runStorySceneReview({ id, dir, story, plan, project, scene
     const { reviewId, results: chunkResults } = await submitAndWaitReview({
       projectId: id,
       images: chunk.map((input) => ({ path: input.imagePath, description: input.description, sceneId: input.sceneId })),
-      context: { globalRules, anchors, rubricTemplate: 'story_scene' }
+      context: { globalRules, anchors, rubricTemplate: 'story_scene', ...(acceptanceCriteria.length ? { acceptanceCriteria } : {}) }
     })
     for (let i = 0; i < chunk.length; i += 1) {
       const input = chunk[i]

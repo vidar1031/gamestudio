@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0",
+  "id": "pose.sitting_gathered",
+  "category": "pose",
+  "name": "围坐",
+  "nameEn": "sitting gathered",
+  "description": "多角色围桌/围物而坐，膝/腿在前方，呈聚拢半圆形",
+  "appliesTo": ["character"],
+  "generation": {
+    "mode": "pose_variant",
+    "skeletonRef": "sitting_side",
+    "promptTemplate": "{characterAnchor}, sitting on a stool or floor mat, knees bent, body leaning slightly forward toward the gathering center, relaxed hands on lap",
+    "negativeExtra": "standing, standing upright, walking, lying down"
+  },
+  "placement": { "mode": "normal", "anchor": "seat_feet", "note": "多角色围坐时呈半圆收拢，朝向共同中心" },
+  "acceptance": [
+    "角色呈坐姿（膝弯曲、腿不直站）",
+    "多角色朝向共同中心聚拢（非一字排开站立）",
+    "无人物漂浮（坐姿脚/臀有着落）"
+  ],
+  "aliases": ["围坐", "围拢", "坐下", "坐着", "入座"],
+  "sourceStories": ["孔融让梨"]
+}

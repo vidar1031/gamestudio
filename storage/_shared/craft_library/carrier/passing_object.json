@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0",
+  "id": "carrier.passing_object",
+  "category": "carrier",
+  "name": "递物交接",
+  "nameEn": "passing object",
+  "description": "一角色把物件递向另一角色：递者前伸手、接物在两手之间临界点，接者伸手迎",
+  "appliesTo": ["character"],
+  "requires": "传递道具 + 递者 + 接者（双人同框）",
+  "generation": {
+    "mode": "carrier_variant_pair",
+    "promptTemplate": "{giverAnchor}, extending arm offering {propAnchor} toward the receiver, {receiverAnchor} reaching out to receive, the object visibly between both hands at the handover moment, warm interaction, both facing each other",
+    "negativeExtra": "object floating far from hands, object on floor, both standing idle, backs turned, object held only by one side with no handover",
+    "note": "递者+接者+物烘成一张图（双人载体变体），三方不得分离"
+  },
+  "placement": { "mode": "replace_both_with_pair", "anchor": "two_character_center", "note": "双人载体变体替换两个独立摆位与该道具摆位" },
+  "acceptance": [
+    "递者手臂前伸、接者伸手迎（交接临界）",
+    "物在两手之间（不在单方手中握死、不落地）",
+    "双方面对面",
+    "人物数量与剧情一致（不得多/少人）"
+  ],
+  "aliases": ["递给", "推给", "交给", "让给", "递给", "送"],
+  "sourceStories": ["孔融让梨"]
+}

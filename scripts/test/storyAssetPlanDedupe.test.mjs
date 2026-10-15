@@ -109,8 +109,7 @@ test('去重合并：被合并条目的既有主参考/生成态并入保留条�
 
 // V1.1 重建保真（63MB 孤儿文件事故修复验证）：计划重建（rebuild/重生）后
 // 既有锁定状态（主参考/生成候选/评审/状态变体/线稿/向导草稿）按 id 全量继承，不再全失
-test('V1.1 重建保真：既有资产的锁定与变体状态在重建后全量继承', () => {
-  const lockState = (id, i) => ({
+test('V1.1 重建保真：既有资产的锁定与变体状态在重建后全量继承', () => {  const lockState = (id, i) => ({
     id,
     name: id,
     category: i < 2 ? 'character' : (i < 4 ? 'prop' : 'location'),
@@ -160,4 +159,39 @@ test('V1.1 重建保真：既有资产的锁定与变体状态在重建后全量
     assert.equal(asset.referencePromptZh, `用户改过的中文稿${ids.indexOf(id)}`, `${id} 向导中文稿保留`)
     assert.equal(asset.referenceNegativePrompt, `negative ${ids.indexOf(id)}`, `${id} 反向英文稿保留`)
   }
+})
+
+// V1.3 表现度落锚：动物类角色按表现度加约束（realistic 负向禁拟人；full 正向留物种特征）；
+// 人类角色不受约束；lite 默认档不加约束
+test('表现度落锚：realistic 动物负向加拟人禁则；full 动物正向留物种特征；人类/lite 不动', () => {
+  const bible = {
+    schemaVersion: '1.0',
+    worldAnchor: '绘本世界',
+    characters: [
+      { id: 'crow', name: '乌鸦', aliases: [], anchorPrompt: 'a black crow with glossy feathers', performanceLevel: 'realistic' },
+      { id: 'piggy', name: '小猪', aliases: [], anchorPrompt: 'a pink piglet wearing blue overalls', performanceLevel: 'full' },
+      { id: 'princess', name: '公主', aliases: [], anchorPrompt: 'a cute princess in pink dress', performanceLevel: 'realistic' },
+      { id: 'puppy', name: '小狗', aliases: [], anchorPrompt: 'a fluffy puppy with floppy ears' }
+    ],
+    props: [],
+    locations: [],
+    sceneRefs: {},
+    eventChain: [],
+    forbiddenSubstitutes: []
+  }
+  const plan = buildStoryAssetPlan({ project: {}, story: { nodes: [] }, storyBible: bible, prevManifest: null })
+  const byId = new Map(plan.assets.map((a) => [a.id, a]))
+  const crow = byId.get('crow')
+  assert.equal(crow.performanceLevel, 'realistic')
+  assert.ok(crow.negativePrompt.includes('human-like face'), 'realistic 负向禁人脸')
+  assert.ok(crow.negativePrompt.includes('standing on two legs'), 'realistic 负向禁直立')
+  assert.ok(!crow.anchorPrompt.includes('species-specific'), 'realistic 不改正向锚点')
+  const piggy = byId.get('piggy')
+  assert.equal(piggy.performanceLevel, 'full')
+  assert.ok(piggy.anchorPrompt.includes('animal features preserved'), 'full 正向留物种特征')
+  const princess = byId.get('princess')
+  assert.ok(!princess.negativePrompt.includes('human-like face'), '人类角色不受表现度约束')
+  const puppy = byId.get('puppy')
+  assert.equal(puppy.performanceLevel, 'lite', '缺省 lite')
+  assert.ok(!puppy.anchorPrompt.includes('animal features preserved'), 'lite 档不加 full 约束')
 })

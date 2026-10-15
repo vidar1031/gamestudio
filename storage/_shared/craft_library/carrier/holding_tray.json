@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "1.0",
+  "id": "carrier.holding_tray",
+  "category": "carrier",
+  "name": "端盘持物",
+  "nameEn": "holding tray",
+  "description": "角色双手端持盘/碗/盆类承载物，承载物在盘内（盘上堆物）",
+  "appliesTo": ["character"],
+  "requires": "一个承载道具（盘/碗/盆）+ 盘内物品",
+  "generation": {
+    "mode": "carrier_variant",
+    "promptTemplate": "{characterAnchor}, holding a serving tray with both hands at waist height, {propOnTray}, arms bent naturally supporting the tray from below, hands visibly touching the tray, tray shown in slight side-tilted perspective (not front-flat), standing pose, neutral warm expression",
+    "negativeExtra": "floating tray, tray without hands, hands away from tray, front-flat tray, empty tray, tray on floor, tray on table",
+    "note": "承载物必须与角色烘成一张图（一张贴纸），禁止盘/物分离"
+  },
+  "placement": {
+    "mode": "replace_prop_with_carrier",
+    "anchor": "character_standing_feet",
+    "propScaleHint": 0.35,
+    "note": "摆位时该角色用载体变体，承载道具不再单独摆位"
+  },
+  "acceptance": [
+    "承载物与角色在同一图内（非独立贴纸浮空）",
+    "角色的手与盘接触（双手端持）",
+    "盘呈侧向透视（非正面平铺）",
+    "盘内物品数量与剧情一致（如'一盘梨'=多颗）",
+    "角色为站立姿态"
+  ],
+  "aliases": ["端盘", "端碗", "端盆", "托盘", "端着", "端来", "呈上"],
+  "sourceStories": ["孔融让梨"]
+}

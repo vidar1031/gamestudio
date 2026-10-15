@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0",
+  "id": "pose.struggling_in_water",
+  "category": "pose",
+  "name": "落水挣扎",
+  "nameEn": "struggling in water",
+  "description": "角色在水中挣扎：只露头与双臂在水面，水花四溅，惊慌表情",
+  "appliesTo": ["character"],
+  "generation": {
+    "mode": "pose_variant",
+    "promptTemplate": "{characterAnchor}, drowning struggle pose: only head and two arms visible above water surface inside the container, splashing water around, panicked expression, mouth open calling for help, wet hair and wet clothes clinging",
+    "negativeExtra": "standing dry, calm expression, full body on land, no water, smiling"
+  },
+  "placement": { "mode": "overlay_on_container", "anchor": "container_water_surface", "note": "落水者叠放在容器（缸）的水面位置；缸内需有水——若缸是空缸变体，须换'盛水缸'状态变体" },
+  "acceptance": [
+    "落水者只露头与手臂在水面（非全身站立）",
+    "缸内有水（非空缸）",
+    "水花/湿发/惊慌表情存在",
+    "落水者位置在缸口范围内"
+  ],
+  "aliases": ["落水", "挣扎", "淹没", "掉进水", "扑腾"],
+  "sourceStories": ["司马光砸缸"]
+}

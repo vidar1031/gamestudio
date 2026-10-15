@@ -10,7 +10,8 @@ const asStr = (v) => String(v == null ? '' : v)
 const asList = (v) => (Array.isArray(v) ? v : [])
 
 // 弱物种标记提示（三小猪事故配方）：锚点含动物词时显性强化 + 身份权重拉满
-const ANIMAL_HINT_RE = /兔|rabbit|猪|pig|狼|wolf|猫|cat|狗|dog|猴|monkey|龟|turtle|熊|bear|狐|fox|羊|sheep|鸟|bird|鸭|duck|鸡|chick/i
+// V1.3：表现度落锚共用本判定，补 乌鸦/crow/壁虎/gecko（工艺库 realistic 样例正是这两类）
+const ANIMAL_HINT_RE = /兔|rabbit|猪|pig|狼|wolf|猫|cat|狗|dog|猴|monkey|龟|turtle|熊|bear|狐|fox|羊|sheep|鸟|bird|鸭|duck|鸡|chick|乌鸦|crow|壁虎|gecko/i
 export function isAnimalLikeAnchor(text) {
   return ANIMAL_HINT_RE.test(asStr(text))
 }

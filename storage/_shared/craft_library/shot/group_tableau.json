@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1.0",
+  "id": "shot.group_tableau",
+  "category": "shot",
+  "name": "群像中景",
+  "nameEn": "group tableau medium shot",
+  "description": "多角色同框的中景群像：全员全身或大半身可见，主次分明，人脸不挤边",
+  "appliesTo": ["scene"],
+  "generation": {
+    "mode": "composition_rule",
+    "rules": [
+      "角色 scale 0.35-0.6（中景大半身）",
+      "主角在视觉中心或黄金分割点，配角两侧错开",
+      "任意两角色水平间距 ≥0.08 画幅（不挤脸）",
+      "角色 y 锚点 0.78-0.95（脚踏实地，字幕区避让）",
+      "道具/器物在角色手边或前景区"
+    ]
+  },
+  "acceptance": [
+    "全员可见无截断无叠脸",
+    "主次分明",
+    "角色之间不相互遮挡五官"
+  ],
+  "aliases": ["群像", "全家福", "围拢", "齐聚一堂"],
+  "sourceStories": ["孔融让梨", "司马光砸缸", "咕咚来了"]
+}

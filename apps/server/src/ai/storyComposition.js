@@ -2,6 +2,7 @@ import { extractResponseOutputText, openaiResponsesJsonForTools, parseModelJsonL
 import { generateStrictJsonViaDoubaoChat } from './doubao.js'
 import { generateStrictJsonViaOllamaChat } from './ollama.js'
 import { buildEntityIdResolver } from './storyAssets.js'
+import { listCraftSkills } from './craftLibrary.js'
 
 // ============ 场景构图规格提取（2026-10-04） ============
 // 从"场景正文 × 出场元素清单（含可用状态变体）"提取每个场景的构图规格：
@@ -45,7 +46,9 @@ function compositionSchema() {
                   zIndex: { type: 'integer' },
                   flipH: { type: 'boolean' },
                   blocking: { type: 'string', maxLength: 60 },
-                  evidence: { type: 'string', maxLength: 120 }
+                  evidence: { type: 'string', maxLength: 120 },
+                  // V1.3 工艺知识库选件（可选，strict 兼容）：从下发的技能目录里挑 0-2 个 skillId
+                  skillIds: { type: 'array', items: { type: 'string', maxLength: 64 }, maxItems: 2 }
                 },
                 required: ['subjectId', 'kind', 'stateKey', 'x', 'y', 'scale', 'zIndex', 'flipH', 'blocking', 'evidence']
               }
@@ -59,7 +62,16 @@ function compositionSchema() {
   }
 }
 
-function buildInstructions() {
+function buildInstructions(craftCatalog = []) {
+  const catalogLines = (Array.isArray(craftCatalog) ? craftCatalog : [])
+    .map((skill) => `- ${skill.id}（${skill.name}）：${skill.description}${skill.aliases?.length ? `（别名：${skill.aliases.join('/')}）` : ''}`)
+  const craftSection = catalogLines.length
+    ? [
+        '【工艺技能件（可选，0-2 个/元素）】',
+        '下列技能件是沉淀的导演手册条目。仅当该元素本场景语义与技能件明确匹配时才在输出里加 skillIds（如端盘持物/双人递物/围坐/对峙/情绪）；不硬配，不匹配就不加。skillIds 必须从下表照抄 id，不得编造。',
+        ...catalogLines
+      ].join('\n')
+    : ''
   return (
     '你是儿童绘本互动故事的"场景构图师"（导演）。\n' +
     '任务：输入给出故事的若干场景（标题+剧情摘要）以及每个场景出场元素清单（角色/道具，含各自可用的状态变体 stateKeys）。' +
@@ -77,19 +89,23 @@ function buildInstructions() {
     'blocking：元素间关系描述，必须含方位+间距+视线/朝向（≤30字），如"蝴蝶在小鸡右前方一个身位的草叶上方飞，小鸡视线追着它"——只写"狐狸在架下"不合格。\n' +
     'evidence：本构图判断的原文依据——从该场景剧情摘要里照抄**高潮/转折句**（≤40字），禁止自己改写；没有依据的摆放不允许输出。\n' +
     'cameraNote：本场景镜头感一句话（≤24字），如"中景平视，鸡在左蝴蝶在右前方"。\n' +
+    (craftSection ? `${craftSection}\n` : '') +
     '输出要求：\n' +
     '- 只输出一个可 JSON.parse 的 JSON 对象，不要 markdown、不要代码块、不要分析过程。\n' +
     '- 结构：{"scenes":[{"sceneId":"…","cameraNote":"…","items":[{"subjectId":"…","kind":"character","stateKey":"…","x":0.5,"y":0.9,"scale":0.5,"zIndex":3,"flipH":false,"blocking":"…","evidence":"…"}]}]}\n' +
     `- sceneId、subjectId 必须原样照抄输入值；items 必须恰好覆盖输入清单里该场景的全部元素，不多不少（每场最多 ${MAX_COMPOSITION_ITEMS} 项）。\n` +
-    `- 同一元素在同场景只出现一次；单场元素超过 ${MAX_COMPOSITION_ITEMS} 项时无法构图，应完整输出而非静默省略。数值必须落在约定区间内。`
+    `- 同一元素在同场景只出现一次；单场元素超过 ${MAX_COMPOSITION_ITEMS} 项时无法构图，应完整输出而非静默省略。数值必须落在约定区间内。` +
+    (catalogLines.length ? ' 元素带 skillIds 时从工艺技能件表照抄 id（0-2 个）。' : '')
   )
 }
 
-function normalizeComposition(parsed, { scenes }) {
+function normalizeComposition(parsed, { scenes, knownSkillIds, onWarn }) {
   const sceneById = new Map(scenes.map((s) => [s.sceneId, s]))
   const sceneByLoose = new Map(scenes.map((s) => [s.sceneId.toLowerCase(), s]))
   // 短别名映射（sc_N）：模型只需照抄输入里的短代号，杜绝长 id 抄错丢场景
   const sceneByAlias = new Map(scenes.filter((s) => s && s.alias).map((s) => [s.alias, s]))
+  // V1.3：skillIds 必须在工艺目录内——未知 id 过滤并告警（不编造、不带出未知技能）
+  const knownSkills = knownSkillIds instanceof Set ? knownSkillIds : null
   const out = []
   for (const rawScene of asList(parsed && parsed.scenes)) {
     const sceneIdIn = asStr(rawScene && rawScene.sceneId)
@@ -104,6 +120,18 @@ function normalizeComposition(parsed, { scenes }) {
       const subject = allowed.get(subjectId)
       const stateKeyRaw = asStr(rawItem && rawItem.stateKey)
       const stateKey = subject.stateKeys.includes(stateKeyRaw) ? stateKeyRaw : ''
+      // V1.3：skillIds 过滤未知 id（过滤并告警，不阻断构图）；先过滤再截断 0-2 个
+      let skillIds = []
+      if (knownSkills) {
+        skillIds = asList(rawItem && rawItem.skillIds)
+          .map((x) => asStr(x).trim())
+          .filter(Boolean)
+        const unknown = skillIds.filter((id) => !knownSkills.has(id))
+        if (unknown.length && typeof onWarn === 'function') {
+          onWarn(`composition_skill_unknown:${scene.sceneId}:${subjectId}:${unknown.join(',')}`)
+        }
+        skillIds = skillIds.filter((id) => knownSkills.has(id)).slice(0, 2)
+      }
       items.push({
         subjectId,
         kind: subject.kind,
@@ -114,7 +142,8 @@ function normalizeComposition(parsed, { scenes }) {
         zIndex: Math.round(clampNum(rawItem && rawItem.zIndex, 1, 99, 3)),
         flipH: Boolean(rawItem && rawItem.flipH),
         blocking: clampText2(rawItem && rawItem.blocking, 60),
-        evidence: clampText2(rawItem && rawItem.evidence, 80)
+        evidence: clampText2(rawItem && rawItem.evidence, 80),
+        ...(skillIds.length ? { skillIds } : {})
       })
       if (items.length >= MAX_COMPOSITION_ITEMS) break
     }
@@ -179,6 +208,11 @@ export function validateCompositionCoverage(normalized, expectedScenes) {
   return issues
 }
 
+// V1.3 导出供测试（skillIds 过滤/旧计划兼容验证）；normalize 逻辑不变
+export function normalizeCompositionForTest(parsed, args) {
+  return normalizeComposition(parsed, args)
+}
+
 function validateComposition(normalized, expectedScenes) {
   return validateCompositionCoverage(normalized, expectedScenes)
 }
@@ -233,8 +267,16 @@ export function buildCompositionInput({ project, story, plan }) {
 export async function extractStoryComposition({ provider, model, apiUrl, proxyUrl, timeoutMs, input }) {
   const p = String(provider || '').trim().toLowerCase()
   const t = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : 120_000
-  const instructions = buildInstructions()
-  const normArgsFor = (scenes) => ({ scenes })
+  // V1.3 工艺知识库选件：目录摘要进指令（数据驱动，库缺失/为空时指令不含技能段，行为与此前一致）；
+  // normalize 时 skillIds 必须命中目录（未知 id 过滤并告警）
+  const craftCatalog = listCraftSkills()
+  const knownSkillIds = new Set(craftCatalog.map((s) => s.id))
+  const instructions = buildInstructions(craftCatalog)
+  const normArgsFor = (scenes) => ({
+    scenes,
+    knownSkillIds,
+    onWarn: (detail) => console.warn(`[story.composition] ${detail}`)
+  })
 
   const oversizedScene = input.scenes.find((scene) => scene.subjects.length > MAX_COMPOSITION_ITEMS)
   if (oversizedScene) {

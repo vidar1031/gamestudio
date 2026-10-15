@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1.0",
+  "version": "2026-10-15",
+  "description": "GameStudio 工艺知识库（导演手册+表演指导）：持物/姿态/情绪/景别/表现度，跨故事公共复用",
+  "skills": [
+    "carrier/holding_tray.json",
+    "carrier/holding_object.json",
+    "carrier/passing_object.json",
+    "pose/sitting_gathered.json",
+    "pose/throwing_stone.json",
+    "pose/struggling_in_water.json",
+    "emotion/hesitation.json",
+    "emotion/distressed.json",
+    "emotion/panic.json",
+    "shot/group_tableau.json",
+    "shot/confrontation_two.json",
+    "performance/levels.json"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0",
+  "id": "shot.confrontation_two",
+  "category": "shot",
+  "name": "双人对峙",
+  "nameEn": "two-character confrontation",
+  "description": "两角色左右对峙：面对面、视线相交、中间留紧张带",
+  "appliesTo": ["scene"],
+  "generation": {
+    "mode": "composition_rule",
+    "rules": [
+      "两角色分置左右（x≈0.3 / x≈0.7），面对面（flipH 相向）",
+      "中间留 0.2+ 画幅的紧张带",
+      "强势方略大/略高，弱势方略小/略低",
+      "地面同线（同 y 锚点）"
+    ]
+  },
+  "acceptance": ["双方面对面视线相交", "强弱关系在大小/高低上有体现", "中间有紧张带（不贴身）"],
+  "aliases": ["对峙", "对质", "面对", "质问", "谈判"],
+  "sourceStories": ["狼和小羊", "狐狸和乌鸦"]
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0",
+  "id": "emotion.panic",
+  "category": "emotion",
+  "name": "惊慌失措",
+  "nameEn": "panic",
+  "description": "角色惊慌：瞪大眼、张口喊、身体后仰或双手乱挥",
+  "appliesTo": ["character"],
+  "generation": {
+    "mode": "expression_overlay",
+    "promptTemplate": "{characterAnchor}, panicked: wide eyes, open mouth shouting, body leaning back or hands flailing, alarmed urgent mood",
+    "negativeExtra": "calm, composed, smiling, relaxed, idle"
+  },
+  "acceptance": ["表情为惊慌（瞪眼/张口/后仰或乱挥）", "不得为平静/微笑/悠闲"],
+  "aliases": ["惊慌", "慌乱", "吓坏", "着急", "着急地喊"],
+  "sourceStories": ["司马光砸缸", "咕咚来了"]
+}

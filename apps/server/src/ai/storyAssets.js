@@ -1,3 +1,7 @@
+// 纯函数模块（V1.3 起引工艺库/物种判定：表现度落锚）
+import { getPerformanceRules } from './craftLibrary.js'
+import { isAnimalLikeAnchor } from './storyPoseVariants.js'
+
 function asObj(v) {
   return v && typeof v === 'object' ? v : {}
 }
@@ -688,6 +692,20 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
     const refAsset = lookupProjectAsset(safeProject, refAssetId)
     const lockProfile = inferAssetLockProfile({ category: 'character', ...entity })
     const lockWorkflow = lockWorkflowForAsset({ category: 'character', lockProfile, ...entity })
+    // V1.3 表现度落锚（performance/levels.json）：动物类角色按表现度加约束——
+    // realistic 负向禁人脸/直立/手脚/服装；full 允许直立穿衣但正向必须保留物种特征词。
+    // performanceLevel：角色实体可覆盖；缺省 plan 级默认（bible 暂无该字段）回落 lite。
+    const performanceLevel = asStr(entity.performanceLevel).trim() || 'lite'
+    let anchorPrompt = asStr(entity.anchorPrompt).trim()
+    let negativePrompt = asStr(entity.negativePrompt).trim()
+    const perfRules = getPerformanceRules(performanceLevel)
+    if (perfRules && isAnimalLikeAnchor(`${anchorPrompt} ${asStr(entity.name).trim()}`)) {
+      if (performanceLevel === 'realistic') {
+        negativePrompt = [negativePrompt, 'human-like face', 'standing on two legs', 'hands', 'clothes'].filter(Boolean).join(', ')
+      } else if (performanceLevel === 'full' && !/ears|tail|snout|wings/i.test(anchorPrompt)) {
+        anchorPrompt = `${anchorPrompt}, animal features preserved: species-specific ears/tail/snout/wings visible`
+      }
+    }
     const asset = {
       id,
       name: asStr(entity.name).trim() || id,
@@ -696,10 +714,11 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       lockWorkflow,
       persistence: 'high',
       renderStrategy: 'ref_required',
-      anchorPrompt: asStr(entity.anchorPrompt).trim(),
-      negativePrompt: asStr(entity.negativePrompt).trim(),
+      anchorPrompt,
+      negativePrompt,
+      performanceLevel,
       // 2026-10-13 字段对齐：向导可见可编字段与生产同源填齐（英文稿=出图锚点；中文稿=中文名/别名种子）
-      referencePromptEn: asStr(entity.anchorPrompt).trim(),
+      referencePromptEn: anchorPrompt,
       referencePromptZh: chinesePromptSeedForEntity(entity),
       aliases: uniqStrings(entity.aliases, 20),
       forbiddenSubstitutes: [],

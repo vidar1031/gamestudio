@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0",
+  "id": "emotion.hesitation",
+  "category": "emotion",
+  "name": "犹豫挣扎",
+  "nameEn": "hesitation",
+  "description": "角色面临抉择的犹豫：眉头微皱、视线游移/下垂、手抬起未决",
+  "appliesTo": ["character"],
+  "generation": {
+    "mode": "expression_overlay",
+    "promptTemplate": "{characterAnchor}, hesitant expression: slightly furrowed brows, eyes glancing sideways or looking down, one hand half-raised undecided, lips pressed, conflicted mood",
+    "negativeExtra": "big smile, grinning, laughing, carefree cheerful, eyes sparkling with joy"
+  },
+  "acceptance": [
+    "表情为犹豫/挣扎（眉皱、视线不定）",
+    "不得为开心/大笑/轻松"
+  ],
+  "aliases": ["犹豫", "挣扎", "为难", "踌躇", "纠结", "内心挣扎"],
+  "sourceStories": ["青蛙王子", "小马过河"]
+}
