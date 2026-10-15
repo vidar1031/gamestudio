@@ -239,11 +239,13 @@ export function collectSceneReviewInputs({ dir, projectId, story, plan, project,
 }
 
 async function submitAndWaitReview({ projectId, images, context }) {
+  // 2026-10-15 实测：4 张同步评审在 LLM  contention 下单张 50-60s（合计 200s+），
+  // 180s 超时被中止（control_unreachable: aborted 三连根因）；评审属分钟级长任务，放宽到 600s。
   const payload = await postControl('/api/control/image-reviews', {
     images,
     context,
     projectId
-  }, 180000)
+  }, 600000)
   if (!payload.reviewId) {
     const err = new Error('control_review_missing_id')
     err.code = 'control_review_missing_id'
