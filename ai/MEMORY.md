@@ -1,8 +1,8 @@
-# MEMORY - GameStudio Project Memory
+# MEMORY - TalkScene Project Memory
 
 ## 项目使命
 
-让 `control + hermes` 成为 GameStudio 的统一任务控制面，能够围绕故事项目执行完整链路：
+让 `control + hermes` 成为 TalkScene 的统一任务控制面，能够围绕故事项目执行完整链路：
 
 项目创建 -> 项目配置 -> 故事/脚本生成 -> 图片与资产生成 -> 项目验证 -> 导出交付
 

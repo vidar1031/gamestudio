@@ -1,6 +1,12 @@
-# GameStudio 文档目录
+# TalkScene 文档目录
 
-`docs/` 当前按「治理 / 生产方案 / 操作手册 / 评估与提案 / 归档区」组织，真实结构如下。
+`docs/` 当前按「产品 / 治理 / 生产方案 / 操作手册 / 评估与提案 / 归档区」组织，真实结构如下。
+
+## 产品
+
+| 文档 | 用途 | 面向读者 |
+|------|------|----------|
+| [`产品说明书.md`](产品说明书.md) | 产品层最高说明书：定位（语言描述→交互故事+预演视频双形态）、市场与竞品、功能总规格（F1–F9）、架构决策、非功能规格、三线合一路线图、验收基准 | 负责人、规则统筹师、所有 Agent、开发者 |
 
 ## 治理
 
@@ -8,6 +14,7 @@
 |------|------|----------|
 | [`PROJECT_GOVERNANCE.md`](PROJECT_GOVERNANCE.md) | 全系统最高治理规则：文档层级、记忆管理、禁止行为、违规处理（含第 8 节项目总监约定） | 所有 Agent、开发者、维护者 |
 | [`总监自治实施方案.md`](总监自治实施方案.md) | 守护台+项目总监（看门狗）自主生产的实施方案：版本路线 V0.9→V3.0、验证门、能力清单（已验证/未验证/未实现）、两仓分工 | 所有 Agent、开发者、维护者 |
+| [`工程升级实施方案.md`](工程升级实施方案.md) | 工程外壳升级（Project Molt）：P0 基线与改名 → P1 编辑器外壳换羽 → P2 服务端分层 → P3 控制面瘦身 → P4 双界面终局；内核不动、绞杀者模式、适应度函数验证门 | 所有 Agent、开发者、维护者 |
 | [`可指挥生产项目契约_v1.md`](可指挥生产项目契约_v1.md) | 项目侧契约：被守护台总监指挥必须实现的端点/行为/证据规则（workflow-contract/v1） | 开发者、接入方 |
 
 ## 生产方案
@@ -17,7 +24,7 @@
 | [`系统生产级推进方案.md`](系统生产级推进方案.md) | 系统分工（明确行为边界）、启动流程、生产任务流、路由规则、UI 约束、放行标准、关键文件索引 | 开发者、维护者 |
 | [`PRODUCTION_DEFECTS.md`](PRODUCTION_DEFECTS.md) | 当前生产缺陷（P0/P1/P2）、未实现功能清单、已修复归档 | 开发者、维护者 |
 | [`故事生产能力矩阵.md`](故事生产能力矩阵.md) | 打样地基档案：已验证能力/有墙/待建总账、核心工艺链、守护台自主执行成熟度、测试故事路线 | 开发者、操作者 |
-| [`外部模型驱动守护台生产操作手册.md`](外部模型驱动守护台生产操作手册.md) | 外部大模型（GPT 类）经守护台事件分发驱动 GameStudio 创作交互故事并出图落地的操作手册：接入认证、逐步操作卡、判断点清单、失败处置 | 外部模型操作员、测试人员 |
+| [`外部模型驱动守护台生产操作手册.md`](外部模型驱动守护台生产操作手册.md) | 外部大模型（GPT 类）经守护台事件分发驱动 TalkScene 创作交互故事并出图落地的操作手册：接入认证、逐步操作卡、判断点清单、失败处置 | 外部模型操作员、测试人员 |
 | [`小型互动故事画面表达优化实施方案.md`](小型互动故事画面表达优化实施方案.md) | 画面表达优化实施提案：质量基线、事实映射闸门、导演规格、复核闭环、评分协议 | 开发者、项目负责人 |
 | [`小型互动故事画面表达优化实施方案.md`](小型互动故事画面表达优化实施方案.md) | 面向 5–15 场景故事的导演机制、视觉质量闭环、测试故事集、验收协议与音视频路线提案 | 产品、开发者、测试人员 |
 | [`白雪公主与七个小矮人互动故事测试设计.md`](白雪公主与七个小矮人互动故事测试设计.md) | 15 场景分支故事样本：多人构图、角色状态/服饰、道具与路径覆盖模拟 | 开发者、测试人员 |
@@ -27,7 +34,7 @@
 | 文档 | 用途 | 面向读者 |
 |------|------|----------|
 | [`狼来了内容质量闭环工作流.md`](狼来了内容质量闭环工作流.md) | 现行生产主手册：从守护台聊天发起故事生产，跑通「生成 → 完整度核实 → 定向修复 → 再核实」闭环（全链路 22 步） | 操作者、测试人员 |
-| [`Control + GameStudio 生产工作流联调测试说明.md`](Control%20+%20GameStudio%20生产工作流联调测试说明.md) | 联调测试标准、阶段定义、验证检查清单、放行判断 | 测试人员、开发者 |
+| [`Control + TalkScene 生产工作流联调测试说明.md`](Control%20+%20TalkScene%20生产工作流联调测试说明.md) | 联调测试标准、阶段定义、验证检查清单、放行判断 | 测试人员、开发者 |
 | [`运行时能力测试基准.md`](运行时能力测试基准.md) | 守护台（Hermes+OMLX）32G/16K 运行时硬约束、记忆外部化规则、稳定性纪律与 A–E 组测试通过标准（硬基准，不可偏离） | 所有 Agent、测试人员、开发者 |
 
 ## 评估与提案
@@ -46,14 +53,14 @@
 
 - `agent-automation-playbook/` — 自动化 playbook 系列
 - KIMI 四件套：`KIMI_RIGHT_BRAIN_SUPERVISION_PLAN.md`、`KIMI_RIGHT_BRAIN_TEST_PLAN.md`、`KIMI_RIGHT_BRAIN_FEASIBILITY_ANALYSIS.md`、`KIMI_INTEGRATION_IMPLEMENTATION_PLAN.md`（右脑监察已落地，见 `ai/BRAIN_DIVISION.md` 与 `ai/control_architecture.md`）
-- `ARCHITECTURE_CORRECTION.md`、`HERMES_CAPABILITY_GAP_ANALYSIS.md`、`HERMES_RUNTIME_AND_CONTROL_INTERACTION.md`、`GameStudio 自动启动与自动测试机制分析.md`、`PRODUCTION_TEST_EXECUTION_PLAN.md`
+- `ARCHITECTURE_CORRECTION.md`、`HERMES_CAPABILITY_GAP_ANALYSIS.md`、`HERMES_RUNTIME_AND_CONTROL_INTERACTION.md`、`TalkScene 自动启动与自动测试机制分析.md`、`PRODUCTION_TEST_EXECUTION_PLAN.md`
 
 ## 阅读顺序
 
 1. **新加入的 Agent** → 先读 `PROJECT_GOVERNANCE.md`，了解什么能做、什么不能做。
 2. **要启动或调试系统** → 读 `系统生产级推进方案.md` 的"启动流程"和"系统分工"章节。
 3. **要跑生产** → 读 `狼来了内容质量闭环工作流.md`。
-4. **要执行联调测试** → 读 `Control + GameStudio 生产工作流联调测试说明.md`，按验证检查清单执行。
+4. **要执行联调测试** → 读 `Control + TalkScene 生产工作流联调测试说明.md`，按验证检查清单执行。
 5. **要修复缺陷或推进功能** → 读 `PRODUCTION_DEFECTS.md`，确认缺陷状态和修复方向。
 6. **要提升小型互动故事的画面表达或验证质量** → 读 `小型互动故事画面表达优化实施方案.md`，按阶段门槛与测试协议执行。
 
@@ -62,7 +69,7 @@
 以下文档的内容已合并到核心文档中，原文件已删除：
 
 - ~~`CONTROL_SYSTEM.md`~~ → 合并到 `系统生产级推进方案.md`（模块结构、核心链路、路由规则）和 `PROJECT_GOVERNANCE.md`（安全边界、记忆规则）
-- ~~`CONTROL_TO_GAMESTUDIO_CHAIN.md`~~ → 合并到 `系统生产级推进方案.md`（启动流程、通信契约、错误处理、关键文件索引）和 `Control + GameStudio 生产工作流联调测试说明.md`（验证检查清单）和 `PRODUCTION_DEFECTS.md`（缺陷清单）
+- ~~`CONTROL_TO_TALKSCENE_CHAIN.md`~~ → 合并到 `系统生产级推进方案.md`（启动流程、通信契约、错误处理、关键文件索引）和 `Control + TalkScene 生产工作流联调测试说明.md`（验证检查清单）和 `PRODUCTION_DEFECTS.md`（缺陷清单）
 - ~~`PRODUCT_AND_STORY_WORKFLOW.md`~~ → 合并到 `系统生产级推进方案.md`（产品定位、项目结构、三层故事工作流）
 - ~~`Control Console 使用说明.md`~~ → 合并到 `系统生产级推进方案.md`（指令分类、productionTest 模式、设计原则）
 - ~~`UI_SELF_CONSTRAINTS.md`~~ → 合并到 `系统生产级推进方案.md`（UI 约束章节）

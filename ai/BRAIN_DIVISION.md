@@ -47,7 +47,7 @@
 | 任务类型 | Action 前缀 | 理由 |
 |----------|-------------|------|
 | 故事生产 | `story_` | 依赖本地 ComfyUI、项目目录、资产管线 |
-| GameStudio 启动/自检 | `gamestudio_` | 需要操作本地进程和文件系统 |
+| TalkScene 启动/自检 | `talkscene_` | 需要操作本地进程和文件系统 |
 | 文件读写 | `read_file_content`, `write_memory_file` 等 | 确定性操作，无需模型推理 |
 | 日常对话回答 | `generate_default_answer` | 低延迟要求，左脑足够 |
 
@@ -185,7 +185,7 @@ const route = {
 | 右脑未启用 | meta-analysis 返回错误："右脑未启用，无法执行元分析" |
 | 右脑 API Key 无效 | 返回错误："右脑认证失败，请检查 API Key" |
 | 右脑网络不可达 | 返回错误："右脑服务不可达" |
-| 左脑未运行 | story/gamestudio 任务阻塞，返回错误 |
+| 左脑未运行 | story/talkscene 任务阻塞，返回错误 |
 | 左脑模型未加载 | 自动触发 load，或返回降级提示 |
 
 ---

@@ -1,0 +1,228 @@
+{
+  "product": "织话智坊",
+  "description": "用语言描述生成可交互故事，同源导出预演视频——本地优先的可治理内容生产工具。本册按 GB/T 8567 建立全套工程文档，内容随版本逐步补齐。",
+  "groups": [
+    {
+      "name": "一、立项与计划",
+      "docs": [
+        {
+          "id": "01_feasibility",
+          "title": "可行性研究报告",
+          "file": "01_可行性研究报告.md",
+          "template": "gb8567/01_可行性研究报告.md",
+          "standard": "GB/T 8567"
+        },
+        {
+          "id": "02_dev_plan",
+          "title": "项目开发计划",
+          "file": "02_项目开发计划.md",
+          "template": "gb8567/02_项目开发计划.md",
+          "standard": "GB/T 8567"
+        }
+      ]
+    },
+    {
+      "name": "二、需求",
+      "docs": [
+        {
+          "id": "03_srs",
+          "title": "软件需求说明书",
+          "file": "03_软件需求说明书.md",
+          "template": "gb8567/03_软件需求说明书.md",
+          "standard": "GB/T 8567"
+        },
+        {
+          "id": "04_data_req",
+          "title": "数据要求说明书",
+          "file": "04_数据要求说明书.md",
+          "template": "gb8567/04_数据要求说明书.md",
+          "standard": "GB/T 8567"
+        }
+      ]
+    },
+    {
+      "name": "三、设计",
+      "docs": [
+        {
+          "id": "05_hld",
+          "title": "概要设计说明书",
+          "file": "05_概要设计说明书.md",
+          "template": "gb8567/05_概要设计说明书.md",
+          "standard": "GB/T 8567"
+        },
+        {
+          "id": "06_lld",
+          "title": "详细设计说明书",
+          "file": "06_详细设计说明书.md",
+          "template": "gb8567/06_详细设计说明书.md",
+          "standard": "GB/T 8567"
+        },
+        {
+          "id": "07_db_design",
+          "title": "数据库设计说明书",
+          "file": "07_数据库设计说明书.md",
+          "template": "gb8567/07_数据库设计说明书.md",
+          "standard": "GB/T 8567"
+        }
+      ]
+    },
+    {
+      "name": "四、测试",
+      "docs": [
+        {
+          "id": "11_test_plan",
+          "title": "测试计划",
+          "file": "11_测试计划.md",
+          "template": "gb8567/11_测试计划.md",
+          "standard": "GB/T 8567"
+        },
+        {
+          "id": "12_test_report",
+          "title": "测试分析报告",
+          "file": "12_测试分析报告.md",
+          "template": "gb8567/12_测试分析报告.md",
+          "standard": "GB/T 8567"
+        }
+      ]
+    },
+    {
+      "name": "五、交付与运维",
+      "docs": [
+        {
+          "id": "08_user_manual",
+          "title": "用户手册",
+          "file": "08_用户手册.md",
+          "template": "gb8567/08_用户手册.md",
+          "standard": "GB/T 8567"
+        },
+        {
+          "id": "09_ops_manual",
+          "title": "操作手册",
+          "file": "09_操作手册.md",
+          "template": "gb8567/09_操作手册.md",
+          "standard": "GB/T 8567"
+        }
+      ]
+    },
+    {
+      "name": "六、过程记录",
+      "docs": [
+        {
+          "id": "10_module_dossier",
+          "title": "模块开发卷宗",
+          "file": "10_模块开发卷宗.md",
+          "template": "gb8567/10_模块开发卷宗.md",
+          "standard": "GB/T 8567"
+        },
+        {
+          "id": "13_monthly",
+          "title": "开发进度月报",
+          "file": "13_开发进度月报.md",
+          "template": "gb8567/13_开发进度月报.md",
+          "standard": "GB/T 8567"
+        },
+        {
+          "id": "14_summary",
+          "title": "项目开发总结报告",
+          "file": "14_项目开发总结报告.md",
+          "template": "gb8567/14_项目开发总结报告.md",
+          "standard": "GB/T 8567"
+        }
+      ]
+    },
+    {
+      "name": "七、产品扩展文档（GB8567 之外）",
+      "docs": [
+        {
+          "id": "ext_product_spec",
+          "title": "产品说明书（PRD）",
+          "file": "../../../docs/产品说明书.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
+          "id": "ext_market",
+          "title": "市场与竞品分析（MRD）",
+          "file": "ext_市场与竞品分析.md",
+          "standard": "扩展",
+          "status": "未开始"
+        },
+        {
+          "id": "ext_molt",
+          "title": "工程升级实施方案",
+          "file": "../../../docs/工程升级实施方案.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
+          "id": "ext_autonomy",
+          "title": "总监自治实施方案",
+          "file": "../../../docs/总监自治实施方案.md",
+          "standard": "扩展",
+          "status": "完成"
+        },
+        {
+          "id": "ext_modsplit",
+          "title": "模块化拆分设计（目标架构）",
+          "file": "ext_模块化拆分设计.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
+          "id": "ext_tokens",
+          "title": "设计令牌与主题扩展规范",
+          "file": "ext_设计令牌与主题规范.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
+          "id": "ext_ui_spec",
+          "title": "UI 设计规范（规则声明）",
+          "file": "ext_UI设计规范.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
+          "id": "ext_ui_upgrade",
+          "title": "交互优化升级方案",
+          "file": "ext_交互优化升级方案.md",
+          "standard": "扩展",
+          "status": "编写中"
+        }
+      ]
+    },
+    {
+      "name": "八、界面定义（产品 UI 规格）",
+      "docs": [
+        {
+          "id": "ui_home",
+          "title": "首页定义（项目库）",
+          "file": "ui_首页定义.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
+          "id": "ui_settings",
+          "title": "设置定义（能力装配台）",
+          "file": "ui_设置定义.md",
+          "standard": "扩展",
+          "status": "评审中"
+        },
+        {
+          "id": "ui_create",
+          "title": "新建故事定义（一句话创作入口）",
+          "file": "ui_新建故事定义.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
+          "id": "ui_compose",
+          "title": "合成工作室定义（编辑器主界面）",
+          "file": "ui_合成工作室定义.md",
+          "standard": "扩展",
+          "status": "编写中"
+        }
+      ]
+    }
+  ]
+}

@@ -6,9 +6,9 @@
 
 ## 战略定位（2026-07-23 与需求方确认）
 
-**目标关系**：Hermes = 本地智能常驻助手（24/7 守护，可配置任意项目、执行适合的工作流）；治理中台 = 治理 Hermes 的站点（让它不黑盒、可管理、可审核）；GameStudio = 助手驱动的第一个实测项目，不是全部。
+**目标关系**：Hermes = 本地智能常驻助手（24/7 守护，可配置任意项目、执行适合的工作流）；治理中台 = 治理 Hermes 的站点（让它不黑盒、可管理、可审核）；TalkScene = 助手驱动的第一个实测项目，不是全部。
 
-**历史偏差**：建设过程中关系被跑反——Control 变成了编排司机，Hermes 退化为生产链里的模型转发代理（本审查发现其边际价值≈0 的原因）。正确关系是：**Hermes 作为常驻助手编排"何时做、为什么做、做完汇报"；Control+GameStudio 作为被调用的确定性能力 API（做得对、留证据、可审核）**。
+**历史偏差**：建设过程中关系被跑反——Control 变成了编排司机，Hermes 退化为生产链里的模型转发代理（本审查发现其边际价值≈0 的原因）。正确关系是：**Hermes 作为常驻助手编排"何时做、为什么做、做完汇报"；Control+TalkScene 作为被调用的确定性能力 API（做得对、留证据、可审核）**。
 
 **目标三层架构**：
 
@@ -17,7 +17,7 @@
   —— agent loop 与子 agent 由右脑强模型驱动（本地 9B 跑 loop 已被日志实证不可靠）
 治理层（现 control-server + 治理中台站点）：项目/工作流注册表、review gate、evaluator、
   证据、审核记录；助手的写入/执行动作全部过门禁（"全部要记录审核"）
-能力层（GameStudio Server 等）：故事生产 API（已验证）/ 图片生成 API / 未来其他项目能力
+能力层（TalkScene Server 等）：故事生产 API（已验证）/ 图片生成 API / 未来其他项目能力
 ```
 
 **关键事实**：Hermes 的 cron（`~/.hermes/cron/jobs.json`，daily-reporter 每日真实执行）、子代理（delegate_task）、多渠道 gateway、技能/记忆体系均为现成能力——自研同等 agent 运行时不划算；当前集成的问题是把它们闲置、只用作转发壳。
@@ -31,7 +31,7 @@
 ### 1. 记忆系统：名不副实，含致命缺陷
 
 - 全部记忆语义由 Control 实现（文件截断注入、24/8 重放窗口、chat 历史持久化、记忆写入+review gate、TTL 归档）。Hermes gateway 为 stateless 设计，Control 从不传 `X-Hermes-Session-*` 头；Hermes 原生记忆子系统从未接入。
-- 【致命】启动注入的 13 个 `GAMESTUDIO_*` env，Hermes 全库零读取（仅 `HERMES_EPHEMERAL_SYSTEM_PROMPT` 被消费）。
+- 【致命】启动注入的 13 个 `TALKSCENE_*` env，Hermes 全库零读取（仅 `HERMES_EPHEMERAL_SYSTEM_PROMPT` 被消费）。
 - 【致命】`ai/memory/DECISIONS.md`、`LONG_TASKS.md` 自 2026-06-18 起内容是"请刷新本文件"的指令文本而非记忆（fallback 落盘 bug），且每日被全量注入 planner prompt——注入垃圾，起反作用。
 - 【高】planner 全量注入 vs answer 路径 references-only 只给路径（且走 direct 无人读）——同 session 策略自相矛盾；跨 session 重放污染；每日 00:00 短期记忆清零；context-pool 与 session 索引只写不读；Hermes cron 每日向已弃用的 `memory/` 根目录写文件（Control 无感知、无审核）。
 
@@ -41,7 +41,7 @@
 
 ### 3. Agent 能力：Hermes 不可替代部分 = 零
 
-以真实 e2e（reasoning_1784725013297）为准：分类（Control 规则表）、plan（Control 确定性 13 步）、执行（Control→GameStudio Server）、脚本/Bible（GameStudio Server 直连 OMLX）、评审（Control 确定性 + GameStudio 规则 + direct 模型三方取 min）、evaluator/证据/审核（Control）。链路中无任何环节必须经 Hermes。
+以真实 e2e（reasoning_1784725013297）为准：分类（Control 规则表）、plan（Control 确定性 13 步）、执行（Control→TalkScene Server）、脚本/Bible（TalkScene Server 直连 OMLX）、评审（Control 确定性 + TalkScene 规则 + direct 模型三方取 min）、evaluator/证据/审核（Control）。链路中无任何环节必须经 Hermes。
 
 ## 二、优势 vs 坏处
 
@@ -61,7 +61,7 @@
 
 补充决议：治理中台站点（现 control-console）更名为**「守护台」**——定位为全天守护助手的治理台。改名分两阶段：UI 层（品牌、标题、导航）已执行；包名/目录名（control-console/control-server）为第二阶段工程改动。信息架构后续按"与助手对话 / 助手的日程 / 助手的项目 / 审核中心 / 助手的健康"心智重排。
 
-- 生产链（分类→plan→执行→生成→评审→校验→导出）保持 Control + GameStudio Server 的确定性实现不变（e2e 已验证可靠）。
+- 生产链（分类→plan→执行→生成→评审→校验→导出）保持 Control + TalkScene Server 的确定性实现不变（e2e 已验证可靠）。
 - 助手层启用 Hermes 现成能力：cron 定时（每日自动建故事/定时关停系统）、子 agent（监察、plan 执行——必须挂右脑强模型）、多渠道 gateway、技能/记忆体系。
 - 原"选项 B（保留但收缩）"与"选项 C（无边界启用）"均否决：前者治标不治本，后者与治理方向冲突；采用"C 的边界内版本"——助手层原生能力开启，但写入/执行动作仍全部过治理层 review gate 并落审核记录。
 - 集成关系翻转：由"Control spawn Hermes 当模型代理"改为"Hermes 常驻，治理层/能力层作为其可调用的 API"。

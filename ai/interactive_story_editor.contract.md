@@ -291,12 +291,12 @@ export type AssetRefV1 = { assetId: string }
 
 ## G. 数据与导出路线（必须一致）
 
-制作工具（gamestudio）只负责生成 demo/产物并保存在自身目录中：
-- `gamestudio/storage/...`
+制作工具（talkscene）只负责生成 demo/产物并保存在自身目录中：
+- `talkscene/storage/...`
 
-**禁止**：gamestudio 直接写入 `online_game_resources`  
+**禁止**：talkscene 直接写入 `online_game_resources`  
 正确路线：
-1) gamestudio 产出 demo/产物（本地）
+1) talkscene 产出 demo/产物（本地）
 2) 由 `app_system` 导入 demo/产物并纳管
 3) 再由 app_system 分配到 `online_game_resources` 静态托管
 

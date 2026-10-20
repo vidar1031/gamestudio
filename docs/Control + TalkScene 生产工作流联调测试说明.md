@@ -1,11 +1,11 @@
-# Control + GameStudio 生产工作流联调测试说明
+# Control + TalkScene 生产工作流联调测试说明
 
-本文定义 Control 与 GameStudio 联动时，什么才算“正确的生产工作流测试通过”。
+本文定义 Control 与 TalkScene 联动时，什么才算“正确的生产工作流测试通过”。
 
 目标不是证明某个接口能返回，也不是证明 ComfyUI 能单独出图，而是证明：
 
 - Control 以任务方式发起。
-- GameStudio 显式承担生产执行。
+- TalkScene 显式承担生产执行。
 - 每个关键阶段都有可追溯日志、artifacts 和项目落盘证据。
 - 最终结果可用于继续生产，而不是停留在临时调试。
 
@@ -35,11 +35,11 @@
 - 接收用户任务
 - 生成 plan
 - 请求人工 review / approve（`productionTest=true` 时可 bypass）
-- 调用 GameStudio Server
+- 调用 TalkScene Server
 - 记录 reasoning session、step artifacts、evaluator 结果
 - 基于确定性证据给出结论
 
-### GameStudio 负责
+### TalkScene 负责
 
 - 读写项目文件
 - 生成 Story Bible
@@ -52,7 +52,7 @@
 
 - Control 直接把 ComfyUI 视为生产入口
 - 用单独 curl 打 ComfyUI 当作生产通过
-- 只看模型回答，不看 GameStudio 落盘结果
+- 只看模型回答，不看 TalkScene 落盘结果
 - 跳过 Story Bible 阶段直接把缺失数据静默补齐后宣称流程通过
 
 ## 3. 当前已验证内容
@@ -62,10 +62,10 @@
 - Control 将请求分类为 story workflow。
 - Control 通过任务流创建项目并写入生成配置。
 - Hermes/OMLX 生成 scripts 候选（`productionTest` + `requireModelAnswer=true` 时走真实模型）。
-- GameStudio 写入 scripts、编译 blueprint、编译合成层。
-- GameStudio 执行 validate / export。
+- TalkScene 写入 scripts、编译 blueprint、编译合成层。
+- TalkScene 执行 validate / export。
 - Control 根据 artifacts 返回结论。
-- Story Bible 由 GameStudio 显式生成并持久化到 `project.json`。
+- Story Bible 由 TalkScene 显式生成并持久化到 `project.json`。
 
 这部分可视为 S1 文本互动故事闭环的已验证基础。
 
@@ -76,8 +76,8 @@
 截至 2026-05-18，本轮联调已经覆盖到以下真实链路：
 
 - Control 以 reasoning session 发起 story workflow，并完成自动审核流（`productionTest=true` 时 bypass 所有 review）。
-- Control 已显式调用 GameStudio 的 Story Bible、asset plan、图片前置检查、资产候选、校验、导出相关步骤。
-- GameStudio 的 `step_story_create_bible` 在当前回归样本中已能实际执行并写回结果，不再停在 `invalid_story_bible` 前置失败。
+- Control 已显式调用 TalkScene 的 Story Bible、asset plan、图片前置检查、资产候选、校验、导出相关步骤。
+- TalkScene 的 `step_story_create_bible` 在当前回归样本中已能实际执行并写回结果，不再停在 `invalid_story_bible` 前置失败。
 - Story Bible 质量已从保底输出（characters=0）提升到真实内容（characters=4, locations=2）。
 - `productionTest` review bypass 已完整实现，自动化测试不再被 review gate 阻塞。
 - 生产测试脚本已补上 stale lock 回收和退出清锁，异常中止后不会继续长期堵住后续 case。
@@ -102,7 +102,7 @@ Story Bible 质量已显著提升：
 - Story Bible 阶段已经从“前置硬阻断”修到“可执行、可落盘、可生成真实内容”。
 - Story Bible 质量**已达到可用水平**，但复杂故事（多角色、多道具）的稳定性仍需更多样本验证。
 
-## 6. 正确的 Control + GameStudio 生产工作流
+## 6. 正确的 Control + TalkScene 生产工作流
 
 下面这条链路是下一步实施和验收时必须遵守的标准流程。
 
@@ -128,7 +128,7 @@ Story Bible 质量已显著提升：
 - review records
 - step artifacts
 
-### 阶段 B. GameStudio 显式生成 Story Bible
+### 阶段 B. TalkScene 显式生成 Story Bible
 
 标准入口：
 
@@ -136,8 +136,8 @@ Story Bible 质量已显著提升：
 
 必须满足：
 
-- 由 Control 调用 GameStudio 发起
-- GameStudio 生成 Story Bible
+- 由 Control 调用 TalkScene 发起
+- TalkScene 生成 Story Bible
 - Story Bible 写入项目或可读持久化结果
 - 服务端出现 `story.bible` start / ok / fail 日志
 
@@ -147,7 +147,7 @@ Story Bible 质量已显著提升：
 - 日志和项目状态都能证明 Story Bible 已生成
 - 结果包含真实角色、地点、事件链（非保底输出）
 
-### 阶段 C. GameStudio 生成 asset plan
+### 阶段 C. TalkScene 生成 asset plan
 
 标准入口：
 
@@ -164,9 +164,9 @@ Story Bible 质量已显著提升：
 
 - asset plan 文件或可读结果
 - Control artifacts
-- GameStudio server log
+- TalkScene server log
 
-### 阶段 D. GameStudio 执行锁定测试
+### 阶段 D. TalkScene 执行锁定测试
 
 标准入口：
 
@@ -174,11 +174,11 @@ Story Bible 质量已显著提升：
 
 必须满足：
 
-- GameStudio 选择 lock target
-- GameStudio 调用图片工作流生成测试图
+- TalkScene 选择 lock target
+- TalkScene 调用图片工作流生成测试图
 - 测试图落盘到项目 `assets/ai/story_lock_tests/`
 - 评审结果落盘或可回溯
-- Control 只记录 GameStudio 的返回和证据，不替代执行
+- Control 只记录 TalkScene 的返回和证据，不替代执行
 
 应留证据：
 
@@ -188,7 +188,7 @@ Story Bible 质量已显著提升：
 - 分析结果或人工复核标记
 - traceId
 
-### 阶段 E. GameStudio 执行正式场景合成
+### 阶段 E. TalkScene 执行正式场景合成
 
 这是下一步最关键的测试目标。
 
@@ -203,7 +203,7 @@ Story Bible 质量已显著提升：
 
 - 正式场景必须引用前面锁定通过的资产或参考
 - 生成结果必须落盘到项目资产目录
-- GameStudio 必须负责回填 scene / resource 引用
+- TalkScene 必须负责回填 scene / resource 引用
 - 完成后必须重新做资源校验和导出验证
 
 应留证据：
@@ -216,24 +216,24 @@ Story Bible 质量已显著提升：
 
 ### 阶段 F. Control 基于证据收口
 
-Control 的最终职责不是“自己生产成功”，而是基于 GameStudio 已留下的事实收口：
+Control 的最终职责不是“自己生产成功”，而是基于 TalkScene 已留下的事实收口：
 
 - 哪一步成功
 - 哪一步失败
-- 失败发生在哪个 GameStudio 阶段
+- 失败发生在哪个 TalkScene 阶段
 - 哪些文件已经落盘
 - 哪些日志可以复查
 - 当前是否达到可继续生产的放行条件
 
 ## 7. 联调通过标准
 
-只有满足下面条件，才能认定 `control + gamestudio` 故事生产工作流通过：
+只有满足下面条件，才能认定 `control + talkscene` 故事生产工作流通过：
 
 1. 任务由 Control session 发起并完成审核流（`productionTest` 可 bypass）。
-2. Story Bible 由 GameStudio 显式生成并有日志，内容非保底。
-3. asset plan 由 GameStudio 显式生成并持久化。
-4. 锁定测试由 GameStudio 执行，测试图真实落盘，日志可追溯。
-5. 正式场景合成由 GameStudio 执行，不以单张 lock test 代替。
+2. Story Bible 由 TalkScene 显式生成并有日志，内容非保底。
+3. asset plan 由 TalkScene 显式生成并持久化。
+4. 锁定测试由 TalkScene 执行，测试图真实落盘，日志可追溯。
+5. 正式场景合成由 TalkScene 执行，不以单张 lock test 代替。
 6. 合成后完成资源回填、校验、重新导出。
 7. Control 最终只基于 artifacts 和 evaluator 给出结论。
 
@@ -248,7 +248,7 @@ Control 的最终职责不是“自己生产成功”，而是基于 GameStudio 
 
 当前结论按最新事实写（2026-08-19）：
 
-- Control + GameStudio 的 story workflow 全链路已打通：P0 文本闭环（13 步）+ P1 分层合成（资产计划 → 透明立绘锁定 → 背景批量渲染 → placements 站位 → 校验 → 重新导出）均在真实项目实测通过。
+- Control + TalkScene 的 story workflow 全链路已打通：P0 文本闭环（13 步）+ P1 分层合成（资产计划 → 透明立绘锁定 → 背景批量渲染 → placements 站位 → 校验 → 重新导出）均在真实项目实测通过。
 - `L4-04` evaluator false-pass 已修复（evaluator 失败记为 FAIL，回归测试 `qualityGateEvaluatorFalsePass.test.mjs` 在案）。
 - Story Bible 质量已从保底输出提升到真实内容（characters=4, locations=2），且复杂故事持续靠内容质量闭环收敛。
 - `productionTest` review bypass 完整可用；里程碑回归基线 393/393 全绿，里程碑后增量 406 全绿。
@@ -269,7 +269,7 @@ Control 的最终职责不是“自己生产成功”，而是基于 GameStudio 
 
 - [x] OMLX (`:18888`) 健康检查通过：`curl http://127.0.0.1:18888/health`
 - [x] OMLX 模型列表可获取：`curl http://127.0.0.1:18888/v1/models`
-- [x] GameStudio Server (`:1999`) 健康检查通过：`curl http://127.0.0.1:1999/api/health`
+- [x] TalkScene Server (`:1999`) 健康检查通过：`curl http://127.0.0.1:1999/api/health`
 - [x] Control Server (`:2099`) 健康检查通过：`curl http://127.0.0.1:2099/api/health`
 - [x] Control Console (`:8870`) 可访问：`curl http://127.0.0.1:8870`
 - [x] Hermes Gateway (`:8742`) API 就绪：`curl http://127.0.0.1:8742/v1/models`
@@ -333,7 +333,7 @@ Control 的最终职责不是“自己生产成功”，而是基于 GameStudio 
 - P0 文本故事生产闭环：**达标，可放行**
 - P1 图片资产闭环：**达标，可放行**（2026-08-05《狼来了》实测通过）
 - 运维恢复能力：**基本达标**（队列/重试/恢复/收敛已落地，最终验收演练待做）
-- Control + GameStudio 整体生产工作流：**通过**（S1/S2 可放行；S3 持续完善）
+- Control + TalkScene 整体生产工作流：**通过**（S1/S2 可放行；S3 持续完善）
 
 ### 11.4 当前建议的下一轮联调重点
 

@@ -1,6 +1,6 @@
-# AGENTS - GameStudio Control / Hermes Contract
+# AGENTS - TalkScene Control / Hermes Contract
 
-本文件是 GameStudio 当前对 Hermes 的工作契约。只保留与本项目、`control`、`hermes` 真实协作相关的规则。
+本文件是 TalkScene 当前对 Hermes 的工作契约。只保留与本项目、`control`、`hermes` 真实协作相关的规则。
 
 ## 核心定位
 
@@ -70,12 +70,12 @@
 
 ## 硬性生产规则（不可被模型覆盖）
 
-以下规则是 GameStudio 交互故事生产系统的核心契约，**无论本地模型分类结果如何，必须通过确定性规则强制执行**：
+以下规则是 TalkScene 交互故事生产系统的核心契约，**无论本地模型分类结果如何，必须通过确定性规则强制执行**：
 
-### 1. Control → GameStudio 交互契约
+### 1. Control → TalkScene 交互契约
 - Control 是所有故事生产操作的**唯一入口**。
 - 任何涉及 `创建故事`、`生成脚本`、`编译蓝图`、`导出项目` 的操作，必须走 Control 的 `agent-runtime-sessions` 或 reasoning 链路。
-- 禁止绕过 Control 直接调用 GameStudio Server API 进行故事生产。
+- 禁止绕过 Control 直接调用 TalkScene Server API 进行故事生产。
 
 ### 2. 故事生产工作流强制规则
 - **正式工作流法律（2026-09-09 用户指令，最高优先级，不可绕过）**：任何故事生产动作**必须走本节的正式生产工作流链**（`story_workflow_execute` 分步计划）。每一步必须有可观测记录（reasoning session 事件流 + `/api/tasks` 进度 + 审核记录）；**任何一步失败必须显式停止**（failed/blocked 等待人工处置），禁止带病继续执行后续步骤。**禁止用零散 API/事件的即席组合替代正式工作流**——事件分发只用于正式链内的确定性步骤与经批准的修补动作，不得作为生产主路径。生产任务默认 reviewMode=manual（计划先审、逐步骤可审），仅用户明确授权才可 full-auto。

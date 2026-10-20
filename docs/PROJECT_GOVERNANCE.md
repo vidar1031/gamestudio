@@ -1,6 +1,6 @@
-# GameStudio 全系统项目治理规则
+# TalkScene 全系统项目治理规则
 
-> 本文档是 GameStudio 项目的**最高级治理规则**。任何 agent、开发者、维护者必须遵守。
+> 本文档是 TalkScene 项目的**最高级治理规则**。任何 agent、开发者、维护者必须遵守。
 > 违反本文档规则的操作视为无效，必须回滚或修正。
 > 本文档的修改必须经过 `ai/memory/DECISIONS.md` 级别的决策记录。
 
@@ -29,7 +29,7 @@
 │   ├── PROJECT_GOVERNANCE.md      # ← 本文档（最高级规则）
 │   ├── 系统生产级推进方案.md       # 系统分工、启动流程、任务流、路由规则
 │   ├── 狼来了内容质量闭环工作流.md  # 现行生产主手册（22 步全链路 + 质量闭环）
-│   ├── Control + GameStudio 生产工作流联调测试说明.md  # 联调测试标准与验证清单
+│   ├── Control + TalkScene 生产工作流联调测试说明.md  # 联调测试标准与验证清单
 │   ├── PRODUCTION_DEFECTS.md      # 当前生产缺陷与未实现项
 │   ├── UI_REDESIGN_PROPOSAL.md    # UI 重设计提案（实施状态见文档头）
 │   ├── HERMES_EVALUATION_2026-07-23.md  # Hermes 评估记录（留存追溯）
@@ -86,7 +86,7 @@
 | `ai/memory/` | **唯一权威运行时记忆** | Agent | Agent 读写，人类可读 |
 | `memory/` | ⚠️ **已弃用** | 无人 | 禁止写入 |
 | `state/` | 运行时状态、自动维护数据、归档 | Control Server | 程序自动维护 |
-| `storage/projects/` | 项目产物真相源 | GameStudio Server | 程序写入，人类只读 |
+| `storage/projects/` | 项目产物真相源 | TalkScene Server | 程序写入，人类只读 |
 
 ### 1.3 关键原则
 
@@ -222,7 +222,7 @@ Request Classification（启发式规则优先）
 需要模型时 ──► Hermes Gateway ──► OMLX / 其他 Provider
   │
   ▼
-GameStudio Server（项目读写、编译、校验、导出）
+TalkScene Server（项目读写、编译、校验、导出）
   │
   ▼
 Artifacts / Evaluator → Control 基于证据返回结论
@@ -264,7 +264,7 @@ Artifacts / Evaluator → Control 基于证据返回结论
 **规则 3.2.4：禁止直接操作 ComfyUI**
 
 - Control **禁止**直接把 ComfyUI 视为生产入口。
-- 图片生成必须通过 GameStudio Server API。
+- 图片生成必须通过 TalkScene Server API。
 - 用单独 curl 打 ComfyUI 不算生产通过。
 
 ### 3.3 Agent 层规则
@@ -273,7 +273,7 @@ Artifacts / Evaluator → Control 基于证据返回结论
 
 - Agent 只能执行 `agentDefinitions.js` 中声明的 capabilities。
 - Agent **不能**决定项目是否成功（这是 evaluator 的职责）。
-- Agent **不能**直接写项目文件（必须通过 GameStudio Server API）。
+- Agent **不能**直接写项目文件（必须通过 TalkScene Server API）。
 
 **规则 3.3.2：模型输出只能作为候选**
 
@@ -286,7 +286,7 @@ Artifacts / Evaluator → Control 基于证据返回结论
 Agent 运行时遵循以下分类优先级（从高到低）：
 
 1. `write_or_invoke_review`（变更操作，需审核）
-2. `gamestudio_bootstrap_execute`（GameStudio 启动/诊断）
+2. `talkscene_bootstrap_execute`（TalkScene 启动/诊断）
 3. `story_workflow_execute`（故事工作流）
 4. `inspect_then_answer`（能力状态查询）
 5. `plan_then_answer`（默认兜底，项目相关查询）
@@ -452,11 +452,11 @@ Agent 运行时遵循以下分类优先级（从高到低）：
 
 | # | 禁止行为 | 后果 |
 |---|----------|------|
-| W1 | Control 直接调用 ComfyUI 生成图片 | 绕过 GameStudio Server，无法追踪 |
+| W1 | Control 直接调用 ComfyUI 生成图片 | 绕过 TalkScene Server，无法追踪 |
 | W2 | 模型自由发明 action 名 | 执行不可控，可能破坏项目 |
 | W3 | fallback 候选不标记 `fallback: true` | 虚假成功，质量无法评估 |
 | W4 | `productionTest=true` 在生产环境使用 | review gate 被 bypass，安全风险 |
-| W5 | Agent 直接写项目文件 | 绕过 GameStudio API，数据不一致 |
+| W5 | Agent 直接写项目文件 | 绕过 TalkScene API，数据不一致 |
 | W6 | 跳过 Story Bible 直接生成资产 | 角色/地点一致性无法保证 |
 
 ### 6.3 数据层面
@@ -527,7 +527,7 @@ Agent 运行时遵循以下分类优先级（从高到低）：
 
 ### 8.2 绑定切换语义
 
-- 守护台 `currentProjectId` 切换 = 总监切换。GameStudio 的总监管互动故事生产全链；forge-studio 等分析型项目有自己的总监档案。
+- 守护台 `currentProjectId` 切换 = 总监切换。TalkScene 的总监管互动故事生产全链；forge-studio 等分析型项目有自己的总监档案。
 - 没有总监档案的项目**不允许跑生产链**（只允许 CRUD/健康检查类调用）。
 - 总监档案存于项目注册表（local-agent-control `state/projects-registry.json` 的 `directorProfile` 字段），修改走审核门禁并写治理审计。
 

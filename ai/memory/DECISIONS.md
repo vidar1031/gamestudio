@@ -3,9 +3,9 @@
 > 本文件只记录已验证的稳定决策，由人工或经审核的流程更新。上次重建：2026-07-23（此前内容误写为刷新指令，已清理）。
 
 ## 架构定位（2026-07-23 确认）
-- Hermes = 本地智能常驻助手（24/7 daemon），GameStudio 是其第一个实测项目。
+- Hermes = 本地智能常驻助手（24/7 daemon），TalkScene 是其第一个实测项目。
 - 治理中台 = 「守护台」（原 control-console，UI 层已改名），负责让助手不黑盒、可管理、可审核。
-- 生产链（分类→plan→执行→生成→评审→导出）保持 Control + GameStudio Server 确定性实现；Hermes 从"模型代理"角色退役，在助手层启用 cron/子 agent/多渠道等原生能力。
+- 生产链（分类→plan→执行→生成→评审→导出）保持 Control + TalkScene Server 确定性实现；Hermes 从"模型代理"角色退役，在助手层启用 cron/子 agent/多渠道等原生能力。
 
 ## 生产纪律（2026-07-22 起生效）
 - 模型输出只能是候选；脚本生成/蓝图评审失败必须显式失败，禁止确定性兜底冒充成功（F-12/F-13）。
@@ -22,7 +22,7 @@
 
 ## 咨询问句分类取舍（2026-08-19，用户明确指令）
 - **问句形态优先于关键词强制**：命中「吗/呢/么 结尾或带问号、能不能/能否/可以…吗/会不会/是不是/是什么/为什么/如何/先回答/先告诉我」等咨询形态的输入，即使含「创建/生成 + 故事」等生产关键词，也先走 `answer_only`（滚动压缩探索路径）回答，**不触发 story/bootstrap 工作流**；祈使句（创建/生成/开始/执行…）维持 `ai/AGENTS.md` 硬性生产规则第 2 条的强制工作流不变。
-- 背景：「可以使用gamestudio创建故事《乌鸦喝水》吗？先回答我？」曾被关键词强制进生产工作流而真建项目，咨询被误伤；本取舍是对硬性规则第 2 条的显式收窄（仅限问句形态），实现于 `requestClassificationRules.js`（R013_consultative_question_form）。
+- 背景：「可以使用talkscene创建故事《乌鸦喝水》吗？先回答我？」曾被关键词强制进生产工作流而真建项目，咨询被误伤；本取舍是对硬性规则第 2 条的显式收窄（仅限问句形态），实现于 `requestClassificationRules.js`（R013_consultative_question_form）。
 - 配套：answer_only 咨询回答改为滚动压缩探索（分块提取→水位压缩→综合→切题自检，见 `reasoning/exploreAnswer.js`），预算 env：`HERMES_EXPLORE_CONTEXT_BUDGET`（默认 16000）/ `HERMES_EXPLORE_CHUNK_CHARS`（默认 6000）/ `HERMES_EXPLORE_NOTES_CHAR_LIMIT`（默认 4000）；模型调用失败显式失败（exploreFailure），不伪造；生产测试（productionTest）与 requireModelAnswer 硬门禁保持单跳路径不变。
 
 ## 运行时能力基准（2026-08-24，用户明确指令）
@@ -56,7 +56,7 @@
 ## 写意图→可确认提案（2026-08-25，用户指令："主动弹出让我确认继续"）
 - **问题**：咨询中提写请求（"能把故事重命名为《X》吗"），模型只能空说"请回复确认"，确认了也没人能执行——提案与执行脱节。
 - **机制**：`agent-stream` 路由在分类后、模型调用前确定性识别写意图（首版覆盖"重命名项目"：意图正则 + 新名称引号提取 + 从当前问题与近 4 轮历史按 uuid/标题解析唯一目标项目），命中即返回 `action_proposal` JSON（eventId=project.update/GS-05、payload={projectId, project:{title}}、人话摘要），不调模型。
-- **承接**：console `tryAgentStreamSubmission` 把提案落到**既有事件确认卡**（`eventConfirmPending`），用户「确认执行」→ `dispatchEventFromChat(confirmed:true)` → command 审核门 → GameStudio Server 执行 → 事件证据；「取消」则终止。目标/名称解析不唯一时不拦截，落回模型追问。
+- **承接**：console `tryAgentStreamSubmission` 把提案落到**既有事件确认卡**（`eventConfirmPending`），用户「确认执行」→ `dispatchEventFromChat(confirmed:true)` → command 审核门 → TalkScene Server 执行 → 事件证据；「取消」则终止。目标/名称解析不唯一时不拦截，落回模型追问。
 - **实测**：改名问题→提案正确（7c04ca64→三只小猪）；未确认 dispatch→`review_required` 拦截；已确认 dispatch→真实执行成功（用同标题幂等写入验证，未改用户数据）。
 - **锁定/出图阶段聊天驱动（同日追加）**：阶段意图表 `PRODUCTION_STAGE_INTENTS`（顺序即优先级）：环境体检→`studio.selfcheck`（query 直发直答）、检查项目→`project.inspect`（query）、生成 Story Bible→`story.bible.generate`、主参考锁定→`asset.reference.lock`、生成参考图→`asset.reference.generate`、锁定测试→`asset.lock.test`、渲染缺失场景→`asset.scene.renderAll`（onlyMissing 断点续跑）。command 走确认卡门禁；query 由 console 直接 dispatch 并把结果卡读回聊天。改名 > 具体阶段 > 宽泛出图推进（资产计划）三级匹配顺序。
 - **编辑器"点击无反应"根因**：①环境体检未通过（实测 ComfyUI 8188 不可达）→ 出图类按钮按门禁设计禁用；②`生成 Story Bible` 在"未打开有效项目"时静默 return 无反馈——已修为可见错误提示（ComposeStudio.tsx runStoryboardGenerateEntitySpec）。
@@ -81,7 +81,7 @@
 - **Story Bible 分块生成（核心修复）**：单发大 schema 调用的 prefill 工作区（~4.4GB）在 27B 权重+KV（~23GB）之上必撞 prefill 内存闸；`storyBible.js` 新增 `generateStoryBibleChunked`——全局锚定/角色/道具/地点/场景绑定 5 个独立小调用（每次 prefill ~1GB）+ 合并 + 轻量修复（只带草稿），localoxml 默认走分块、失败回退单发。配套：bible 输入瘦身（场景/脚本正文 ≤500 字符、brief ≤800）、超时信封放宽（server 单次 ≤600s、客户端 600s、步骤 900s）。
 - 编辑器手动功能修复：bible/生成类按钮的静默守卫（无项目/忙碌）改为可见提示（ComposeStudio.tsx）；体检未通过的真因是 ComfyUI 不在线。
 
-## 事实类问题误答根治（2026-08-25，"问爬山行、问 gamestudio 就错"）
+## 事实类问题误答根治（2026-08-25，"问爬山行、问 talkscene 就错"）
 - **根因分层**：①OMLX 内存闸期所有大 prompt 被 400（hermes_empty_answer，已自愈）；②咨询流（R013 问句优先接入）当时没有当前事实来源，模型改用 gateway 仅剩的工具 session_search 翻旧会话档案（灰姑娘历史记录）冒充现状，还如实报告"没有读取工具"；纯知识问答（爬山/健身）不受影响是因为不依赖项目事实。
 - **验证手段沉淀**：诊断"系统提示是否送达"用唯一标记法（身份块埋 ZXQ9917 → 模型能报出 → 证明 ephemeral system_message 全链送达；hermes 仅在 ASCII codec 异常重试路径才剥离非 ASCII，正常路径原样追加）。
 - **修复**：咨询流每轮注入「项目库实况」——control 从 `storage/projects` 磁盘直读项目目录 + 各 `project.json` 标题（≤10 个，读失败如实标注），并声明其优先级高于任何会话记录/记忆/session_search 结果；查询当前项目实况禁止再调 session_search。实测：同一问题由"仅 1 个灰姑娘"纠正为"4 个（狼来了/测试写盘/未命名×2）"，与磁盘一致。
@@ -155,4 +155,4 @@
 - **结合需求用足工具**：新需求优先复用既有工具链（持久化、审核门禁、进度条目、翻译链、关联选择器），缺能力补工具链，不手工代偿；生产操作（出图/脚本/导出）永远归用户或正式工作流。
 
 ## ComfyUI 启动机制（2026-09-08 修正）
-- 禁用 osascript `do script`（Apple Events「自动化」授权被拒后 -1743 静默失败且只弹一次框）；一律 `.command` 包装文件 + `open -a Terminal`（LaunchServices，无需授权），Terminal 可见窗口语义不变。守护台「启动 ComfyUI」类请求直认 bootstrap 链（isGameStudioBootstrapPrompt 不再要求 gamestudio 字样）。
+- 禁用 osascript `do script`（Apple Events「自动化」授权被拒后 -1743 静默失败且只弹一次框）；一律 `.command` 包装文件 + `open -a Terminal`（LaunchServices，无需授权），Terminal 可见窗口语义不变。守护台「启动 ComfyUI」类请求直认 bootstrap 链（isTalkSceneBootstrapPrompt 不再要求 talkscene 字样）。

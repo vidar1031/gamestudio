@@ -13,7 +13,7 @@
 - 验收：T1 定时生产闭环 → T2 定时关停/恢复 → T3 子 agent 监察 → T4 多项目注册 → T5 治理抽查全过。
 
 ## L3. 项目/工作流注册表抽象（已达成，HERMES-H04，2026-08-15）
-- 目标：工作流从代码硬编码（story/bootstrap）抽象为可配置条目，支持 GameStudio 之外的任意项目。
+- 目标：工作流从代码硬编码（story/bootstrap）抽象为可配置条目，支持 TalkScene 之外的任意项目。
 - 达成：注册表模块 `reasoning/projectWorkflowRegistry.js` + 受控执行 runner + `routes/registryRoutes.js`；既有 story/bootstrap/projectStatus 登记为内建条目（执行语义不变），cron 白名单与 HTTP 触发门禁改消费注册表；第二个项目（demo-image-site + dry_run workflow）在测试中完成「注册 → 隔离执行 → 人工审核 → 完成」全链路，证据（run.json/run.log/artifact.json）只落在其注册根目录内，storage/projects 零变化；未注册/停用/跨项目路径与归属请求全部显式拒绝并审计（S4-07，测试 12/12，回归 278/278）。
 - 后续方向：第二个项目接真实生产动作时需先在代码登记新 executor（代码级治理）；可考虑守护台注册表管理界面（当前仅 API 面）。
 

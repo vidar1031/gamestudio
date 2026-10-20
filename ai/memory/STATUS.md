@@ -5,10 +5,10 @@ control 基石功能全部完成并已提交里程碑（commit 0331a91）。后�
 ## 当前结果（2026-08-19）
 
 - 里程碑提交 `0331a91`：control 基石（执行引擎/守护/治理闭环/cron/右脑监察/隔离配额/proposal 治理/注册表）+ 生产链（图片三级门禁/分层合成/完整度核实/资源互斥/学习治理桥/历史检索/strict 显式失败/有界记忆注入/事件地图/项目绑定/一键启动自愈）。测试 381→393 全绿。
-- 里程碑后增量：事件页卡片化；技能治理首轮评估激活 6 个（gamestudio/writing-plans/long-task/comfyui/outlines/guidance）；提交确认门弹窗移除（内联审核卡片承担确认）；问句形态优先分类（R013，咨询不再误入生产）；**滚动压缩探索机制**（exploreAnswer：分块取证→压缩中间结论→综合回答→切题自检，answer_only 咨询走此路径）。
+- 里程碑后增量：事件页卡片化；技能治理首轮评估激活 6 个（talkscene/writing-plans/long-task/comfyui/outlines/guidance）；提交确认门弹窗移除（内联审核卡片承担确认）；问句形态优先分类（R013，咨询不再误入生产）；**滚动压缩探索机制**（exploreAnswer：分块取证→压缩中间结论→综合回答→切题自检，answer_only 咨询走此路径）。
 - 两个关键问题实测答对：「能否创建乌鸦喝水」答"能+依据"且不误建项目；「你是什么系统」正确自述守护智能体身份与能力。
 - 一键启动自愈：外来模型（含加载中）先清扫 + 失败守卫收敛重试；守护台四状态行（Control/Hermes/Studio/OMLX）；路由记忆刷新保持页面。
-- **出图总账（2026-08-30）**：新增确定性只读聚合 `GET /api/projects/:id/ai/coverage`（`apps/server/src/ai/storyCoverage.js`），从 plan/story/project/reviews+磁盘事实计算每个资产（missing/candidates/selected/locked/not_required）与场景（pending/rendered/bound）状态及全局完成度；批量渲染缺口改以总账为准（pending 才重渲），批次结果带总账快照；reference/select 选定即补写 lock_confirm approved 记录（control 旁路链路也留痕，decidedBy=control）。UI：编辑器锁定工作台摘要行（1.5s 轮询）、control-console 守护台「出图总账」卡片（5s 轮询，经 `/api/control/gamestudio/projects/:id/ai/coverage` 代理）。
+- **出图总账（2026-08-30）**：新增确定性只读聚合 `GET /api/projects/:id/ai/coverage`（`apps/server/src/ai/storyCoverage.js`），从 plan/story/project/reviews+磁盘事实计算每个资产（missing/candidates/selected/locked/not_required）与场景（pending/rendered/bound）状态及全局完成度；批量渲染缺口改以总账为准（pending 才重渲），批次结果带总账快照；reference/select 选定即补写 lock_confirm approved 记录（control 旁路链路也留痕，decidedBy=control）。UI：编辑器锁定工作台摘要行（1.5s 轮询）、control-console 守护台「出图总账」卡片（5s 轮询，经 `/api/control/talkscene/projects/:id/ai/coverage` 代理）。
 - **三只小猪全图分析与修复（2026-08-30）**：
   1. 资产锁定 6/12 到终态（4 角色+稻草屋+早餐桌；wolf/早餐桌系补写 lock_confirm 留痕，原因记录 params.note）。2 个 location 为 prompt_only 不需要立绘（总账已排除）。
   2. 6 个道具（木屋/砖房/铁门/烟囱/壁炉/开水锅）候选池全部不达标：AI 视觉评审逐项未通过（分数 40-58，原因如"锅像奶油汤""门不是铁门"），S4-01 门禁正确拦截。重抽不能盲目重复——8-29 已迭代 4-9 轮均失败，需改进生成策略（工作流/LoRA/提示词定向修复）。
@@ -95,7 +95,7 @@ updatedAt: 2026-08-30T02:25:00.000Z
 
 ## 重大推进节点（2026-09-06 ~ 09-09）：三只小猪全故事生产闭环首次完整跑通
 
-> 这是 GameStudio 从"建设期"进入"生产能力验证期"的节点：一个 11 场景互动故事从出图到导出全程跑通，且全程经守护台事件链驱动。
+> 这是 TalkScene 从"建设期"进入"生产能力验证期"的节点：一个 11 场景互动故事从出图到导出全程跑通，且全程经守护台事件链驱动。
 
 ### 交付事实（全部磁盘/走查实测）
 - **三只小猪 11/11 场景全套分层出图完成**：48 条分层摆位、11 张背景（全部 background-only 空景，道具/角色全部立绘分层）、9 个新姿势变体（狼吹气/狼趴屋顶/狼倒栽/狼逃离/老大逃跑/老大老二敲门/老二举锤/老三和泥/老三加固）。
@@ -110,7 +110,7 @@ updatedAt: 2026-08-30T02:25:00.000Z
 - compose/compile 合并逻辑用蓝图 actorIds 重建摆位 → 全量摆位被清空（已改为既有摆位优先，重编译验证 48 条存活）。
 - 渲染端点显式自定义 prompt 时 worldAnchor（含村庄/建筑/月夜词）仍拼入 → 背景必出房子（已修：显式覆盖时不再拼锚点）。
 - 守护台三连：`extractJsonObjectString` 贪婪切片把重复 JSON 拼成非法（改配平括号截取）；项目列表关键词误截文件读取请求；裸 shell 命令被误判只读剥光 shell_execute。
-- `isGameStudioBootstrapPrompt` 不认裸「启动 ComfyUI」；osascript do script 的 Apple Events 授权被拒后静默失败 → 改 `.command`+LaunchServices 免授权拉起 Terminal 可见窗口。
+- `isTalkSceneBootstrapPrompt` 不认裸「启动 ComfyUI」；osascript do script 的 Apple Events 授权被拒后静默失败 → 改 `.command`+LaunchServices 免授权拉起 Terminal 可见窗口。
 - control `vision_analyze` "模型名含 qwen 即支持视觉"误判（Qwen3.6-27B 纯文本），改认真多模态标记。
 - repairStoryAssetPlanSceneLinks 会把道具锚点重新加回分层场景（已加 layeredComposition 标记并让 repair 尊重它）。
 

@@ -9,6 +9,13 @@
 
 ---
 
+## 环境/判定类观察项（2026-10-19 登记）
+
+- **L1 硬门禁答案链 prompt 超窗**：核准模型 Qwen3.6-27B-4bit 为 8K 上下文，而 L1 能力问答链的 prompt 实测 10539 tokens（系统提示+记忆+探索证据注入），模型 API 返回 400「Prompt too long」→ 答案链回退到结构化兜底（fallback=yes）→ 判定 FAIL。非代码回归（新旧分类规则同判定实证）。处理方向：答案链做 prompt 预算管理（探索证据压缩注入）或该类测试走 32K 核准路径评估；未定案前 L1 红不代表生产链故障。
+- oMLX 侧 cron 报表任务在内存墙期间 507（残留内存读数失真）——按已固化的 oMLX 应用重启模式恢复。
+
+---
+
 ## 联调测试基准（四阶段）
 
 > **核心原则**：测试必须严格分段执行。前一阶段未全部通过，不得进入下一阶段。每个阶段有明确的硬性检查项（Must Pass）和观察项（Should Pass）。
@@ -28,7 +35,7 @@ Step 1: OMLX 启动（独立进程）
   └─▶ 必须返回: status=healthy, default_model 已加载
   └─▶ 内存检查: current_model_memory <= 14GB（M2 32GB 上限）
 
-Step 2: GameStudio Server + Editor 启动
+Step 2: TalkScene Server + Editor 启动
   └─▶ 地址: server:1999, editor:8868
   └─▶ 验证: curl http://127.0.0.1:1999/api/health
   └─▶ editor 可访问: curl http://localhost:8868
@@ -54,14 +61,14 @@ Step 5: ComfyUI 启动（显式窗口）
 
 #### 1.2 Control 自检执行
 
-调用 `POST /api/control/agents/:agentId/agent-runtime-sessions` with prompt `"GameStudio 自检"`，`productionTest=true`。
+调用 `POST /api/control/agents/:agentId/agent-runtime-sessions` with prompt `"TalkScene 自检"`，`productionTest=true`。
 
 **硬性通过标准（Must Pass）：**
 
 | 检查项 | 通过标准 |
 |--------|----------|
-| `gamestudio_ensure_running` | `ok=true`，serverHealth.ok=true，editorHealth.ok=true |
-| `gamestudio_self_check` | `ok=true`，healthOk=true，settingsOk=true，diagnoseOk=true，comfyUiOk=true，imagePreflightOk=true |
+| `talkscene_ensure_running` | `ok=true`，serverHealth.ok=true，editorHealth.ok=true |
+| `talkscene_self_check` | `ok=true`，healthOk=true，settingsOk=true，diagnoseOk=true，comfyUiOk=true，imagePreflightOk=true |
 | ComfyUI 检测结果 | `comfyUi.ok=true`，若 `started=true` 则必须在 Terminal 窗口中可见启动过程 |
 | settings 读取 | `effective.image.provider === 'comfyui'`，`comfyuiBaseUrl` 正确 |
 | diagnose | `services.scripts.ok=true`（OMLX 可达），`services.image.ok=true`（ComfyUI 可达） |
@@ -76,13 +83,13 @@ Step 5: ComfyUI 启动（显式窗口）
 | # | 测试题目 | 执行方式 | 通过标准 |
 |---|----------|----------|----------|
 | S0-T01 | OMLX 健康检查 | `curl http://127.0.0.1:18888/health` | 返回 `status=healthy`，`default_model` 已加载 |
-| S0-T02 | GameStudio Server 健康检查 | `curl http://127.0.0.1:1999/api/health` | 返回 `ok=true` |
+| S0-T02 | TalkScene Server 健康检查 | `curl http://127.0.0.1:1999/api/health` | 返回 `ok=true` |
 | S0-T03 | Control Server 健康检查 | `curl http://127.0.0.1:2099/api/health` | 返回 `ok=true` |
 | S0-T04 | Control Console 可访问 | `curl http://127.0.0.1:8870` | HTTP 200，页面可加载 |
 | S0-T05 | Hermes Gateway API 就绪 | `curl http://127.0.0.1:8742/v1/models` | 返回 `hermes-agent` |
 | S0-T06 | ComfyUI system_stats 可达 | `curl http://127.0.0.1:8188/system_stats` | 返回 `comfyui_version`，`devices` 含 `mps` |
-| S0-T07 | Control `ensure_running` 自检 | 调用 bootstrap workflow `gamestudio_ensure_running` | `ok=true`，`serverHealth.ok=true`，`editorHealth.ok=true` |
-| S0-T08 | Control `self_check` 自检（含 ComfyUI） | 调用 bootstrap workflow `gamestudio_self_check` | `ok=true`，`comfyUiOk=true`，`imagePreflightOk=true` |
+| S0-T07 | Control `ensure_running` 自检 | 调用 bootstrap workflow `talkscene_ensure_running` | `ok=true`，`serverHealth.ok=true`，`editorHealth.ok=true` |
+| S0-T08 | Control `self_check` 自检（含 ComfyUI） | 调用 bootstrap workflow `talkscene_self_check` | `ok=true`，`comfyUiOk=true`，`imagePreflightOk=true` |
 | S0-T09 | 记忆文件权威性检查 | `ls ai/memory/` | 只有 4 个文件：`STATUS.md`、`TASK_QUEUE.md`、`DECISIONS.md`、`LONG_TASKS.md` |
 | S0-T10 | Studio Settings 图片配置检查 | `GET /api/studio/settings` | `effective.image.provider === 'comfyui'`，`comfyuiBaseUrl` 正确 |
 
@@ -97,7 +104,7 @@ Step 5: ComfyUI 启动（显式窗口）
 | 测试 prompt | 期望分类 | 期望 plan 类型 | 硬性标准 |
 |-------------|----------|---------------|----------|
 | `"Hermes 和 OMLX 有什么区别"` | `answer_only` | 无 plan，直接回答 | 不调用任何工具，不读写文件 |
-| `"GameStudio 自检"` | `gamestudio_bootstrap_execute` | bootstrap workflow | 包含 ensure_running + self_check |
+| `"TalkScene 自检"` | `talkscene_bootstrap_execute` | bootstrap workflow | 包含 ensure_running + self_check |
 | `"一口气生产一个小红帽互动故事"` | `story_workflow_execute` | **完整 P0 workflow**（13 步） | 必须包含：create_project → configure → generate_scripts → write_scripts → create_bible → compile_blueprint → review_blueprint → repair → preflight_image → compile_compose → validate → export |
 | `"创建一个小红帽互动故事"`（无"完整/一口气"） | `story_workflow_execute` | **最小创建 plan**（create + inspect + answer） | 这是预期行为：未声明完整生产时只创建项目 |
 | `"检查项目 ABC 的能力状态"` | `capability_status_inspection` | capability status workflow | 只读检查，不修改 |
@@ -128,7 +135,7 @@ Step 5: ComfyUI 启动（显式窗口）
 | # | 测试题目 | 执行方式 | 通过标准 |
 |---|----------|----------|----------|
 | L1-T01 | `answer_only` 分类准确性 | prompt: `"Hermes 和 OMLX 有什么区别"` | 分类为 `answer_only`，不调用任何工具，直接返回文本 |
-| L1-T02 | `gamestudio_bootstrap_execute` 分类准确性 | prompt: `"GameStudio 自检"` | 分类为 `gamestudio_bootstrap_execute`，plan 含 `ensure_running` + `self_check` |
+| L1-T02 | `talkscene_bootstrap_execute` 分类准确性 | prompt: `"TalkScene 自检"` | 分类为 `talkscene_bootstrap_execute`，plan 含 `ensure_running` + `self_check` |
 | L1-T03 | 完整 P0 故事 workflow 分类准确性 | prompt: `"一口气生产一个小红帽互动故事"` | 分类为 `story_workflow_execute`，plan 为 **13 步完整 P0**（非最小创建） |
 | L1-T04 | 最小创建 plan 分类准确性 | prompt: `"创建一个小红帽互动故事"`（无"完整/一口气"） | 分类为 `story_workflow_execute`，plan 为 **最小创建**（create + inspect + answer） |
 | L1-T05 | `capability_status_inspection` 分类准确性 | prompt: `"检查项目 ABC 的能力状态"` | 分类为 `capability_status_inspection`，只读不修改 |
@@ -299,7 +306,7 @@ Step G: 资源回填与校验
 | **锁定测试必须通过 AI 评审** | `passed=false` 的测试图不得保存为锁定参考 | 参考图质量不足，导致后续场景出图偏差 |
 | **单主体原则** | 每张锁定测试图只能包含一个主要对象 | 多主体会导致 IP-Adapter 混淆 |
 | **禁止跳过 preflight** | `image_provider_not_ready` 时必须阻断，不能静默继续 | ComfyUI 不可达时生成空图或失败 |
-| **禁止直接调用 ComfyUI** | 所有图片生成必须通过 GameStudio Server API | Control 直接调 ComfyUI 会绕过资产管理和引用追踪 |
+| **禁止直接调用 ComfyUI** | 所有图片生成必须通过 TalkScene Server API | Control 直接调 ComfyUI 会绕过资产管理和引用追踪 |
 | **资产计划必须持久化** | `story-assets/plan.json` 必须落盘 | 无计划则无法追踪哪些资产需要锁定 |
 
 #### 4.5 场景图质量检查项
@@ -419,18 +426,18 @@ Step G: 资源回填与校验
 | F-06 | Story Bible 未持久化 | 2026-05-18 | `POST /api/projects/:id/ai/story/bible` 写入 `project.state.aiBackground.storyBible` |
 | F-07 | P0 workflow 缺少 `story_create_bible` 步骤 | 2026-05-18 | `appendFullP0Steps` 添加 `story_create_bible` 步骤 |
 | F-08 | `wantsCreate` 正则未匹配"产出" | 2026-05-18 | 正则添加 `产出` 匹配 |
-| F-09 | Control 自检未检测 ComfyUI 运行状态 | 2026-05-18 | `gamestudio_ensure_running` / `gamestudio_self_check` 新增 ComfyUI 自动检测与启动；支持 Terminal.app 显式窗口启动 |
+| F-09 | Control 自检未检测 ComfyUI 运行状态 | 2026-05-18 | `talkscene_ensure_running` / `talkscene_self_check` 新增 ComfyUI 自动检测与启动；支持 Terminal.app 显式窗口启动 |
 | F-10 | `.env.example` 缺少 `COMFYUI_ROOT` 等变量 | 2026-05-18 | 已补全 `COMFYUI_ROOT`、`COMFYUI_MODELS_ROOT`、`COMFYUI_MODEL`、`HERMES_MODEL_TASK_MAX_CALLS_PER_SESSION` |
 | F-11 | 生产代码硬编码测试用例关键词并向模型回答追加关键词过门禁 | 2026-07-22 | 删除 `modelRequests.js` 的 `getProductionTestExpectations` 硬编码分支与 `applyProductionTestTermCoverage`（对应 L1-21/22/23 用例已不存在于测试脚本） |
-| F-12 | 非测试模式下脚本生成失败用确定性兜底脚本冒充成功 | 2026-07-22 | `story_generate_scripts_candidate`：GameStudio regenerate 失败/异常改为显式失败（`ok:false`、`retryable:true`），不再伪造模型产物 |
+| F-12 | 非测试模式下脚本生成失败用确定性兜底脚本冒充成功 | 2026-07-22 | `story_generate_scripts_candidate`：TalkScene regenerate 失败/异常改为显式失败（`ok:false`、`retryable:true`），不再伪造模型产物 |
 | F-13 | 非测试模式下 Hermes 蓝图评审失败以 `deterministic_fallback` 冒充通过 | 2026-07-22 | `story_review_blueprint_agent`：Hermes 评审失败改为显式阻断（`failedStage:'hermes_blueprint_review'`、evaluator `passed:false`、可重试） |
-| F-14 | `gameStudioBootstrapWorkflows.js` 使用 `path.join` 但未 import | 2026-07-22 | 补 `import path from 'node:path'`（设 `COMFYUI_ROOT` 时原会 ReferenceError） |
+| F-14 | `talksceneBootstrapWorkflows.js` 使用 `path.join` 但未 import | 2026-07-22 | 补 `import path from 'node:path'`（设 `COMFYUI_ROOT` 时原会 ReferenceError） |
 | F-15 | `story_render_scene` 缺 `REASONING_ACTIONS` 元数据 | 2026-07-22 | 已在 `actionRegistry.js` 补齐注册条目 |
-| F-16 | 死代码 `generateStoryScriptsCandidate`（架构修正后遗留） | 2026-07-22 | 已删除（Control 生成脚本只走 GameStudio Server） |
+| F-16 | 死代码 `generateStoryScriptsCandidate`（架构修正后遗留） | 2026-07-22 | 已删除（Control 生成脚本只走 TalkScene Server） |
 | F-17 | Kimi apiKey 明文存于 git 跟踪的 `manager.left-brain.json` | 2026-07-22 | 密钥移入 `.env`（`MOONSHOT_API_KEY`，`getRightBrainApiKey` 已支持 env 兜底）；`manager.left-brain.state.json` 移出 git 跟踪；git 历史旧 key 已由人工轮换（2026-08-15 验证新 key 可用） |
 | F-18 | `story.bible.generate` 契约落后于实现：Control 发送的 `candidateWorldHints`/`candidateEntities`/`scenePresenceRules`/`source` 被 StoryOutputGate 拒绝 | 2026-07-22 | `StoryBibleGeneratePayloadSchema.input` 补齐四个键（服务端 `storyBible.js` 本就消费它们）；由 e2e 真实链路首次暴露——此前该路径只在 productionTest 下跑过且未含 bible 步骤 |
 | F-19 | Story Bible 客户端超时不足：服务端实测生成需 513s，plan 仅给 300s | 2026-07-22 | `storyProductionWorkflows.js` 长生成步骤 `timeoutMs` 统一提升至 600000（契约上限） |
-| F-20 | 全局 fetch（undici）内置 headersTimeout 约 300s，长请求被掐断且不受 AbortController 控制 | 2026-07-22 | `gameStudioServerClient.requestGameStudio` 改用 `node:http` 实现，超时完全由调用方 `timeoutMs` 控制 |
+| F-20 | 全局 fetch（undici）内置 headersTimeout 约 300s，长请求被掐断且不受 AbortController 控制 | 2026-07-22 | `talksceneServerClient.requestTalkScene` 改用 `node:http` 实现，超时完全由调用方 `timeoutMs` 控制 |
 | F-21 | 记忆改写 fallback 把"刷新指令"当内容落盘：`DECISIONS.md`/`LONG_TASKS.md` 自 2026-06-18 起内容为指令文本且每日注入 planner prompt | 2026-07-23 | 两文件已重建为真实内容；`generateReasoningFileRewrite` 模型未产出有效内容时显式失败，禁止指令落盘 |
 | F-22 | supervision 定时器（启动 30s + 每 30 分钟）在 meta_analysis 401 下空转烧钱，已制造 75 个无效 session | 2026-07-23 | 加 `SUPERVISION_ENABLED` 开关，默认关停；Kimi key 已轮换并验证可用（2026-08-15），需要时显式启用 |
 | F-23 | 56 个历史 `waiting_review` 会话永久积压（最早 2026-04-28），无超时/升级机制 | 2026-07-23 | 超 7 天的 56 个已批量 cancel；审核队列视图列入守护台 P2 |
@@ -454,8 +461,8 @@ Step G: 资源回填与校验
 | F-41 | 文本层：选择点正文残留"选项1/2"（内联情形未覆盖）、节点名"1后果1/1选择点"工程化且跨选择点重名、结局卡标题重复正文首行；meta.json stage 创建后从不更新 | 2026-09-27 | 编译层：内联选项尾段截除（仅 choices 解析成功时）、"i选择点"→选择点一/二、"i后果k"按编译序全图唯一后果一~四、"结局k"→结局一/二、结局卡 title 取首行否则回退节点名；meta.json stage 由写盘收口按派生逻辑回写（与 Hub 展示口径一致） |
 | F-42 | 线稿端点（POST /ai/story/assets/lineart）全程无 /ai/tasks 任务条目，违反"长任务必须暴露进度"守则（自动链跑线稿时编辑器进度区全盲） | 2026-09-28 | 端点补 createAiTask/updateAiTask 全相位（准备/预处理/重绘/完成/失败/待审，文案带资产名），background.js 线稿生成加 onStage 回调区分预处理与重绘；编辑器 taskKindLabel/taskStageLabel 同步补 4 种 kind、19 种 stage 中文映射（全部按服务端真实写入值） |
 | F-43 | 自动生产链不走锁定向导明面路径：promptGate（storyboardLockPromptGate）服务端零读写、提示词中文稿无源、story_generate_lineart 执行器写好却从未接进计划器——产物缺三件套，向导第 4 步卡死导致 5/6/7 步全部打不开（《小猫钓鱼》实测） | 2026-09-28 | ①锁定 select 写回时服务端自动模板兜底中文稿（backfillStoryAssetPromptDraftZh，不覆盖人工/AI 稿）；②锁定步 evaluator 通过后 control 写回 promptGate（confirmedBy:'control_workflow' 明示非人工点击，GET→合并→_rev PUT；全局中文稿空时经 /ai/translate 兜底）；③线稿步接入 P1 计划器（锁定步后、场景渲染前，分层/非分层两路径同插；补 mutation 名单、allowedActions、工具映射）；《小猫钓鱼》存量项目已补 8/8 线稿+promptGate，向导 2-7 步按门禁公式全可开 |
-| F-44 | control 不消费 GameStudio /ai/tasks：守护台只能看到 operation 级开始/结束，"正在为 X 资产抽卡第 N 张/评审中"级进度不可见 | 2026-09-28 | gameStudioServerClient 加 listAiTasks；appendGameStudioObserverEvent 增 progress 相位（就地更新不刷屏）；锁定/线稿/场景批次三步在长调用期间每 4s 轮询转发资产级进度文案；ReasoningTaskCard 执行中行下加「最新进展」一行 |
-| F-45 | 接入注册表 gamestudio baseUrl 陈旧（58227 临时端口，probe ECONNREFUSED）：23 步链 story_create_project fetch failed 全链阻断（《小红帽》首跑） | 2026-09-28/29 | PATCH /api/control/integrations/gamestudio 修正为 1999 并探活；`getPriorBlockingStoryFailure` 穿透改为循环（跳过链可连环：步0失败→步1跳过→步2跳过，单层穿透仍死锁）。**根因已查明并根治（09-29）**：`storyLayeredWorkflow.test.mjs` 设 `GAMESTUDIO_SERVER_BASE_URL` 临时端口且未隔离注册表文件，种子/迁移路径把临时端口持久化进真相源（两连实测 58227/60038）；修复=无 legacy 可迁移时种子只驻内存不落盘（projectsRegistry.js migrateLegacyIfNeeded）+ 测试用 `HERMES_PROJECTS_REGISTRY_FILE` 隔离（跑完实测真实注册表零触碰） |
+| F-44 | control 不消费 TalkScene /ai/tasks：守护台只能看到 operation 级开始/结束，"正在为 X 资产抽卡第 N 张/评审中"级进度不可见 | 2026-09-28 | talksceneServerClient 加 listAiTasks；appendTalkSceneObserverEvent 增 progress 相位（就地更新不刷屏）；锁定/线稿/场景批次三步在长调用期间每 4s 轮询转发资产级进度文案；ReasoningTaskCard 执行中行下加「最新进展」一行 |
+| F-45 | 接入注册表 talkscene baseUrl 陈旧（58227 临时端口，probe ECONNREFUSED）：23 步链 story_create_project fetch failed 全链阻断（《小红帽》首跑） | 2026-09-28/29 | PATCH /api/control/integrations/talkscene 修正为 1999 并探活；`getPriorBlockingStoryFailure` 穿透改为循环（跳过链可连环：步0失败→步1跳过→步2跳过，单层穿透仍死锁）。**根因已查明并根治（09-29）**：`storyLayeredWorkflow.test.mjs` 设 `TALKSCENE_SERVER_BASE_URL` 临时端口且未隔离注册表文件，种子/迁移路径把临时端口持久化进真相源（两连实测 58227/60038）；修复=无 legacy 可迁移时种子只驻内存不落盘（projectsRegistry.js migrateLegacyIfNeeded）+ 测试用 `HERMES_PROJECTS_REGISTRY_FILE` 隔离（跑完实测真实注册表零触碰） |
 | F-46 | checkpoint 回灌撤销已成功重试：`runAllReasoningStepsFrom` 在显式回退重跑（back/处置后重试）时 applyCheckpointToSession 回滚 session artifacts，旧失败态 storyProduction.lastResult 复活，把依赖守卫重新毒化（步0重试成功→步1/步2 连环"前置失败"跳过，《小红帽》首跑实测） | 2026-09-28 | 回退语义改为「未来向断点即失效」：startIndex<checkpoint.nextStepIndex 时不回灌，调用 `deleteStepCheckpointsFrom` 清理并记 checkpoint_invalidated 事件；同日补 deleteStepCheckpointsFrom 的 import 遗漏（node --check 查不出的运行期 ReferenceError，已加导入冒烟断言） |
 | F-47 | 会话"清空重开"不轮换 chatSessionId、不动历史日文件，跨天回填把旧内容复制进新日文件隔天复活（已删项目链接/其他项目通报/旧错误记录混入当前会话，实测 2026-09-28.json 44 条含 20 个 sessionId） | 2026-09-29 | clear/archive-current 统一走 `sealHermesChatDayFile`（轮换+哨兵条目）；`readStoredHermesChatHistory` 跨天回填只取每个旧日文件最后哨兵之后，无哨兵旧文件整份跳过；哨兵永不泄给 UI |
 | F-48 | token 水位按合并全量历史计算（含 inbound 通报/压缩摘要），用户看不到的话也占 token（"没几句话却 77%"错觉） | 2026-09-29 | `buildHermesChatWaterLevel` 统计前过滤 inbound/compacted/哨兵，与 UI 可见子集一致（实测 6311→234 tokens） |
@@ -467,7 +474,7 @@ Step G: 资源回填与校验
 | F-54 | 场景渲染系统性画进动物/角色主体：三只小猪 12 场景 8 个被评审拦下（森林场景必出鹿/兔/猪剪影，五连重渲全中）——plan 场景 summary 含"大灰狼/猪"直接进入背景 prompt，且 ivision 对"storybook forest"有强动物先验 | 2026-10-03 | 三层修复：①picture_book 负向词补全量动物类（animal/cartoon animal/pig/wolf/fox/rabbit/bear/bird/deer/cow/wildlife/creature/any living being/person/character）；②风格正向改 "empty peaceful scenery, landscape environment only"；③场景内容串去 storybook 字面、明示 "scenery only, no characters, no animals"（index.js anchorOnlyBackground 分支）。修复后 12/12 零动物通过 |
 | P1-21 | **资产计划退化为 bible 期 stub**：正式链 createAssetPlan 步调用 `POST assets/plan`（默认 rebuild:false）直接返回 bible 期持久化 stub——scenes 只有 start/end、资产 sceneIds 全空，后续锁定/线稿/渲染/摆位全按残缺计划跑（蚂蚁搬豆首跑：只渲染 2 个 start/end 场景、摆位 0 命中）；rebuild:true 可从 story.json 派生 10 场景但会丢锁定状态与 generatedRefs，需人工合并回填 | 活跃 | 本次人工 rebuild+合并 generatedRefs+重挂锁定恢复；根治方向：createAssetPlan 步在 plan.scenes 与 story 节点数不符时自动 rebuild 并保留既有锁定/候选字段（merge 而非覆盖），或在 bible 步就把 scenes 写全 |
 | P1-18 | **可穿戴道具的模型偏置墙与过度绑定**：红色斗篷连抽 16 候选全是"穿戴人物"（ivision+flat LoRA 对 hood 类词强偏置，ghost mannequin/flat lay 强化提示也压不住）；且 bible 把角色固有穿戴物绑进全部场景（prop.hood scenes=11，与角色立绘自带斗篷重复） | 活跃 | 处置路径已验证有效：锚点修单物件化（empty/ghost mannequin）、`plan/remove-asset`+`excludedAssetIds` 固化排除；模板级改进：wearable_prop 模板默认 flat lay 措辞、bible 指令禁绑"角色固有穿戴"，bind 前做"该物件是否独立出现在画面"判定 |
-| P1-19 | **OMLX 27B prefill 边际拒答**：池化缓冲残留（换模后 ~1.1GB）+ Metal 帽沿浮动（22.4GB cap）时，蓝图评审等大上下文调用被 prefill guard 拒绝，上层表现为"Unexpected end of JSON input"空响应（乌鸦喝水首跑蓝图评审二连失败；model-dialogs 明细里 resp=0 字符的两跳即铁证）。**2026-10-03 复发形态升级（狐狸与葡萄 T7）**：长产线跨步骤累积的 prompt KV 热缓存把 current 顶到 17.85GB（余量仅 4.32GB），蓝图评审需 KV+SDPA ~4.5GB 被 prefill_memory_exceeded 拒；hermes 网关把 OMLX 的 prefill 拒答**误分类为 context-length 错误**走压缩路径，压缩无可压后抛 "Context length exceeded (2,432 tokens). Cannot compress further"（agent_incomplete）——连单句小消息也 400，极具迷惑性；直连 OMLX 同 key 同窗口正常是鉴别关键。**当日三连复现（T7 蓝图评审/T6 Bible/T8 Bible+蓝图评审）后的定量结论**：8K 窗口 27B + hermes 网关注入 ~4.9K tokens，单次大调用 KV 预留池 ~3GB，OMLX `/health` 的 current_model_memory 看不到该池（实测差 ~1.6GB），金丝雀探测自身又吃池——不存在可靠的轻量预检指标 | 活跃 | **根治已落地（controlServerCore.ensureLocalModelPrefillHeadroom + runManagedReasoningTask 挂钩）**：每个受管理模型任务前确定性 unload 已加载配置模型，真实调用在自动重载（~24s）后的干净池上跑——T8 蓝图评审 4 连失败后立过（score=95）；可用 HERMES_PREFILL_PREFLIGHT_ENABLED=0 关闭。此前验证的临时处置：模型 unload/reload 手动清池；评审 payload 瘦身（已落地）。剩余优化项：gamestudio 侧直连大调用（Bible/脚本）尚未挂同款预检（在 openai.js choke point 做 prefill_400 后自动重载重试为佳） |
+| P1-19 | **OMLX 27B prefill 边际拒答**：池化缓冲残留（换模后 ~1.1GB）+ Metal 帽沿浮动（22.4GB cap）时，蓝图评审等大上下文调用被 prefill guard 拒绝，上层表现为"Unexpected end of JSON input"空响应（乌鸦喝水首跑蓝图评审二连失败；model-dialogs 明细里 resp=0 字符的两跳即铁证）。**2026-10-03 复发形态升级（狐狸与葡萄 T7）**：长产线跨步骤累积的 prompt KV 热缓存把 current 顶到 17.85GB（余量仅 4.32GB），蓝图评审需 KV+SDPA ~4.5GB 被 prefill_memory_exceeded 拒；hermes 网关把 OMLX 的 prefill 拒答**误分类为 context-length 错误**走压缩路径，压缩无可压后抛 "Context length exceeded (2,432 tokens). Cannot compress further"（agent_incomplete）——连单句小消息也 400，极具迷惑性；直连 OMLX 同 key 同窗口正常是鉴别关键。**当日三连复现（T7 蓝图评审/T6 Bible/T8 Bible+蓝图评审）后的定量结论**：8K 窗口 27B + hermes 网关注入 ~4.9K tokens，单次大调用 KV 预留池 ~3GB，OMLX `/health` 的 current_model_memory 看不到该池（实测差 ~1.6GB），金丝雀探测自身又吃池——不存在可靠的轻量预检指标 | 活跃 | **根治已落地（controlServerCore.ensureLocalModelPrefillHeadroom + runManagedReasoningTask 挂钩）**：每个受管理模型任务前确定性 unload 已加载配置模型，真实调用在自动重载（~24s）后的干净池上跑——T8 蓝图评审 4 连失败后立过（score=95）；可用 HERMES_PREFILL_PREFLIGHT_ENABLED=0 关闭。此前验证的临时处置：模型 unload/reload 手动清池；评审 payload 瘦身（已落地）。剩余优化项：talkscene 侧直连大调用（Bible/脚本）尚未挂同款预检（在 openai.js choke point 做 prefill_400 后自动重载重试为佳） |
 | P1-20 | **脚本生成结构缺陷无前置拦截**：结局卡撞名（两张"结局2"）、结局卡插在后果组中间打断邻接分组、末选择点选项直接映射结局导致后果卡孤儿/自环（乌鸦喝水首候选实测，编译出不可达结局+自环）。**2026-10-03 加重实证（三只小猪 T8）**：同款三连（结局一不可达+2后果2自环+逃跑→安居矛盾）；且 **write-scripts 步会用暂存候选覆盖人工修复**（人工修好结构→批准写入→修复被冲掉→评审仍见旧图，二连返工）；编译按卡片的 `order` 字段排序而非数组顺序（仅重排数组无效，必须改 order） | 活跃 | 本次靠右脑审核+本地编译预演发现并重排修复；write-scripts 覆盖问题的工作流级修法：人工修复后须回退到 compile 步重编译验证，不能只过写入步；建议 compile 前加确定性结构校验（结局名唯一/邻接版式/可达性/无自环），不合格显式打回脚本生成步重出 |
 
 ---
@@ -502,7 +509,7 @@ Step G: 资源回填与校验
 >
 > **公式化生成修复（2026-10-05）**：编辑器"假日出游"事件（1/2/2 公式生成 3 选+修复幻觉出 2选择/结局3）修复双管齐下：①promptTemplates 加硬约束（按公式显式枚举"选项1、选项2，禁止选项3"，删除"若为3选则继续"逃逸句，结局枚举写死）；②新增 fitScriptCardsToFormula 确定性结构拟合（只做减不做编）：多余选择点整组删除（选择卡+其后果卡）、选项超编裁前 N 并重编号选项句与后果卡、结局裁剪重编号、后果-结局之间夹的普通卡删除、重名去重——LLM 修复的自由改写不再被信任。回归验证：同 prompt 连跑 2 次（带公式入参），均产出规范 1/2/2（铺垫→选择点一(2选)→后果一→结局一/后果二→结局二，全可达）。注意：/ai/regenerate 的公式取自请求体非项目 meta（normalizeAiStoryFormula 默认 2/2/2），测试/调用必须显式传 choicePoints/optionsPerChoice。
 >
-> **AI 生成草稿入口丢失修复（2026-10-05）**：Hub「AI 生成新故事」弹窗此前 aiResult 仅存组件态，关闭/刷新后无法回到上次生成（用户假日出游事件：只能重新创建）。修复：生成成功写 localStorage 草稿历史（gamestudio.ai.draftHistory，8 条去重）；弹窗表单新增"最近草稿"区（标题/公式/时间，项目已删除标灰），每条三个动作——载入继续生成（拉 scripts 回填表单+resumeDraftId 模式，"生成"变"覆盖生成（该草稿）"走 regenerate 不新建项目）、打开项目（onOpenProject 直达脚本层）、移除；同名旧稿删除逻辑在 resume 模式旁路。编辑器 tsc 通过。
+> **AI 生成草稿入口丢失修复（2026-10-05）**：Hub「AI 生成新故事」弹窗此前 aiResult 仅存组件态，关闭/刷新后无法回到上次生成（用户假日出游事件：只能重新创建）。修复：生成成功写 localStorage 草稿历史（talkscene.ai.draftHistory，8 条去重）；弹窗表单新增"最近草稿"区（标题/公式/时间，项目已删除标灰），每条三个动作——载入继续生成（拉 scripts 回填表单+resumeDraftId 模式，"生成"变"覆盖生成（该草稿）"走 regenerate 不新建项目）、打开项目（onOpenProject 直达脚本层）、移除；同名旧稿删除逻辑在 resume 模式旁路。编辑器 tsc 通过。
 >
 > **结构分析公式感知修复（2026-10-05）**：analyze.js 阈值写死（"至少2选择点/结局2~3/卡片8~12"），与编辑器 1/2/2 公式设置矛盾（用户假日出游 1/2/2 被误报选择点不足）。修复：analyzeScriptsForBlueprint 第二参接 meta.aiFormula——卡片数区间按公式推导（2+cp+cp×opt+end ~ +3）、选择点数/每点选项数/结局数均按公式精确判定（新增 option_count 检查项），无公式时回退旧阈值；调用点传 meta.aiFormula。Hub 主界面新增"🕘 继续上次草稿（N）"卡片（有历史时显示，点击进弹窗的最近草稿列表）。
 >
@@ -567,6 +574,7 @@ Step G: 资源回填与校验
 > 新发现并已修缺陷：
 > - **F-64 waitComfyImage 执行错误盲**：ComfyUI 节点报错（execution_error）时 history 无 outputs，轮询一律等满超时（OpenPose 缺 skimage 的真实错误被三次 10 分钟超时掩盖）。修复=轮询识别 status_str='error' 并提取 exception_message 立即抛错（apps/server/src/ai/background.js）。
 > - **F-65 资源租约无过期回收（control 仓，待办）**：客户端进程被杀后 gpu 租约永久悬挂（实测 20 分钟+），后续 LLM/出图准入全部排队堵死。本次处置=操作员通道手动 release；**待办=local-agent-control 资源调度器加租约 TTL/心跳清扫**。
+> - **F-66 control Story Bible 超时双信封错传（2026-10-18 已修）**：control 计划把 `stepTimeoutMs=900000` 传给 `talkscene.story.createBible`，client 又原样进入 TalkScene `story.bible.generate` 契约（上限 600000ms），导致《狼和小羊》正式链第一步 8ms 即被 StoryOutputGate 400 拒绝（此前同名草稿项目同因失败）。修复=client 侧统一钳制请求 `timeoutMs≤600000`，步骤监督预算仍保留 900000；回归 `storyLayeredWorkflow.test.mjs` 16/16。
 > - ComfyUI 环境补齐：venv 装 scikit-image（OpenposePreprocessor 硬依赖）；OpenPose 三件权重归位 `ckpts/lllyasviel/Annotators/`（注意 comfyui_controlnet_aux 下载落盘路径嵌套层级易错）；DWPose 双件归位 `ckpts/yzd-v/DWPose/`；本机 comfyui_controlnet_aux 版本未注册 `DWPreprocessor`（DWPose 节点），骨架提取自动回退 OpenposePreprocessor，质量已达标。
 > - 导演层地点错绑（结局一）：圣经 sceneRefs 把"走出公司大楼看夜景"绑到 `loc_office`（办公室内景），anchor 驱动重渲两次仍是办公室；修正 plan 场景绑定为 `loc_company_exterior` 后一次出图达标。**经验：显式 scenePrompt 覆盖不住地点锚点引力（promptLocks 仍拼接），场景地点错绑必须修绑定本身。**
 > - 摆位冗余清理规则再实证：角色已穿着/立绘已含的道具（西服/骑手服/头盔/电动车/电脑桌）必须从摆位撤除，否则"穿着西服的人旁边再摆一件西服"；背景已含的事物（衣柜挂装）也不再摆道具抠图。
@@ -619,11 +627,11 @@ Step G: 资源回填与校验
 >
 > **守护台 story_production 工作流补全为全链（2026-10-12，local-agent-control 3bb7548）**：用户问"守护台没有新故事任务信息"——根因：生产全走事件分发直发（有事件无任务实体），而守护台内置 story_production 工作流（reasoning_chain）的规划器只排结构期步骤。补全：allowedActions 30 个（新增 story_bible_qc/story_composition/story_pose_auto/story_render_all/story_scene_bind_approve_all/story_walkthrough 六个生产期动作+执行器分支），规划器默认分层全链模板（质检→计划→抽卡→线稿→姿势→构图→渲染→批准→摆位→校验→导出→走查），render-all 强制 manual 审核链生效+202 挂起显式 waiting_review 阻断后续等处置，LLM 长任务超时经 /ai/tasks 台账复核。此后守护台生产故事=任务队列可见的可观测任务，逐步骤留证据。storyLayeredWorkflow.test.mjs 15/15。
 >
-> **《青蛙王子》自主回归批次（2026-10-12/13，守护台全链+Guardian 上线+总监约定确立）**：首个纯守护台自主回归故事，三连排障全部根修。①**接入注册表污染根因（两次假死真凶）**：`projectBindingService.setProjectBinding` 硬编码写真实 `state/projects-registry.json`，不理会 `HERMES_PROJECTS_REGISTRY_FILE` 隔离——`projectBindingEvents.test.mjs` 跑测试把 gamestudio baseUrl 改成 Mock 临时端口（51532/59928/60457 三逮），守护台照死端口派发全灭。修复=服务侧 env 感知路径+测试补隔离+恢复 1999 绑定，全量套件实证零污染；该测试两个陈旧断言（file→registry 源、source 字段语义）随 9-13 迁移修正，14/14。②**蓝图修复 empty_ai_output 双根因**：repairScriptsViaOpenAI 独缺 localoxml 直连 chat 回退（/responses+strict schema 在思考型模型上空输出），且默认 20s 超时被 27B 实测 60s 生成打断——修复=直连 chat/completions+localoxml 超时下限 180s，实测 53s 出 9 张修复卡。③**视觉评审 Kimi 配额兜底建成**：MOONSHOT key 存在即永远走 Kimi 且无回退，配额尽→候选全 review_unavailable→S4-01 门禁正确拒绝写入→出图链整体停摆。修复=storyLock.js 新增本地 VL 通道（gemma-4-26b 经 OMLX vision 租约，响应体消费留在租约内），moonshot 失败自动回退，双失败才判败（门禁语义不变）。实证：本地 VL 评审 95 分批量过审，且正确拦截双视图废图（prince_char_01 20 分/50 分两次）。④**构图 JSON 截断**：构图 max_output_tokens=2048 被思考型模型 reasoning 吃掉导致输出截断（Expected ',' or ']'），提到 4096。⑤**圣经双建档致计划重复资产**（characters.frog + props.frog_char_01 同物双档）——buildStoryAssetPlan 新增 dedupeStoryAssetDefs 按 id/名称/别名 token 集合并（类别优先级 character>location>prop，sceneIds/主参考/生成态并入保留条目，场景 assetIds 改写），实测 10→8。⑥**提示词字段错位**：生产链写 anchorPrompt/negativePrompt，锁定向导读 referencePromptZh/En——生产侧补填向导字段（中文稿取实体中文名种子，不编造），编辑器读端加 anchorPrompt 兜底；控制侧锁定出图步新增提示词完备检查（全空即 prompt_missing 阻断列名，不计 retryable）。⑦**新缺陷记档（待修）**：a) 计划重建丢锁定状态（primaryReference/generatedRefs/批次清空，孤儿文件 123 个 63MB 无 UI 入口）——重建必须按 id 合并保留，且需"生成历史"视图与孤儿清理；b) 接续模板 finalize 质量门不一致（首轮 story_workflow_evaluator_failed 正确拦截，次轮同性质失败却 completed）——finalize 门对级联跳过链必须一致判败；c) 公式推断缺省 2 选择点与故事实际结构脱节（青蛙王子实为 1 选择点故事，修复步被迫按公式改结构）——公式应跟随脚本实际结构或由需求确认环节显式定。⑧**监控守卫教训**：外部代批脚本的"近 6 条事件"窗口被出图步高频观测事件冲掉导致误批准级联跳过——守卫必须查服务端 firstFailure 字段（v4 修正）；产品侧 Guardian 停摆本就 firstFailure 驱动不受影响。⑨**项目总监约定确立**（写入 PROJECT_GOVERNANCE 第 8 节）：总监=规则化编排器+失败处置策略表+项目级约定，不是大模型；按绑定项目切换；失败即停高于一切自动处置。Guardian 守护循环/托管批准/守护横幅/模型交互面板（含 GameStudio 侧对话埋点）全部上线。
+> **《青蛙王子》自主回归批次（2026-10-12/13，守护台全链+Guardian 上线+总监约定确立）**：首个纯守护台自主回归故事，三连排障全部根修。①**接入注册表污染根因（两次假死真凶）**：`projectBindingService.setProjectBinding` 硬编码写真实 `state/projects-registry.json`，不理会 `HERMES_PROJECTS_REGISTRY_FILE` 隔离——`projectBindingEvents.test.mjs` 跑测试把 talkscene baseUrl 改成 Mock 临时端口（51532/59928/60457 三逮），守护台照死端口派发全灭。修复=服务侧 env 感知路径+测试补隔离+恢复 1999 绑定，全量套件实证零污染；该测试两个陈旧断言（file→registry 源、source 字段语义）随 9-13 迁移修正，14/14。②**蓝图修复 empty_ai_output 双根因**：repairScriptsViaOpenAI 独缺 localoxml 直连 chat 回退（/responses+strict schema 在思考型模型上空输出），且默认 20s 超时被 27B 实测 60s 生成打断——修复=直连 chat/completions+localoxml 超时下限 180s，实测 53s 出 9 张修复卡。③**视觉评审 Kimi 配额兜底建成**：MOONSHOT key 存在即永远走 Kimi 且无回退，配额尽→候选全 review_unavailable→S4-01 门禁正确拒绝写入→出图链整体停摆。修复=storyLock.js 新增本地 VL 通道（gemma-4-26b 经 OMLX vision 租约，响应体消费留在租约内），moonshot 失败自动回退，双失败才判败（门禁语义不变）。实证：本地 VL 评审 95 分批量过审，且正确拦截双视图废图（prince_char_01 20 分/50 分两次）。④**构图 JSON 截断**：构图 max_output_tokens=2048 被思考型模型 reasoning 吃掉导致输出截断（Expected ',' or ']'），提到 4096。⑤**圣经双建档致计划重复资产**（characters.frog + props.frog_char_01 同物双档）——buildStoryAssetPlan 新增 dedupeStoryAssetDefs 按 id/名称/别名 token 集合并（类别优先级 character>location>prop，sceneIds/主参考/生成态并入保留条目，场景 assetIds 改写），实测 10→8。⑥**提示词字段错位**：生产链写 anchorPrompt/negativePrompt，锁定向导读 referencePromptZh/En——生产侧补填向导字段（中文稿取实体中文名种子，不编造），编辑器读端加 anchorPrompt 兜底；控制侧锁定出图步新增提示词完备检查（全空即 prompt_missing 阻断列名，不计 retryable）。⑦**新缺陷记档（待修）**：a) 计划重建丢锁定状态（primaryReference/generatedRefs/批次清空，孤儿文件 123 个 63MB 无 UI 入口）——重建必须按 id 合并保留，且需"生成历史"视图与孤儿清理；b) 接续模板 finalize 质量门不一致（首轮 story_workflow_evaluator_failed 正确拦截，次轮同性质失败却 completed）——finalize 门对级联跳过链必须一致判败；c) 公式推断缺省 2 选择点与故事实际结构脱节（青蛙王子实为 1 选择点故事，修复步被迫按公式改结构）——公式应跟随脚本实际结构或由需求确认环节显式定。⑧**监控守卫教训**：外部代批脚本的"近 6 条事件"窗口被出图步高频观测事件冲掉导致误批准级联跳过——守卫必须查服务端 firstFailure 字段（v4 修正）；产品侧 Guardian 停摆本就 firstFailure 驱动不受影响。⑨**项目总监约定确立**（写入 PROJECT_GOVERNANCE 第 8 节）：总监=规则化编排器+失败处置策略表+项目级约定，不是大模型；按绑定项目切换；失败即停高于一切自动处置。Guardian 守护循环/托管批准/守护横幅/模型交互面板（含 TalkScene 侧对话埋点）全部上线。
 >
 > **《丑小鸭》V1.0 看门狗自治版达成批次（2026-10-13）**：首个全程守护台自主完成的故事——24/24 生产步骤通过，走查 4/4 全结局路径零问题，双结局可用，画面绘本级一致（冬季沼泽/雾湖天鹅）。操作员仅计划批准 1 次（法定）。4 次人工介入全部转化为新自动策略：①**oMLX prefill 护栏三连根修**：实测护栏由 prompt 长度驱动（~2500 字符即拒，与 max_tokens 无关）——wired_limit 26GB→28GB（oMLX 重启生效，机器重启恢复默认，长期保持待操作员确认）+ 圣经分块按块裁字段（prompt 压至 1-2K tokens）+ max_tokens 缺省 8192→6144。②**输出预算截断家族**（第三个实例）：姿势需求提取 2048→4096（丑小鸭 9 资产×场景需求 JSON 在 5292 字符处截断）——结构化输出预算下限 4096 + 关思考已成硬约定。③**故事步瞬断策略**（story_step_transient）：渲染轮询 ECONNRESET 曾致停摆——策略表第二条上线，任何 story 步瞬断特征（ECONNRESET/ECONNREFUSED/超时/fetch failed）或 retryable 标记自动重试（预算 3），优先级 gateWait > lock_converge > transient > 停摆。④**门禁抢跑根修**：同一步先瞬断记 firstFailure、重试到门禁等待态后旧失败未清除，停摆守卫抢在过闸前误停——updateStoryWorkflowArtifacts 改为同一步 gateWait 覆盖旧 firstFailure。⑤GUARD-04 生产首验：锁定步 deferred_limit+review_not_passed 自动重驱收敛（丑小鸭 6/9→全锁，评审正确拦截 farm-dog/farmer 姿态不符废图后自动重抽）。⑥姿势变体自动编排生产实证：丑小鸭 5 组变体自动产出（13 组未匹配骨架跳过）。⑦编辑器 UI 研发术语清理：ComposeStudio 顶栏与折叠标题去除"（P0）"露出（UI 约束合规）。**V1.0 验收门全过，实施方案状态已翻转**。
 >
-> **V1.1 工具链工程修复批次（2026-10-14）**：6 项工程债根修 + 1 个新 bug 即建即修。①**服务看门狗上线**（serviceWatchdog.js，30s tick）：gamestudio/ComfyUI 掉线自动合法拉起（start_server.sh / ensureComfyUiRunning 可见终端，3 次预算+giveup 防抖）、27B 未加载且有活跃会话时自动提升 wired 上限（sudo sysctl 28672）+oMLX 重启回载；**上线即逮接线 bug**：注入探活用了未导入的 GAMESTUDIO_SERVER_BASE_URL（ReferenceError 致健康服务器被误杀重启 6 次）——加诊断事件（probe 原始错误落 service_probe_failed）当场抓获，补导入修复，实测不再误杀。②**模型交换自愈**：load 失败→unload+verify unloaded→15s 后重试（2 次），不再残留半加载连撞、不再直接杀会话（resource_swap_load_failed 孔融尾部事故根修）。③**策略表分预算+瞬断退避**：strategyRedriveCount 按 strategy 分键（瞬断不再烧内容预算），瞬断重驱同一步最小间隔 60s（服务掉线期毫秒连撞烧预算根修）。④**finalize 质量门全模板一致**：接续模板级联跳过也判 story_workflow_evaluator_failed 并穿透首个真实失败步（第二次青蛙王子"带病 completed"根修）；gateWait 过闸成功豁免不误判。⑤**计划重建保留锁定**：重建按 id 继承主参考/generatedRefs/latestReferenceReview/线稿/状态变体（青蛙王子 63MB 孤儿文件类事故根修）。⑥**驱动器/监控误报修正**：停摆需连续两轮同 reasonKey 才报警（Guardian 重驱间隙不再打扰）。控制仓 420/427（7 个存量 flaky 同集），gamestudio 43/43。
+> **V1.1 工具链工程修复批次（2026-10-14）**：6 项工程债根修 + 1 个新 bug 即建即修。①**服务看门狗上线**（serviceWatchdog.js，30s tick）：talkscene/ComfyUI 掉线自动合法拉起（start_server.sh / ensureComfyUiRunning 可见终端，3 次预算+giveup 防抖）、27B 未加载且有活跃会话时自动提升 wired 上限（sudo sysctl 28672）+oMLX 重启回载；**上线即逮接线 bug**：注入探活用了未导入的 TALKSCENE_SERVER_BASE_URL（ReferenceError 致健康服务器被误杀重启 6 次）——加诊断事件（probe 原始错误落 service_probe_failed）当场抓获，补导入修复，实测不再误杀。②**模型交换自愈**：load 失败→unload+verify unloaded→15s 后重试（2 次），不再残留半加载连撞、不再直接杀会话（resource_swap_load_failed 孔融尾部事故根修）。③**策略表分预算+瞬断退避**：strategyRedriveCount 按 strategy 分键（瞬断不再烧内容预算），瞬断重驱同一步最小间隔 60s（服务掉线期毫秒连撞烧预算根修）。④**finalize 质量门全模板一致**：接续模板级联跳过也判 story_workflow_evaluator_failed 并穿透首个真实失败步（第二次青蛙王子"带病 completed"根修）；gateWait 过闸成功豁免不误判。⑤**计划重建保留锁定**：重建按 id 继承主参考/generatedRefs/latestReferenceReview/线稿/状态变体（青蛙王子 63MB 孤儿文件类事故根修）。⑥**驱动器/监控误报修正**：停摆需连续两轮同 reasonKey 才报警（Guardian 重驱间隙不再打扰）。控制仓 420/427（7 个存量 flaky 同集），talkscene 43/43。
 >
 > **场景图审核接入+孔融让梨按结论修正批次（2026-10-14/15）**：①**审图中心上线**（守护台通用图片评价：story_scene/generic 细则模板+全局规则+身份锚点、三态结论 pass≥75/suspect/fail、VL 直审优先通道（27B 常驻时零交换开销）、缩略图入卡、JSON 格式错自动重试一次、绑定项目 API+console 独立使用+image_review scope）。②**接入故事复核**：GS-53 story.scene.review 注册（55 事件）；编辑器顶栏「场景图审核」按钮+结果面板（缩略图/分数/判定色/问题/建议/打回重出（建议合入 scenePrompt 单场景重渲）/确认通过）；双端留痕（control state/image-reviews + 项目 reviews/scene_reviews.jsonl + ai task）。实测（青蛙王子图）：85 分通过并正确抓"金球缺失"真问题；gemma 误判"公主完全没有"（小主体漏判）实证存疑带人工设计的必要。③**story_scene 细则加"底部 18% 界面豁免区"**（走查截图含字幕/按钮 UI，遮挡致"道具缺失"系统性误判的根修）。④**孔融让梨按结论修正实证**：评审抓出"两个一模一样男孩"→ 根因哥哥/弟弟锚点几乎相同 → 锚点重写差异化 → 新哥哥重抽 88 分锁定；摆位刷新画面不变 → **深挖出三层级联依赖**：project.json 影子计划（state.aiBackground.storyAssetPlan）+ 磁盘 plan.json 的 poseVariants 双注册表都挂着旧立绘衍生的姿势变体，删 project.json 资产不够，须双清 + 清 story.json 悬挂摆位 + 再刷新 → 画面才真正更新。**记档待建规则**：锁定新主参考时，引用该资产的姿势变体（双注册表+摆位）必须自动级联失效/重生成，禁止人肉追三层。⑤走查/复审全链重跑终验中。
 >
