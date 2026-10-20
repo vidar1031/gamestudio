@@ -5,7 +5,7 @@
 set -euo pipefail
 
 USER_NAME="${SUDO_USER:-$(whoami)}"
-SUDOERS_FILE="/etc/sudoers.d/gamestudio-iogpu"
+SUDOERS_FILE="/etc/sudoers.d/talkscene-iogpu"
 RULE="${USER_NAME} ALL=(root) NOPASSWD: /usr/sbin/sysctl iogpu.wired_limit_mb=*"
 
 echo "将安装 sudoers 免密规则到 ${SUDOERS_FILE}："

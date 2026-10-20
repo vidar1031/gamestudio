@@ -7,7 +7,7 @@ SENDER_EMAIL="vidar1031@gmail.com"
 RECIPIENT="vidar1031@gmail.com"
 
 # 发件人显示名称
-SENDER_NAME="GameStudio Reporter"
+SENDER_NAME="TalkScene Reporter"
 
 # 邮件主题前缀
-SUBJECT_PREFIX="[GameStudio]"
+SUBJECT_PREFIX="[TalkScene]"

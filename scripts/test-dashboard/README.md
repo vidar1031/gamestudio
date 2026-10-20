@@ -1,6 +1,6 @@
-# GameStudio 四阶段联调测试仪表盘
+# TalkScene 四阶段联调测试仪表盘
 
-一个轻量级的 HTML+CSS+Node.js 测试外挂页面，用于可视化启动和监控 GameStudio 四阶段联调测试。
+一个轻量级的 HTML+CSS+Node.js 测试外挂页面，用于可视化启动和监控 TalkScene 四阶段联调测试。
 
 ## 快速开始
 
@@ -36,8 +36,8 @@ TEST_DASHBOARD_PORT=3000 node scripts/test-dashboard/server.mjs
 | `TEST_DASHBOARD_PORT` | `20990` | 仪表盘服务端口 |
 | `CONTROL_BASE_URL` | `http://127.0.0.1:2099` | Control Server |
 | `CONTROL_CONSOLE_URL` | `http://127.0.0.1:8870` | Control Console |
-| `SERVER_BASE_URL` | `http://127.0.0.1:1999` | GameStudio Server |
-| `EDITOR_BASE_URL` | `http://127.0.0.1:8868` | GameStudio Editor |
+| `SERVER_BASE_URL` | `http://127.0.0.1:1999` | TalkScene Server |
+| `EDITOR_BASE_URL` | `http://127.0.0.1:8868` | TalkScene Editor |
 | `HERMES_BASE_URL` | `http://127.0.0.1:8742` | Hermes Gateway |
 | `OMLX_BASE_URL` | `http://127.0.0.1:18888` | OMLX API |
 | `COMFYUI_BASE_URL` | `http://127.0.0.1:8188` | ComfyUI |

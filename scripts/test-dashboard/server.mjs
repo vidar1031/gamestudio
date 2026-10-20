@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * GameStudio 四阶段联调测试仪表盘 - 后端服务
+ * TalkScene 四阶段联调测试仪表盘 - 后端服务
  * 端口: 20990 (避免与现有服务冲突)
  * 功能:
  *   - 静态文件服务 (index.html)
@@ -124,12 +124,12 @@ function setupSSE(res) {
 async function handleHealthCheck(req, res) {
   const checks = [
     { id: 'S0-T01', name: 'OMLX 健康检查', fn: checkOmlxHealth },
-    { id: 'S0-T02', name: 'GameStudio Server 健康检查', fn: checkGameStudioHealth },
+    { id: 'S0-T02', name: 'TalkScene Server 健康检查', fn: checkTalkSceneHealth },
     { id: 'S0-T03', name: 'Control Server 健康检查', fn: checkControlHealth },
     { id: 'S0-T04', name: 'Control Console 可访问', fn: checkControlConsole },
     { id: 'S0-T05', name: 'Hermes Gateway API 就绪', fn: checkHermesGateway },
     { id: 'S0-T06', name: 'ComfyUI system_stats 可达', fn: checkComfyUI },
-    { id: 'S0-T07', name: 'GameStudio Editor 可访问', fn: checkEditorHealth },
+    { id: 'S0-T07', name: 'TalkScene Editor 可访问', fn: checkEditorHealth },
     { id: 'S0-T08', name: 'OMLX 模型列表非空', fn: checkOmlxModels },
     { id: 'S0-T09', name: '记忆文件权威性检查', fn: checkMemoryFiles },
     { id: 'S0-T10', name: 'Studio Settings 图片配置', fn: checkStudioSettings },
@@ -198,12 +198,12 @@ function handleStop(req, res) {
 async function runS0Stage(res) {
   const tests = [
     { id: 'S0-T01', name: 'OMLX 健康检查', fn: checkOmlxHealth },
-    { id: 'S0-T02', name: 'GameStudio Server 健康检查', fn: checkGameStudioHealth },
+    { id: 'S0-T02', name: 'TalkScene Server 健康检查', fn: checkTalkSceneHealth },
     { id: 'S0-T03', name: 'Control Server 健康检查', fn: checkControlHealth },
     { id: 'S0-T04', name: 'Control Console 可访问', fn: checkControlConsole },
     { id: 'S0-T05', name: 'Hermes Gateway API 就绪', fn: checkHermesGateway },
     { id: 'S0-T06', name: 'ComfyUI system_stats 可达', fn: checkComfyUI },
-    { id: 'S0-T07', name: 'GameStudio Editor 可访问', fn: checkEditorHealth },
+    { id: 'S0-T07', name: 'TalkScene Editor 可访问', fn: checkEditorHealth },
     { id: 'S0-T08', name: 'OMLX 模型列表非空', fn: checkOmlxModels },
     { id: 'S0-T09', name: '记忆文件权威性检查', fn: checkMemoryFiles },
     { id: 'S0-T10', name: 'Studio Settings 图片配置', fn: checkStudioSettings },
@@ -245,7 +245,7 @@ async function checkOmlxHealth() {
   return { ok, detail: ok ? `status=${data.status}` : JSON.stringify(data) }
 }
 
-async function checkGameStudioHealth() {
+async function checkTalkSceneHealth() {
   const data = await fetchJson(`${SERVER_BASE_URL}/api/health`, { timeout: 5000 })
   const ok = data?.ok === true
   return { ok, detail: ok ? 'ok=true' : JSON.stringify(data) }

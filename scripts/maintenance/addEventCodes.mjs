@@ -51,6 +51,6 @@ registry.events = registry.events.map((event, index) => {
     chatArgs: meta.chatArgs || []
   }
 })
-registry.contract.notes.push('code（GS-01…）为事件短编号；aliases 为中文别名；chatArgs 为聊天激活时的位置参数说明。聊天输入格式：gamestudio <eventId|code|别名> [参数]。')
+registry.contract.notes.push('code（GS-01…）为事件短编号；aliases 为中文别名；chatArgs 为聊天激活时的位置参数说明。聊天输入格式：talkscene <eventId|code|别名> [参数]。')
 fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n')
 console.log(`updated ${registry.events.length} events`)

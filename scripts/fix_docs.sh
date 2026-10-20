@@ -2,7 +2,7 @@
 # Fix documentation paths and rebuild
 
 # Update STATUS.md path
-sed -i '' -e 's|PROJECT_PATH.*|PROJECT_PATH=/Volumes/ovokit2t/aiwork/gamestudio|' memory/STATUS.md
+sed -i '' -e 's|PROJECT_PATH.*|PROJECT_PATH=/Volumes/ovokit2t/aiwork/talkscene|' memory/STATUS.md
 
 # Note: CONTROL_SYSTEM.md has been merged into docs/系统生产级推进方案.md
 # If you need to update status markers, edit docs/系统生产级推进方案.md instead

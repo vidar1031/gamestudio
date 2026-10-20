@@ -3,8 +3,8 @@
  * 外挂事件测试运行器（不进入 apps 业务代码）。
  *
  * 用法：
- *   node scripts/event-runner/run.mjs testcases/gamestudio/story-create.case.json
- *   node scripts/event-runner/run.mjs --all            # 跑 testcases/gamestudio/ 下全部用例
+ *   node scripts/event-runner/run.mjs testcases/talkscene/story-create.case.json
+ *   node scripts/event-runner/run.mjs --all            # 跑 testcases/talkscene/ 下全部用例
  *
  * 行为：
  *   1. 读取用例 JSON，逐 step 调 Control 的 POST /api/control/events/dispatch（caller=testcase, confirmed=true）
@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '../..')
 const CONTROL_BASE_URL = process.env.CONTROL_BASE_URL || 'http://127.0.0.1:2099'
-const CASES_DIR = path.join(REPO_ROOT, 'testcases', 'gamestudio')
+const CASES_DIR = path.join(REPO_ROOT, 'testcases', 'talkscene')
 const RUNS_ROOT = path.join(REPO_ROOT, 'state', 'event-runs')
 
 function fail(message) {

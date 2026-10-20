@@ -102,7 +102,7 @@ function isLowValueSession(session) {
   const isTerminalFailure = status === 'failed' || status === 'cancelled'
   const isProductionTest = Boolean(context.productionTest || context.stageId || context.caseId)
   const hasLowValueAnswer = /当前没有足够的可观测结构化结果可直接回答|hermes_gateway_omlx_fault|omlx_api_failed_after_retries|search_workspace_text_missing_query/i.test(finalAnswer)
-  const hasNoArtifactEvidence = !session.artifacts?.storyProduction && !session.artifacts?.gameStudioBootstrap && !session.artifacts?.finalAnswer
+  const hasNoArtifactEvidence = !session.artifacts?.storyProduction && !session.artifacts?.talksceneBootstrap && !session.artifacts?.finalAnswer
   const isFailedStoryBoundary = /missing_project_id|image_provider_not_ready|model_task_timeout/i.test(lastResult) && !session.artifacts?.storyProduction?.currentProjectId
   return isProductionTest && (isTerminalFailure || hasLowValueAnswer || hasNoArtifactEvidence || isFailedStoryBoundary)
 }

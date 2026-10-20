@@ -51,3 +51,4 @@ docsys/dist/
 # 语音合成引擎（edge-tts pip 环境，机器本地可重建：/opt/homebrew/bin/python3 -m venv tools/tts-venv && tools/tts-venv/bin/pip install edge-tts）
 tools/tts-venv/
 __pycache__/
+storage/_shared/tts_previews/
