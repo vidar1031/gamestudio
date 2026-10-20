@@ -7,7 +7,7 @@ CONTROL_SCRIPT="$CONTROL_REPO/scripts/test/control_production_test.mjs"
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   cat <<'EOF'
-GameStudio Control-First Smoke Test
+TalkScene Control-First Smoke Test
 
 用法:
   bash scripts/test/smoke_test_pipeline.sh [--help]
@@ -25,7 +25,7 @@ if [ ! -f "$CONTROL_SCRIPT" ]; then
 fi
 
 echo "========================================"
-echo "  GameStudio Control-First Smoke Test"
+echo "  TalkScene Control-First Smoke Test"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "  （经 local-agent-control 守护台执行）"
 echo "========================================"

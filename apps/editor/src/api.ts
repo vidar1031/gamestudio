@@ -1,4 +1,4 @@
-// API client for gamestudio editor
+// API client for talkscene editor
 
 import type {
   AiBackgroundRequest,
@@ -8,11 +8,11 @@ import type {
   ProjectV1,
   ScriptDocV1,
   StoryV1
-} from '@game-studio/schema'
-import { normalizeProjectV1 } from '@game-studio/schema'
+} from '@talkscene/schema'
+import { normalizeProjectV1 } from '@talkscene/schema'
 
-export type { AiBackgroundRequest, BlueprintDocV1, DemoItem, DemoMeta, ProjectV1, ScriptDocV1, StoryV1 } from '@game-studio/schema'
-export type * from '@game-studio/schema'
+export type { AiBackgroundRequest, BlueprintDocV1, DemoItem, DemoMeta, ProjectV1, ScriptDocV1, StoryV1 } from '@talkscene/schema'
+export type * from '@talkscene/schema'
 
 // ===== HTTP helpers =====
 function base() {
@@ -85,6 +85,8 @@ export type ProjectSummary = {
   stages: { scripts: boolean; blueprint: boolean; compose: boolean; export: boolean }
   stage: 'script' | 'blueprint' | 'compose' | 'export' | 'playable'
   distUrl: string | null
+  cover?: string | null
+  stageConfig?: { orientation?: string | null; width?: number | null; height?: number | null } | null
 }
 
 /**
@@ -155,11 +157,13 @@ export type AiCreateResult = {
 export async function createProjectWithAiDetailed(
   prompt: string,
   title?: string,
-  opts?: { choicePoints?: number; optionsPerChoice?: number; endings?: number }
+  opts?: { choicePoints?: number; optionsPerChoice?: number; endings?: number; signal?: AbortSignal }
 ): Promise<AiCreateResult> {
+  const { signal, ...formula } = opts || {}
   const json = await j(`${base()}/api/projects/ai/create`, {
     method: 'POST',
-    body: JSON.stringify({ prompt, title, ...(opts || {}) })
+    body: JSON.stringify({ prompt, title, ...formula }),
+    ...(signal ? { signal } : {})
   })
   return {
     project: normalizeProjectV1(json.project),
@@ -312,6 +316,23 @@ export async function reviewStoryboardPromptAi(
     body: JSON.stringify(payload || {})
   })
   return json.review as StoryboardPromptQualityReview
+}
+
+export async function generateStoryboardGlobalPromptAi(
+  projectId: string,
+  payload: Parameters<typeof reviewStoryboardPromptAi>[1]
+): Promise<{
+  result: { globalPromptZh: string; globalNegativePromptZh: string }
+  meta: StoryboardPromptQualityReview['meta'] | null
+}> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/storyboard/global-prompt-generate`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return {
+    result: (json.result as any) || { globalPromptZh: '', globalNegativePromptZh: '' },
+    meta: (json.meta as any) || null
+  }
 }
 
 export async function listStoryPromptTemplates(): Promise<StoryPromptTemplateItem[]> {
@@ -1059,6 +1080,12 @@ export async function listProjectAiTasks(projectId: string): Promise<AiTaskProgr
   return Array.isArray(json.tasks) ? (json.tasks as AiTaskProgress[]) : []
 }
 
+// 2026-10-20 全局任务台账（跨项目）：全局任务指示器用——任何长任务都在界面上可见，不经守护台
+export async function listAllAiTasks(includeDone = true): Promise<AiTaskProgress[]> {
+  const json = await j(`${base()}/api/ai/tasks${includeDone ? '' : '?includeDone=0'}`)
+  return Array.isArray(json.tasks) ? (json.tasks as AiTaskProgress[]) : []
+}
+
 // 出图总账：服务端只读聚合（资产锁定/场景绑定/总进度），用于全局出图进度展示
 export type AiCoverageAssetItem = {
   id: string
@@ -1660,10 +1687,14 @@ export async function openProjectAiAssetsFolder(projectId: string): Promise<{ fo
 }
 
 // ===== Studio settings (AI providers/models) =====
+// 2026-10-20 设置页 V1（docsys ui_设置定义.md §6）：tts 增加 voice/speed/format；
+// 新增 video/appearance/storage 节（全部可选，缺省由服务端默认值回填）。
+export type StudioVideoSubtitleStyle = { fontSize?: number; position?: string; bgOpacity?: number }
+
 export type StudioSettings = {
   schemaVersion?: string
   updatedAt?: string
-  enabled?: { scripts?: boolean; prompt?: boolean; image?: boolean; tts?: boolean }
+  enabled?: { scripts?: boolean; prompt?: boolean; image?: boolean; tts?: boolean; video?: boolean }
   scripts?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
   prompt?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
   translation?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
@@ -1676,17 +1707,46 @@ export type StudioSettings = {
     sdwebuiBaseUrl?: string | null
     comfyuiBaseUrl?: string | null
     comfyuiModelsRoot?: string | null
+    activeStylePreset?: string | null
+    stylePresets?: Record<string, any> | null
   }
-  tts?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
+  tts?: {
+    provider?: string | null
+    model?: string | null
+    apiUrl?: string | null
+    voice?: string | null
+    speed?: number | null
+    format?: string | null
+  }
+  video?: {
+    provider?: string | null
+    resolution?: string | null
+    fps?: number | null
+    bitrate?: string | number | null
+    subtitleStyle?: StudioVideoSubtitleStyle | null
+    audioTrack?: string | null
+    apiUrl?: string | null
+  }
+  appearance?: { theme?: string | null; locale?: string | null }
+  storage?: { root?: string | null }
+  // 2026-10-20 守护台关联：租约运行时开关 + 守护台地址
+  control?: { leaseEnabled?: boolean; baseUrl?: string | null }
   // AUTO-E05：完整度核实的视觉评审模型（moonshot / omlx）
-  review?: { provider?: string | null; model?: string | null; apiUrl?: string | null }
+  review?: {
+    provider?: string | null
+    model?: string | null
+    apiUrl?: string | null
+    poseReviewProvider?: string | null
+    poseReviewModel?: string | null
+    poseReviewBaseUrl?: string | null
+  }
   // NOTE: secrets are accepted on save, but never returned in full by the server.
   secrets?: { openaiApiKey?: string | null; localoxmlApiKey?: string | null; doubaoArkApiKey?: string | null }
   network?: { proxyUrl?: string | null }
 }
 
 export type StudioEffectiveConfig = {
-  enabled: { scripts: boolean; prompt: boolean; image: boolean; tts: boolean }
+  enabled: { scripts: boolean; prompt: boolean; image: boolean; tts: boolean; video?: boolean }
   scripts: { provider: string; model: string | null; apiUrl?: string | null }
   prompt: { provider: string; model: string | null; apiUrl?: string | null }
   translation: { provider: string; model: string | null; apiUrl?: string | null }
@@ -1699,15 +1759,135 @@ export type StudioEffectiveConfig = {
     sdwebuiBaseUrl: string | null
     comfyuiBaseUrl: string | null
     comfyuiModelsRoot?: string | null
+    activeStylePreset?: string | null
+    stylePresets?: Record<string, any> | null
   }
-  tts: { provider: string; model: string | null; apiUrl: string | null }
-  review?: { provider: string; model: string | null; apiUrl: string | null }
+  tts: {
+    provider: string
+    model: string | null
+    apiUrl: string | null
+    voice?: string | null
+    speed?: number
+    format?: string
+  }
+  video?: {
+    provider: string
+    resolution: string
+    fps: number
+    bitrate: string | number
+    subtitleStyle: StudioVideoSubtitleStyle | null
+    audioTrack: string
+    apiUrl: string | null
+  }
+  appearance?: { theme: string; locale: string }
+  storage?: { root: string | null }
+  control?: { leaseEnabled: boolean; baseUrl: string }
+  review?: {
+    provider: string
+    model: string | null
+    apiUrl: string | null
+    poseReviewProvider?: string | null
+    poseReviewModel?: string | null
+    poseReviewBaseUrl?: string | null
+  }
   secrets?: {
     openai: { present: boolean; masked: string | null; source: string; value?: string | null }
     localoxml: { present: boolean; masked: string | null; source: string; value?: string | null }
     doubao: { present: boolean; masked: string | null; source: string; value?: string | null }
   }
   network: { proxyUrl: string | null }
+}
+
+export type StudioStorageInfo = { root: string; writable: boolean; version: string; docsysUrl: string }
+
+export async function getStorageInfo(): Promise<StudioStorageInfo> {
+  const json = await j(`${base()}/api/studio/storage-info`, { method: 'GET' })
+  return {
+    root: String(json.root || ''),
+    writable: Boolean(json.writable),
+    version: String(json.version || ''),
+    docsysUrl: String(json.docsysUrl || '')
+  }
+}
+
+// ===== 语音 TTS（2026-10-20 落地，ui_设置定义.md §7.6） =====
+export type TtsVoiceItem = { id: string; label: string; engineVoice: string; pitch?: number; rateAdjust?: number }
+export type TtsVoiceGroup = { group: string; items: TtsVoiceItem[] }
+
+export async function getTtsVoices(provider: string): Promise<TtsVoiceGroup[]> {
+  const u = new URL(`${base()}/api/studio/tts/voices`, window.location.origin)
+  u.searchParams.set('provider', String(provider || '').trim().toLowerCase())
+  const json = await j(u.toString(), { method: 'GET' })
+  const raw = Array.isArray(json.voices) ? json.voices : []
+  return raw
+    .map((g: any) => ({
+      group: String(g?.group || ''),
+      items: (Array.isArray(g?.items) ? g.items : [])
+        .map((x: any) => ({
+          id: String(x?.id || '').trim(),
+          label: String(x?.label || x?.id || '').trim(),
+          engineVoice: String(x?.engineVoice || '').trim(),
+          pitch: Number(x?.pitch) || 0,
+          rateAdjust: Number(x?.rateAdjust) || 0
+        }))
+        .filter((x: TtsVoiceItem) => x.id && x.engineVoice)
+    }))
+    .filter((g: TtsVoiceGroup) => g.group && g.items.length)
+}
+
+export type TtsPreviewResult = { blob: Blob; voice: string; provider: string; bytes: number }
+
+export async function previewTts(payload: {
+  settings?: StudioSettings
+  text?: string
+  voice?: string
+  speed?: number
+  format?: string
+}): Promise<TtsPreviewResult> {
+  const resp = await fetch(`${base()}/api/studio/tts/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  })
+  if (!resp.ok) {
+    const json = (await resp.json().catch(() => null)) as any
+    const code = json && json.error && json.error.code ? String(json.error.code) : ''
+    const msg = json && json.error && json.error.message ? String(json.error.message) : `HTTP ${resp.status}`
+    const err = new Error(code ? `${code}: ${msg}` : msg) as Error & { code?: string }
+    err.code = code
+    throw err
+  }
+  const blob = await resp.blob()
+  return {
+    blob,
+    voice: String(resp.headers.get('x-tts-voice') || ''),
+    provider: String(resp.headers.get('x-tts-provider') || ''),
+    bytes: blob.size
+  }
+}
+
+// ===== 守护台关联（2026-10-20：租约运行时开关 + 可达性探测） =====
+export type StudioControlLink = {
+  leaseEnabled: boolean
+  baseUrl: string
+  settingsLeaseEnabled: boolean
+  envOverride: boolean
+  reachable: boolean
+  latencyMs: number
+  checkedAt: string
+}
+
+export async function getControlLink(): Promise<StudioControlLink> {
+  const json = await j(`${base()}/api/studio/control-link`, { method: 'GET' })
+  return {
+    leaseEnabled: Boolean(json.leaseEnabled),
+    baseUrl: String(json.baseUrl || ''),
+    settingsLeaseEnabled: Boolean(json.settingsLeaseEnabled),
+    envOverride: Boolean(json.envOverride),
+    reachable: Boolean(json.reachable),
+    latencyMs: Number(json.latencyMs) || 0,
+    checkedAt: String(json.checkedAt || '')
+  }
 }
 
 export async function getStudioSettings(): Promise<{ settings: StudioSettings | null; effective: StudioEffectiveConfig }> {

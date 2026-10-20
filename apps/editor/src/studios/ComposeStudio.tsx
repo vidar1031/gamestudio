@@ -49,6 +49,7 @@ import {
   resolveUrl,
   renderStorySceneAi,
   reviewStoryboardPromptAi,
+  generateStoryboardGlobalPromptAi,
   runStoryCompletenessCheckAi,
   getLatestStoryCompletenessReport,
   listProjectAiTasks,
@@ -90,1159 +91,71 @@ import {
   compileCompose
 } from '../api'
 
-type Selection =
-  | { type: 'none' }
-  | { type: 'node'; id: string }
-  | { type: 'character'; id: string }
-  | { type: 'asset'; id: string }
-
-type LeftTab = 'nodes' | 'characters' | 'assets' | 'materials'
-
-type StoryboardSceneAiBackgroundRequest = AiBackgroundRequest & {
-  assetRefs?: Array<{
-    assetId?: string
-    assetName?: string
-    assetType?: string
-    assetPath?: string
-    assetUri?: string
-    weight?: number
-  }>
-}
-
-type StoryboardBatchState = {
-  entitySpec: string
-  storyBibleJson: string
-  continuity: {
-    ipadapterEnabled: boolean
-    requireCharacterRefs: boolean
-    controlnetEnabled: boolean
-  }
-  globalPromptZh: string
-  globalPrompt: string
-  globalNegativePromptZh: string
-  globalNegativePrompt: string
-  style: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
-  aspectRatio: '9:16' | '16:9' | '1:1' | '9:1'
-  width: number
-  height: number
-  model?: string
-  loras?: string[]
-  size?: string
-  responseFormat?: 'url' | 'b64_json'
-  watermark?: boolean
-  sequentialImageGeneration?: 'auto' | 'disabled'
-  steps: number
-  cfgScale: number
-  sampler: string
-  scheduler: string
-}
-
-type StoryboardLockAssetPromptDraft = {
-  promptZh: string
-  promptEn: string
-  negativePromptZh?: string
-  negativePrompt?: string
-  promptReview?: {
-    passed?: boolean
-    score?: number
-    summary?: string
-    strengths?: string[]
-    risks?: string[]
-    suggestions?: string[]
-  } | null
-  enhancedAt?: string
-  enhanceMode?: string
-}
-
-type StoryboardScenePromptStore = {
-  nodeId: string
-  nodeName: string
-  userInput: string
-  promptZh?: string
-  prompt: string
-  negativePromptZh?: string
-  negativePrompt: string
-  promptReview?: StoryboardPromptQualityReview | null
-  updatedAt: string
-}
-
-type StoryboardPromptMeta = {
-  style: string
-  aspectRatio: string
-  updatedAt: string
-  globalReview?: StoryboardPromptQualityReview | null
-}
-
-type StoryboardOpenCheckState = {
-  checking: boolean
-  checkedAt: string
-  ok: boolean
-  serverOk: boolean
-  promptOk: boolean
-  imageOk: boolean
-  continuityBindingsOk: boolean
-  promptProvider: string
-  promptModel: string
-  imageProvider: string
-  imageModel: string
-  // 2026-09-09：studio 生效 LoRA 列表——项目未配置 batch draft 时状态行应显示全局默认而非 (none)（乌鸦喝水实测显示缺陷）
-  imageLoras: string[]
-  summary: string
-  issues: string[]
-  details: string[]
-}
-
-type StoryAssetPlanAsset = {
-  id: string
-  name: string
-  category?: string
-  lockProfile?: string
-  lockWorkflow?: string
-  renderStrategy?: string
-  sceneCount?: number
-  referenceStatus?: string
-  primaryReferenceAssetId?: string
-  primaryReferenceAssetUri?: string
-  referencePromptHint?: string
-  referencePromptZh?: string
-  referencePromptEn?: string
-}
-
-type StoryAssetGalleryState = {
-  assetId: string
-  assetName: string
-  items: StoryAssetGalleryEntry[]
-}
-
-type LatestExportAction = 'overwrite' | 'delete' | 'cancel'
-
- type StoryboardBatchDraft = {
-  style: 'picture_book' | 'cartoon' | 'national_style' | 'watercolor'
-  aspectRatio: '9:16' | '16:9' | '1:1' | '9:1'
-  width: number
-  height: number
-  model?: string
-  loras?: string[]
-  size?: string
-  responseFormat?: 'url' | 'b64_json'
-  watermark?: boolean
-  sequentialImageGeneration?: 'auto' | 'disabled'
-  steps: number
-  cfgScale: number
-  sampler: string
-  scheduler: string
-  updatedAt: string
-}
-
-const DOUBAO_STORYBOARD_DEFAULTS = {
-  steps: 30,
-  cfgScale: 7.5,
-  sampler: 'DPM++ 2M',
-  scheduler: 'Karras'
-} as const
-
-function getDoubaoStoryboardDefaultSize(aspectRatio: string) {
-  const ar = String(aspectRatio || '').trim()
-  if (ar === '16:9') return '2560x1440'
-  if (ar === '1:1') return '1920x1920'
-  if (ar === '9:1') return '6480x720'
-  return '1440x2560'
-}
-
-	type EditorDoc = {
-	  mode: 'project' | 'none'
-	  readonly: boolean
-	  id: string
-	  title: string
-	  assetBase: string
-	  project: ProjectV1 | null
-  story: StoryV1 | null
-}
-
-function uid(prefix = 'id') {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`
-}
-
-function nodeKindLabel(kind: NodeV1['kind']) {
-  return '场景'
-}
-
-function scriptCardLabel(sc: any) {
-  const order = Number(sc && sc.order) || 0
-  const name = String(sc && sc.name || '').trim()
-  if (order && name) return `#${order} ${name}`
-  if (name) return name
-  if (order) return `#${order}`
-  return ''
-}
-
-function clamp01(n: number) {
-  if (!Number.isFinite(n)) return 0
-  return Math.max(0, Math.min(1, n))
-}
-
-function normalizeStoryboardAssetPlan(plan: StoryAssetPlan | null | undefined): StoryAssetPlan | null {
-  if (!plan || typeof plan !== 'object') return null
-  const assets = Array.isArray((plan as any).assets) ? (plan as any).assets : []
-  const scenes = Array.isArray((plan as any).scenes) ? (plan as any).scenes : []
-  const summaryIn = (plan as any).summary && typeof (plan as any).summary === 'object' ? (plan as any).summary : {}
-  return {
-    schemaVersion: String((plan as any).schemaVersion || '1.0'),
-    generatedAt: String((plan as any).generatedAt || '').trim() || new Date().toISOString(),
-    worldAnchor: String((plan as any).worldAnchor || '').trim(),
-    forbiddenSubstitutes: Array.isArray((plan as any).forbiddenSubstitutes) ? (plan as any).forbiddenSubstitutes.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
-    eventChain: Array.isArray((plan as any).eventChain) ? (plan as any).eventChain.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
-    excludedAssetIds: Array.isArray((plan as any).excludedAssetIds) ? (plan as any).excludedAssetIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
-    assets,
-    scenes,
-    summary: {
-      assetCount: Number(summaryIn.assetCount || assets.length || 0),
-      sceneCount: Number(summaryIn.sceneCount || scenes.length || 0),
-      refRequiredCount: Number(summaryIn.refRequiredCount || 0),
-      refReadyCount: Number(summaryIn.refReadyCount || 0),
-      refMissingCount: Number(summaryIn.refMissingCount || 0),
-      workflows: (summaryIn.workflows && typeof summaryIn.workflows === 'object') ? summaryIn.workflows : {}
-    }
-  }
-}
-
-function getStoryboardRequiredMissingAssets(plan: StoryAssetPlan | null | undefined): StoryAssetPlanAsset[] {
-  const assets = Array.isArray((plan as any)?.assets) ? ((plan as any).assets as any[]) : []
-  return assets
-    .filter((asset) => String(asset && asset.renderStrategy ? asset.renderStrategy : '').trim() === 'ref_required')
-    .filter((asset) => {
-      const primaryUri = String(asset && asset.primaryReferenceAssetUri ? asset.primaryReferenceAssetUri : '').trim()
-      const batch = Array.isArray(asset && (asset as any).latestReferenceBatch) ? (asset as any).latestReferenceBatch : []
-      const refs = Array.isArray(asset && (asset as any).generatedRefs) ? (asset as any).generatedRefs : []
-      return !primaryUri && batch.length === 0 && refs.length === 0
-    })
-    .map((asset) => ({
-      id: String(asset && asset.id ? asset.id : '').trim(),
-      name: String(asset && asset.name ? asset.name : '').trim(),
-      category: String(asset && asset.category ? asset.category : '').trim(),
-      renderStrategy: String(asset && asset.renderStrategy ? asset.renderStrategy : '').trim(),
-      sceneCount: Number(asset && asset.sceneCount ? asset.sceneCount : 0),
-      referenceStatus: String(asset && asset.referenceStatus ? asset.referenceStatus : '').trim(),
-      primaryReferenceAssetId: String(asset && asset.primaryReferenceAssetId ? asset.primaryReferenceAssetId : '').trim(),
-      primaryReferenceAssetUri: String(asset && asset.primaryReferenceAssetUri ? asset.primaryReferenceAssetUri : '').trim(),
-      referencePromptHint: String(asset && asset.referencePromptHint ? asset.referencePromptHint : '').trim()
-    }))
-}
-
-
-function getStoryboardRequiredUnlockedAssets(plan: StoryAssetPlan | null | undefined): StoryAssetPlanAsset[] {
-  const assets = Array.isArray((plan as any)?.assets) ? ((plan as any).assets as any[]) : []
-  return assets
-    .filter((asset) => String(asset && asset.renderStrategy ? asset.renderStrategy : '').trim() === 'ref_required')
-    .filter((asset) => !String(asset && asset.primaryReferenceAssetUri ? asset.primaryReferenceAssetUri : '').trim() || !String(asset && asset.lineartFinalAssetUri ? asset.lineartFinalAssetUri : '').trim())
-    .map((asset) => ({
-      id: String(asset && asset.id ? asset.id : '').trim(),
-      name: String(asset && asset.name ? asset.name : '').trim(),
-      category: String(asset && asset.category ? asset.category : '').trim(),
-      renderStrategy: String(asset && asset.renderStrategy ? asset.renderStrategy : '').trim(),
-      sceneCount: Number(asset && asset.sceneCount ? asset.sceneCount : 0),
-      referenceStatus: String(asset && asset.referenceStatus ? asset.referenceStatus : '').trim(),
-      primaryReferenceAssetId: String(asset && asset.primaryReferenceAssetId ? asset.primaryReferenceAssetId : '').trim(),
-      primaryReferenceAssetUri: String(asset && asset.primaryReferenceAssetUri ? asset.primaryReferenceAssetUri : '').trim(),
-      referencePromptHint: String(asset && asset.referencePromptHint ? asset.referencePromptHint : '').trim()
-    }))
-}
-
-function getStoryboardAssetPlanSummary(plan: StoryAssetPlan | null | undefined, confirmedAt: string): string {
-  const normalized = normalizeStoryboardAssetPlan(plan)
-  if (!normalized) return '尚未生成必要事物资产计划'
-  const missingRefs = getStoryboardRequiredMissingAssets(normalized)
-  const unlocked = getStoryboardRequiredUnlockedAssets(normalized)
-  if (missingRefs.length > 0) return `仍有 ${missingRefs.length} 个必要事物尚未生成候选参考图，请先抽卡。`
-  if (unlocked.length > 0) return `仍有 ${unlocked.length} 个必要事物尚未完成“手选主参考 + 线稿生成”。`
-  if (String(confirmedAt || '').trim()) return '锁定资产已确认，可进入正式场景出图阶段'
-  return '所有必要事物已完成主参考与线稿，请确认后进入正式出图。'
-}
-
-function recomputeStoryboardAssetPlanSummary(plan: StoryAssetPlan | null | undefined) {
-  const normalized = normalizeStoryboardAssetPlan(plan)
-  if (!normalized) return null
-  const assets = Array.isArray(normalized.assets) ? normalized.assets : []
-  const scenes = Array.isArray(normalized.scenes) ? normalized.scenes : []
-  const refRequiredAssets = assets.filter((asset: any) => String(asset?.renderStrategy || '').trim() === 'ref_required')
-  const refReadyCount = refRequiredAssets.filter((asset: any) => String(asset?.primaryReferenceAssetUri || '').trim()).length
-  const refMissingCount = refRequiredAssets.filter((asset: any) => {
-    const primaryUri = String(asset?.primaryReferenceAssetUri || '').trim()
-    const batch = Array.isArray(asset?.latestReferenceBatch) ? asset.latestReferenceBatch : []
-    const refs = Array.isArray(asset?.generatedRefs) ? asset.generatedRefs : []
-    return !primaryUri && batch.length === 0 && refs.length === 0
-  }).length
-  const workflows: Record<string, number> = {}
-  for (const scene of scenes) {
-    const key = String((scene as any)?.workflow || '').trim()
-    if (!key) continue
-    workflows[key] = Number(workflows[key] || 0) + 1
-  }
-  return {
-    ...normalized,
-    summary: {
-      assetCount: assets.length,
-      sceneCount: scenes.length,
-      refRequiredCount: refRequiredAssets.length,
-      refReadyCount,
-      refMissingCount,
-      workflows
-    }
-  }
-}
-
-function hasCjkPromptText(input: string | null | undefined): boolean {
-  return /[\u3400-\u9fff]/.test(String(input || ''))
-}
-
-function looksLikeEnglishPromptText(input: string | null | undefined): boolean {
-  const value = String(input || '').trim()
-  if (!value) return false
-  if (hasCjkPromptText(value)) return false
-  return /[A-Za-z]{3,}/.test(value)
-}
-
-function chooseEnglishAssetPrompt(candidate: string | null | undefined, fallback: string | null | undefined): string {
-  const preferred = String(candidate || '').trim()
-  if (looksLikeEnglishPromptText(preferred)) return preferred
-  const alt = String(fallback || '').trim()
-  if (looksLikeEnglishPromptText(alt)) return alt
-  return preferred || alt
-}
-
-function isProtectedAssetLockProfile(asset: any): boolean {
-  const profile = String(asset?.lockProfile || '').trim().toLowerCase()
-  return ['wearable_prop', 'slender_prop', 'rigid_prop', 'soft_prop', 'ambient_prop', 'organic_prop'].includes(profile)
-}
-
-function looksContaminatedProtectedAssetPrompt(input: string | null | undefined, asset?: any): boolean {
-  const value = String(input || '').trim()
-  if (!value) return false
-  const profile = String(asset?.lockProfile || '').trim().toLowerCase()
-  const wearableLike = profile === 'wearable_prop'
-  const commonDanger = /\b(girl|boy|portrait|upper body|model|wearing|worn|dress|shirt|mannequin|bust)\b|under chin/i
-  if (commonDanger.test(value)) return true
-  if (wearableLike) {
-    return /\b(face|head|hair|ears|shoulders|neck|collarbone)\b/i.test(value)
-  }
-  return false
-}
-
-
-function normalizeStoryboardLockAssetPromptDrafts(
-  plan: StoryAssetPlan | null | undefined,
-  draftsIn: Record<string, StoryboardLockAssetPromptDraft> | null | undefined
-): Record<string, StoryboardLockAssetPromptDraft> {
-  const hasOwn = (obj: any, key: string) => Boolean(obj) && Object.prototype.hasOwnProperty.call(obj, key)
-  function defaultAssetNegativePromptZh(asset: any) {
-    const category = String(asset?.category || '').trim().toLowerCase()
-    if (category === 'character') {
-      return '真人小孩，人类脸，猫娘，拟人少女，帽子，草帽，水桶，鱼竿，复杂背景，场景环境，树木，草地，水面，地面投影，文字，水印'
-    }
-    if (category === 'prop') {
-      return '人物，角色，儿童，女孩，男孩，头部，脸部，半身像，上半身，手持，佩戴展示，戴在头上，模特，人体穿戴关系，场景背景，树木，草地，水面，文字，水印'
-    }
-    if (category === 'location') {
-      return '角色特写，人群，文字，水印'
-    }
-    return ''
-  }
-
-  const incoming = draftsIn && typeof draftsIn === 'object' ? draftsIn : {}
-  const assets = Array.isArray((plan as any)?.assets) ? (plan as any).assets : []
-  const next: Record<string, StoryboardLockAssetPromptDraft> = {}
-  for (const asset of assets) {
-    const assetId = String(asset && asset.id ? asset.id : '').trim()
-    if (!assetId) continue
-    const prev = incoming[assetId] && typeof incoming[assetId] === 'object' ? incoming[assetId] : { promptZh: '', promptEn: '' }
-    // 2026-10-13 兜底链补 anchorPrompt：存量计划（生产链只写了出图锚点、未写向导字段）在向导里立即可见，
-    // 新计划由生产侧直接填齐 referencePromptEn/referencePromptZh（字段语义不变，仅回退读取）
-    const fallbackPromptEn = String(asset?.referencePromptEn || asset?.anchorPrompt || asset?.referencePromptHint || '').trim()
-    const preferredPromptEn = chooseEnglishAssetPrompt(hasOwn(prev, 'promptEn') ? prev.promptEn : (asset?.referencePromptEn || ''), fallbackPromptEn)
-    const safePromptEn = isProtectedAssetLockProfile(asset) && looksContaminatedProtectedAssetPrompt(preferredPromptEn, asset)
-      ? fallbackPromptEn
-      : preferredPromptEn
-    next[assetId] = {
-      promptZh: hasOwn(prev, 'promptZh') ? String(prev.promptZh ?? '') : String(asset?.referencePromptZh || ''),
-      promptEn: safePromptEn,
-      negativePromptZh: hasOwn(prev, 'negativePromptZh') ? String(prev.negativePromptZh ?? '') : String(asset?.referenceNegativePromptZh || defaultAssetNegativePromptZh(asset) || ''),
-      negativePrompt: hasOwn(prev, 'negativePrompt') ? String(prev.negativePrompt ?? '') : String(asset?.referenceNegativePrompt || asset?.negativePrompt || ''),
-      promptReview: prev.promptReview && typeof prev.promptReview === 'object' ? prev.promptReview : null,
-      enhancedAt: String(prev.enhancedAt || '').trim(),
-      enhanceMode: String(prev.enhanceMode || '').trim()
-    }
-  }
-  if (assets.length === 0) {
-    for (const [assetId, draft] of Object.entries(incoming)) {
-      if (next[assetId]) continue
-      next[assetId] = {
-        promptZh: String((draft as any)?.promptZh ?? ''),
-        promptEn: String((draft as any)?.promptEn ?? ''),
-        negativePromptZh: String((draft as any)?.negativePromptZh ?? ''),
-        negativePrompt: String((draft as any)?.negativePrompt ?? ''),
-        enhancedAt: String((draft as any)?.enhancedAt || '').trim(),
-        enhanceMode: String((draft as any)?.enhanceMode || '').trim()
-      }
-    }
-  }
-  return next
-}
-
-type StageViewport = {
-  stageW: number
-  stageH: number
-  scale: number
-  offsetX: number
-  offsetY: number
-  scaleMode: 'contain' | 'cover'
-}
-
-function computeStageViewport(stageCfg: StageConfigV1 | undefined, viewW: number, viewH: number): StageViewport {
-  const s = normalizeStageV1(stageCfg)
-  const stageW = Math.max(1, Math.floor(numberOr(s.width, 720)))
-  const stageH = Math.max(1, Math.floor(numberOr(s.height, 1280)))
-  const scaleMode = String(s.scaleMode || 'contain') === 'cover' ? 'cover' : 'contain'
-  const sx = viewW / stageW
-  const sy = viewH / stageH
-  const scale = scaleMode === 'cover' ? Math.max(sx, sy) : Math.min(sx, sy)
-  const offsetX = (viewW - stageW * scale) / 2
-  const offsetY = (viewH - stageH * scale) / 2
-  return { stageW, stageH, scale, offsetX, offsetY, scaleMode }
-}
-
-function numberOr(v: unknown, fallback: number) {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : fallback
-}
-
-function resolveAsset(uri: string, assetBase: string) {
-  const s = String(uri || '').trim()
-  if (!s) return ''
-  if (/^https?:\/\//i.test(s)) return s
-  if (/^\//.test(s) && /^https?:\/\//i.test(assetBase || '')) {
-    try {
-      const origin = new URL(assetBase).origin
-      return `${origin}${s}`
-    } catch {}
-  }
-  if (!assetBase) return s
-  return assetBase.replace(/\/+$/, '/') + s.replace(/^\/+/, '')
-}
-
-const textureCache = new Map<string, Promise<Texture> | Texture>()
-
-// 场景编排器：像素级命中的 alpha 查找图（按 Texture 实例缓存，会话内复用；null 表示构建失败→回退矩形命中）
-type AlphaMap = { data: Uint8ClampedArray; width: number; height: number }
-const alphaMapCache = new WeakMap<Texture, AlphaMap | null>()
-
-function getAlphaMap(tex: Texture): AlphaMap | null {
-  if (alphaMapCache.has(tex)) return alphaMapCache.get(tex) || null
-  let result: AlphaMap | null = null
-  try {
-    const src: any = (tex as any).source?.resource || (tex as any).source?.resource?.source
-    const w = Math.floor(Number(src?.naturalWidth || src?.width || 0))
-    const h = Math.floor(Number(src?.naturalHeight || src?.height || 0))
-    if (src && w > 0 && h > 0) {
-      const canvas = document.createElement('canvas')
-      canvas.width = w
-      canvas.height = h
-      const ctx = canvas.getContext('2d', { willReadFrequently: true })
-      if (ctx) {
-        ctx.drawImage(src, 0, 0, w, h)
-        const img = ctx.getImageData(0, 0, w, h)
-        const data = new Uint8ClampedArray(w * h)
-        for (let i = 0; i < w * h; i += 1) data[i] = img.data[i * 4 + 3]
-        result = { data, width: w, height: h }
-      }
-    }
-  } catch {
-    result = null
-  }
-  alphaMapCache.set(tex, result)
-  return result
-}
-
-// 像素级命中：世界点 → worldTransform 逆变换得纹理局部点（翻转/缩放/旋转天然覆盖）→ alpha > 10 才算命中
-function hitPlacementSprite(sp: Sprite, gx: number, gy: number): boolean {
-  try {
-    const tex = sp.texture
-    const tw = Number(tex.width) || 0
-    const th = Number(tex.height) || 0
-    if (!tw || !th) return false
-    const local = sp.worldTransform.applyInverse({ x: gx, y: gy })
-    // anchor (0.5,1)：局部空间纹理范围 x∈[-tw/2, tw/2]，y∈[-th, 0]
-    const lx = local.x + tw * 0.5
-    const ly = local.y + th
-    if (lx < 0 || ly < 0 || lx >= tw || ly >= th) return false
-    const am = getAlphaMap(tex)
-    if (!am) return true // alpha 图不可用（跨域/未就绪）：回退矩形命中
-    const px = Math.min(am.width - 1, Math.max(0, Math.floor((lx / tw) * am.width)))
-    const py = Math.min(am.height - 1, Math.max(0, Math.floor((ly / th) * am.height)))
-    return am.data[py * am.width + px] > 10
-  } catch {
-    return false
-  }
-}
-
-async function loadTexture(url: string): Promise<Texture | null> {
-  const key = String(url || '').trim()
-  if (!key) return null
-
-  const cached = textureCache.get(key)
-  if (cached) {
-    try {
-      return cached instanceof Promise ? await cached : cached
-    } catch {
-      textureCache.delete(key)
-    }
-  }
-
-  const p = new Promise<Texture>((resolve, reject) => {
-    try {
-      const img = new Image()
-      img.crossOrigin = 'anonymous'
-      img.onload = () => {
-        try {
-          resolve(Texture.from(img))
-        } catch (e) {
-          reject(e)
-        }
-      }
-      img.onerror = () => reject(new Error(`图片加载失败: ${key}`))
-      img.src = key
-    } catch (e) {
-      reject(e)
-    }
-  })
-
-  textureCache.set(key, p)
-
-  try {
-    const tex = await p
-    textureCache.set(key, tex)
-    return tex
-  } catch (e) {
-    textureCache.delete(key)
-    try {
-      console.warn('[gamestudio] loadTexture failed:', key, e instanceof Error ? e.message : String(e))
-    } catch {}
-    return null
-  }
-}
-
-type RuntimeWait =
-  | { kind: 'auto' }
-  | { kind: 'click' }
-  | { kind: 'choice' }
-  | { kind: 'timer'; ms: number }
-  | { kind: 'event'; name: string }
-  | { kind: 'condition'; expr: ConditionExprV1; pollMs: number }
-  | { kind: 'end' }
-
-type RuntimeNav =
-  | { type: 'gotoNode'; nodeId: string; delayMs?: number }
-  | { type: 'restart' }
-  | { type: 'backToHub'; url?: string }
-  | null
-
-type RuntimeState = {
-  stepIndex: number
-  text: string
-  toast: string
-  endingCard: EndingCardV1 | null
-  wait: RuntimeWait
-  vars: Record<string, any>
-  eventMemory: Record<string, any>
-  stageOverride: StageOverride
-  nav: RuntimeNav
-}
-
-function buildDefaultVars(vars: StateVarDefV1[] | undefined): Record<string, any> {
-  const out: Record<string, any> = {}
-  const list = Array.isArray(vars) ? vars : []
-  for (const v of list) {
-    const name = String(v && (v as any).name || '').trim()
-    if (!name) continue
-    const type = String(v && (v as any).type || 'string') as any
-    let d = (v as any).default
-    if (type === 'tags') {
-      if (!Array.isArray(d)) d = []
-      d = d.map((x: any) => String(x)).filter(Boolean)
-    } else if (type === 'number') {
-      const n = Number(d)
-      d = Number.isFinite(n) ? n : 0
-    } else if (type === 'boolean') {
-      d = Boolean(d)
-    } else if (type === 'string') {
-      d = String(d ?? '')
-    }
-    out[name] = d
-  }
-  return out
-}
-
-function evalConditionValue(val: any, vars: Record<string, any>) {
-  try {
-    if (val && typeof val === 'object' && typeof val.var === 'string') return vars[String(val.var)]
-  } catch {}
-  return val
-}
-
-function cmp(a: any, b: any) {
-  const na = Number(a)
-  const nb = Number(b)
-  if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb
-  const sa = String(a)
-  const sb = String(b)
-  if (sa === sb) return 0
-  return sa < sb ? -1 : 1
-}
-
-function evalConditionExpr(expr: ConditionExprV1 | null | undefined, vars: Record<string, any>): boolean {
-  if (expr == null) return true
-  if (typeof expr !== 'object') return Boolean(expr)
-  const op = String((expr as any).op || '')
-  if (!op) return Boolean(expr)
-
-  if (op === 'and' || op === 'or') {
-    const args = Array.isArray((expr as any).args) ? (expr as any).args : []
-    if (!args.length) return true
-    return op === 'and'
-      ? args.every((x: any) => evalConditionExpr(x, vars))
-      : args.some((x: any) => evalConditionExpr(x, vars))
-  }
-  if (op === 'not') return !evalConditionExpr((expr as any).arg, vars)
-
-  if (op === 'tags.has') {
-    const v = String((expr as any).var || '').trim()
-    const value = String((expr as any).value || '').trim()
-    const list = Array.isArray(vars[v]) ? vars[v] : []
-    return list.map(String).includes(value)
-  }
-
-  if (op === '==' || op === '!=' || op === '<' || op === '<=' || op === '>' || op === '>=') {
-    const left = evalConditionValue((expr as any).left, vars)
-    const right = evalConditionValue((expr as any).right, vars)
-    const c = cmp(left, right)
-    if (op === '==') return c === 0
-    if (op === '!=') return c !== 0
-    if (op === '<') return c < 0
-    if (op === '<=') return c <= 0
-    if (op === '>') return c > 0
-    if (op === '>=') return c >= 0
-  }
-
-  return Boolean(expr)
-}
-
-function normalizeAdvance(a: TimelineAdvanceV1 | any): TimelineAdvanceV1 {
-  if (!a) return { type: 'auto' }
-  if (typeof a === 'string') {
-    const t = String(a)
-    const allowed: Record<string, true> = {
-      auto: true,
-      click: true,
-      choice: true,
-      timer: true,
-      event: true,
-      condition: true,
-      end: true
-    }
-    return { type: (allowed[t] ? (t as any) : 'auto') as any }
-  }
-  if (typeof a === 'object' && a.type) return a
-  return { type: 'auto' }
-}
-
-function defaultEndingCardForNode(node: NodeV1): EndingCardV1 {
-  return {
-    title: '',
-    bullets: [],
-    moral: String(node.body?.text || '故事结束。'),
-    buttons: [{ type: 'restart', label: '重新开始' }]
-  }
-}
-
-type StageOverride = {
-  backgroundAssetId?: string
-  placements?: CharacterPlacementV1[]
-}
-
-async function renderStage(args: {
-  app: Application
-  doc: EditorDoc
-  node: NodeV1 | null
-  stageOverride?: StageOverride | null
-  isStale?: () => boolean
-  // 场景编排器：画布内拖动/点选摆放（仅渲染真实节点 placements 时启用，stageOverride 只读）
-  interaction?: {
-    onSelect: (placementId: string) => void
-    onCommitTransform: (placementId: string, patch: { x?: number; y?: number }) => void
-  }
-  // 场景编排器：视图变换（缩放以画布中心为基准 + 平移）与编辑/预览模式
-  view?: {
-    zoom?: number
-    panX?: number
-    panY?: number
-    panTool?: boolean
-    editable?: boolean
-    onPanCommit?: (panX: number, panY: number) => void
-  }
-}) {
-  const { app, doc, node, stageOverride, isStale, interaction, view } = args
-
-  if (isStale && isStale()) return
-
-  app.stage.removeChildren()
-  if (!node || !doc.project || !doc.story) return
-
-  const viewW = app.renderer.width
-  const viewH = app.renderer.height
-  if (!viewW || !viewH) return
-
-  const stageCfg = (doc.project && (doc.project as any).stage) as StageConfigV1 | undefined
-  const vp = computeStageViewport(stageCfg, viewW, viewH)
-
-  const root = new Container()
-  const zoom = Math.max(0.25, Math.min(4, Number(view?.zoom) || 1))
-  const effScale = vp.scale * zoom
-  const panX = Number(view?.panX) || 0
-  const panY = Number(view?.panY) || 0
-  const centerX = viewW / 2
-  const centerY = viewH / 2
-  // 缩放以画布中心为基准：rootPos = 中心 + (原 rootPos - 中心) × zoom + pan
-  root.x = centerX + (vp.offsetX - centerX) * zoom + panX
-  root.y = centerY + (vp.offsetY - centerY) * zoom + panY
-  root.scale.set(effScale)
-  app.stage.addChild(root)
-
-  // 平移工具：开启后按住画布拖动平移舞台（移动中直接改 root，pointerup 一次性提交视图状态）
-  try {
-    const st: any = app.stage
-    if (st.__panDown) {
-      st.off('pointerdown', st.__panDown)
-      st.__panDown = null
-    }
-    if (view?.panTool) {
-      st.__panDown = (e: any) => {
-        const startGx = e.global.x
-        const startGy = e.global.y
-        const baseX = root.x
-        const baseY = root.y
-        let latest: { x: number; y: number } | null = null
-        const onMove = (ev: any) => {
-          latest = { x: baseX + (ev.global.x - startGx), y: baseY + (ev.global.y - startGy) }
-          root.x = latest.x
-          root.y = latest.y
-        }
-        const onUp = () => {
-          st.off('pointermove', onMove)
-          st.off('pointerup', onUp)
-          st.off('pointerupoutside', onUp)
-          if (latest && view?.onPanCommit) {
-            const baseRootX = centerX + (vp.offsetX - centerX) * zoom
-            const baseRootY = centerY + (vp.offsetY - centerY) * zoom
-            view.onPanCommit(latest.x - baseRootX, latest.y - baseRootY)
-          }
-        }
-        st.on('pointermove', onMove)
-        st.on('pointerup', onUp)
-        st.on('pointerupoutside', onUp)
-      }
-      st.on('pointerdown', st.__panDown)
-    }
-  } catch {}
-
-  // background
-  try {
-    const bgId = stageOverride?.backgroundAssetId ?? node.visuals?.backgroundAssetId
-    if (bgId) {
-      const a = (doc.project.assets || []).find((x) => x.id === bgId)
-      if (a?.uri) {
-        const url = resolveAsset(a.uri, doc.assetBase)
-        const tex = await loadTexture(url)
-        if (isStale && isStale()) return
-        if (!tex) {
-          try {
-            console.warn('[gamestudio] background texture missing:', url)
-          } catch {}
-        } else {
-          const s = new Sprite(tex)
-          s.x = 0
-          s.y = 0
-          s.width = vp.stageW
-          s.height = vp.stageH
-          root.addChild(s)
-        }
-      }
-    }
-  } catch {}
-
-  // placements
-  try {
-    const placements = Array.isArray(stageOverride?.placements)
-      ? stageOverride?.placements
-      : Array.isArray(node.visuals?.placements)
-        ? node.visuals?.placements
-        : []
-    const editable = view?.editable !== false
-    const interactive = editable && Boolean(interaction) && !Array.isArray(stageOverride?.placements) && !view?.panTool
-    if (interactive || view?.panTool) {
-      try {
-        app.stage.eventMode = 'static'
-        app.stage.hitArea = app.screen
-      } catch {}
-    }
-    const ordered = placements.slice().sort((a, b) => numberOr(a.zIndex, 0) - numberOr(b.zIndex, 0))
-    // 像素级点选候选（渲染顺序 ascending，命中判定时从尾到头 = 从顶层到底层）
-    const hitSprites: Array<{ sprite: Sprite; pid: string; origX: number; origY: number }> = []
-    for (const p of ordered) {
-      if (p.visible === false) continue
-      const ch = (doc.project.characters || []).find((c) => c.id === p.characterId)
-      const imageAssetId = String(p.imageAssetId || ch?.imageAssetId || '').trim()
-      if (!imageAssetId) continue
-      const a = (doc.project.assets || []).find((x) => x.id === imageAssetId)
-      if (!a?.uri) continue
-
-      const url = resolveAsset(a.uri, doc.assetBase)
-      const tex = await loadTexture(url)
-      if (isStale && isStale()) return
-      if (!tex) continue
-      const sp = new Sprite(tex)
-      sp.anchor.set(0.5, 1)
-
-      const x = clamp01(numberOr(p.transform?.x, 0.5))
-      const y = clamp01(numberOr(p.transform?.y, 1))
-      const scale = numberOr(p.transform?.scale, 1)
-      const rot = numberOr(p.transform?.rotationDeg, 0)
-      const flipX = Boolean((p.transform as any)?.flipX)
-      const flipY = Boolean((p.transform as any)?.flipY)
-
-      sp.x = vp.stageW * x
-      sp.y = vp.stageH * y
-      // anchor (0.5,1) 底中：水平反转围绕中心稳定（与导出运行时 storyPixi.js 同一语义）
-      sp.scale.set(scale * (flipX ? -1 : 1), scale * (flipY ? -1 : 1))
-      sp.rotation = (rot * Math.PI) / 180
-
-      root.addChild(sp)
-
-      // 选中高亮定位标记 + 像素级点选候选（标记不依赖交互开关，预览模式也可显示选中框）
-      const pid = String(p.id || '').trim()
-      if (pid && !Array.isArray(stageOverride?.placements)) {
-        try { (sp as any).__placementId = pid } catch {}
-        hitSprites.push({ sprite: sp, pid, origX: x, origY: y })
-      }
-    }
-
-    // 像素级点选：stage 级 pointerdown 从顶到底逐摆放判定（透明像素穿透）；
-    // 命中的摆放走原有点选+拖动链；该点所有摆放像素都透明则视为点击空白并取消选中
-    try {
-      const st: any = app.stage
-      if (st.__pickDown) {
-        st.off('pointerdown', st.__pickDown)
-        st.__pickDown = null
-      }
-      if (interactive && interaction) {
-        st.__pickDown = (e: any) => {
-          const gx = e.global.x
-          const gy = e.global.y
-          for (let i = hitSprites.length - 1; i >= 0; i -= 1) {
-            const hit = hitSprites[i]
-            if (!hitPlacementSprite(hit.sprite, gx, gy)) continue
-            const sp = hit.sprite
-            interaction.onSelect(hit.pid)
-            const startGx = gx
-            const startGy = gy
-            const origX = hit.origX
-            const origY = hit.origY
-            let latest: { x: number; y: number } | null = null
-            const onMove = (ev: any) => {
-              const nx = clamp01(origX + (ev.global.x - startGx) / (effScale * vp.stageW))
-              const ny = clamp01(origY + (ev.global.y - startGy) / (effScale * vp.stageH))
-              latest = { x: nx, y: ny }
-              sp.x = vp.stageW * nx
-              sp.y = vp.stageH * ny
-            }
-            const onUp = () => {
-              st.off('pointermove', onMove)
-              st.off('pointerup', onUp)
-              st.off('pointerupoutside', onUp)
-              if (latest) interaction.onCommitTransform(hit.pid, latest)
-            }
-            st.on('pointermove', onMove)
-            st.on('pointerup', onUp)
-            st.on('pointerupoutside', onUp)
-            return
-          }
-          interaction.onSelect('')
-        }
-        st.on('pointerdown', st.__pickDown)
-      }
-    } catch {}
-  } catch {}
-}
-
-function normalizeDialogPreset(v: any): DialogPresetV1 {
-  const s = String(v || '').trim()
-  const allowed: Record<string, true> = { bottom: true, top: true, left: true, right: true, center: true, custom: true }
-  return (allowed[s] ? s : 'bottom') as DialogPresetV1
-}
-
-function normalizeChoicesDirection(v: any): ChoicesDirectionV1 {
-  const s = String(v || '').trim()
-  return (s === 'column' ? 'column' : 'row') as ChoicesDirectionV1
-}
-
-function normalizeChoicesAlign(v: any): ChoicesAlignV1 {
-  const s = String(v || '').trim()
-  const allowed: Record<string, true> = { start: true, center: true, end: true, stretch: true }
-  return (allowed[s] ? s : 'center') as ChoicesAlignV1
-}
-
-function normalizeStageV1(raw: any): StageConfigV1 {
-  const s = raw && typeof raw === 'object' ? raw : {}
-  let width = Math.max(1, Math.floor(numberOr((s as any).width, 720)))
-  let height = Math.max(1, Math.floor(numberOr((s as any).height, 1280)))
-
-  const orientationIn = String((s as any).orientation || '').trim()
-  const orientation =
-    orientationIn === 'portrait' || orientationIn === 'landscape'
-      ? (orientationIn as any)
-      : width >= height
-        ? 'landscape'
-        : 'portrait'
-
-  // keep ratio consistent with orientation if user provided mismatched values
-  if (orientation === 'portrait' && width > height) {
-    const t = width
-    width = height
-    height = t
-  }
-  if (orientation === 'landscape' && height > width) {
-    const t = width
-    width = height
-    height = t
-  }
-
-  const scaleMode = String((s as any).scaleMode || 'contain') === 'cover' ? 'cover' : 'contain'
-
-  // clamp to reasonable bounds (P0)
-  width = Math.max(320, Math.min(4096, width))
-  height = Math.max(320, Math.min(4096, height))
-
-  return { width, height, orientation, scaleMode }
-}
-
-function normalizeProjectV1(raw: any): ProjectV1 {
-  const p = (raw || {}) as any
-  const characters = Array.isArray(p.characters) ? p.characters : []
-  const assets = Array.isArray(p.assets) ? p.assets : []
-  const events = Array.isArray(p.events) ? p.events : []
-  const state = p && typeof p.state === 'object' && p.state ? p.state : { vars: [] }
-  if (!Array.isArray(state.vars)) state.vars = []
-  const stage = normalizeStageV1(p.stage)
-  return {
-    schemaVersion: String(p.schemaVersion || '1.0'),
-    id: String(p.id || ''),
-    title: String(p.title || ''),
-    pluginId: String(p.pluginId || 'story-pixi'),
-    pluginVersion: String(p.pluginVersion || '0.1.0'),
-    createdAt: String(p.createdAt || ''),
-    updatedAt: String(p.updatedAt || ''),
-    characters,
-    assets,
-    events,
-    state,
-    stage
-  }
-}
-
-function ensureTimelineForNode(n: NodeV1): NodeV1 {
-  const nn = (n || {}) as any
-  const kind = String(nn.kind || 'scene') === 'ending' ? 'ending' : 'scene'
-  const bodyText = String(nn.body?.text || '')
-  const bodyTitleRaw = nn.body?.title
-  const bodyTitle = typeof bodyTitleRaw === 'string' ? bodyTitleRaw : bodyTitleRaw == null ? '' : String(bodyTitleRaw)
-  const body: any = { text: bodyText }
-  if (String(bodyTitle || '').trim()) body.title = bodyTitle
-  const choices = kind === 'scene' ? (Array.isArray(nn.choices) ? nn.choices : []) : []
-
-  const stepsIn = Array.isArray(nn.timeline?.steps) ? nn.timeline.steps : []
-  if (stepsIn.length) {
-    const steps = stepsIn.map((s: any, i: number) => ({
-      id: String(s && s.id || `st_${nn.id}_${i + 1}`),
-      actions: Array.isArray(s && s.actions) ? s.actions : [],
-      advance: (s && typeof s.advance === 'object' && s.advance) ? s.advance : { type: 'auto' }
-    }))
-    return { ...n, kind: kind as any, body, timeline: { steps } }
-  }
-
-  // Legacy node → minimal timeline
-  if (kind === 'ending') {
-    return {
-      ...n,
-      kind: 'ending',
-      body,
-      timeline: {
-        steps: [
-          {
-            id: `st_${String(nn.id || 'end')}_1`,
-            actions: [
-              {
-                type: 'ui.showEndingCard',
-                card: {
-                  title: '',
-                  bullets: [],
-                  moral: bodyText || '故事结束。',
-                  buttons: [{ type: 'restart', label: '重新开始' }]
-                }
-              }
-            ],
-            advance: { type: 'end' }
-          }
-        ]
-      }
-    }
-  }
-
-  return {
-    ...n,
-    kind: 'scene',
-    body,
-    timeline: {
-      steps: [
-        {
-          id: `st_${String(nn.id || 'scene')}_1`,
-          actions: [{ type: 'ui.setText', mode: 'replace', text: bodyText }],
-          advance: { type: choices.length ? 'choice' : 'click' }
-        }
-      ]
-    }
-  }
-}
-
-function normalizeStoryV1(raw: any): StoryV1 {
-  const s = (raw || {}) as any
-  const nodesIn = Array.isArray(s.nodes) ? s.nodes : []
-  const nodes = nodesIn.map((n: any) => ensureTimelineForNode(n))
-  const startNodeId = String(s.startNodeId || (nodes[0] && nodes[0].id) || '')
-  return { schemaVersion: String(s.schemaVersion || '1.0'), startNodeId, nodes }
-}
-
-  function validate(doc: EditorDoc): string[] {
-    const problems: string[] = []
-    if (!doc.story || !doc.project) return ['未打开项目']
-
-    const project = normalizeProjectV1(doc.project as any)
-    const story = normalizeStoryV1(doc.story as any)
-
-    const nodes = Array.isArray(story.nodes) ? story.nodes : []
-    const nodeIds = new Set(nodes.map((n: any) => String(n && n.id)))
-    const eventIds = new Set((project.events || []).map((e: any) => String(e && e.id)))
-    const stateVarNames = new Set((project.state?.vars || []).map((v: any) => String(v && v.name)))
-
-    if (!story.startNodeId || !nodeIds.has(String(story.startNodeId))) problems.push('startNodeId 无效')
-
-    // state vars: basic validation
-    try {
-      const names = (project.state?.vars || []).map((v: any) => String(v && v.name || '').trim()).filter(Boolean)
-      const dup = names.find((n, idx) => names.indexOf(n) !== idx)
-      if (dup) problems.push(`State 变量名重复：${dup}`)
-    } catch {}
-
-    // event macros: basic validation
-    try {
-      const ids = (project.events || []).map((e: any) => String(e && e.id || '').trim()).filter(Boolean)
-      const dup = ids.find((n, idx) => ids.indexOf(n) !== idx)
-      if (dup) problems.push(`Event 宏 id 重复：${dup}`)
-    } catch {}
-
-    for (const n of nodes) {
-      const nodeId = String((n as any).id || '')
-      const kind = String((n as any).kind || '')
-      const name = String((n as any).name || '').trim()
-      if (!name) problems.push(`节点 ${nodeId} 缺少名称`)
-
-      const timelineSteps = Array.isArray((n as any).timeline?.steps) ? (n as any).timeline.steps : []
-      if (!timelineSteps.length) problems.push(`节点 ${nodeId} 缺少 timeline.steps`)
-
-      for (const [si, st] of timelineSteps.entries()) {
-        const stepId = String(st && st.id || `#${si + 1}`)
-        const adv = normalizeAdvance(st && st.advance)
-        const t = String((adv as any).type || 'auto')
-        if (t === 'choice' && kind === 'scene') {
-          const cs = Array.isArray((n as any).choices) ? (n as any).choices : []
-          if (!cs.length) problems.push(`节点 ${nodeId} 步骤 ${stepId}：choice 但未配置任何选项`)
-        }
-        if (t === 'event') {
-          const name = String((adv as any).name || '').trim()
-          if (!name) problems.push(`节点 ${nodeId} 步骤 ${stepId}：event 缺少 name`)
-        }
-        if (t === 'timer') {
-          const ms = Number((adv as any).ms)
-          if (!Number.isFinite(ms)) problems.push(`节点 ${nodeId} 步骤 ${stepId}：timer.ms 无效`)
-        }
-        if (t === 'condition') {
-          const expr = (adv as any).expr
-          if (!expr) problems.push(`节点 ${nodeId} 步骤 ${stepId}：condition 缺少 expr`)
-        }
-
-        const actions = Array.isArray(st && st.actions) ? st.actions : []
-        for (const a of actions) {
-          const at = String(a && a.type || '')
-          if (at === 'flow.gotoNode') {
-            const to = String(a && (a as any).nodeId || '').trim()
-            if (to && !nodeIds.has(to)) problems.push(`节点 ${nodeId} 动作 flow.gotoNode 指向无效：${to}`)
-          }
-          if (at === 'event.call') {
-            const id = String(a && (a as any).eventId || '').trim()
-            if (id && !eventIds.has(id)) problems.push(`节点 ${nodeId} 动作 event.call 不存在：${id}`)
-          }
-          if (at.startsWith('state.')) {
-            const v = String(a && (a as any).var || '').trim()
-            if (v && !stateVarNames.has(v)) problems.push(`节点 ${nodeId} 动作 ${at} 变量未定义：${v}`)
-          }
-        }
-      }
-
-      if (kind === 'scene') {
-        const choices = Array.isArray((n as any).choices) ? (n as any).choices : []
-        for (const c of choices) {
-          const to = String(c && c.toNodeId || '')
-          const cid = String(c && c.id || '')
-          if (!to || !nodeIds.has(to)) problems.push(`节点 ${nodeId} 选项指向无效：${cid}`)
-        }
-      }
-
-    const placements = Array.isArray((n as any).visuals?.placements) ? (n as any).visuals.placements : []
-    for (const p of placements) {
-      const pid = String(p && p.id || '')
-      const chId = String(p && p.characterId || '')
-      if (chId && !project.characters.find((ch: any) => String(ch && ch.id) === chId)) {
-        problems.push(`节点 ${nodeId} placement 角色不存在：${pid}`)
-      }
-      const img = (p as any).imageAssetId
-      if (img && !project.assets.find((a: any) => String(a && a.id) === String(img))) {
-        problems.push(`节点 ${nodeId} placement ${pid} imageAssetId 不存在：${String(img)}`)
-      }
-    }
-
-    const bg = (n as any).visuals?.backgroundAssetId
-    if (bg && !project.assets.find((a: any) => String(a && a.id) === String(bg))) {
-      problems.push(`节点 ${nodeId} backgroundAssetId 不存在：${String(bg)}`)
-    }
-  }
-
-  for (const ch of project.characters) {
-    const chId = String((ch as any).id || '')
-    const img = (ch as any).imageAssetId
-    if (img && !project.assets.find((a: any) => String(a && a.id) === String(img))) {
-      problems.push(`角色 ${chId} imageAssetId 不存在：${String(img)}`)
-    }
-  }
-
-  return problems
-}
+import { renderStage } from './compose/canvas/renderStage'
+import {
+  buildGlobalNegativeFromTemplate,
+  defaultAiReq,
+  loadAiBackgroundDraft,
+  loadStoryboardContinuityBackup,
+  mapTemplateStyleToStoryboardStyle,
+  readHubTemplateFields,
+  saveAiBackgroundDraft,
+  saveStoryboardContinuityBackup
+} from './compose/orchestration/draftStorage'
+import { StageOverlay } from './compose/canvas/StageOverlay'
+import { StageToolbar } from './compose/canvas/StageToolbar'
+import { CompletenessModal } from './compose/modals/CompletenessModal'
+import { LatestExportModal } from './compose/modals/LatestExportModal'
+import { SceneReviewPanel } from './compose/modals/SceneReviewPanel'
+import { StoryboardOverrideModal } from './compose/modals/StoryboardOverrideModal'
+import { ComposeLeftPanel } from './compose/panels/LeftPanel'
+import { ComposeRightPanel } from './compose/panels/RightPanel'
+import { ComposeTopBar } from './compose/panels/ComposeTopBar'
+import { ExternalUpdateBanner } from './compose/panels/ExternalUpdateBanner'
+import type { EditorDoc, LatestExportAction, LeftTab, Selection } from './compose/types'
+import {
+  ensureNode,
+  ensureTimelineForNode,
+  normalizeChoicesAlign,
+  normalizeChoicesDirection,
+  normalizeDialogPreset,
+  normalizeProjectV1,
+  normalizeStageV1,
+  normalizeStoryV1,
+  validate
+} from './compose/orchestration/normalize'
+import {
+  applyTimelineAction,
+  buildDefaultVars,
+  defaultEndingCardForNode,
+  enterNodeRuntime,
+  evalConditionExpr,
+  normalizeAdvance,
+  type RuntimeState
+} from './compose/orchestration/runtime'
+import { computeStageViewport } from './compose/orchestration/stageViewport'
+import {
+  DOUBAO_STORYBOARD_DEFAULTS,
+  getDoubaoStoryboardDefaultSize,
+  getStoryboardAssetPlanSummary,
+  getStoryboardRequiredMissingAssets,
+  getStoryboardRequiredUnlockedAssets,
+  normalizeStoryboardAssetPlan,
+  normalizeStoryboardLockAssetPromptDrafts,
+  readStoryboardAssetConfirmedAtFromProject,
+  readStoryboardAssetPlanFromProject,
+  buildSelectedCharacterRefsFromChoices,
+  recomputeStoryboardAssetPlanSummary,
+  type StoryAssetGalleryState,
+  type StoryboardBatchDraft,
+  type StoryboardBatchState,
+  type StoryboardLockAssetPromptDraft,
+  type StoryboardOpenCheckState,
+  type StoryboardPromptMeta,
+  type StoryboardSceneAiBackgroundRequest,
+  type StoryboardScenePromptStore
+} from './compose/orchestration/storyboardPlan'
+import { buildNodeTextSummary, clamp01, nodeKindLabel, nowHms, numberOr, resolveAsset, scriptCardLabel, uid } from './compose/orchestration/utils'
 
 
 export default function ComposeStudio(props: { projectId?: string | null; onBack?: () => void; onBackToHub?: () => void }) {
@@ -1261,6 +174,15 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [selection, setSelection] = useState<Selection>({ type: 'none' })
   const [leftTab, setLeftTab] = useState<LeftTab>('nodes')
   const [dirty, setDirty] = useState(false)
+  // 2026-10-20 外壳升级：顶栏「导出/制作」下拉菜单开合（点击外部或再次点击收起）
+  const [openMenu, setOpenMenu] = useState<'' | 'export' | 'produce'>('')
+
+  useEffect(() => {
+    if (!openMenu) return
+    const close = () => setOpenMenu('')
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [openMenu])
   // 2026-09-03 外部更新检测：服务端 _rev 高于本地时横幅提示刷新。
   // 根因（用户实测"删除不掉/切换不了"）：旧会话内存态保存时 409 重试会把旧内容盖回磁盘，外部修正被回滚。
   const [externalNewerRev, setExternalNewerRev] = useState(0)
@@ -1380,180 +302,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [aiError, setAiError] = useState('')
   const [aiImageProvider, setAiImageProvider] = useState('')
   const [aiImageModel, setAiImageModel] = useState('')
-  const HUB_TEMPLATE_FIELDS_KEY = 'gamestudio.ai.templateFields'
-  const AI_BG_DRAFT_KEY = `gamestudio.ai.backgroundDraft.${String(props.projectId || 'global')}`
-  const AI_BG_CONTINUITY_KEY = `gamestudio.ai.storyboardContinuity.${String(props.projectId || 'global')}`
-  const loadAiBackgroundDraft = (key: string): Partial<AiBackgroundRequest> | null => {
-    try {
-      const raw = localStorage.getItem(key)
-      if (!raw) return null
-      const json = JSON.parse(raw)
-      if (!json || typeof json !== 'object') return null
-      const v: any = json
-      const out: Partial<AiBackgroundRequest> = {}
-      if (typeof v.userInput === 'string') out.userInput = v.userInput
-      if (typeof v.globalPrompt === 'string') out.globalPrompt = v.globalPrompt
-      if (typeof v.globalNegativePrompt === 'string') out.globalNegativePrompt = v.globalNegativePrompt
-      if (typeof v.backgroundOnly === 'boolean') out.backgroundOnly = v.backgroundOnly
-      if (typeof v.prompt === 'string') out.prompt = v.prompt
-      if (typeof v.negativePrompt === 'string') out.negativePrompt = v.negativePrompt
-      if (typeof v.aspectRatio === 'string') out.aspectRatio = v.aspectRatio as any
-      if (typeof v.style === 'string') out.style = v.style as any
-      if (v.width != null && Number.isFinite(Number(v.width))) out.width = Number(v.width)
-      if (v.height != null && Number.isFinite(Number(v.height))) out.height = Number(v.height)
-      if (typeof v.size === 'string') out.size = v.size
-      if (v.responseFormat === 'b64_json' || v.responseFormat === 'url') out.responseFormat = v.responseFormat
-      if (typeof v.watermark === 'boolean') out.watermark = v.watermark
-      if (v.sequentialImageGeneration === 'auto' || v.sequentialImageGeneration === 'disabled') out.sequentialImageGeneration = v.sequentialImageGeneration
-      if (Array.isArray(v.referenceSceneIds)) out.referenceSceneIds = v.referenceSceneIds.map((x: any) => String(x || '').trim()).filter(Boolean)
-      if (v.steps != null && Number.isFinite(Number(v.steps))) out.steps = Number(v.steps)
-      if (v.cfgScale != null && Number.isFinite(Number(v.cfgScale))) out.cfgScale = Number(v.cfgScale)
-      if (v.seed != null && Number.isFinite(Number(v.seed))) out.seed = Number(v.seed)
-      if (v.continuity && typeof v.continuity === 'object') {
-        out.continuity = {
-          ipadapterEnabled: Boolean((v.continuity as any).ipadapterEnabled),
-          requireCharacterRefs: (v.continuity as any).requireCharacterRefs !== false,
-          controlnetEnabled: Boolean((v.continuity as any).controlnetEnabled),
-          seedMode: String((v.continuity as any).seedMode || '').trim() === 'fixed' ? 'fixed' : 'random'
-        }
-      }
-      return out
-    } catch {
-      return null
-    }
-  }
-  const saveAiBackgroundDraft = (key: string, draft: AiBackgroundRequest) => {
-    try {
-      localStorage.setItem(
-        key,
-        JSON.stringify({
-          userInput: String(draft.userInput || ''),
-          globalPrompt: String(draft.globalPrompt || ''),
-          globalNegativePrompt: String(draft.globalNegativePrompt || ''),
-          backgroundOnly: Boolean(draft.backgroundOnly),
-          prompt: String(draft.prompt || ''),
-          negativePrompt: String(draft.negativePrompt || ''),
-          aspectRatio: draft.aspectRatio || '9:16',
-          style: draft.style || 'picture_book',
-          width: draft.width ?? 768,
-          height: draft.height ?? 1024,
-          size: String(draft.size || ''),
-          responseFormat: draft.responseFormat === 'b64_json' ? 'b64_json' : 'url',
-          watermark: Boolean(draft.watermark),
-          sequentialImageGeneration: draft.sequentialImageGeneration === 'disabled' ? 'disabled' : 'auto',
-          referenceSceneIds: Array.isArray(draft.referenceSceneIds) ? draft.referenceSceneIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
-          steps: draft.steps ?? 20,
-          cfgScale: draft.cfgScale ?? 7,
-          seed: draft.seed ?? null,
-          continuity: draft.continuity || { ipadapterEnabled: true, requireCharacterRefs: false, controlnetEnabled: false, seedMode: 'random' },
-          updatedAt: new Date().toISOString()
-        })
-      )
-    } catch {}
-  }
-
-  const loadStoryboardContinuityBackup = (key: string): { storyBibleJson?: string; entitySpec?: string; continuity?: any } | null => {
-    try {
-      const raw = localStorage.getItem(key)
-      if (!raw) return null
-      const json = JSON.parse(raw) as any
-      if (!json || typeof json !== 'object') return null
-      return {
-        storyBibleJson: typeof json.storyBibleJson === 'string' ? json.storyBibleJson : undefined,
-        entitySpec: typeof json.entitySpec === 'string' ? json.entitySpec : undefined,
-        continuity: json.continuity && typeof json.continuity === 'object' ? json.continuity : undefined
-      }
-    } catch {
-      return null
-    }
-  }
-
-  const saveStoryboardContinuityBackup = (key: string, payload: { storyBibleJson?: string; entitySpec?: string; continuity?: any }) => {
-    try {
-      localStorage.setItem(
-        key,
-        JSON.stringify({
-          storyBibleJson: String(payload.storyBibleJson || ''),
-          entitySpec: String(payload.entitySpec || ''),
-          continuity: payload.continuity || null,
-          updatedAt: new Date().toISOString()
-        })
-      )
-    } catch {}
-  }
-
-  const readHubTemplateFields = (): {
-    theme: string
-    moral: string
-    world: string
-    protagonist: string
-    style: string
-    tone: string
-    constraints: string
-    extra: string
-  } | null => {
-    try {
-      const raw = localStorage.getItem(HUB_TEMPLATE_FIELDS_KEY)
-      if (!raw) return null
-      const json = JSON.parse(raw) as any
-      if (!json || typeof json !== 'object') return null
-      return {
-        theme: String(json.theme || '').trim(),
-        moral: String(json.moral || '').trim(),
-        world: String(json.world || '').trim(),
-        protagonist: String(json.protagonist || '').trim(),
-        style: String(json.style || '').trim(),
-        tone: String(json.tone || '').trim(),
-        constraints: String(json.constraints || '').trim(),
-        extra: String(json.extra || '').trim()
-      }
-    } catch {
-      return null
-    }
-  }
-
-  const mapTemplateStyleToStoryboardStyle = (
-    styleText: string
-  ): StoryboardBatchState['style'] => {
-    const s = String(styleText || '').toLowerCase()
-    if (s.includes('国风') || s.includes('national')) return 'national_style'
-    if (s.includes('卡通') || s.includes('cartoon') || s.includes('动漫')) return 'cartoon'
-    if (s.includes('水彩') || s.includes('watercolor')) return 'watercolor'
-    return 'picture_book'
-  }
-
-  const buildGlobalNegativeFromTemplate = (tpl: ReturnType<typeof readHubTemplateFields>) => {
-    const base = ['text', 'watermark', 'low quality', 'blurry', 'deformed']
-    const c = String(tpl?.constraints || '')
-    if (/暴力|血腥/.test(c)) base.push('gore', 'blood')
-    if (/恐怖/.test(c)) base.push('horror')
-    return Array.from(new Set(base)).join(', ')
-  }
-
-  const defaultAiReq: AiBackgroundRequest = {
-    userInput: '',
-    globalPrompt: '',
-    globalNegativePrompt: '',
-    backgroundOnly: false,
-    prompt: '',
-    negativePrompt: '',
-    aspectRatio: '9:16',
-    style: 'picture_book',
-    width: 768,
-    height: 1344,
-    model: '',
-    loras: [],
-    size: getDoubaoStoryboardDefaultSize('9:16'),
-    responseFormat: 'url',
-    watermark: false,
-    sequentialImageGeneration: 'auto',
-    referenceSceneIds: [],
-    steps: 20,
-    cfgScale: 7,
-    seed: undefined,
-    continuity: { ipadapterEnabled: true, requireCharacterRefs: false, controlnetEnabled: false, seedMode: 'random' },
-    characterRefs: []
-  }
+  const AI_BG_DRAFT_KEY = `talkscene.ai.backgroundDraft.${String(props.projectId || 'global')}`
+  const AI_BG_CONTINUITY_KEY = `talkscene.ai.storyboardContinuity.${String(props.projectId || 'global')}`
 
   const [aiReq, setAiReq] = useState<AiBackgroundRequest>(() => {
     const saved = loadAiBackgroundDraft(AI_BG_DRAFT_KEY)
@@ -1637,6 +387,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     sampler: 'DPM++ 2M',
     scheduler: 'Automatic'
   })
+  const sbReqRef = useRef(sbReq)
+  const sbGlobalPromptStateReadyRef = useRef(false)
+  useEffect(() => { sbReqRef.current = sbReq }, [sbReq])
   const [sbAssetPromptDrafts, setSbAssetPromptDrafts] = useState<Record<string, StoryboardLockAssetPromptDraft>>({})
   // 2026-08-26 修复批量串行覆盖：长任务闭包只能读到渲染时的状态快照，批量增强时每个资产的更新会互相覆盖
   // （实测 14 个资产只剩最后一个落盘）。ref 镜像始终持最新草稿，更新函数一律从 ref 读取
@@ -1657,7 +410,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   }, [sbAssetPlan])
 
   // ============ 2026-08-26 锁定事物工作区打开状态持久化与恢复（用户指令：刷新不能丢正在操作的流程） ============
-  const sbWsOpenStorageKey = 'gamestudio.lockWorkspace.openProject'
+  const sbWsOpenStorageKey = 'talkscene.lockWorkspace.openProject'
   const sbWsRestoreDoneRef = useRef(false)
   // 打开即记录（只记最后操作的项目）；清除只发生在用户主动关闭/离开工作区的路径（onClose / onOpenRender），
   // 不能在 effect 里按 sbOpen=false 反推删除——挂载首轮 sbOpen 恒为 false，会先误删再导致恢复失败
@@ -1903,7 +656,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         app = a
       } catch (e) {
         try {
-          console.error('[gamestudio] pixi init failed:', e)
+          console.error('[talkscene] pixi init failed:', e)
         } catch {}
       }
     })()
@@ -2589,6 +1342,12 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
+  async function reloadProjectAndStoryboard() {
+    if (doc.mode !== 'project') return
+    await openProject(doc.id)
+    if (sbOpen) await initStoryboardBatchFromDoc()
+  }
+
   async function createNewProject() {
     const title = await dlgPrompt('新项目名称', { defaultValue: '未命名故事', placeholder: '请输入项目名称' })
     if (!title) return
@@ -2776,13 +1535,6 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
-  function ccAiReviewStatusText(s: string) {
-    if (s === 'completed') return '完成'
-    if (s === 'partial') return '部分完成'
-    if (s === 'unavailable') return '不可用'
-    return '未执行'
-  }
-
   function ccScreenshotUrl(screenshotDir: string, file: string) {
     return resolveUrl(`/project-assets/${encodeURIComponent(doc.id)}/${String(screenshotDir || '').replace(/^\/+/, '')}/${encodeURIComponent(file)}`)
   }
@@ -2868,18 +1620,6 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
-  function srVerdictColor(verdict?: string) {
-    if (verdict === 'pass') return '#86efac'
-    if (verdict === 'suspect') return '#fbbf24'
-    return '#fca5a5'
-  }
-
-  function srVerdictLabel(verdict?: string) {
-    if (verdict === 'pass') return '通过'
-    if (verdict === 'suspect') return '存疑'
-    return '不合格'
-  }
-
   function srFeedbackStatusOf(sceneId: string) {
     const feedback = (srRound?.feedback || []).filter((f) => f.sceneId === sceneId)
     const latest = feedback.length ? feedback[feedback.length - 1] : null
@@ -2947,111 +1687,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
-  function enterNodeRuntime(prev: RuntimeState): RuntimeState {
-    return {
-      ...prev,
-      stepIndex: 0,
-      text: '',
-      toast: '',
-      endingCard: null,
-      wait: { kind: 'auto' },
-      stageOverride: {},
-      nav: null
-    }
-  }
 
-  function applyTimelineAction(state: RuntimeState, action: TimelineActionV1, events: ProjectEventV1[], depth: number): RuntimeState {
-    const t = String((action as any)?.type || '').trim()
-    if (!t) return state
-    if (state.nav) return state
-
-    if (t === 'ui.setText') {
-      const mode = String((action as any).mode || 'replace')
-      const text = String((action as any).text ?? '')
-      return { ...state, text: mode === 'append' ? `${state.text}${text}` : text }
-    }
-    if (t === 'ui.appendText') {
-      const text = String((action as any).text ?? '')
-      return { ...state, text: `${state.text}${text}` }
-    }
-    if (t === 'ui.clearText') return { ...state, text: '' }
-    if (t === 'ui.toast') return { ...state, toast: String((action as any).text ?? '') }
-
-    if (t === 'ui.showEndingCard') {
-      const card = (action as any).card as EndingCardV1
-      return { ...state, endingCard: card || null, wait: { kind: 'end' } }
-    }
-
-    if (t === 'flow.gotoNode') {
-      const nodeId = String((action as any).nodeId || '').trim()
-      if (!nodeId) return state
-      return { ...state, nav: { type: 'gotoNode', nodeId } }
-    }
-    if (t === 'flow.restart') return { ...state, nav: { type: 'restart' } }
-    if (t === 'flow.backToHub') return { ...state, nav: { type: 'backToHub', url: (action as any).url } }
-    if (t === 'flow.stopTimeline') return { ...state, wait: { kind: 'end' } }
-
-    if (t === 'event.call') {
-      if (depth >= 8) return { ...state, toast: state.toast || '事件嵌套过深，已中止' }
-      const eventId = String((action as any).eventId || '').trim()
-      if (!eventId) return state
-      const ev = events.find((e) => String(e && (e as any).id) === eventId) || null
-      if (!ev) return { ...state, toast: state.toast || `事件不存在：${eventId}` }
-      const acts = Array.isArray((ev as any).actions) ? (ev as any).actions : []
-      let next = state
-      for (const a of acts) {
-        next = applyTimelineAction(next, a as any, events, depth + 1)
-        if (next.nav) break
-      }
-      return next
-    }
-    if (t === 'events.emit') {
-      const name = String((action as any).name || '').trim()
-      if (!name) return state
-      const payload = (action as any).payload
-      return { ...state, eventMemory: { ...state.eventMemory, [name]: payload ?? true } }
-    }
-
-    if (t === 'state.set') {
-      const k = String((action as any).var || '').trim()
-      if (!k) return state
-      return { ...state, vars: { ...state.vars, [k]: (action as any).value } }
-    }
-    if (t === 'state.add' || t === 'state.inc') {
-      const k = String((action as any).var || '').trim()
-      if (!k) return state
-      const delta = t === 'state.inc' ? Number((action as any).value ?? 1) : Number((action as any).value ?? 0)
-      const prev = Number(state.vars[k] ?? 0)
-      const next = (Number.isFinite(prev) ? prev : 0) + (Number.isFinite(delta) ? delta : 0)
-      return { ...state, vars: { ...state.vars, [k]: next } }
-    }
-    if (t === 'state.toggle') {
-      const k = String((action as any).var || '').trim()
-      if (!k) return state
-      return { ...state, vars: { ...state.vars, [k]: !Boolean(state.vars[k]) } }
-    }
-    if (t === 'state.tags.add' || t === 'state.tags.remove') {
-      const k = String((action as any).var || '').trim()
-      const v = String((action as any).value || '').trim()
-      if (!k || !v) return state
-      const list = Array.isArray(state.vars[k]) ? state.vars[k].map(String) : []
-      const set = new Set(list)
-      if (t === 'state.tags.add') set.add(v)
-      else set.delete(v)
-      return { ...state, vars: { ...state.vars, [k]: Array.from(set) } }
-    }
-
-    if (t === 'stage.setBackground') {
-      const assetId = (action as any).assetId ? String((action as any).assetId) : undefined
-      return { ...state, stageOverride: { ...state.stageOverride, backgroundAssetId: assetId } }
-    }
-    if (t === 'stage.setPlacements') {
-      const placements = Array.isArray((action as any).placements) ? (action as any).placements : []
-      return { ...state, stageOverride: { ...state.stageOverride, placements } }
-    }
-
-    return state
-  }
 
   function runTimelineStable(prev: RuntimeState, node: NodeV1): RuntimeState {
     if (!doc.project) return prev
@@ -3141,23 +1777,6 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     return { ...state, wait: { kind: 'end' }, toast: state.toast || '运行时：auto 步骤过多，已中止' }
   }
 
-function ensureNode(n: NodeV1): NodeV1 {
-  const base = ensureTimelineForNode(n)
-  const visuals = base.visuals || {}
-  const placements = Array.isArray(visuals.placements) ? visuals.placements : []
-  const choices = Array.isArray((base as any).choices) ? (base as any).choices : []
-  const normalizedChoices = choices.map((c: any) => ({
-          ...c,
-          id: String((c as any).id || ''),
-          text: String((c as any).text || ''),
-          toNodeId: String((c as any).toNodeId || ''),
-          effects: Array.isArray((c as any).effects) ? (c as any).effects : [],
-          visibleWhen: (c as any).visibleWhen ?? null,
-          enabledWhen: (c as any).enabledWhen ?? null
-        }))
-  return { ...base, choices: normalizedChoices, visuals: { ...visuals, placements } }
-}
-
   function addNode(kind: NodeV1['kind']) {
     if (!doc.story || doc.readonly) return
     void dlgAlert('合成层禁止新增节点；请返回蓝图层调整结构。')
@@ -3234,19 +1853,6 @@ function ensureNode(n: NodeV1): NodeV1 {
     return { w: Math.max(1, Math.floor(Number(st.width || 720))), h: Math.max(1, Math.floor(Number(st.height || 1280))) }
   }
 
-  function buildNodeTextSummary(textRaw: string) {
-    const lines = String(textRaw || '')
-      .split(/\r?\n/)
-      .map((x) => x.trim())
-      .filter(Boolean)
-    const picked: string[] = []
-    for (const ln of lines) {
-      if (/^选项(?:\d{1,2}|[A-Z])\s*[:：]/i.test(ln)) break
-      picked.push(ln)
-      if (picked.length >= 8) break
-    }
-    return picked.join('，').replace(/\s+/g, ' ').trim()
-  }
 
   function buildCharacterContextText(characterId: string) {
     if (!doc.story || !doc.project) return ''
@@ -3336,27 +1942,6 @@ function ensureNode(n: NodeV1): NodeV1 {
     })
   }
 
-  function buildSelectedCharacterRefsFromChoices(choices: Array<{
-    characterId: string
-    characterName: string
-    fingerprintPrompt?: string
-    assetId?: string
-    assetUri?: string
-    available: boolean
-    selected: boolean
-    weight?: number
-  }>) {
-    return choices
-      .filter((x) => x.selected && x.available && x.assetUri)
-      .map((x) => ({
-        characterId: x.characterId,
-        characterName: x.characterName,
-        assetId: x.assetId,
-        assetUri: x.assetUri,
-        fingerprintPrompt: x.fingerprintPrompt || undefined,
-        weight: Number.isFinite(Number(x.weight)) ? Number(x.weight) : 0.85
-      }))
-  }
 
   function nowHms() {
     try {
@@ -3454,7 +2039,16 @@ function ensureNode(n: NodeV1): NodeV1 {
           'modern city, modern plastic fishing gear, metal fishing rod, fishing reel, baseball cap, backpack, photorealistic, adult proportions, multiple protagonists, multiple cats, extra people, costume change, color drift, face drift, extra props, text, watermark, logo, speech bubble, qr code, blurry, low quality, deformed, gore, blood, underexposed, overexposed'
       }
     }
-    return null
+    return {
+      globalPromptZh:
+        '儿童绘本连续分镜，统一美术风格、时代、地点、环境元素、光线、色彩和镜头语言；所有角色的身份、外观、年龄感、服装和配色保持一致，关键道具的造型、材质与尺寸保持一致，不变脸、不换装、不替换核心物件；画面突出可见动作，构图干净，叙事连续。',
+      globalNegativePromptZh:
+        '多余人物，重复角色，多视图，换装，换色，变脸，道具替换，与故事时代或设定冲突的元素，文字，水印，logo，对话框，二维码，模糊，低质量，畸形，写实摄影，过暗，过曝',
+      globalPrompt:
+        'children picture-book storyboard, unified art style, consistent era, locations, environment elements, lighting, color palette and camera language; keep every character identity, appearance, age, outfit and colors consistent, and keep the shape, material and scale of key props consistent across all scenes, no face drift, no costume change, no prop substitution; clear visible actions, clean composition, continuous narrative',
+      globalNegativePrompt:
+        'extra people, duplicate characters, multiple views, costume change, color drift, face drift, prop substitution, anachronistic or story-inconsistent elements, text, watermark, logo, speech bubble, qr code, blurry, low quality, deformed, photorealistic, underexposed, overexposed'
+    }
   }
 
   function isWeakStoryboardGlobalPrompt(value: string) {
@@ -4066,21 +2660,6 @@ function ensureNode(n: NodeV1): NodeV1 {
     }
   }
 
-  function readStoryboardAssetPlanFromProject(project: ProjectV1 | null | undefined): StoryAssetPlan | null {
-    const st = project && (project as any).state && typeof (project as any).state === 'object' ? (project as any).state : {}
-    const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
-    const raw = aiBg && (aiBg as any).storyAssetPlan && typeof (aiBg as any).storyAssetPlan === 'object'
-      ? ((aiBg as any).storyAssetPlan as StoryAssetPlan)
-      : null
-    return normalizeStoryboardAssetPlan(raw)
-  }
-
-  function readStoryboardAssetConfirmedAtFromProject(project: ProjectV1 | null | undefined) {
-    const st = project && (project as any).state && typeof (project as any).state === 'object' ? (project as any).state : {}
-    const aiBg = st && (st as any).aiBackground && typeof (st as any).aiBackground === 'object' ? (st as any).aiBackground : {}
-    return String((aiBg as any).storyAssetPlanConfirmedAt || '').trim()
-  }
-
   // 2026-08-30 修复：202 审核挂起响应没有 plan，绝不能用空计划覆盖现有计划（会把向导打回第 3 步）
   function applyStoryboardPlanResponse(res: any): boolean {
     const nextPlan = normalizeStoryboardAssetPlan(res?.plan)
@@ -4158,6 +2737,7 @@ function ensureNode(n: NodeV1): NodeV1 {
   ): ProjectV1 {
     const stateIn = (project && (project as any).state && typeof (project as any).state === 'object') ? (project as any).state : {}
     const aiBgIn = (stateIn as any).aiBackground && typeof (stateIn as any).aiBackground === 'object' ? (stateIn as any).aiBackground : {}
+    const currentSbReq = sbReqRef.current
     const nextPromptDrafts = overrides && 'assetPromptDrafts' in overrides
       ? (overrides.assetPromptDrafts && typeof overrides.assetPromptDrafts === 'object' ? overrides.assetPromptDrafts : {})
       : (sbAssetPromptDrafts && typeof sbAssetPromptDrafts === 'object' ? sbAssetPromptDrafts : {})
@@ -4167,24 +2747,26 @@ function ensureNode(n: NodeV1): NodeV1 {
       : String(sbAssetsConfirmedAt || '').trim()
     const nextAiBg: any = {
       ...aiBgIn,
+      storyboardGlobalPromptStateReady: sbGlobalPromptStateReadyRef.current,
       global: {
-        prompt: String(sbReq.globalPrompt || '').trim(),
-        negativePrompt: String(sbReq.globalNegativePrompt || '').trim()
+        prompt: String(currentSbReq.globalPrompt || '').trim(),
+        negativePrompt: String(currentSbReq.globalNegativePrompt || '').trim()
       },
-      // 2026-08-31 修复：sbReq 里的标题种子/弱占位提示词不得覆盖文档里的好提示词
-      //（自 perpetuating 污染链：文档垃圾种子 → sbReq → 保存又写回文档；守卫后保存不再降级 globalPrompt）
+      // 未初始化或弱占位不得覆盖文档里的好提示词；向导初始化后，用户明确清空允许落盘
       globalPrompt: (() => {
-        const fromReq = String(sbReq.globalPrompt || '').trim()
+        const fromReq = String(currentSbReq.globalPrompt || '').trim()
         const fromDoc = String((aiBgIn as any).globalPrompt || '').trim()
+        if (!fromReq && sbGlobalPromptStateReadyRef.current) return ''
         return isWeakStoryboardGlobalPrompt(fromReq) && fromDoc ? fromDoc : fromReq
       })(),
       globalNegativePrompt: (() => {
-        const fromReq = String(sbReq.globalNegativePrompt || '').trim()
+        const fromReq = String(currentSbReq.globalNegativePrompt || '').trim()
         const fromDoc = String((aiBgIn as any).globalNegativePrompt || '').trim()
+        if (!fromReq && sbGlobalPromptStateReadyRef.current) return ''
         return isWeakStoryboardGlobalPrompt(fromReq) && fromDoc ? fromDoc : fromReq
       })(),
-      storyboardGlobalPromptZh: String(sbReq.globalPromptZh || '').trim(),
-      storyboardGlobalNegativePromptZh: String(sbReq.globalNegativePromptZh || '').trim(),
+      storyboardGlobalPromptZh: String(currentSbReq.globalPromptZh || '').trim(),
+      storyboardGlobalNegativePromptZh: String(currentSbReq.globalNegativePromptZh || '').trim(),
       storyboardLockAssetPrompts: nextPromptDrafts
     }
     if (nextAssetPlan) nextAiBg.storyAssetPlan = nextAssetPlan
@@ -4379,6 +2961,7 @@ function ensureNode(n: NodeV1): NodeV1 {
 
   async function initStoryboardBatchFromDoc() {
     if (!doc.project || !doc.story) return
+    sbGlobalPromptStateReadyRef.current = false
     const aiBg0 = (doc.project as any).state && (doc.project as any).state.aiBackground && typeof (doc.project as any).state.aiBackground === 'object'
       ? (doc.project as any).state.aiBackground
       : {}
@@ -4434,7 +3017,11 @@ function ensureNode(n: NodeV1): NodeV1 {
     setSbGeneratingAssetId('')
     const continuityBackup = loadStoryboardContinuityBackup(AI_BG_CONTINUITY_KEY)
     const entitySpecFromState = String(aiBg0.storyboardEntitySpec || '').trim()
-    setSbReq({
+    const savedGlobalPromptZh = String((aiBg0 as any).storyboardGlobalPromptZh || '').trim()
+    const savedGlobalNegativePromptZh = String((aiBg0 as any).storyboardGlobalNegativePromptZh || '').trim()
+    const savedGlobalPrompt = isWeakStoryboardGlobalPrompt(String(aiBg0.globalPrompt || '').trim()) ? '' : String(aiBg0.globalPrompt || '').trim()
+    const savedGlobalNegativePrompt = String(aiBg0.globalNegativePrompt || '').trim()
+    const nextSbReq: StoryboardBatchState = {
       entitySpec: entitySpecFromState || String(continuityBackup?.entitySpec || '').trim(),
       storyBibleJson: storyBibleJsonFromState || String(continuityBackup?.storyBibleJson || '').trim(),
       continuity: aiBg0.storyboardContinuity && typeof aiBg0.storyboardContinuity === 'object'
@@ -4450,10 +3037,10 @@ function ensureNode(n: NodeV1): NodeV1 {
             controlnetEnabled: Boolean((continuityBackup.continuity as any).controlnetEnabled)
           }
         : { ipadapterEnabled: true, requireCharacterRefs: true, controlnetEnabled: false },
-      globalPromptZh: String((aiBg0 as any).storyboardGlobalPromptZh || '').trim() || String(storyboardPromptSeed?.globalPromptZh || '').trim(),
-      globalPrompt: (isWeakStoryboardGlobalPrompt(String(aiBg0.globalPrompt || '').trim()) ? '' : String(aiBg0.globalPrompt || '').trim()) || String(storyboardPromptSeed?.globalPrompt || '').trim(),
-      globalNegativePromptZh: String((aiBg0 as any).storyboardGlobalNegativePromptZh || '').trim() || String(storyboardPromptSeed?.globalNegativePromptZh || '').trim(),
-      globalNegativePrompt: String(aiBg0.globalNegativePrompt || '').trim() || String(storyboardPromptSeed?.globalNegativePrompt || '').trim() || templateGneg,
+      globalPromptZh: savedGlobalPromptZh || String(storyboardPromptSeed?.globalPromptZh || '').trim(),
+      globalPrompt: savedGlobalPrompt || (savedGlobalPromptZh ? '' : String(storyboardPromptSeed?.globalPrompt || '').trim()),
+      globalNegativePromptZh: savedGlobalNegativePromptZh || String(storyboardPromptSeed?.globalNegativePromptZh || '').trim(),
+      globalNegativePrompt: savedGlobalNegativePrompt || (savedGlobalNegativePromptZh ? '' : String(storyboardPromptSeed?.globalNegativePrompt || '').trim() || templateGneg),
       style: ((draft0 && draft0.style) || templateStyle || aiReq.style || 'picture_book') as any,
       aspectRatio: ((draft0 && draft0.aspectRatio) || aiReq.aspectRatio || '9:16') as any,
       width: Number((draft0 && draft0.width) || aiReq.width || 768),
@@ -4468,7 +3055,10 @@ function ensureNode(n: NodeV1): NodeV1 {
       cfgScale: Number((draft0 && draft0.cfgScale) || aiReq.cfgScale || 7),
       sampler: String((draft0 && draft0.sampler) || 'DPM++ 2M'),
       scheduler: String((draft0 && draft0.scheduler) || 'Automatic')
-    })
+    }
+    sbReqRef.current = nextSbReq
+    setSbReq(nextSbReq)
+    sbGlobalPromptStateReadyRef.current = true
     setSbGlobalPromptReview(meta?.globalReview && typeof meta.globalReview === 'object' ? (meta.globalReview as StoryboardPromptQualityReview) : null)
     setSbPromptReviewingNodeId('')
     const savedPromptDrafts = (aiBg0 as any).storyboardLockAssetPrompts && typeof (aiBg0 as any).storyboardLockAssetPrompts === 'object' ? (aiBg0 as any).storyboardLockAssetPrompts : {}
@@ -4589,7 +3179,8 @@ function ensureNode(n: NodeV1): NodeV1 {
   function updateStoryboardLockGlobalPrompts(patch: Partial<Pick<StoryboardBatchState, 'globalPromptZh' | 'globalPrompt' | 'globalNegativePromptZh' | 'globalNegativePrompt'>>) {
     setSbGlobalPromptReview(null)
     persistStoryboardGlobalPromptReview(null)
-    const next = { ...sbReq, ...(patch || {}) }
+    const next = { ...sbReqRef.current, ...(patch || {}) }
+    sbReqRef.current = next
     setSbReq(next)
     if (doc.mode === 'project') {
       setDocProject((p) => {
@@ -5283,53 +3874,55 @@ function ensureNode(n: NodeV1): NodeV1 {
     setToast(done > 0 ? `已翻译 ${done} 条提示词` : '翻译失败')
   }
 
-  // AI 起草中文全局稿：以 Story Bible 世界锚点译写为中文正向稿；负面清单译写为中文反向稿
+  // AI 生成中文全局稿：专用生成链只返回正、负向中文稿，结果仍需确认后翻译
   const [sbGlobalDraftBusy, setSbGlobalDraftBusy] = useState(false)
   async function runStoryboardDraftGlobalPromptZh() {
     if (doc.mode !== 'project' || !doc.project) return
     if (sbGlobalDraftBusy) return
-    const aiBg = (doc.project as any)?.state?.aiBackground || {}
-    const worldAnchor = String(aiBg?.storyBible?.worldAnchor || aiBg?.storyBible?.world?.anchor || '').trim()
-    // 占位垃圾（"故事名：《xx》"/"story title: …"）不是有效锚点，不能作为译写原料（2026-09-10）
-    const isJunkPrompt = (s: string) => { const t = String(s || '').trim(); return !t || /^story title\s*:/i.test(t) || /^故事名：《.*》$/.test(t) }
-    const fallbackAnchor = String(sbReq.globalPrompt || '').trim()
-    const anchorSrc = worldAnchor || (isJunkPrompt(fallbackAnchor) ? '' : fallbackAnchor)
-    if (!anchorSrc) {
-      setSbError('未找到 Story Bible 世界锚点，请先生成 Story Bible')
-      return
-    }
+    const currentReq = sbReqRef.current
     setSbGlobalDraftBusy(true)
-    appendSbLog('开始起草中文全局提示词（由 Story Bible 世界锚点译写）')
+    setSbError('')
+    appendSbLog('开始 AI 生成中文全局提示词（结合 Story Bible 与当前设定）')
     try {
-      const posRes = await translateStoryboardPromptText(doc.id, { text: anchorSrc, sourceLang: 'en', targetLang: 'zh', mode: 'prompt', timeoutMs: 60_000 })
-      const posZh = String(posRes.result?.translatedText || '').trim()
-      const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
-      const forbidden = Array.isArray(plan?.forbiddenSubstitutes) ? plan.forbiddenSubstitutes.map((x: any) => String(x || '').trim()).filter(Boolean) : []
-      let negZh = ''
-      if (forbidden.length > 0) {
-        const negRes = await translateStoryboardPromptText(doc.id, { text: forbidden.join(', '), sourceLang: 'en', targetLang: 'zh', mode: 'prompt', timeoutMs: 60_000 })
-        negZh = String(negRes.result?.translatedText || '').trim()
-      }
-      // 起草中文稿的同时清掉英文栏历史占位垃圾（如"故事名：《xx》"），避免被误认为有效英文稿；
-      // 真正的英文稿由后续「中文转英文」产出。有效英文内容（如默认负向包）不受影响。
+      const generated = await generateStoryboardGlobalPromptAi(doc.id, {
+        scope: 'global',
+        projectTitle: String(doc.project.title || '').trim(),
+        storyBibleJson: String(currentReq.storyBibleJson || '').trim(),
+        globalPromptZh: String(currentReq.globalPromptZh || '').trim(),
+        globalPrompt: String(currentReq.globalPrompt || '').trim(),
+        globalNegativePromptZh: String(currentReq.globalNegativePromptZh || '').trim(),
+        globalNegativePrompt: String(currentReq.globalNegativePrompt || '').trim(),
+        style: String(currentReq.style || '').trim(),
+        aspectRatio: String(currentReq.aspectRatio || '').trim()
+      })
+      const posZh = String(generated.result?.globalPromptZh || '').trim()
+      const negZh = String(generated.result?.globalNegativePromptZh || '').trim()
+      if (!posZh || !negZh) throw new Error('AI 返回的全局中文稿不完整，请重试')
       updateStoryboardLockGlobalPrompts({
         globalPromptZh: posZh,
         globalNegativePromptZh: negZh,
-        ...(isJunkPrompt(sbReq.globalPrompt) ? { globalPrompt: '' } : {}),
-        ...(isJunkPrompt(sbReq.globalNegativePrompt) ? { globalNegativePrompt: '' } : {})
+        globalPrompt: '',
+        globalNegativePrompt: ''
       })
-      appendSbLog('中文全局稿已起草：请审阅微调后「确认中文稿」，再执行中文转英文')
-      if (posZh) appendSbLog(`  正向中文稿：${posZh.slice(0, 160)}${posZh.length > 160 ? '…' : ''}`)
-      if (negZh) appendSbLog(`  负向中文稿：${negZh.slice(0, 120)}${negZh.length > 120 ? '…' : ''}`)
-      setToast('中文全局稿已起草')
+      appendSbLog('AI 中文全局稿已生成：请审阅微调后「确认中文稿」，再执行中文转英文')
+      appendSbLog(`  正向中文稿：${posZh.slice(0, 160)}${posZh.length > 160 ? '…' : ''}`)
+      appendSbLog(`  负向中文稿：${negZh.slice(0, 120)}${negZh.length > 120 ? '…' : ''}`)
+      setToast('AI 中文全局稿已生成')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setSbError(msg)
-      appendSbLog(`中文全局稿起草失败：${msg}`)
+      appendSbLog(`AI 中文全局稿生成失败：${msg}`)
     } finally {
       setSbGlobalDraftBusy(false)
     }
   }
+
+  const requestStoryboardReferenceOverride = (message: string): Promise<boolean> => (
+    new Promise<boolean>((resolve) => {
+      sbOverrideResolverRef.current = resolve
+      setSbOverrideModal({ open: true, message })
+    })
+  )
 
   async function runStoryboardSelectAssetReference(assetId: string, assetPath: string) {
     if (doc.mode !== 'project' || !doc.project) return
@@ -5352,22 +3945,58 @@ function ensureNode(n: NodeV1): NodeV1 {
     setSbLineartAssetId('')
     setSbAssetsConfirmedAt('')
     setSbContinuityReady(false)
-    appendSbLog(`开始设置主参考：${label}（将执行白底抠图，生成可锁定主参考）`)
+
+    const normalizePath = (value: string) => String(value || '').trim().replace(/^\/+/, '')
+    const targetPath = normalizePath(assetPath)
+    const batch = Array.isArray(asset.latestReferenceBatch) ? asset.latestReferenceBatch : []
+    const generatedRefs = Array.isArray(asset.generatedRefs) ? asset.generatedRefs : []
+    const pickedCandidate = batch.find((item: any) => normalizePath(String(item?.assetPath || '')) === targetPath) || null
+    const generatedRef = generatedRefs.find((item: any) => normalizePath(String(item?.projectAssetUri || '')) === targetPath) || null
+    const latestReview = asset.latestReferenceReview && typeof asset.latestReferenceReview === 'object'
+      && normalizePath(String(asset.latestReferenceReview.targetAssetUri || '')) === targetPath
+      ? asset.latestReferenceReview
+      : null
+    const candidateReview = pickedCandidate && pickedCandidate.analysis && typeof pickedCandidate.analysis === 'object'
+      ? pickedCandidate.analysis
+      : latestReview
+
+    let overrideConfirmed = false
+    if (candidateReview && candidateReview.passed !== true) {
+      const scoreText = Number.isFinite(Number(candidateReview.score)) ? `（${Math.round(Number(candidateReview.score))} 分）` : ''
+      const reason = String(
+        candidateReview.summary ||
+        candidateReview.reviewError ||
+        (Array.isArray(candidateReview.issues) ? candidateReview.issues.filter(Boolean).join('；') : '') ||
+        '未提供详细原因'
+      ).trim()
+      const allow = await requestStoryboardReferenceOverride(`AI 视觉评审未通过${scoreText}。${reason}`)
+      if (!allow) {
+        appendSbLog(`已取消人工特批设为主参考：${label}`)
+        setSbSelectingAssetId('')
+        return
+      }
+      overrideConfirmed = true
+      appendSbLog(`人工特批设为主参考：${label}`)
+    } else {
+      appendSbLog(`开始设置主参考：${label}（将执行白底抠图，生成可锁定主参考）`)
+    }
+
     try {
-      const res = await selectStoryAssetReferenceAi(doc.id, { assetId: String(assetId || '').trim(), assetPath: String(assetPath || '').trim() })
+      const res = await selectStoryAssetReferenceAi(doc.id, {
+        assetId: String(assetId || '').trim(),
+        assetPath: String(assetPath || '').trim(),
+        ...(overrideConfirmed ? { manualOverride: true } : {})
+      })
       const nextPlan = normalizeStoryboardAssetPlan(res.plan)
       setSbAssetPlan(nextPlan)
       persistStoryboardAssetPlan(nextPlan, '')
-      appendSbLog(`已设置主参考：${label}`)
-      setToast(`已选择主参考：${label}`)
+      appendSbLog(`已设置主参考${overrideConfirmed ? '（人工特批）' : ''}：${label}`)
+      setToast(`已选择主参考${overrideConfirmed ? '（人工特批）' : ''}：${label}`)
+      setSbError('')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      // 人工特批（2026-08-30 用户指令）：AI 评审未通过时，允许人工确认后越过门禁设为主参考
-      if (/评审|禁止写入主参考/.test(msg)) {
-        const allow = await new Promise<boolean>((resolve) => {
-          sbOverrideResolverRef.current = resolve
-          setSbOverrideModal({ open: true, message: msg })
-        })
+      if (/评审|禁止写入主参考/.test(msg) && !overrideConfirmed) {
+        const allow = await requestStoryboardReferenceOverride(msg)
         if (allow) {
           appendSbLog(`人工特批设为主参考：${label}`)
           try {
@@ -5784,7 +4413,7 @@ function ensureNode(n: NodeV1): NodeV1 {
           }
         }
       } catch (draftAutoError) {
-        appendSbLog(`中文全局稿自动起草跳过（可在第 4 步手动点「AI 起草中文全局稿」）：${draftAutoError instanceof Error ? draftAutoError.message : String(draftAutoError)}`)
+        appendSbLog(`中文全局稿自动起草跳过（可在第 4 步手动点「AI 生成中文全局稿」）：${draftAutoError instanceof Error ? draftAutoError.message : String(draftAutoError)}`)
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -7815,3249 +6444,114 @@ function ensureNode(n: NodeV1): NodeV1 {
     }
   }, [doc])
 
-  const right = (() => {
-    if (!doc.project || !doc.story) {
-      return (
-        <div className="section">
-          <div className="hint">右侧是唯一编辑入口：请选择项目后开始。</div>
-          {error ? <div style={{ marginTop: 10, color: '#fca5a5' }}>{error}</div> : null}
-        </div>
-      )
-    }
-
-    if (doc.readonly) {
-      return (
-        <div className="section">
-          <div className="hint">当前为示例（只读）。如需编辑，请新建/打开项目。</div>
-        </div>
-      )
-    }
-
-    if (selection.type === 'node') {
-      const n0 = nodeById.get(selection.id) || null
-      if (!n0) return <div className="section"><div className="hint">节点不存在</div></div>
-      const n = ensureNode(n0)
-      const fromBlueprint = blueprintLoaded ? blueprintNodeIdSet.has(n.id) : true
-      const structureBound = fromBlueprint
-      const choicesLocked = fromBlueprint
-      const placements = n.visuals?.placements || []
-      const activePlacement = placements.find((p) => p.id === activePlacementId) || null
-
-      const setNode = (updater: (node: NodeV1) => NodeV1) => {
-        setDocStory((s) => ({
-          ...s,
-          nodes: s.nodes.map((x) => (x.id === n.id ? ensureNode(updater(ensureNode(x))) : x))
-        }))
-      }
-      // 场景编排器：placement 面板的离散编辑统一先压撤销快照（数字输入用 onFocus 压一次）
-      const setNodeUndo = (updater: (node: NodeV1) => NodeV1) => {
-        pushUndo()
-        setNode(updater)
-      }
-      const bgAssetId = String(n.visuals?.backgroundAssetId || '').trim()
-      const bgAsset = bgAssetId ? (doc.project?.assets || []).find((a) => a.id === bgAssetId) : null
-      const bgAssetName = String(bgAsset?.name || bgAssetId || '').trim()
-
-      const allNodes = nodes
-
-      return (
-        <div className="section">
-          <div className="right-acc">
-            <div className="fold">
-            <div className="fold-head" onClick={() => toggleRightFold('nodeProps')}>
-                <div className="fold-title">{n.kind === 'scene' ? '场景节点属性' : '结局节点属性'}</div>
-                <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={rightFold.nodeProps ? '折叠' : '展开'}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      toggleRightFold('nodeProps')
-                    }}
-                  >
-                    {rightFold.nodeProps ? '－' : '＋'}
-                  </button>
-                </div>
-              </div>
-
-	              {rightFold.nodeProps ? (
-	                <div className="fold-body">
-	                  <div className="form" style={{ marginTop: 8 }}>
-	                    <div className="form-row">
-	                      <label>{n.kind === 'scene' ? '场景名称（必填）' : '结局名称（必填）'}</label>
-	                      <input
-	                        className="input"
-	                        value={n.name}
-	                        onChange={(e) => {
-	                          const name = e.target.value
-	                          if (!String(name).trim()) return
-	                          setNode((x) => {
-	                            const nn = ensureNode(x)
-	                            const steps = Array.isArray(nn.timeline?.steps) ? nn.timeline.steps : []
-	                            if (nn.kind === 'ending' && steps.length === 1) {
-	                              const s0 = steps[0]
-	                              const acts = Array.isArray(s0.actions) ? s0.actions : []
-	                              const idx = acts.findIndex((a: any) => String(a && a.type) === 'ui.showEndingCard')
-	                              if (idx >= 0) {
-	                                const card = (acts[idx] as any).card || {}
-	                                const nextActs = acts.slice()
-	                                nextActs[idx] = { ...(acts[idx] as any), card: { ...card, title: name || card.title } }
-	                                return { ...nn, name, timeline: { steps: [{ ...s0, actions: nextActs }] } }
-	                              }
-	                            }
-	                            return { ...nn, name }
-	                          })
-	                        }}
-	                      />
-	                    </div>
-	                    <div className="hint" style={{ marginTop: 6 }}>
-	                      来源：{fromBlueprint ? '蓝图结构' : '合成层临时节点'}。{fromBlueprint ? '结构调整请返回蓝图层。' : '可在合成层直接删除。'}
-	                    </div>
-	                    {structureBound ? <div className="hint" style={{ marginTop: 6, color: '#fde68a' }}>合成层用于文案与演出排练；结构（节点/跳转）请回到蓝图层调整。</div> : null}
-	                  </div>
-
-	                  <div className="hr" />
-
-	                  <div className="sub-acc">
-	                    {(() => {
-	                      // 2026-10-05 构图需求单（导演层）UI 呈现：读 plan.scenes[].composition，展示每个元素的
-	                      // 状态/位置/大小/层级/关系/原文依据——导演的摆放意图在编辑器里可见可查，不再是黑盒。
-	                      const planAny = sbAssetPlan as any
-	                      const comp = (Array.isArray(planAny?.scenes) ? planAny.scenes : []).find((s: any) => String(s?.sceneId || '') === String(n.id))?.composition
-	                      if (!comp || !Array.isArray(comp.items) || !comp.items.length) return null
-	                      const assetNameById = new Map<string, string>((Array.isArray(planAny?.assets) ? planAny.assets : []).map((a: any) => [String(a?.id || ''), String(a?.name || a?.id || '')]))
-	                      return (
-	                        <div className="subfold">
-	                          <div className="subfold-head" onClick={() => toggleRightFold('composition')}>
-	                            <div className="subfold-title">构图需求单（导演）</div>
-	                            <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-	                              <button type="button" className="icon-btn" title={rightFold.composition ? '折叠' : '展开'} onClick={(e) => { e.stopPropagation(); toggleRightFold('composition') }}>
-	                                {rightFold.composition ? '－' : '＋'}
-	                              </button>
-	                            </div>
-	                          </div>
-	                          {rightFold.composition ? (
-	                            <div className="subfold-body">
-	                              {comp.cameraNote ? <div className="hint" style={{ marginBottom: 6 }}>镜头：{comp.cameraNote}</div> : null}
-	                              {comp.items.map((it: any, idx: number) => (
-	                                <div key={idx} style={{ fontSize: 12, lineHeight: 1.7, marginTop: 4, paddingBottom: 6, borderBottom: idx < comp.items.length - 1 ? '1px solid rgba(148,163,184,0.15)' : 'none' }}>
-	                                  <div style={{ color: '#e5e7eb', fontWeight: 600 }}>
-	                                    {assetNameById.get(String(it.subjectId || '')) || it.subjectId}
-	                                    {it.stateKey ? <span style={{ color: '#7dd3fc' }}>（状态 {it.stateKey}）</span> : null}
-	                                  </div>
-	                                  <div className="hint">位置 ({it.x}, {it.y}) · 大小 {it.scale} · 层级 {it.zIndex}{it.flipH ? ' · 朝左' : ''}</div>
-	                                  {it.blocking ? <div className="hint">关系：{it.blocking}</div> : null}
-	                                  {it.evidence ? <div className="hint" style={{ color: '#94a3b8' }}>依据：{it.evidence}</div> : null}
-	                                </div>
-	                              ))}
-	                            </div>
-	                          ) : null}
-	                        </div>
-	                      )
-	                    })()}
-	                    <div className="subfold subfold-content">
-	                      <div className="subfold-head" onClick={() => toggleRightFold('nodeContent')}>
-	                        <div className="subfold-title">对话内容</div>
-	                        <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-	                          <button
-	                            type="button"
-	                            className="icon-btn"
-	                            title={rightFold.nodeContent ? '折叠' : '展开'}
-	                            onClick={(e) => {
-	                              e.stopPropagation()
-	                              toggleRightFold('nodeContent')
-	                            }}
-	                          >
-	                            {rightFold.nodeContent ? '－' : '＋'}
-	                          </button>
-	                        </div>
-	                      </div>
-
-	                      {rightFold.nodeContent ? (
-	                        <div className="subfold-body">
-	                          <div className="form">
-	                            <div className="form-row">
-	                              <label>对话标题（可空）</label>
-	                              <input
-	                                className="input"
-	                                value={String((n as any).body?.title || '')}
-	                                onChange={(e) => {
-	                                  const title = e.target.value
-	                                  setNode((x) => {
-	                                    const nn = ensureNode(x)
-	                                    const bodyIn = (nn as any).body && typeof (nn as any).body === 'object' ? (nn as any).body : { text: '' }
-	                                    const nextBody = { ...bodyIn, title }
-	                                    if (!String(title || '').trim()) {
-	                                      try {
-	                                        delete (nextBody as any).title
-	                                      } catch {}
-	                                    }
-	                                    return { ...nn, body: nextBody }
-	                                  })
-	                                }}
-	                              />
-	                            </div>
-
-	                            <div className="form-row">
-	                              <label>类型</label>
-	                              <select
-	                                className="sel"
-	                                value={n.kind}
-	                                disabled={structureBound}
-	                                onChange={(e) => {
-	                                  const kind = e.target.value === 'ending' ? 'ending' : 'scene'
-                                  setNode((x) => ({
-                                    ...x,
-                                    kind,
-                                    timeline: undefined,
-                                    choices: Array.isArray(x.choices) ? x.choices : []
-                                  }))
-                                }}
-                              >
-	                                <option value="scene">场景</option>
-	                                <option value="ending">结局</option>
-	                              </select>
-	                            </div>
-
-	                            <div className="form-row">
-	                              <label>文本</label>
-	                              <textarea
-	                                className="textarea"
-	                                value={String(n.body?.text || '')}
-	                                onChange={(e) => {
-	                                  const text = e.target.value
-	                                  setNode((x) => {
-	                                    const nn = ensureNode(x)
-	                                    const steps = Array.isArray(nn.timeline?.steps) ? nn.timeline.steps : []
-	                                    if (steps.length === 1) {
-	                                      const s0 = steps[0]
-	                                      const acts = Array.isArray(s0.actions) ? s0.actions : []
-	                                      if (nn.kind === 'scene') {
-	                                        const idx = acts.findIndex((a: any) => String(a && a.type) === 'ui.setText')
-	                                        if (idx >= 0 && acts.length === 1) {
-	                                          const nextActs = acts.slice()
-	                                          nextActs[idx] = { ...(acts[idx] as any), text }
-	                                          return { ...nn, body: { text }, timeline: { steps: [{ ...s0, actions: nextActs }] } }
-	                                        }
-	                                      } else if (nn.kind === 'ending') {
-	                                        const idx = acts.findIndex((a: any) => String(a && a.type) === 'ui.showEndingCard')
-	                                        if (idx >= 0) {
-	                                          const card = (acts[idx] as any).card || {}
-	                                          const nextActs = acts.slice()
-	                                          nextActs[idx] = { ...(acts[idx] as any), card: { ...card, moral: text || card.moral } }
-	                                          return { ...nn, body: { text }, timeline: { steps: [{ ...s0, actions: nextActs }] } }
-	                                        }
-	                                      }
-	                                    }
-	                                    return { ...nn, body: { text } }
-	                                  })
-	                                  if (effectivePreviewNode?.id === n.id && rt.stepIndex === 0) {
-	                                    setRt((prev) => ({ ...prev, text }))
-	                                  }
-	                                }}
-	                              />
-	                            </div>
-	                          </div>
-	                        </div>
-	                      ) : null}
-	                    </div>
-
-	                    <div className="subfold subfold-stage">
-	                      <div className="subfold-head" onClick={() => toggleRightFold('background')}>
-	                        <div className="subfold-title">尺寸与背景</div>
-	                        <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-	                          <button
-	                            type="button"
-	                            className="icon-btn"
-	                            title={rightFold.background ? '折叠' : '展开'}
-	                            onClick={(e) => {
-	                              e.stopPropagation()
-	                              toggleRightFold('background')
-	                            }}
-	                          >
-	                            {rightFold.background ? '－' : '＋'}
-	                          </button>
-	                        </div>
-	                      </div>
-
-	                      {rightFold.background ? (
-	                        <div className="subfold-body">
-	                          {(() => {
-	                            const stage = normalizeStageV1((doc.project as any).stage)
-	                            const presets = [
-	                              { key: 'p720x1280', label: '竖屏 720×1280（9:16）', orientation: 'portrait' as const, w: 720, h: 1280 },
-	                              { key: 'p1080x1920', label: '竖屏 1080×1920（9:16）', orientation: 'portrait' as const, w: 1080, h: 1920 },
-	                              { key: 'p750x1334', label: '竖屏 750×1334（iPhone）', orientation: 'portrait' as const, w: 750, h: 1334 },
-	                              { key: 'l1280x720', label: '横屏 1280×720（16:9）', orientation: 'landscape' as const, w: 1280, h: 720 },
-	                              { key: 'l1920x1080', label: '横屏 1920×1080（16:9）', orientation: 'landscape' as const, w: 1920, h: 1080 },
-	                              { key: 'l1024x768', label: '横屏 1024×768（4:3）', orientation: 'landscape' as const, w: 1024, h: 768 }
-	                            ]
-	                            const presetKey =
-	                              presets.find((p) => p.w === stage.width && p.h === stage.height && p.orientation === stage.orientation)?.key || ''
-
-	                            const setStage = (patch: Partial<StageConfigV1>) => {
-	                              setDocProject((p) => ({ ...p, stage: normalizeStageV1({ ...(p as any).stage, ...patch }) }))
-	                            }
-
-	                            return (
-	                              <div className="form" style={{ gap: 10 }}>
-	                                <div>
-	                                  <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>设计尺寸（全局）</div>
-	                                  <div className="hint" style={{ marginTop: 6 }}>
-	                                    影响编辑器预览与导出成品。推荐先选常用尺寸，再微调。
-	                                  </div>
-	                                </div>
-
-	                                <div className="form-row">
-	                                  <label>方向</label>
-	                                  <select
-	                                    className="sel"
-	                                    value={stage.orientation || (stage.width >= stage.height ? 'landscape' : 'portrait')}
-	                                    onChange={(e) =>
-	                                      setStage({ orientation: e.target.value === 'landscape' ? 'landscape' : 'portrait' })
-	                                    }
-	                                    disabled={busy}
-	                                  >
-	                                    <option value="portrait">竖屏</option>
-	                                    <option value="landscape">横屏</option>
-	                                  </select>
-	                                </div>
-
-	                                <div className="form-row">
-	                                  <label>常用尺寸</label>
-	                                  <select
-	                                    className="sel"
-	                                    value={presetKey}
-	                                    onChange={(e) => {
-	                                      const p = presets.find((x) => x.key === e.target.value)
-	                                      if (!p) return
-	                                      setStage({ orientation: p.orientation, width: p.w, height: p.h })
-	                                    }}
-	                                    disabled={busy}
-	                                  >
-	                                    <option value="">自定义</option>
-	                                    {presets.map((p) => (
-	                                      <option key={p.key} value={p.key}>
-	                                        {p.label}
-	                                      </option>
-	                                    ))}
-	                                  </select>
-	                                </div>
-
-	                                <div className="form-row">
-	                                  <label>宽 × 高</label>
-	                                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-	                                    <input
-	                                      className="input"
-	                                      type="number"
-	                                      min={320}
-	                                      max={4096}
-	                                      value={String(stage.width)}
-	                                      onChange={(e) => setStage({ width: Number(e.target.value) })}
-	                                      disabled={busy}
-	                                      style={{ width: 110 }}
-	                                    />
-	                                    <span style={{ opacity: 0.7 }}>×</span>
-	                                    <input
-	                                      className="input"
-	                                      type="number"
-	                                      min={320}
-	                                      max={4096}
-	                                      value={String(stage.height)}
-	                                      onChange={(e) => setStage({ height: Number(e.target.value) })}
-	                                      disabled={busy}
-	                                      style={{ width: 110 }}
-	                                    />
-	                                  </div>
-	                                </div>
-
-	                                <div className="form-row">
-	                                  <label>适配</label>
-	                                  <select
-	                                    className="sel"
-	                                    value={stage.scaleMode || 'contain'}
-	                                    onChange={(e) => setStage({ scaleMode: e.target.value === 'cover' ? 'cover' : 'contain' })}
-	                                    disabled={busy}
-	                                  >
-	                                    <option value="contain">完整显示（留黑边）</option>
-	                                    <option value="cover">裁切填满（可能裁剪）</option>
-	                                  </select>
-	                                </div>
-	                              </div>
-	                            )
-	                          })()}
-
-	                          <div className="hr" />
-
-	                          {(() => {
-	                            const bgId = String(n.visuals?.backgroundAssetId || '')
-	                            const bgAsset = bgId ? doc.project.assets.find((a) => a.id === bgId) || null : null
-	                            const hasImage = !!(bgAsset && String(bgAsset.uri || '').trim())
-
-		                            const createBackgroundAsset = () => {
-		                              const id = uid('asset')
-		                              const asset: AssetV1 = {
-		                                id,
-		                                kind: 'image',
-		                                name: `背景图 ${new Date().toLocaleTimeString()}`,
-		                                uri: '',
-		                                source: { type: 'upload' as const }
-		                              }
-		                              setDocProject((p) => ({ ...p, assets: [...(p.assets || []), asset] }))
-		                              setNode((x) => ({ ...x, visuals: { ...ensureNode(x).visuals, backgroundAssetId: id } }))
-		                              return id
-		                            }
-
-	                            const bgUsed = new Set(
-	                              (doc.story?.nodes || [])
-	                                .map((x) => String(ensureNode(x).visuals?.backgroundAssetId || '').trim())
-	                                .filter(Boolean)
-	                            )
-	                            const bgAssets = doc.project.assets.filter(
-	                              (a) =>
-	                                a.kind === 'image' && (bgUsed.has(a.id) || /^背景/.test(String(a.name || '')) || a.source?.type === 'ai')
-	                            )
-	                            const bgAssetsWithSelected = bgId && bgAsset && !bgAssets.some((a) => a.id === bgId) ? [...bgAssets, bgAsset] : bgAssets
-
-	                            return (
-	                              <>
-	                                <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>背景</div>
-
-	                                <div className="form-row" style={{ marginTop: 8 }}>
-	                                  <label>背景资源</label>
-	                                  <select
-	                                    className="sel"
-	                                    value={bgId}
-	                                    onChange={(e) => {
-	                                      const v = e.target.value || undefined
-	                                      setNode((x) => ({ ...x, visuals: { ...ensureNode(x).visuals, backgroundAssetId: v } }))
-	                                    }}
-	                                  >
-	                                    <option value="">（无）</option>
-	                                    {doc.project.assets.map((a) => (
-	                                      <option key={a.id} value={a.id}>
-	                                        {a.name || a.id}
-	                                      </option>
-	                                    ))}
-	                                  </select>
-	                                </div>
-
-		                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-			                                  <button
-			                                    className="btn secondary"
-				                                    onClick={() => openAiStoryboardForCurrentNode()}
-			                                    disabled={busy}
-			                                  >
-		                                    AI 生成分镜图…
-		                                  </button>
-
-		                                  <button
-		                                    className="btn secondary"
-		                                    onClick={() => {
-		                                      if (doc.mode !== 'project') return
-		                                      const url = resolveUrl(`/api/projects/${encodeURIComponent(String(doc.id))}/assets/ai`)
-		                                      window.open(url, '_blank', 'noopener,noreferrer')
-		                                    }}
-		                                    disabled={busy || doc.mode !== 'project'}
-		                                    title="打开 AI 背景输出目录（便于确认生成位置）"
-		                                  >
-		                                    打开生成目录
-		                                  </button>
-
-		                                  <button
-		                                    className="btn secondary"
-		                                    onClick={() => {
-		                                      const targetId = bgId || createBackgroundAsset()
-		                                      pendingBgAssetIdRef.current = targetId
-		                                      bgFileRef.current?.click()
-		                                    }}
-		                                    disabled={busy || doc.readonly}
-		                                    title="从本地选择图片并上传到项目 assets"
-		                                  >
-		                                    {bgId ? (hasImage ? '替换本地图片…' : '添加本地图片…') : '添加背景图片…'}
-		                                  </button>
-
-		                                  {bgId ? (
-		                                    <>
-		                                      <button
-		                                        className="btn secondary"
-		                                        onClick={() => {
-	                                          if (!bgId) return
-	                                          setDocProject((p) => ({
-	                                            ...p,
-	                                            assets: (p.assets || []).map((a) =>
-	                                              a.id === bgId ? { ...a, uri: '', source: a.source } : a
-	                                            )
-	                                          }))
-	                                          setToast('已删除背景图片')
-	                                        }}
-	                                        disabled={busy || !hasImage}
-	                                        title={hasImage ? '清空该背景资源的图片 URI（保留资源条目）' : '当前背景资源未绑定图片'}
-		                                      >
-		                                        删除图片
-		                                      </button>
-		                                    </>
-		                                  ) : null}
-		                                </div>
-
-	                                {bgId ? (
-	                                  <div className="hint" style={{ marginTop: 8 }}>
-	                                    当前背景资源：{bgAsset?.name || bgId}
-	                                    {hasImage ? '' : '（未绑定图片）'}
-	                                  </div>
-	                                ) : (
-		                                  <div className="hint" style={{ marginTop: 8 }}>
-		                                    未选择背景资源：可先从下拉选择已有资源，或点击“添加背景图片…”创建并绑定。
-		                                  </div>
-		                                )}
-		                              </>
-		                            )
-		                          })()}
-	                          <input
-	                            ref={bgFileRef}
-	                            type="file"
-	                            accept="image/png,image/jpeg,image/webp,image/gif"
-	                            style={{ display: 'none' }}
-	                            onChange={(e) => {
-	                              const f = e.target.files && e.target.files[0] ? e.target.files[0] : null
-	                              if (!f) return
-	                              const target = pendingBgAssetIdRef.current ? String(pendingBgAssetIdRef.current) : undefined
-	                              pendingBgAssetIdRef.current = ''
-	                              void handleUploadBackground(f, target)
-	                              try {
-	                                e.currentTarget.value = ''
-	                              } catch {}
-	                            }}
-	                          />
-	                        </div>
-	                      ) : null}
-	                    </div>
-
-		                    <div className="subfold subfold-dialog">
-	                      <div className="subfold-head" onClick={() => toggleRightFold('choices')}>
-	                        <div className="subfold-title">对话与选项</div>
-	                        <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-	                          <button
-	                            type="button"
-	                            className="icon-btn"
-	                            title={rightFold.choices ? '折叠' : '展开'}
-	                            onClick={(e) => {
-	                              e.stopPropagation()
-	                              toggleRightFold('choices')
-	                            }}
-	                          >
-	                            {rightFold.choices ? '－' : '＋'}
-	                          </button>
-	                        </div>
-	                      </div>
-
-                      {rightFold.choices ? (
-                        <div className="subfold-body">
-                          <div className="form" style={{ gap: 10 }}>
-                              {(() => {
-	                                const ui = ((n.visuals && (n.visuals as any).ui) || {}) as NodeUiV1
-	                                const dialog = (ui.dialog || {}) as DialogLayoutV1
-	                                const choicesUi = (ui.choices || {}) as ChoicesLayoutV1
-	                                const preset = normalizeDialogPreset((dialog as any).preset)
-	                                const x = clamp01(numberOr((dialog as any).x, 0.5))
-	                                const y = clamp01(numberOr((dialog as any).y, 0.88))
-	                                const opacity = clamp01(numberOr((dialog as any).opacity, 1))
-	                                const dir = normalizeChoicesDirection((choicesUi as any).direction)
-	                                const align = normalizeChoicesAlign((choicesUi as any).align)
-
-	                                const setUi = (patch: Partial<NodeUiV1>) => {
-	                                  setNode((node) => {
-	                                    const nn = ensureNode(node)
-	                                    const visuals = nn.visuals || {}
-	                                    const currUi = (visuals.ui || {}) as NodeUiV1
-	                                    return { ...nn, visuals: { ...visuals, ui: { ...currUi, ...patch } } }
-	                                  })
-	                                }
-
-	                                const setDialog = (patch: Partial<DialogLayoutV1>) => {
-	                                  setUi({ dialog: { ...(ui.dialog || { preset: 'bottom' }), ...patch } as DialogLayoutV1 })
-	                                }
-
-	                                const setChoicesLayout = (patch: Partial<ChoicesLayoutV1>) => {
-	                                  setUi({ choices: { ...(ui.choices || { direction: 'row' }), ...patch } as ChoicesLayoutV1 })
-	                                }
-
-	                                return (
-	                                  <>
-	                                    <div>
-	                                      <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>对话框位置（本节点）</div>
-	                                      <div className="hint" style={{ marginTop: 6 }}>
-	                                        选择“自定义坐标”后，可在画布里拖动对话框定位。
-	                                      </div>
-	                                    </div>
-
-	                                    <div className="form-row">
-	                                      <label>预设</label>
-	                                      <select
-	                                        className="sel"
-	                                        value={preset}
-	                                        onChange={(e) => setDialog({ preset: normalizeDialogPreset(e.target.value) })}
-	                                      >
-	                                        <option value="bottom">底部</option>
-	                                        <option value="top">顶部</option>
-	                                        <option value="center">居中</option>
-	                                        <option value="left">左侧</option>
-	                                        <option value="right">右侧</option>
-	                                        <option value="custom">自定义坐标</option>
-	                                      </select>
-	                                    </div>
-
-	                                    {preset === 'custom' ? (
-	                                      <div className="form-row">
-	                                        <label>坐标</label>
-	                                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-	                                          <input
-	                                            className="input"
-	                                            type="number"
-	                                            min={0}
-	                                            max={1}
-	                                            step={0.01}
-	                                            value={String(x)}
-	                                            onChange={(e) => setDialog({ x: clamp01(Number(e.target.value)) })}
-	                                            style={{ width: 110 }}
-	                                          />
-	                                          <span style={{ opacity: 0.7 }}>×</span>
-	                                          <input
-	                                            className="input"
-	                                            type="number"
-	                                            min={0}
-	                                            max={1}
-	                                            step={0.01}
-	                                            value={String(y)}
-	                                            onChange={(e) => setDialog({ y: clamp01(Number(e.target.value)) })}
-	                                            style={{ width: 110 }}
-	                                          />
-	                                        </div>
-	                                      </div>
-	                                    ) : null}
-
-	                                    <div className="form-row">
-	                                      <label>底板透明度</label>
-	                                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1 }}>
-	                                        <input
-	                                          type="range"
-	                                          min={0}
-	                                          max={100}
-	                                          step={1}
-	                                          value={Math.round(opacity * 100)}
-	                                          onChange={(e) => setDialog({ opacity: clamp01(Number(e.target.value) / 100) })}
-	                                          style={{ flex: 1 }}
-	                                        />
-	                                        <span style={{ minWidth: 40, textAlign: 'right', opacity: 0.85 }}>{Math.round(opacity * 100)}%</span>
-	                                      </div>
-	                                    </div>
-
-	                                    <div className="hr" />
-
-	                                    <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>选项按钮布局（本节点）</div>
-
-	                                    <div className="form-row">
-	                                      <label>排列</label>
-	                                      <select
-	                                        className="sel"
-	                                        value={dir}
-	                                        onChange={(e) => setChoicesLayout({ direction: normalizeChoicesDirection(e.target.value) })}
-	                                      >
-	                                        <option value="row">横向（自动换行）</option>
-	                                        <option value="column">竖向</option>
-	                                      </select>
-	                                    </div>
-
-	                                    <div className="form-row">
-	                                      <label>对齐</label>
-	                                      <select
-	                                        className="sel"
-	                                        value={align}
-	                                        onChange={(e) => setChoicesLayout({ align: normalizeChoicesAlign(e.target.value) })}
-	                                      >
-	                                        <option value="start">靠左</option>
-	                                        <option value="center">居中</option>
-	                                        <option value="end">靠右</option>
-	                                        <option value="stretch">拉伸</option>
-	                                      </select>
-	                                    </div>
-
-	                                    <div className="hr" />
-	                                  </>
-	                                )
-	                              })()}
-
-	                              {(Array.isArray(n.choices) ? n.choices : []).map((c) => (
-	                                <div key={c.id} style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 12, padding: 10 }}>
-	                                  <div className="form-row">
-	                                    <label>按钮文本</label>
-	                                    <input
-	                                      className="input"
-	                                      value={c.text}
-	                                      disabled={choicesLocked}
-	                                      onChange={(e) =>
-	                                        choicesLocked ? null :
-	                                        setNode((x) => ({
-	                                          ...x,
-	                                          choices: (Array.isArray(x.choices) ? x.choices : []).map((cc) =>
-	                                            cc.id === c.id ? { ...cc, text: e.target.value } : cc
-	                                          )
-	                                        }))
-	                                      }
-	                                    />
-	                                  </div>
-	                                  <div className="form-row">
-	                                    <label>跳转到</label>
-	                                    <select
-	                                      className="sel"
-	                                      value={c.toNodeId}
-	                                      disabled={choicesLocked}
-	                                      onChange={(e) =>
-	                                        choicesLocked ? null :
-	                                        setNode((x) => ({
-	                                          ...x,
-	                                          choices: (Array.isArray(x.choices) ? x.choices : []).map((cc) =>
-	                                            cc.id === c.id ? { ...cc, toNodeId: e.target.value } : cc
-	                                          )
-	                                        }))
-	                                      }
-	                                    >
-	                                      {allNodes.map((nn) => (
-	                                        <option key={nn.id} value={nn.id}>
-	                                          {nn.name || nn.id}
-	                                        </option>
-	                                      ))}
-	                                    </select>
-	                                  </div>
-	                                  {!choicesLocked ? <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-	                                    <button
-	                                      className="btn secondary"
-	                                      onClick={() =>
-	                                        setNode((x) => ({
-	                                          ...x,
-	                                          choices: (Array.isArray(x.choices) ? x.choices : []).filter((cc) => cc.id !== c.id)
-	                                        }))
-	                                      }
-	                                    >
-	                                      删除选项
-	                                    </button>
-	                                  </div> : null}
-	                                </div>
-	                              ))}
-
-                              {!choicesLocked ? <button
-                                className="btn secondary"
-                                onClick={() => {
-                                  const toNodeId = doc.story?.startNodeId || nodes[0]?.id || ''
-                                  const next: ChoiceV1 = { id: uid('choice'), text: '继续', toNodeId }
-                                  setNode((x) => ({ ...x, choices: [...(Array.isArray(x.choices) ? x.choices : []), next] }))
-                                }}
-                              >
-                                + 添加选项
-                              </button> : null}
-                            </div>
-                        </div>
-                      ) : null}
-	                    </div>
-	                  </div>
-	                </div>
-	              ) : null}
-	            </div>
-
-	            {/*
-	            <div className="fold">
-	              <div className="fold-head" onClick={() => toggleRightFold('background')}>
-	                <div className="fold-title">尺寸与背景</div>
-	                <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-	                  <button
-	                    type="button"
-	                    className="icon-btn"
-	                    title={rightFold.background ? '折叠' : '展开'}
-	                    onClick={(e) => {
-	                      e.stopPropagation()
-	                      toggleRightFold('background')
-	                    }}
-	                  >
-	                    {rightFold.background ? '－' : '＋'}
-	                  </button>
-	                </div>
-	              </div>
-
-	              {rightFold.background ? (
-	                <div className="fold-body">
-	                  {(() => {
-	                    const stage = normalizeStageV1((doc.project as any).stage)
-	                    const presets = [
-	                      { key: 'p720x1280', label: '竖屏 720×1280（9:16）', orientation: 'portrait' as const, w: 720, h: 1280 },
-	                      { key: 'p1080x1920', label: '竖屏 1080×1920（9:16）', orientation: 'portrait' as const, w: 1080, h: 1920 },
-	                      { key: 'p750x1334', label: '竖屏 750×1334（iPhone）', orientation: 'portrait' as const, w: 750, h: 1334 },
-	                      { key: 'l1280x720', label: '横屏 1280×720（16:9）', orientation: 'landscape' as const, w: 1280, h: 720 },
-	                      { key: 'l1920x1080', label: '横屏 1920×1080（16:9）', orientation: 'landscape' as const, w: 1920, h: 1080 },
-	                      { key: 'l1024x768', label: '横屏 1024×768（4:3）', orientation: 'landscape' as const, w: 1024, h: 768 }
-	                    ]
-	                    const presetKey =
-	                      presets.find((p) => p.w === stage.width && p.h === stage.height && p.orientation === stage.orientation)?.key || ''
-
-	                    const setStage = (patch: Partial<StageConfigV1>) => {
-	                      setDocProject((p) => ({ ...p, stage: normalizeStageV1({ ...(p as any).stage, ...patch }) }))
-	                    }
-
-	                    return (
-	                      <div className="form" style={{ gap: 10 }}>
-	                        <div>
-	                          <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>设计尺寸（全局）</div>
-	                          <div className="hint" style={{ marginTop: 6 }}>
-	                            影响编辑器预览与导出成品。推荐先选常用尺寸，再微调。
-	                          </div>
-	                        </div>
-
-	                        <div className="form-row">
-	                          <label>方向</label>
-	                          <select
-	                            className="sel"
-	                            value={stage.orientation || (stage.width >= stage.height ? 'landscape' : 'portrait')}
-	                            onChange={(e) => setStage({ orientation: e.target.value === 'landscape' ? 'landscape' : 'portrait' })}
-	                            disabled={busy}
-	                          >
-	                            <option value="portrait">竖屏</option>
-	                            <option value="landscape">横屏</option>
-	                          </select>
-	                        </div>
-
-	                        <div className="form-row">
-	                          <label>常用尺寸</label>
-	                          <select
-	                            className="sel"
-	                            value={presetKey}
-	                            onChange={(e) => {
-	                              const p = presets.find((x) => x.key === e.target.value)
-	                              if (!p) return
-	                              setStage({ orientation: p.orientation, width: p.w, height: p.h })
-	                            }}
-	                            disabled={busy}
-	                          >
-	                            <option value="">自定义</option>
-	                            {presets.map((p) => (
-	                              <option key={p.key} value={p.key}>
-	                                {p.label}
-	                              </option>
-	                            ))}
-	                          </select>
-	                        </div>
-
-	                        <div className="form-row">
-	                          <label>宽 × 高</label>
-	                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-	                            <input
-	                              className="input"
-	                              type="number"
-	                              min={320}
-	                              max={4096}
-	                              value={String(stage.width)}
-	                              onChange={(e) => setStage({ width: Number(e.target.value) })}
-	                              disabled={busy}
-	                              style={{ width: 110 }}
-	                            />
-	                            <span style={{ opacity: 0.7 }}>×</span>
-	                            <input
-	                              className="input"
-	                              type="number"
-	                              min={320}
-	                              max={4096}
-	                              value={String(stage.height)}
-	                              onChange={(e) => setStage({ height: Number(e.target.value) })}
-	                              disabled={busy}
-	                              style={{ width: 110 }}
-	                            />
-	                          </div>
-	                        </div>
-
-	                        <div className="form-row">
-	                          <label>适配</label>
-	                          <select
-	                            className="sel"
-	                            value={stage.scaleMode || 'contain'}
-	                            onChange={(e) => setStage({ scaleMode: e.target.value === 'cover' ? 'cover' : 'contain' })}
-	                            disabled={busy}
-	                          >
-	                            <option value="contain">完整显示（留黑边）</option>
-	                            <option value="cover">裁切填满（可能裁剪）</option>
-	                          </select>
-	                        </div>
-	                      </div>
-	                    )
-	                  })()}
-
-	                  <div className="hr" />
-
-	                  {(() => {
-	                    const bgId = String(n.visuals?.backgroundAssetId || '')
-	                    const bgAsset = bgId ? doc.project.assets.find((a) => a.id === bgId) || null : null
-	                    const hasImage = !!(bgAsset && String(bgAsset.uri || '').trim())
-
-	                    const createBackgroundAsset = () => {
-	                      const id = uid('asset')
-	                      const asset: AssetV1 = {
-	                        id,
-	                        kind: 'image',
-	                        name: `背景图 ${new Date().toLocaleTimeString()}`,
-	                        uri: '',
-	                        source: { type: 'upload' as const }
-	                      }
-	                      setDocProject((p) => ({ ...p, assets: [...(p.assets || []), asset] }))
-	                      setNode((x) => ({ ...x, visuals: { ...ensureNode(x).visuals, backgroundAssetId: id } }))
-	                      return id
-	                    }
-
-	                    const bgUsed = new Set(
-	                      (doc.story?.nodes || [])
-	                        .map((x) => String(ensureNode(x).visuals?.backgroundAssetId || '').trim())
-	                        .filter(Boolean)
-	                    )
-	                    const bgAssets = doc.project.assets.filter(
-	                      (a) => a.kind === 'image' && (bgUsed.has(a.id) || /^背景/.test(String(a.name || '')) || a.source?.type === 'ai')
-	                    )
-	                    const bgAssetsWithSelected = bgId && bgAsset && !bgAssets.some((a) => a.id === bgId) ? [...bgAssets, bgAsset] : bgAssets
-
-	                    return (
-	                      <>
-	                        <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>背景</div>
-
-	                        <div className="form-row" style={{ marginTop: 8 }}>
-	                          <label>背景资源</label>
-	                          <select
-	                            className="sel"
-	                            value={bgId}
-	                            onChange={(e) => {
-	                              const v = e.target.value || undefined
-	                              setNode((x) => ({ ...x, visuals: { ...ensureNode(x).visuals, backgroundAssetId: v } }))
-	                            }}
-	                          >
-	                            <option value="">（无）</option>
-	                            {doc.project.assets.map((a) => (
-	                              <option key={a.id} value={a.id}>
-	                                {a.name || a.id}
-	                              </option>
-	                            ))}
-	                          </select>
-	                        </div>
-
-	                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-	                          <button
-	                            className="btn secondary"
-		                            onClick={() => openAiStoryboardForCurrentNode()}
-	                            disabled={busy}
-	                          >
-	                            AI 生成分镜图…
-	                          </button>
-
-	                          <button
-	                            className="btn secondary"
-	                            onClick={() => {
-	                              const targetId = bgId || createBackgroundAsset()
-	                              pendingBgAssetIdRef.current = targetId
-	                              bgFileRef.current?.click()
-	                            }}
-	                            disabled={busy || doc.readonly}
-	                            title="从本地选择图片并上传到项目 assets"
-	                          >
-	                            {bgId ? (hasImage ? '替换本地图片…' : '添加本地图片…') : '添加背景图片…'}
-	                          </button>
-
-	                          {bgId ? (
-	                            <>
-	                              <button
-	                                className="btn secondary"
-	                                onClick={() => {
-	                                  if (!bgId) return
-	                                  setDocProject((p) => ({
-	                                    ...p,
-	                                    assets: (p.assets || []).map((a) => (a.id === bgId ? { ...a, uri: '', source: a.source } : a))
-	                                  }))
-	                                  setToast('已删除背景图片')
-	                                }}
-	                                disabled={busy || !hasImage}
-	                                title={hasImage ? '清空该背景资源的图片 URI（保留资源条目）' : '当前背景资源未绑定图片'}
-	                              >
-	                                删除图片
-	                              </button>
-
-	                              <button
-	                                className="btn secondary"
-	                                onClick={() => deleteAsset(bgId)}
-	                                disabled={busy}
-	                                title="删除该背景资源（会从列表中移除，并清空所有引用）"
-	                              >
-	                                删除资源
-	                              </button>
-
-	                              <button
-	                                className="btn secondary"
-	                                onClick={() =>
-	                                  setNode((x) => ({ ...x, visuals: { ...ensureNode(x).visuals, backgroundAssetId: undefined } }))
-	                                }
-	                                disabled={busy}
-	                                title="仅取消当前节点对该背景资源的关联（不删除资源）"
-	                              >
-	                                取消关联
-	                              </button>
-	                            </>
-	                          ) : null}
-	                        </div>
-
-	                        {bgId ? (
-	                          <div className="hint" style={{ marginTop: 8 }}>
-	                            当前背景资源：{bgAsset?.name || bgId}
-	                            {hasImage ? '' : '（未绑定图片）'}
-	                          </div>
-	                        ) : (
-	                          <div className="hint" style={{ marginTop: 8 }}>
-	                            未选择背景资源：可先从下拉选择已有资源，或点击“添加背景图片…”创建并绑定。
-	                          </div>
-	                        )}
-
-	                        <div className="hr" />
-
-	                        <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>背景图片列表</div>
-	                        <div className="hint" style={{ marginTop: 6 }}>
-	                          删除资源会清空引用并从列表移除。
-	                        </div>
-	                        <div className="mini-scroll" style={{ marginTop: 8, maxHeight: 160, display: 'flex', flexDirection: 'column', gap: 6 }}>
-	                          {bgAssetsWithSelected.length ? (
-	                            bgAssetsWithSelected.map((a) => {
-	                              const selected = bgId && a.id === bgId
-	                              return (
-	                                <div
-	                                  key={a.id}
-	                                  style={{
-	                                    display: 'flex',
-	                                    gap: 8,
-	                                    alignItems: 'center',
-	                                    justifyContent: 'space-between',
-	                                    border: '1px solid rgba(148,163,184,0.14)',
-	                                    borderRadius: 10,
-	                                    padding: '6px 8px',
-	                                    background: selected ? 'rgba(37,99,235,0.10)' : 'rgba(2,6,23,0.20)'
-	                                  }}
-	                                >
-	                                  <div style={{ minWidth: 0 }}>
-	                                    <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-	                                      {a.name || a.id}
-	                                    </div>
-	                                    <div style={{ fontSize: 11, opacity: 0.7 }}>{String(a.uri || '').trim() ? '已绑定图片' : '未绑定图片'}</div>
-	                                  </div>
-	                                  <button className="icon-btn" title="删除该背景资源" onClick={() => deleteAsset(a.id)} disabled={busy}>
-	                                    ✕
-	                                  </button>
-	                                </div>
-	                              )
-	                            })
-	                          ) : (
-	                            <div className="hint">暂无背景图片资源。</div>
-	                          )}
-	                        </div>
-	                      </>
-	                    )
-	                  })()}
-	                  <input
-	                    ref={bgFileRef}
-	                    type="file"
-	                    accept="image/png,image/jpeg,image/webp,image/gif"
-	                    style={{ display: 'none' }}
-	                    onChange={(e) => {
-	                      const f = e.target.files && e.target.files[0] ? e.target.files[0] : null
-	                      if (!f) return
-	                      const target = pendingBgAssetIdRef.current ? String(pendingBgAssetIdRef.current) : undefined
-	                      pendingBgAssetIdRef.current = ''
-	                      void handleUploadBackground(f, target)
-	                      try {
-	                        e.currentTarget.value = ''
-	                      } catch {}
-	                    }}
-	                  />
-	                </div>
-	              ) : null}
-	            </div>
-
-	            <div className="fold">
-	              <div className="fold-head" onClick={() => toggleRightFold('choices')}>
-	                <div className="fold-title">对话与选项</div>
-	                <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-	                  <button
-	                    type="button"
-	                    className="icon-btn"
-	                    title={rightFold.choices ? '折叠' : '展开'}
-	                    onClick={(e) => {
-	                      e.stopPropagation()
-	                      toggleRightFold('choices')
-	                    }}
-	                  >
-	                    {rightFold.choices ? '－' : '＋'}
-	                  </button>
-	                </div>
-	              </div>
-
-              {rightFold.choices ? (
-                <div className="fold-body">
-                  <div className="form" style={{ gap: 10 }}>
-                      {(() => {
-	                        const ui = ((n.visuals && (n.visuals as any).ui) || {}) as NodeUiV1
-	                        const dialog = (ui.dialog || {}) as DialogLayoutV1
-	                        const choicesUi = (ui.choices || {}) as ChoicesLayoutV1
-	                        const preset = normalizeDialogPreset((dialog as any).preset)
-	                        const x = clamp01(numberOr((dialog as any).x, 0.5))
-	                        const y = clamp01(numberOr((dialog as any).y, 0.88))
-	                        const opacity = clamp01(numberOr((dialog as any).opacity, 1))
-	                        const dir = normalizeChoicesDirection((choicesUi as any).direction)
-	                        const align = normalizeChoicesAlign((choicesUi as any).align)
-
-	                        const setUi = (patch: Partial<NodeUiV1>) => {
-	                          setNode((node) => {
-	                            const nn = ensureNode(node)
-	                            const visuals = nn.visuals || {}
-	                            const currUi = (visuals.ui || {}) as NodeUiV1
-	                            return { ...nn, visuals: { ...visuals, ui: { ...currUi, ...patch } } }
-	                          })
-	                        }
-
-	                        const setDialog = (patch: Partial<DialogLayoutV1>) => {
-	                          setUi({ dialog: { ...(ui.dialog || { preset: 'bottom' }), ...patch } as DialogLayoutV1 })
-	                        }
-
-	                        const setChoicesLayout = (patch: Partial<ChoicesLayoutV1>) => {
-	                          setUi({ choices: { ...(ui.choices || { direction: 'row' }), ...patch } as ChoicesLayoutV1 })
-	                        }
-
-	                        return (
-	                          <>
-	                            <div>
-	                              <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>对话框位置（本节点）</div>
-	                              <div className="hint" style={{ marginTop: 6 }}>
-	                                选择“自定义坐标”后，可在画布里拖动对话框定位。
-	                              </div>
-	                            </div>
-
-	                            <div className="form-row">
-	                              <label>预设</label>
-	                              <select className="sel" value={preset} onChange={(e) => setDialog({ preset: normalizeDialogPreset(e.target.value) })}>
-	                                <option value="bottom">底部</option>
-	                                <option value="top">顶部</option>
-	                                <option value="center">居中</option>
-	                                <option value="left">左侧</option>
-	                                <option value="right">右侧</option>
-	                                <option value="custom">自定义坐标</option>
-	                              </select>
-	                            </div>
-
-	                            {preset === 'custom' ? (
-	                              <div className="form-row">
-	                                <label>坐标</label>
-	                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-	                                  <input
-	                                    className="input"
-	                                    type="number"
-	                                    min={0}
-	                                    max={1}
-	                                    step={0.01}
-	                                    value={String(x)}
-	                                    onChange={(e) => setDialog({ x: clamp01(Number(e.target.value)) })}
-	                                    style={{ width: 110 }}
-	                                  />
-	                                  <span style={{ opacity: 0.7 }}>×</span>
-	                                  <input
-	                                    className="input"
-	                                    type="number"
-	                                    min={0}
-	                                    max={1}
-	                                    step={0.01}
-	                                    value={String(y)}
-	                                    onChange={(e) => setDialog({ y: clamp01(Number(e.target.value)) })}
-	                                    style={{ width: 110 }}
-	                                  />
-	                                </div>
-	                              </div>
-	                            ) : null}
-
-	                            <div className="form-row">
-	                              <label>底板透明度</label>
-	                              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1 }}>
-	                                <input
-	                                  type="range"
-	                                  min={0}
-	                                  max={100}
-	                                  step={1}
-	                                  value={Math.round(opacity * 100)}
-	                                  onChange={(e) => setDialog({ opacity: clamp01(Number(e.target.value) / 100) })}
-	                                  style={{ flex: 1 }}
-	                                />
-	                                <span style={{ minWidth: 40, textAlign: 'right', opacity: 0.85 }}>{Math.round(opacity * 100)}%</span>
-	                              </div>
-	                            </div>
-
-	                            <div className="hr" />
-
-	                            <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>选项按钮布局（本节点）</div>
-
-	                            <div className="form-row">
-	                              <label>排列</label>
-	                              <select className="sel" value={dir} onChange={(e) => setChoicesLayout({ direction: normalizeChoicesDirection(e.target.value) })}>
-	                                <option value="row">横向（自动换行）</option>
-	                                <option value="column">竖向</option>
-	                              </select>
-	                            </div>
-
-	                            <div className="form-row">
-	                              <label>对齐</label>
-	                              <select className="sel" value={align} onChange={(e) => setChoicesLayout({ align: normalizeChoicesAlign(e.target.value) })}>
-	                                <option value="start">靠左</option>
-	                                <option value="center">居中</option>
-	                                <option value="end">靠右</option>
-	                                <option value="stretch">拉伸</option>
-	                              </select>
-	                            </div>
-
-	                            <div className="hr" />
-	                          </>
-	                        )
-	                      })()}
-
-	                      {(Array.isArray(n.choices) ? n.choices : []).map((c) => (
-	                        <div key={c.id} style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 12, padding: 10 }}>
-	                          <div className="form-row">
-	                            <label>按钮文本</label>
-	                            <input
-	                              className="input"
-	                              value={c.text}
-	                              onChange={(e) =>
-	                                setNode((x) => ({
-	                                  ...x,
-	                                  choices: (Array.isArray(x.choices) ? x.choices : []).map((cc) => (cc.id === c.id ? { ...cc, text: e.target.value } : cc))
-	                                }))
-	                              }
-	                            />
-	                          </div>
-	                          <div className="form-row">
-	                            <label>跳转到</label>
-	                            <select
-	                              className="sel"
-	                              value={c.toNodeId}
-	                              onChange={(e) =>
-	                                setNode((x) => ({
-	                                  ...x,
-	                                  choices: (Array.isArray(x.choices) ? x.choices : []).map((cc) =>
-	                                    cc.id === c.id ? { ...cc, toNodeId: e.target.value } : cc
-	                                  )
-	                                }))
-	                              }
-	                            >
-	                              {allNodes.map((nn) => (
-	                                <option key={nn.id} value={nn.id}>
-	                                  {nn.name || nn.id}
-	                                </option>
-	                              ))}
-	                            </select>
-	                          </div>
-	                          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-	                            <button
-	                              className="btn secondary"
-	                              onClick={() =>
-	                                setNode((x) => ({
-	                                  ...x,
-	                                  choices: (Array.isArray(x.choices) ? x.choices : []).filter((cc) => cc.id !== c.id)
-	                                }))
-	                              }
-	                            >
-	                              删除选项
-	                            </button>
-	                          </div>
-	                        </div>
-	                      ))}
-
-                      <button
-                        className="btn secondary"
-                        onClick={() => {
-                          const toNodeId = doc.story?.startNodeId || nodes[0]?.id || ''
-                          const next: ChoiceV1 = { id: uid('choice'), text: '继续', toNodeId }
-                          setNode((x) => ({ ...x, choices: [...(Array.isArray(x.choices) ? x.choices : []), next] }))
-                        }}
-                      >
-                        + 添加选项
-                      </button>
-                    </div>
-                </div>
-              ) : null}
-	            </div>
-
-	            */}
-
-	            <div className="fold">
-	              <div className="fold-head" onClick={() => toggleRightFold('timeline')}>
-	                <div className="fold-title">时间线</div>
-	                <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-	                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={rightFold.timeline ? '折叠' : '展开'}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      toggleRightFold('timeline')
-                    }}
-                  >
-                    {rightFold.timeline ? '－' : '＋'}
-                  </button>
-                </div>
-              </div>
-
-              {rightFold.timeline ? (
-                <div className="fold-body">
-                  <div className="hint">节点内“PPT式”播放/触发：先执行动作（Actions），再按推进方式（Advance）进入下一步。</div>
-
-            {(() => {
-              const steps = Array.isArray(n.timeline?.steps) ? n.timeline.steps : []
-              const stateVars = Array.isArray(doc.project?.state?.vars) ? doc.project.state.vars : []
-              const eventMacros = Array.isArray(doc.project?.events) ? doc.project.events : []
-
-              const updateSteps = (updater: (steps: any[]) => any[]) =>
-                setNode((x) => {
-                  const nn = ensureNode(x)
-                  const curr = Array.isArray(nn.timeline?.steps) ? nn.timeline.steps : []
-                  return { ...nn, timeline: { steps: updater(curr.slice()) } }
-                })
-
-              const makeDefaultAction = (type: string): any => {
-                if (type === 'ui.setText') return { type: 'ui.setText', mode: 'replace', text: '' }
-                if (type === 'ui.appendText') return { type: 'ui.appendText', text: '' }
-                if (type === 'ui.clearText') return { type: 'ui.clearText' }
-                if (type === 'ui.toast') return { type: 'ui.toast', text: '' }
-                if (type === 'events.emit') return { type: 'events.emit', name: '' }
-                if (type === 'event.call') return { type: 'event.call', eventId: eventMacros[0]?.id || '' }
-                if (type === 'state.set') return { type: 'state.set', var: stateVars[0]?.name || '', value: '' }
-                if (type === 'state.inc') return { type: 'state.inc', var: stateVars[0]?.name || '', value: 1 }
-                if (type === 'state.toggle') return { type: 'state.toggle', var: stateVars[0]?.name || '' }
-                if (type === 'state.tags.add') return { type: 'state.tags.add', var: stateVars[0]?.name || '', value: '' }
-                if (type === 'state.tags.remove') return { type: 'state.tags.remove', var: stateVars[0]?.name || '', value: '' }
-                if (type === 'flow.gotoNode') return { type: 'flow.gotoNode', nodeId: allNodes[0]?.id || '' }
-                if (type === 'stage.setBackground') return { type: 'stage.setBackground', assetId: '' }
-                if (type === 'ui.showEndingCard') return { type: 'ui.showEndingCard', card: defaultEndingCardForNode(n) }
-                return { type }
-              }
-
-              const parseCondValue = (raw: string) => {
-                const s = String(raw ?? '')
-                if (s.trim().toLowerCase() === 'true') return true
-                if (s.trim().toLowerCase() === 'false') return false
-                const n = Number(s)
-                if (Number.isFinite(n) && s.trim() !== '') return n
-                return s
-              }
-
-              const renderActionEditor = (action: any, onChange: (next: any) => void) => {
-                const type = String(action?.type || '')
-                const actionTypes = [
-                  'ui.setText',
-                  'ui.appendText',
-                  'ui.clearText',
-                  'ui.toast',
-                  'events.emit',
-                  'event.call',
-                  'state.set',
-                  'state.inc',
-                  'state.toggle',
-                  'state.tags.add',
-                  'state.tags.remove',
-                  'flow.gotoNode',
-                  'stage.setBackground',
-                  ...(n.kind === 'ending' ? ['ui.showEndingCard'] : [])
-                ]
-
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div className="form-row">
-                      <label>类型</label>
-                      <select className="sel" value={type} onChange={(e) => onChange(makeDefaultAction(e.target.value))}>
-                        {actionTypes.map((t) => (
-                          <option key={t} value={t}>
-                            {t}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {type === 'ui.setText' ? (
-                      <>
-                        <div className="form-row">
-                          <label>模式</label>
-                          <select className="sel" value={String(action?.mode || 'replace')} onChange={(e) => onChange({ ...action, mode: e.target.value })}>
-                            <option value="replace">替换</option>
-                            <option value="append">追加</option>
-                          </select>
-                        </div>
-                        <div className="form-row">
-                          <label>文本</label>
-                          <textarea className="textarea" value={String(action?.text || '')} onChange={(e) => onChange({ ...action, text: e.target.value })} />
-                        </div>
-                      </>
-                    ) : null}
-
-                    {type === 'ui.appendText' ? (
-                      <div className="form-row">
-                        <label>文本</label>
-                        <textarea className="textarea" value={String(action?.text || '')} onChange={(e) => onChange({ ...action, text: e.target.value })} />
-                      </div>
-                    ) : null}
-
-                    {type === 'ui.toast' ? (
-                      <div className="form-row">
-                        <label>内容</label>
-                        <input className="input" value={String(action?.text || '')} onChange={(e) => onChange({ ...action, text: e.target.value })} />
-                      </div>
-                    ) : null}
-
-                    {type === 'events.emit' ? (
-                      <div className="form-row">
-                        <label>事件名</label>
-                        <input className="input" value={String(action?.name || '')} onChange={(e) => onChange({ ...action, name: e.target.value })} placeholder="例如：ad_ready" />
-                      </div>
-                    ) : null}
-
-                    {type === 'event.call' ? (
-                      <div className="form-row">
-                        <label>事件（宏）</label>
-                        <select className="sel" value={String(action?.eventId || '')} onChange={(e) => onChange({ ...action, eventId: e.target.value })}>
-                          <option value="">（未选择）</option>
-                          {eventMacros.map((ev) => (
-                            <option key={ev.id} value={ev.id}>
-                              {ev.name || ev.id}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    ) : null}
-
-                    {type === 'state.set' ? (
-                      <>
-                        <div className="form-row">
-                          <label>变量</label>
-                          <input className="input" value={String(action?.var || '')} onChange={(e) => onChange({ ...action, var: e.target.value })} placeholder="例如：trust" />
-                        </div>
-                        <div className="form-row">
-                          <label>值</label>
-                          <input className="input" value={String(action?.value ?? '')} onChange={(e) => onChange({ ...action, value: e.target.value })} placeholder="字符串/数字/true/false" />
-                        </div>
-                      </>
-                    ) : null}
-
-                    {type === 'state.inc' ? (
-                      <>
-                        <div className="form-row">
-                          <label>变量</label>
-                          <input className="input" value={String(action?.var || '')} onChange={(e) => onChange({ ...action, var: e.target.value })} placeholder="例如：score" />
-                        </div>
-                        <div className="form-row">
-                          <label>增量</label>
-                          <input
-                            className="input"
-                            type="number"
-                            value={String(Number.isFinite(Number(action?.value)) ? Number(action.value) : 1)}
-                            onChange={(e) => onChange({ ...action, value: Number(e.target.value) })}
-                          />
-                        </div>
-                      </>
-                    ) : null}
-
-                    {type === 'state.toggle' ? (
-                      <div className="form-row">
-                        <label>变量</label>
-                        <input className="input" value={String(action?.var || '')} onChange={(e) => onChange({ ...action, var: e.target.value })} placeholder="例如：flag" />
-                      </div>
-                    ) : null}
-
-                    {type === 'state.tags.add' || type === 'state.tags.remove' ? (
-                      <>
-                        <div className="form-row">
-                          <label>变量（tags）</label>
-                          <input className="input" value={String(action?.var || '')} onChange={(e) => onChange({ ...action, var: e.target.value })} placeholder="例如：tags" />
-                        </div>
-                        <div className="form-row">
-                          <label>值</label>
-                          <input className="input" value={String(action?.value || '')} onChange={(e) => onChange({ ...action, value: e.target.value })} placeholder="例如：lied" />
-                        </div>
-                      </>
-                    ) : null}
-
-                    {type === 'flow.gotoNode' ? (
-                      <div className="form-row">
-                        <label>跳转到</label>
-                        <select className="sel" value={String(action?.nodeId || '')} onChange={(e) => onChange({ ...action, nodeId: e.target.value })}>
-                          {allNodes.map((nn) => (
-                            <option key={nn.id} value={nn.id}>
-                              {nn.name || nn.id}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    ) : null}
-
-                    {type === 'stage.setBackground' ? (
-                      <div className="form-row">
-                        <label>背景资源</label>
-                        <select className="sel" value={String(action?.assetId || '')} onChange={(e) => onChange({ ...action, assetId: e.target.value })}>
-                          <option value="">（清除）</option>
-                          {(doc.project?.assets || []).map((a) => (
-                            <option key={a.id} value={a.id}>
-                              {a.name || a.id}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    ) : null}
-
-                    {type === 'ui.showEndingCard' ? (
-                      <>
-                        <div className="form-row">
-                          <label>标题</label>
-                          <input
-                            className="input"
-                            value={String(action?.card?.title || '')}
-                            onChange={(e) => onChange({ ...action, card: { ...(action?.card || {}), title: e.target.value } })}
-                          />
-                        </div>
-                        <div className="form-row">
-                          <label>结局文案</label>
-                          <textarea
-                            className="textarea"
-                            value={String(action?.card?.moral || '')}
-                            onChange={(e) => onChange({ ...action, card: { ...(action?.card || {}), moral: e.target.value } })}
-                          />
-                        </div>
-                      </>
-                    ) : null}
-                  </div>
-                )
-              }
-
-              const renderAdvanceEditor = (advanceIn: any, onChange: (next: any) => void) => {
-                const adv = normalizeAdvance(advanceIn)
-                const type = String((adv as any).type || 'auto')
-                const setType = (t: string) => {
-                  if (t === 'auto') return onChange({ type: 'auto' })
-                  if (t === 'click') return onChange({ type: 'click' })
-                  if (t === 'choice') return onChange({ type: 'choice' })
-                  if (t === 'timer') return onChange({ type: 'timer', ms: 800 })
-                  if (t === 'event') return onChange({ type: 'event', name: '' })
-                  if (t === 'condition') return onChange({ type: 'condition', expr: { op: '==', left: { var: stateVars[0]?.name || 'flag' }, right: true }, pollMs: 200 })
-                  if (t === 'end') return onChange({ type: 'end' })
-                  return onChange({ type: t })
-                }
-
-                const expr = (adv as any).expr
-                const pollMs = Number.isFinite(Number((adv as any).pollMs)) ? Number((adv as any).pollMs) : 200
-                const op = String(expr && (expr as any).op || '==')
-                const varName = String(expr && ((expr as any).var || (expr as any).left?.var) || '')
-                const rhs =
-                  op === 'tags.has'
-                    ? String(expr && (expr as any).value || '')
-                    : String(expr ? ((expr as any).right ?? '') : '')
-
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div className="form-row">
-                      <label>推进方式</label>
-                      <select className="sel" value={type} onChange={(e) => setType(e.target.value)}>
-                        <option value="auto">自动</option>
-                        <option value="click">点击继续</option>
-                        <option value="choice">分支选择</option>
-                        <option value="timer">定时器</option>
-                        <option value="event">等待事件</option>
-                        <option value="condition">等待条件</option>
-                        <option value="end">结束</option>
-                      </select>
-                    </div>
-
-                    {type === 'timer' ? (
-                      <div className="form-row">
-                        <label>毫秒</label>
-                        <input
-                          className="input"
-                          type="number"
-                          value={String(Number.isFinite(Number((adv as any).ms)) ? Number((adv as any).ms) : 0)}
-                          onChange={(e) => onChange({ ...adv, ms: Math.max(0, Math.floor(Number(e.target.value))) })}
-                        />
-                      </div>
-                    ) : null}
-
-                    {type === 'event' ? (
-                      <div className="form-row">
-                        <label>事件名</label>
-                        <input className="input" value={String((adv as any).name || '')} onChange={(e) => onChange({ ...adv, name: e.target.value })} placeholder="例如：ad_ready" />
-                      </div>
-                    ) : null}
-
-                    {type === 'condition' ? (
-                      <>
-                        <div className="form-row">
-                          <label>变量</label>
-                          <input className="input" value={varName} onChange={(e) => {
-                            const v = e.target.value
-                            const nextExpr = op === 'tags.has'
-                              ? { op: 'tags.has', var: v, value: String((expr as any)?.value || '') }
-                              : { op, left: { var: v }, right: parseCondValue(rhs) }
-                            onChange({ ...adv, expr: nextExpr })
-                          }} placeholder="例如：trust" />
-                        </div>
-                        <div className="form-row">
-                          <label>运算</label>
-                          <select className="sel" value={op} onChange={(e) => {
-                            const nextOp = e.target.value
-                            const nextExpr = nextOp === 'tags.has'
-                              ? { op: 'tags.has', var: varName, value: String(rhs || '') }
-                              : { op: nextOp, left: { var: varName }, right: parseCondValue(rhs) }
-                            onChange({ ...adv, expr: nextExpr })
-                          }}>
-                            <option value="==">==</option>
-                            <option value="!=">!=</option>
-                            <option value="<">&lt;</option>
-                            <option value="<=">&lt;=</option>
-                            <option value=">">&gt;</option>
-                            <option value=">=">&gt;=</option>
-                            <option value="tags.has">tags.has</option>
-                          </select>
-                        </div>
-                        <div className="form-row">
-                          <label>值</label>
-                          <input className="input" value={rhs} onChange={(e) => {
-                            const v = e.target.value
-                            const nextExpr = op === 'tags.has'
-                              ? { op: 'tags.has', var: varName, value: v }
-                              : { op, left: { var: varName }, right: parseCondValue(v) }
-                            onChange({ ...adv, expr: nextExpr })
-                          }} placeholder="数字/true/false/字符串" />
-                        </div>
-                        <div className="form-row">
-                          <label>轮询（ms）</label>
-                          <input className="input" type="number" value={String(pollMs)} onChange={(e) => onChange({ ...adv, pollMs: Math.max(50, Math.floor(Number(e.target.value) || 200)) })} />
-                        </div>
-                      </>
-                    ) : null}
-                  </div>
-                )
-              }
-
-              return (
-                <div className="form" style={{ gap: 10 }}>
-                  {steps.map((st, idx) => (
-                    <div key={st.id} style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 14, padding: 12 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                        <div style={{ fontWeight: 800 }}>步骤 {idx + 1}</div>
-                        <div className="script-item-actions">
-                          <button className="icon-btn" title="上移" disabled={idx === 0} onClick={() => updateSteps((arr) => {
-                            const a = arr.slice()
-                            const tmp = a[idx - 1]
-                            a[idx - 1] = a[idx]
-                            a[idx] = tmp
-                            return a
-                          })}>↑</button>
-                          <button className="icon-btn" title="下移" disabled={idx === steps.length - 1} onClick={() => updateSteps((arr) => {
-                            const a = arr.slice()
-                            const tmp = a[idx + 1]
-                            a[idx + 1] = a[idx]
-                            a[idx] = tmp
-                            return a
-                          })}>↓</button>
-                          <button className="icon-btn danger" title="删除步骤" disabled={steps.length <= 1} onClick={() => updateSteps((arr) => arr.filter((_, i) => i !== idx))}>✕</button>
-                        </div>
-                      </div>
-
-                      <div className="hr" />
-
-                      <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>动作</div>
-                      <div className="form" style={{ gap: 8 }}>
-                        {(Array.isArray(st.actions) ? st.actions : []).map((a: any, ai: number) => (
-                          <div key={`${st.id}_a_${ai}`} style={{ border: '1px solid rgba(148,163,184,0.14)', borderRadius: 12, padding: 10 }}>
-                            {renderActionEditor(a, (nextA) =>
-                              updateSteps((arr) => {
-                                const next = arr.slice()
-                                const ss = { ...next[idx] }
-                                const acts = Array.isArray(ss.actions) ? ss.actions.slice() : []
-                                acts[ai] = nextA
-                                ss.actions = acts
-                                next[idx] = ss
-                                return next
-                              })
-                            )}
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                              <button
-                                className="btn secondary"
-                                onClick={() =>
-                                  updateSteps((arr) => {
-                                    const next = arr.slice()
-                                    const ss = { ...next[idx] }
-                                    const acts = Array.isArray(ss.actions) ? ss.actions.slice() : []
-                                    ss.actions = acts.filter((_: any, j: number) => j !== ai)
-                                    next[idx] = ss
-                                    return next
-                                  })
-                                }
-                              >
-                                删除动作
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-
-                        <button
-                          className="btn secondary"
-                          onClick={() =>
-                            updateSteps((arr) => {
-                              const next = arr.slice()
-                              const ss = { ...next[idx] }
-                              const acts = Array.isArray(ss.actions) ? ss.actions.slice() : []
-                              acts.push(makeDefaultAction('ui.setText'))
-                              ss.actions = acts
-                              next[idx] = ss
-                              return next
-                            })
-                          }
-                        >
-                          + 添加动作
-                        </button>
-                      </div>
-
-                      <div className="hr" />
-
-                      <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>推进</div>
-                      {renderAdvanceEditor(st.advance, (nextAdv) =>
-                        updateSteps((arr) => {
-                          const next = arr.slice()
-                          next[idx] = { ...next[idx], advance: nextAdv }
-                          return next
-                        })
-                      )}
-                    </div>
-                  ))}
-
-                  <button
-                    className="btn secondary"
-                    onClick={() =>
-                      updateSteps((arr) => [
-                        ...arr,
-                        {
-                          id: uid('st'),
-                          actions: [makeDefaultAction('ui.setText')],
-                          advance: { type: 'click' }
-                        }
-                      ])
-                    }
-                  >
-                    + 添加步骤
-                  </button>
-                </div>
-              )
-            })()}
-	                </div>
-	              ) : null}
-	            </div>
-
-	            <div className="fold">
-	              <div className="fold-head" onClick={() => toggleRightFold('placements')}>
-	                <div className="fold-title">元素层级（背景 / 摆放）</div>
-	                <div className="fold-actions" onClick={(e) => e.stopPropagation()}>
-	                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={rightFold.placements ? '折叠' : '展开'}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      toggleRightFold('placements')
-                    }}
-                  >
-                    {rightFold.placements ? '－' : '＋'}
-                  </button>
-                </div>
-              </div>
-
-              {rightFold.placements ? (
-                <div className="fold-body">
-                  <div className="hint">角色是独立实体；节点只保存摆放 Placement。</div>
-
-            <div className="form" style={{ gap: 8 }}>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  className="btn secondary"
-                  onClick={() => {
-                    const choices = doc.project?.characters || []
-                    if (!choices.length) {
-                      void dlgAlert('请先在左侧创建角色')
-                      return
-                    }
-                    pushUndo()
-                    const chId = choices[0].id
-                    const p: CharacterPlacementV1 = {
-                      id: uid('pl'),
-                      characterId: chId,
-                      transform: { x: 0.5, y: 1, scale: 1, rotationDeg: 0 },
-                      visible: true,
-                      zIndex: 0
-                    }
-                    setNode((x) => ({
-                      ...x,
-                      visuals: { ...ensureNode(x).visuals, placements: [...(ensureNode(x).visuals?.placements || []), p] }
-                    }))
-                    setActivePlacementId(p.id)
-                  }}
-                >
-                  + 添加角色摆放
-                </button>
-
-                <button className="btn secondary" onClick={() => setActivePlacementId('')}>取消选择摆放</button>
-              </div>
-
-              <div className="list stage-layer-list">
-                <div
-                  className={`item stage-layer-item ${bgRowSelected ? 'active' : ''}`}
-                  onClick={() => { setBgRowSelected(true); setActivePlacementId('') }}
-                  title="场景背景（在「尺寸与背景」分组中更换）"
-                >
-                  <div className="stage-layer-thumb stage-layer-thumb-bg">背</div>
-                  <div className="stage-layer-main">
-                    <div>背景</div>
-                    <div className="meta">{bgAssetName || '未设置背景'}</div>
-                  </div>
-                </div>
-                {placements.slice().sort((a, b) => numberOr(b.zIndex, 0) - numberOr(a.zIndex, 0)).map((p) => {
-                  const ch = doc.project?.characters.find((c) => c.id === p.characterId)
-                  const imgId = String(p.imageAssetId || ch?.imageAssetId || '').trim()
-                  const asset = imgId ? (doc.project?.assets || []).find((x) => x.id === imgId) : null
-                  const name = String(ch?.name || asset?.name || p.characterId || p.id)
-                  const thumbUrl = asset?.uri ? resolveAsset(String(asset.uri), doc.assetBase) : ''
-                  const hidden = p.visible === false
-                  return (
-                    <div
-                      key={p.id}
-                      className={`item stage-layer-item ${p.id === activePlacementId && !bgRowSelected ? 'active' : ''}${hidden ? ' stage-layer-hidden' : ''}`}
-                      onClick={() => { setBgRowSelected(false); setActivePlacementId(p.id) }}
-                    >
-                      {thumbUrl ? (
-                        <img className="stage-layer-thumb" src={thumbUrl} alt="" />
-                      ) : (
-                        <div className="stage-layer-thumb stage-layer-thumb-fallback">{name.slice(0, 1)}</div>
-                      )}
-                      <div className="stage-layer-main">
-                        <div>{name}</div>
-                        <div className="meta">层级 {numberOr(p.zIndex, 0)}</div>
-                      </div>
-                      <div className="stage-layer-actions" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          title={hidden ? '显示该元素' : '隐藏该元素'}
-                          onClick={() => setNodeUndo((x) => ({
-                            ...x,
-                            visuals: {
-                              ...ensureNode(x).visuals,
-                              placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                                pp.id === p.id ? { ...pp, visible: hidden } : pp
-                              )
-                            }
-                          }))}
-                        >
-                          {hidden ? '隐' : '显'}
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          title="上移一层"
-                          onClick={() => setNodeUndo((x) => ({
-                            ...x,
-                            visuals: {
-                              ...ensureNode(x).visuals,
-                              placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                                pp.id === p.id ? { ...pp, zIndex: numberOr(pp.zIndex, 0) + 1 } : pp
-                              )
-                            }
-                          }))}
-                        >
-                          ↑
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          title="下移一层"
-                          onClick={() => setNodeUndo((x) => ({
-                            ...x,
-                            visuals: {
-                              ...ensureNode(x).visuals,
-                              placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                                pp.id === p.id ? { ...pp, zIndex: numberOr(pp.zIndex, 0) - 1 } : pp
-                              )
-                            }
-                          }))}
-                        >
-                          ↓
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          title="删除该摆放"
-                          onClick={() => {
-                            setNodeUndo((x) => ({
-                              ...x,
-                              visuals: {
-                                ...ensureNode(x).visuals,
-                                placements: (ensureNode(x).visuals?.placements || []).filter((pp) => pp.id !== p.id)
-                              }
-                            }))
-                            if (activePlacementId === p.id) setActivePlacementId('')
-                          }}
-                        >
-                          删
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-              {bgRowSelected ? (
-                <div className="hint" style={{ marginTop: 6 }}>
-                  背景：{bgAssetName || '未设置'}{bgAssetId ? `（${bgAssetId}）` : ''}。更换或生成背景在上方「尺寸与背景」分组。
-                </div>
-              ) : null}
-
-              {activePlacement ? (
-                <div
-                  key={activePlacement.id}
-                  ref={placementPropsRef}
-                  className="placement-props-card"
-                  style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 12, padding: 10 }}
-                >
-                  <div style={{ fontWeight: 700, marginBottom: 8 }}>
-                    摆放属性{(() => {
-                      const ch = doc.project?.characters.find((c) => c.id === activePlacement.characterId)
-                      const imgId = String(activePlacement.imageAssetId || ch?.imageAssetId || '').trim()
-                      const asset = imgId ? (doc.project?.assets || []).find((x) => x.id === imgId) : null
-                      const label = String(ch?.name || asset?.name || '').trim()
-                      return label ? `：${label}` : ''
-                    })()}
-                  </div>
-
-                  {/* 2026-09-01 图片来源追溯（B）：当前图是哪张、从哪来，一眼可查 */}
-                  {(() => {
-                    const ch0 = doc.project?.characters.find((c) => c.id === activePlacement.characterId)
-                    const imgId0 = String(activePlacement.imageAssetId || ch0?.imageAssetId || '').trim()
-                    const asset0 = imgId0 ? (doc.project?.assets || []).find((x) => x.id === imgId0) || null : null
-                    if (!asset0) return null
-                    const thumb = asset0.uri ? resolveAsset(String(asset0.uri), doc.assetBase) : ''
-                    const srcPrompt = String((asset0 as any)?.source?.prompt || '').trim()
-                    return (
-                      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 10, padding: 8, borderRadius: 10, background: 'rgba(94,204,255,0.06)' }}>
-                        {thumb ? <img src={thumb} alt="" style={{ width: 56, height: 56, objectFit: 'contain', borderRadius: 8, background: 'rgba(255,255,255,0.06)', flexShrink: 0 }} /> : null}
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{asset0.name || asset0.id}</div>
-                          <div className="hint" style={{ fontSize: 11, wordBreak: 'break-all' }}>{asset0.id}</div>
-                          {srcPrompt ? (
-                            <details style={{ marginTop: 4 }}>
-                              <summary className="hint" style={{ cursor: 'pointer', fontSize: 11 }}>生成提示词摘要</summary>
-                              <div className="hint" style={{ fontSize: 11, marginTop: 4, maxHeight: 90, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{srcPrompt.slice(0, 600)}</div>
-                            </details>
-                          ) : null}
-                          <div style={{ marginTop: 6 }}>
-                            <button
-                              type="button"
-                              className="btn secondary"
-                              style={{ fontSize: 11, padding: '2px 10px' }}
-                              onClick={() => {
-                                setSelection({ type: 'asset', id: asset0.id })
-                                setLeftTab('assets')
-                              }}
-                            >
-                              在资源中打开
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })()}
-
-                  <div className="form-row">
-                    <label>角色</label>
-                    <select
-                      className="sel"
-                      value={activePlacement.characterId}
-                      onChange={(e) => {
-                        const id = e.target.value
-                        setNodeUndo((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id ? { ...pp, characterId: id } : pp
-                            )
-                          }
-                        }))
-                      }}
-                    >
-                      {doc.project.characters.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name || c.id}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="form-row">
-                    <label>图片（修改）</label>
-                    {/* 2026-09-01 摆放属性降级为纯消费端：只列「使用角色默认」+ 该角色已锁定姿势变体；
-                        当前引用不在列表中（历史遗留）时追加「当前（未纳入管理）」保证不丢显示 */}
-                    {(() => {
-                      const poseOpts = poseVariantOptionsFor(activePlacement.characterId)
-                      const currentId = String(activePlacement.imageAssetId || '').trim()
-                      const currentInList = currentId && poseOpts.some((v) => v.id === currentId)
-                      return (
-                        <select
-                          className="sel"
-                          value={activePlacement.imageAssetId || ''}
-                          onChange={(e) => {
-                            const v = e.target.value || undefined
-                            setNodeUndo((x) => ({
-                              ...x,
-                              visuals: {
-                                ...ensureNode(x).visuals,
-                                placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                                  pp.id === activePlacement.id ? { ...pp, imageAssetId: v } : pp
-                                )
-                              }
-                            }))
-                          }}
-                          title="为当前节点的该角色摆放选用一个已锁定姿势变体（覆盖角色默认图片）；姿势变体在「锁定事物」向导第 5 步管理"
-                        >
-                          <option value="">（使用角色默认）</option>
-                          {poseOpts.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              {v.name}
-                            </option>
-                          ))}
-                          {currentId && !currentInList ? <option value={currentId}>当前（未纳入管理）</option> : null}
-                        </select>
-                      )
-                    })()}
-                  </div>
-
-                  <div className="form-row">
-                    <label>动作描述</label>
-                    <textarea
-                      className="story-lock-textarea compact-rows"
-                      value={placementPoseDraft}
-                      onChange={(e) => setPlacementPoseDraft(e.target.value)}
-                      placeholder="该角色在当前场景的动作与表情，例如：指着左边稻草堆，得意表情"
-                    />
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-                    <button
-                      className="btn secondary"
-                      onClick={() => void openPoseVariantManagerForCharacter(activePlacement.characterId)}
-                      title="出图统一管理在锁定向导：打开「锁定事物」第 5 步该角色资产的姿势变体区（抽卡/评分/命名锁定）"
-                    >
-                      管理姿势变体…
-                    </button>
-                    {activePlacement.imageAssetId ? (
-                      <button
-                        className="btn secondary"
-                        onClick={() => {
-                          setNodeUndo((x) => ({
-                            ...x,
-                            visuals: {
-                              ...ensureNode(x).visuals,
-                              placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                                pp.id === activePlacement.id ? { ...pp, imageAssetId: undefined } : pp
-                              )
-                            }
-                          }))
-                        }}
-                        title="清除该摆放的图片修改，回退为角色默认图片"
-                      >
-                        恢复默认
-                      </button>
-                    ) : null}
-                  </div>
-
-                  <div className="form-row">
-                    <label>x（0-1）</label>
-                    <input
-                      className="input"
-                      type="number"
-                      step="0.01"
-                      value={activePlacement.transform.x}
-                      onFocus={pushUndo}
-                      onChange={(e) => {
-                        const v = clamp01(Number(e.target.value))
-                        setNode((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id ? { ...pp, transform: { ...pp.transform, x: v } } : pp
-                            )
-                          }
-                        }))
-                      }}
-                    />
-                  </div>
-
-                  <div className="form-row">
-                    <label>y（0-1）</label>
-                    <input
-                      className="input"
-                      type="number"
-                      step="0.01"
-                      value={activePlacement.transform.y}
-                      onFocus={pushUndo}
-                      onChange={(e) => {
-                        const v = clamp01(Number(e.target.value))
-                        setNode((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id ? { ...pp, transform: { ...pp.transform, y: v } } : pp
-                            )
-                          }
-                        }))
-                      }}
-                    />
-                  </div>
-
-                  <div className="form-row">
-                    <label>缩放</label>
-                    <input
-                      className="input"
-                      type="number"
-                      step="0.05"
-                      value={activePlacement.transform.scale}
-                      onFocus={pushUndo}
-                      onChange={(e) => {
-                        const v = Number(e.target.value)
-                        setNode((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id ? { ...pp, transform: { ...pp.transform, scale: v } } : pp
-                            )
-                          }
-                        }))
-                      }}
-                    />
-                  </div>
-
-                  <div className="form-row">
-                    <label>角度</label>
-                    <input
-                      className="input"
-                      type="number"
-                      step="1"
-                      value={activePlacement.transform.rotationDeg}
-                      onFocus={pushUndo}
-                      onChange={(e) => {
-                        const v = Number(e.target.value)
-                        setNode((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id ? { ...pp, transform: { ...pp.transform, rotationDeg: v } } : pp
-                            )
-                          }
-                        }))
-                      }}
-                    />
-                  </div>
-
-                  <div className="form-row">
-                    <label>层级（zIndex）</label>
-                    <input
-                      className="input"
-                      type="number"
-                      step="1"
-                      value={numberOr(activePlacement.zIndex, 0)}
-                      onFocus={pushUndo}
-                      onChange={(e) => {
-                        const v = Number(e.target.value)
-                        setNode((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id ? { ...pp, zIndex: Number.isFinite(v) ? v : 0 } : pp
-                            )
-                          }
-                        }))
-                      }}
-                    />
-                  </div>
-
-                  <div className="form-row">
-                    <label>可见</label>
-                    <select
-                      className="sel"
-                      value={activePlacement.visible === false ? '0' : '1'}
-                      onChange={(e) => {
-                        const v = e.target.value === '0' ? false : true
-                        setNodeUndo((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id ? { ...pp, visible: v } : pp
-                            )
-                          }
-                        }))
-                      }}
-                    >
-                      <option value="1">显示</option>
-                      <option value="0">隐藏</option>
-                    </select>
-                  </div>
-
-                  {/* 2026-09-01 翻转开关收进面板（B）：与工具栏同一语义，面板内可直接调 */}
-                  <div className="form-row">
-                    <label>翻转</label>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {(['flipX', 'flipY'] as const).map((axis) => {
-                        const on = Boolean((activePlacement.transform as any)?.[axis])
-                        return (
-                          <button
-                            key={axis}
-                            type="button"
-                            className={`btn secondary${on ? ' active' : ''}`}
-                            style={on ? { borderColor: '#5eccff', color: '#5eccff' } : undefined}
-                            onClick={() =>
-                              setNodeUndo((x) => ({
-                                ...x,
-                                visuals: {
-                                  ...ensureNode(x).visuals,
-                                  placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                                    pp.id === activePlacement.id
-                                      ? { ...pp, transform: { ...pp.transform, [axis]: !Boolean((pp.transform as any)?.[axis]) } as any }
-                                      : pp
-                                  )
-                                }
-                              }))
-                            }
-                          >
-                            {axis === 'flipX' ? '左右反转' : '上下反转'}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                    <button
-                      className="btn secondary"
-                      title="位置/缩放/角度/翻转恢复默认"
-                      onClick={() => {
-                        setNodeUndo((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).map((pp) =>
-                              pp.id === activePlacement.id
-                                ? { ...pp, transform: { x: 0.5, y: 1, scale: 1, rotationDeg: 0 } as any }
-                                : pp
-                            )
-                          }
-                        }))
-                      }}
-                    >
-                      重置变换
-                    </button>
-                    <button
-                      className="btn secondary"
-                      onClick={() => {
-                        setNodeUndo((x) => ({
-                          ...x,
-                          visuals: {
-                            ...ensureNode(x).visuals,
-                            placements: (ensureNode(x).visuals?.placements || []).filter((pp) => pp.id !== activePlacement.id)
-                          }
-                        }))
-                        setActivePlacementId('')
-                      }}
-                    >
-                      删除摆放
-                    </button>
-                  </div>
-
-                  {/* 2026-09-01 调试区（B）：数据级排障入口——id/资产/transform 原文可复制 */}
-                  <details style={{ marginTop: 10 }}>
-                    <summary className="hint" style={{ cursor: 'pointer', fontSize: 11 }}>调试信息</summary>
-                    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      <pre
-                        className="hint"
-                        style={{ fontSize: 11, margin: 0, padding: 8, borderRadius: 8, background: 'rgba(0,0,0,0.25)', maxHeight: 160, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-                      >{JSON.stringify(activePlacement, null, 2)}</pre>
-                      <div>
-                        <button
-                          type="button"
-                          className="btn secondary"
-                          style={{ fontSize: 11, padding: '2px 10px' }}
-                          onClick={() => {
-                            try {
-                              navigator.clipboard.writeText(JSON.stringify(activePlacement, null, 2))
-                              setToast('已复制摆放数据')
-                            } catch {
-                              setToast('复制失败')
-                            }
-                          }}
-                        >
-                          复制 JSON
-                        </button>
-                      </div>
-                    </div>
-                  </details>
-                </div>
-              ) : null}
-            </div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      )
-    }
-
-    if (selection.type === 'character') {
-      const ch = doc.project.characters.find((c) => c.id === selection.id) || null
-      if (!ch) return <div className="section"><div className="hint">角色不存在</div></div>
-
-      return (
-        <div className="section">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-            <div style={{ fontWeight: 700 }}>角色属性</div>
-            <button className="btn secondary" onClick={() => deleteCharacter(ch.id)} disabled={busy}>删除</button>
-          </div>
-
-          <div className="hr" />
-
-          <div className="form">
-            <div className="form-row">
-              <label>名称</label>
-              <input
-                className="input"
-                value={ch.name}
-                onChange={(e) =>
-                  setDocProject((p) => ({
-                    ...p,
-                    characters: p.characters.map((x) => (x.id === ch.id ? { ...x, name: e.target.value } : x))
-                  }))
-                }
-              />
-            </div>
-
-            <div className="form-row">
-              <label>图片资源</label>
-              <select
-                className="sel"
-                value={ch.imageAssetId || ''}
-                onChange={(e) => {
-                  const v = e.target.value || undefined
-                  setDocProject((p) => ({
-                    ...p,
-                    characters: p.characters.map((x) => (x.id === ch.id ? { ...x, imageAssetId: v } : x))
-                  }))
-                }}
-              >
-                <option value="">（无）</option>
-                {doc.project.assets.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name || a.id}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {ch.imageAssetId ? (
-              <div className="hint">
-                预览：
-                <div style={{ marginTop: 8 }}>
-                  {(() => {
-                    const a = doc.project.assets.find((x) => x.id === ch.imageAssetId)
-                    if (!a?.uri) return null
-                    return (
-                      <img
-                        alt={a.name}
-                        src={resolveAsset(a.uri, doc.assetBase)}
-                        style={{ maxWidth: '100%', borderRadius: 10, border: '1px solid rgba(148,163,184,0.18)' }}
-                      />
-                    )
-                  })()}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="hr" />
-
-            <div style={{ fontWeight: 800 }}>AI 角色一致性</div>
-            <div className="hint" style={{ marginTop: 6 }}>
-              建议流程：先提取“角色设定指纹”（用于全局锁定），再生成“透明 PNG 角色图”（可用于摆放/覆盖），避免每个场景人物变脸。
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-              <button className="btn secondary" onClick={() => void runCharacterFingerprint(ch.id)} disabled={busy || chFpBusy}>
-                {chFpBusy ? '提取中…' : 'AI 提取角色设定'}
-              </button>
-              <button className="btn secondary" onClick={() => openCharacterSpriteModal(ch.id)} disabled={busy}>
-                AI 生成角色 PNG（透明）
-              </button>
-            </div>
-
-            {chFpError ? <div style={{ marginTop: 8, color: '#fca5a5', fontSize: 12 }}>{chFpError}</div> : null}
-
-            <div className="form-row" style={{ marginTop: 10 }}>
-              <label>指纹（全局锁定）</label>
-              <textarea
-                className="textarea"
-                rows={3}
-                value={String(ch.ai?.fingerprintPrompt || '')}
-                onChange={(e) =>
-                  setDocProject((p) => ({
-                    ...p,
-                    characters: (p.characters || []).map((x) =>
-                      x.id === ch.id ? { ...x, ai: { ...(x.ai || {}), fingerprintPrompt: e.target.value } } : x
-                    )
-                  }))
-                }
-                placeholder="可手动补充更具体的外貌/服饰/标志性特征（后续全局复用）"
-              />
-            </div>
-
-            <div className="form-row">
-              <label>一致性负面（可选）</label>
-              <input
-                className="input"
-                value={String(ch.ai?.negativePrompt || '')}
-                onChange={(e) =>
-                  setDocProject((p) => ({
-                    ...p,
-                    characters: (p.characters || []).map((x) =>
-                      x.id === ch.id ? { ...x, ai: { ...(x.ai || {}), negativePrompt: e.target.value } } : x
-                    )
-                  }))
-                }
-                placeholder="例如：变脸,换装,发型变化,颜色变化,多只动物"
-              />
-            </div>
-          </div>
-        </div>
-      )
-    }
-
-    if (selection.type === 'asset') {
-      const a = doc.project.assets.find((x) => x.id === selection.id) || null
-      if (!a) return <div className="section"><div className="hint">资源不存在</div></div>
-      const assetUrl = String(a.uri || '').trim() ? resolveAsset(a.uri, doc.assetBase) : ''
-
-      return (
-        <div className="section">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-            <div style={{ fontWeight: 700 }}>资源属性</div>
-            <button className="btn secondary" onClick={() => deleteAsset(a.id)} disabled={busy}>删除</button>
-          </div>
-
-          <div className="hr" />
-
-          <div className="form">
-            <div className="form-row">
-              <label>名称</label>
-              <input
-                className="input"
-                value={a.name}
-                onChange={(e) =>
-                  setDocProject((p) => ({
-                    ...p,
-                    assets: p.assets.map((x) => (x.id === a.id ? { ...x, name: e.target.value } : x))
-                  }))
-                }
-              />
-            </div>
-
-            <div className="form-row">
-              <label>URI</label>
-              <input
-                className="input"
-                value={a.uri}
-                onChange={(e) =>
-                  setDocProject((p) => ({
-                    ...p,
-                    assets: p.assets.map((x) => (x.id === a.id ? { ...x, uri: e.target.value } : x))
-                  }))
-                }
-                placeholder="例如：assets/bg.png 或 https://..."
-              />
-            </div>
-
-            <div className="hint">预览</div>
-            {a.uri ? (
-              <>
-                <img
-                  alt={a.name}
-                  src={assetUrl}
-                  style={{ maxWidth: '100%', borderRadius: 10, border: '1px solid rgba(148,163,184,0.18)' }}
-                />
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-                  <button
-                    className="btn secondary"
-                    onClick={() => {
-                      if (!assetUrl) return
-                      window.open(assetUrl, '_blank', 'noopener,noreferrer')
-                    }}
-                    disabled={!assetUrl}
-                  >
-                    预览图片
-                  </button>
-                  <button
-                    className="btn secondary"
-                    onClick={async () => {
-                      if (doc.mode !== 'project') return
-                      try {
-                        const res = await openProjectAssetFolder(doc.id, String(a.uri || ''))
-                        setToast(res.folder ? `已打开文件夹：${res.folder}` : '已打开文件夹')
-                      } catch (e) {
-                        setToast(e instanceof Error ? e.message : String(e))
-                      }
-                    }}
-                    disabled={doc.mode !== 'project'}
-                  >
-                    打开所在文件夹
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="hint">未设置 URI</div>
-            )}
-          </div>
-        </div>
-      )
-    }
-
-    return (
-      <div className="section">
-        <div style={{ fontWeight: 800 }}>全局设置（运行时）</div>
-        <div className="hint" style={{ marginTop: 6 }}>
-          这里配置 State（变量/条件）与 Event（宏）。左侧仅做结构导航；所有编辑都在右侧完成。
-        </div>
-
-        <div className="hr" />
-
-        <div style={{ fontWeight: 700 }}>State（变量）</div>
-        <div className="hint">变量名用于条件判断与 state.* 动作（例如：trust / liedCount / tags）。</div>
-
-        <div className="form" style={{ gap: 8, marginTop: 8 }}>
-          {(Array.isArray(doc.project.state?.vars) ? doc.project.state!.vars : []).map((v, i) => (
-            <div key={`${v.name}_${i}`} style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 14, padding: 12 }}>
-              <div className="form-row">
-                <label>名称</label>
-                <input
-                  className="input"
-                  value={String(v.name || '')}
-                  onChange={(e) =>
-                    setDocProject((p) => {
-                      const state = p.state && typeof p.state === 'object' ? p.state : { vars: [] }
-                      const vars = Array.isArray(state.vars) ? state.vars.slice() : []
-                      vars[i] = { ...(vars[i] as any), name: e.target.value }
-                      return { ...p, state: { ...state, vars } }
-                    })
-                  }
-                />
-              </div>
-              <div className="form-row">
-                <label>类型</label>
-                <select
-                  className="sel"
-                  value={String((v as any).type || 'string')}
-                  onChange={(e) =>
-                    setDocProject((p) => {
-                      const state = p.state && typeof p.state === 'object' ? p.state : { vars: [] }
-                      const vars = Array.isArray(state.vars) ? state.vars.slice() : []
-                      const type = e.target.value as any
-                      const cur = vars[i] as any
-                      const def =
-                        type === 'number' ? 0 :
-                        type === 'boolean' ? false :
-                        type === 'tags' ? [] :
-                        ''
-                      vars[i] = { ...cur, type, default: cur && cur.default != null ? cur.default : def }
-                      return { ...p, state: { ...state, vars } }
-                    })
-                  }
-                >
-                  <option value="string">字符串</option>
-                  <option value="number">数字</option>
-                  <option value="boolean">布尔</option>
-                  <option value="tags">标签集合（数组）</option>
-                </select>
-              </div>
-              <div className="form-row">
-                <label>默认值</label>
-                {String((v as any).type || 'string') === 'number' ? (
-                  <input
-                    className="input"
-                    type="number"
-                    value={String(Number.isFinite(Number((v as any).default)) ? Number((v as any).default) : 0)}
-                    onChange={(e) =>
-                      setDocProject((p) => {
-                        const state = p.state && typeof p.state === 'object' ? p.state : { vars: [] }
-                        const vars = Array.isArray(state.vars) ? state.vars.slice() : []
-                        vars[i] = { ...(vars[i] as any), default: Number(e.target.value) }
-                        return { ...p, state: { ...state, vars } }
-                      })
-                    }
-                  />
-                ) : String((v as any).type || 'string') === 'boolean' ? (
-                  <select
-                    className="sel"
-                    value={String(Boolean((v as any).default))}
-                    onChange={(e) =>
-                      setDocProject((p) => {
-                        const state = p.state && typeof p.state === 'object' ? p.state : { vars: [] }
-                        const vars = Array.isArray(state.vars) ? state.vars.slice() : []
-                        vars[i] = { ...(vars[i] as any), default: e.target.value === 'true' }
-                        return { ...p, state: { ...state, vars } }
-                      })
-                    }
-                  >
-                    <option value="true">true</option>
-                    <option value="false">false</option>
-                  </select>
-                ) : String((v as any).type || 'string') === 'tags' ? (
-                  <input
-                    className="input"
-                    value={Array.isArray((v as any).default) ? (v as any).default.join(',') : ''}
-                    onChange={(e) =>
-                      setDocProject((p) => {
-                        const state = p.state && typeof p.state === 'object' ? p.state : { vars: [] }
-                        const vars = Array.isArray(state.vars) ? state.vars.slice() : []
-                        const parts = String(e.target.value || '')
-                          .split(',')
-                          .map((x) => x.trim())
-                          .filter(Boolean)
-                        vars[i] = { ...(vars[i] as any), default: parts }
-                        return { ...p, state: { ...state, vars } }
-                      })
-                    }
-                    placeholder="用逗号分隔，例如：lied,helped"
-                  />
-                ) : (
-                  <input
-                    className="input"
-                    value={String((v as any).default ?? '')}
-                    onChange={(e) =>
-                      setDocProject((p) => {
-                        const state = p.state && typeof p.state === 'object' ? p.state : { vars: [] }
-                        const vars = Array.isArray(state.vars) ? state.vars.slice() : []
-                        vars[i] = { ...(vars[i] as any), default: e.target.value }
-                        return { ...p, state: { ...state, vars } }
-                      })
-                    }
-                  />
-                )}
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <button
-                  className="btn secondary"
-                  onClick={() =>
-                    setDocProject((p) => {
-                      const state = p.state && typeof p.state === 'object' ? p.state : { vars: [] }
-                      const vars = Array.isArray(state.vars) ? state.vars.slice() : []
-                      vars.splice(i, 1)
-                      return { ...p, state: { ...state, vars } }
-                    })
-                  }
-                >
-                  删除变量
-                </button>
-              </div>
-            </div>
-          ))}
-
-          <button
-            className="btn secondary"
-            onClick={() =>
-              setDocProject((p) => {
-                const state = p.state && typeof p.state === 'object' ? p.state : { vars: [] }
-                const vars = Array.isArray(state.vars) ? state.vars.slice() : []
-                vars.push({ name: `var_${vars.length + 1}`, type: 'number', default: 0 })
-                return { ...p, state: { ...state, vars } }
-              })
-            }
-          >
-            + 添加变量
-          </button>
-        </div>
-
-        <div className="hr" />
-
-        <div style={{ fontWeight: 700 }}>Event（宏）</div>
-        <div className="hint">事件宏用于复用动作序列（通过 action: event.call 触发）。</div>
-
-        <div className="form" style={{ gap: 8, marginTop: 8 }}>
-          {(Array.isArray(doc.project.events) ? doc.project.events : []).map((ev, i) => (
-            <div key={ev.id} style={{ border: '1px solid rgba(148,163,184,0.16)', borderRadius: 14, padding: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                <div style={{ fontWeight: 800 }}>事件：{ev.name || ev.id}</div>
-                <button
-                  className="btn secondary"
-                  onClick={() =>
-                    setDocProject((p) => ({ ...p, events: (Array.isArray(p.events) ? p.events : []).filter((_, j) => j !== i) }))
-                  }
-                >
-                  删除
-                </button>
-              </div>
-
-              <div className="hr" />
-
-              <div className="form-row">
-                <label>名称</label>
-                <input
-                  className="input"
-                  value={String(ev.name || '')}
-                  onChange={(e) =>
-                    setDocProject((p) => {
-                      const list = Array.isArray(p.events) ? p.events.slice() : []
-                      list[i] = { ...(list[i] as any), name: e.target.value }
-                      return { ...p, events: list }
-                    })
-                  }
-                />
-              </div>
-
-              {(() => {
-                const stateVars = Array.isArray(doc.project?.state?.vars) ? (doc.project?.state?.vars || []) : []
-                const actions = Array.isArray((ev as any).actions) ? (ev as any).actions : []
-                const setActions = (updater: (acts: any[]) => any[]) =>
-                  setDocProject((p) => {
-                    const list = Array.isArray(p.events) ? p.events.slice() : []
-                    const cur = list[i] as any
-                    const acts = Array.isArray(cur && cur.actions) ? cur.actions.slice() : []
-                    list[i] = { ...cur, actions: updater(acts) }
-                    return { ...p, events: list }
-                  })
-
-                const makeAction = (type: string): any => {
-                  if (type === 'ui.toast') return { type: 'ui.toast', text: '' }
-                  if (type === 'ui.setText') return { type: 'ui.setText', mode: 'replace', text: '' }
-                  if (type === 'events.emit') return { type: 'events.emit', name: '' }
-                  if (type === 'state.set') return { type: 'state.set', var: stateVars[0]?.name || '', value: '' }
-                  if (type === 'state.inc') return { type: 'state.inc', var: stateVars[0]?.name || '', value: 1 }
-                  if (type === 'state.toggle') return { type: 'state.toggle', var: stateVars[0]?.name || '' }
-                  if (type === 'state.tags.add') return { type: 'state.tags.add', var: stateVars[0]?.name || '', value: '' }
-                  if (type === 'state.tags.remove') return { type: 'state.tags.remove', var: stateVars[0]?.name || '', value: '' }
-                  if (type === 'flow.gotoNode') return { type: 'flow.gotoNode', nodeId: doc.story?.startNodeId || (nodes[0]?.id || '') }
-                  if (type === 'flow.restart') return { type: 'flow.restart' }
-                  if (type === 'flow.backToHub') return { type: 'flow.backToHub' }
-                  return { type }
-                }
-
-                const types = [
-                  'ui.toast',
-                  'ui.setText',
-                  'events.emit',
-                  'state.set',
-                  'state.inc',
-                  'state.toggle',
-                  'state.tags.add',
-                  'state.tags.remove',
-                  'flow.gotoNode',
-                  'flow.restart',
-                  'flow.backToHub'
-                ]
-
-                return (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.9 }}>动作</div>
-
-                    <div className="form" style={{ gap: 8, marginTop: 8 }}>
-                      {actions.map((a: any, ai: number) => {
-                        const type = String(a && a.type || '')
-                        return (
-                          <div key={`${ev.id}_a_${ai}`} style={{ border: '1px solid rgba(148,163,184,0.14)', borderRadius: 12, padding: 10 }}>
-                            <div className="form-row">
-                              <label>类型</label>
-                              <select className="sel" value={type} onChange={(e) => setActions((acts) => {
-                                const next = acts.slice()
-                                next[ai] = makeAction(e.target.value)
-                                return next
-                              })}>
-                                {types.map((t) => (
-                                  <option key={t} value={t}>{t}</option>
-                                ))}
-                              </select>
-                            </div>
-
-                            {type === 'ui.toast' ? (
-                              <div className="form-row">
-                                <label>内容</label>
-                                <input className="input" value={String(a?.text || '')} onChange={(e) => setActions((acts) => {
-                                  const next = acts.slice()
-                                  next[ai] = { ...next[ai], text: e.target.value }
-                                  return next
-                                })} />
-                              </div>
-                            ) : null}
-
-                            {type === 'ui.setText' ? (
-                              <>
-                                <div className="form-row">
-                                  <label>模式</label>
-                                  <select className="sel" value={String(a?.mode || 'replace')} onChange={(e) => setActions((acts) => {
-                                    const next = acts.slice()
-                                    next[ai] = { ...next[ai], mode: e.target.value }
-                                    return next
-                                  })}>
-                                    <option value="replace">替换</option>
-                                    <option value="append">追加</option>
-                                  </select>
-                                </div>
-                                <div className="form-row">
-                                  <label>文本</label>
-                                  <textarea className="textarea" value={String(a?.text || '')} onChange={(e) => setActions((acts) => {
-                                    const next = acts.slice()
-                                    next[ai] = { ...next[ai], text: e.target.value }
-                                    return next
-                                  })} />
-                                </div>
-                              </>
-                            ) : null}
-
-                            {type === 'events.emit' ? (
-                              <div className="form-row">
-                                <label>事件名</label>
-                                <input className="input" value={String(a?.name || '')} onChange={(e) => setActions((acts) => {
-                                  const next = acts.slice()
-                                  next[ai] = { ...next[ai], name: e.target.value }
-                                  return next
-                                })} placeholder="例如：ad_ready" />
-                              </div>
-                            ) : null}
-
-                            {type === 'state.set' ? (
-                              <>
-                                <div className="form-row">
-                                  <label>变量</label>
-                                  <input className="input" value={String(a?.var || '')} onChange={(e) => setActions((acts) => {
-                                    const next = acts.slice()
-                                    next[ai] = { ...next[ai], var: e.target.value }
-                                    return next
-                                  })} />
-                                </div>
-                                <div className="form-row">
-                                  <label>值</label>
-                                  <input className="input" value={String(a?.value ?? '')} onChange={(e) => setActions((acts) => {
-                                    const next = acts.slice()
-                                    next[ai] = { ...next[ai], value: e.target.value }
-                                    return next
-                                  })} />
-                                </div>
-                              </>
-                            ) : null}
-
-                            {type === 'state.inc' ? (
-                              <>
-                                <div className="form-row">
-                                  <label>变量</label>
-                                  <input className="input" value={String(a?.var || '')} onChange={(e) => setActions((acts) => {
-                                    const next = acts.slice()
-                                    next[ai] = { ...next[ai], var: e.target.value }
-                                    return next
-                                  })} />
-                                </div>
-                                <div className="form-row">
-                                  <label>增量</label>
-                                  <input className="input" type="number" value={String(Number.isFinite(Number(a?.value)) ? Number(a.value) : 1)} onChange={(e) => setActions((acts) => {
-                                    const next = acts.slice()
-                                    next[ai] = { ...next[ai], value: Number(e.target.value) }
-                                    return next
-                                  })} />
-                                </div>
-                              </>
-                            ) : null}
-
-                            {type === 'state.toggle' ? (
-                              <div className="form-row">
-                                <label>变量</label>
-                                <input className="input" value={String(a?.var || '')} onChange={(e) => setActions((acts) => {
-                                  const next = acts.slice()
-                                  next[ai] = { ...next[ai], var: e.target.value }
-                                  return next
-                                })} />
-                              </div>
-                            ) : null}
-
-                            {type === 'state.tags.add' || type === 'state.tags.remove' ? (
-                              <>
-                                <div className="form-row">
-                                  <label>变量</label>
-                                  <input className="input" value={String(a?.var || '')} onChange={(e) => setActions((acts) => {
-                                    const next = acts.slice()
-                                    next[ai] = { ...next[ai], var: e.target.value }
-                                    return next
-                                  })} />
-                                </div>
-                                <div className="form-row">
-                                  <label>值</label>
-                                  <input className="input" value={String(a?.value || '')} onChange={(e) => setActions((acts) => {
-                                    const next = acts.slice()
-                                    next[ai] = { ...next[ai], value: e.target.value }
-                                    return next
-                                  })} />
-                                </div>
-                              </>
-                            ) : null}
-
-                            {type === 'flow.gotoNode' ? (
-                              <div className="form-row">
-                                <label>跳转到</label>
-                                <select className="sel" value={String(a?.nodeId || '')} onChange={(e) => setActions((acts) => {
-                                  const next = acts.slice()
-                                  next[ai] = { ...next[ai], nodeId: e.target.value }
-                                  return next
-                                })}>
-                                  {nodes.map((nn) => (
-                                    <option key={nn.id} value={nn.id}>{nn.name || nn.id}</option>
-                                  ))}
-                                </select>
-                              </div>
-                            ) : null}
-
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                              <button className="btn secondary" onClick={() => setActions((acts) => acts.filter((_, j) => j !== ai))}>删除动作</button>
-                            </div>
-                          </div>
-                        )
-                      })}
-
-                      <button className="btn secondary" onClick={() => setActions((acts) => [...acts, makeAction('ui.toast')])}>+ 添加动作</button>
-                    </div>
-                  </div>
-                )
-              })()}
-            </div>
-          ))}
-
-          <button
-            className="btn secondary"
-            onClick={() =>
-              setDocProject((p) => {
-                const list = Array.isArray(p.events) ? p.events.slice() : []
-                list.push({ id: uid('ev'), name: `事件${list.length + 1}`, actions: [] })
-                return { ...p, events: list }
-              })
-            }
-          >
-            + 添加事件宏
-          </button>
-        </div>
-      </div>
-    )
-  })()
+  const right = (
+    <ComposeRightPanel
+      doc={doc}
+      selection={selection}
+      setSelection={setSelection}
+      setLeftTab={setLeftTab}
+      busy={busy}
+      error={error}
+      rightFold={rightFold}
+      toggleRightFold={toggleRightFold}
+      setDocProject={setDocProject}
+      setDocStory={setDocStory}
+      activePlacementId={activePlacementId}
+      setActivePlacementId={setActivePlacementId}
+      bgRowSelected={bgRowSelected}
+      setBgRowSelected={setBgRowSelected}
+      placementPoseDraft={placementPoseDraft}
+      setPlacementPoseDraft={setPlacementPoseDraft}
+      bgFileRef={bgFileRef}
+      pendingBgAssetIdRef={pendingBgAssetIdRef}
+      placementPropsRef={placementPropsRef}
+      blueprintLoaded={blueprintLoaded}
+      blueprintNodeIdSet={blueprintNodeIdSet}
+      nodeById={nodeById}
+      nodes={nodes}
+      effectivePreviewNode={effectivePreviewNode}
+      rt={rt}
+      setRt={setRt}
+      setToast={setToast}
+      sbAssetPlan={sbAssetPlan}
+      chFpBusy={chFpBusy}
+      chFpError={chFpError}
+      pushUndo={pushUndo}
+      deleteAsset={deleteAsset}
+      deleteCharacter={deleteCharacter}
+      handleUploadBackground={handleUploadBackground}
+      openAiStoryboardForCurrentNode={openAiStoryboardForCurrentNode}
+      openCharacterSpriteModal={openCharacterSpriteModal}
+      openPoseVariantManagerForCharacter={openPoseVariantManagerForCharacter}
+      poseVariantOptionsFor={poseVariantOptionsFor}
+      runCharacterFingerprint={runCharacterFingerprint}
+    />
+  )
 
   return (
     <div className="app">
-      <div className="topbar">
-        <div className="left">
-          <div className="title">gamestudio · 节点式交互故事编辑器</div>
-          {showProjectManager ? (
-            <>
-              <button className="btn secondary" onClick={() => refreshProjects()} disabled={busy}>
-                刷新
-              </button>
-              <button className="btn" onClick={() => createNewProject()} disabled={busy}>
-                新建项目
-              </button>
-              <select
-                className="sel"
-                value={doc.mode === 'project' ? doc.id : ''}
-                onChange={(e) => {
-                  const id = e.target.value
-                  if (!id) return
-                  void openProject(id)
-                }}
-              >
-                <option value="">打开项目…</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.title || p.id}
-                  </option>
-                ))}
-              </select>
-            </>
-          ) : null}
-        </div>
-
-	        <div className="right">
-	          {props.onBackToHub ? (
-	            <button
-	              className="btn secondary"
-              onClick={async () => {
-                const ok = await saveIfDirty()
-                if (!ok) return
-                props.onBackToHub?.()
-              }}
-              disabled={busy}
-            >
-              返回工作台
-            </button>
-          ) : null}
-
-	          {props.onBack ? (
-	            <button
-	              className="btn secondary"
-              onClick={async () => {
-                const ok = await saveIfDirty()
-                if (!ok) return
-                props.onBack?.()
-              }}
-              disabled={busy}
-            >
-	              返回蓝图
-	            </button>
-	          ) : null}
-
-	          {doc.story ? (
-	            <select
-	              className="sel"
-	              value={runtimeStartNodeId || doc.story.startNodeId}
-	              onChange={(e) => setRuntimeStartNodeId(e.target.value)}
-	              title="播放起点（不影响蓝图结构/导出）"
-	            >
-	              {nodesForList.map((n) => (
-	                <option key={n.id} value={n.id}>
-	                  {nodeLabel(n as any) || '（未命名）'}
-	                </option>
-	              ))}
-	            </select>
-	          ) : null}
-
-	          {doc.mode !== 'none' ? <div className="hint">当前：{doc.title}</div> : null}
-	          {doc.mode !== 'none' ? (
-	            <button className="btn secondary" onClick={() => setSelection({ type: 'none' })} disabled={busy}>
-	              全局设置
-	            </button>
-	          ) : null}
-            {doc.mode === 'project' && doc.story ? (
-              <button
-                className="btn secondary"
-                onClick={async () => {
-                  await initStoryboardBatchFromDoc()
-                  setSbPoseFocusAssetId('')
-                  setSbRenderOpen(false)
-                  setSbOpen(true)
-                  void runStoryboardOpenChecks()
-                }}
-                disabled={busy}
-              >
-                锁定事物
-              </button>
-            ) : null}
-            {doc.mode === 'project' && doc.story ? (
-              <button
-                className="btn secondary"
-                title="直达正式场景出图（背景生产车间）：编辑场景提示词、重新出图、批量重渲、待审核处理，无需穿过锁定向导"
-                onClick={async () => {
-                  // 2026-09-01 场景出图直接入口（用户需求：调背景不必每次穿 7 步向导）
-                  await initStoryboardBatchFromDoc()
-                  const ok = await saveIfDirty()
-                  if (!ok) return
-                  setSbOpen(false)
-                  setSbRenderOpen(true)
-                  void runStoryboardOpenChecks()
-                }}
-                disabled={busy}
-              >
-                场景出图
-              </button>
-            ) : null}
-            {doc.mode === 'project' && doc.story ? (
-              <button
-                className="btn secondary"
-                title="场景图审核：把每个场景的整图提交守护台审图中心评审（分数/问题/改图建议），不合格可一键打回重出"
-                onClick={() => {
-                  void openSceneReviewPanel()
-                }}
-                disabled={busy}
-              >
-                场景图审核
-              </button>
-            ) : null}
-            {doc.mode === 'project' ? (
-              <button
-                className="btn secondary"
-                title="在 Finder 中打开本项目 AI 素材目录（assets/ai），直接管理全部 AI 生成图"
-                onClick={() => {
-                  void openProjectAiAssetsFolder(doc.id).catch((e) => setToast(`打开素材目录失败：${e instanceof Error ? e.message : String(e)}`))
-                }}
-                disabled={busy}
-              >
-                素材目录
-              </button>
-            ) : null}
-	          {problems.length ? <div className="hint" style={{ color: '#fca5a5' }}>校验：{problems.length} 个问题</div> : <div className="hint">校验：通过</div>}
-	          <button className="btn secondary" onClick={() => restartRuntime()} disabled={!doc.story}>播放</button>
-	          <button className="btn" onClick={() => saveCurrent()} disabled={busy || doc.mode !== 'project' || !dirty}>保存</button>
-	          <button className="btn secondary" onClick={() => exportCurrent()} disabled={busy || doc.mode !== 'project'}>导出预览</button>
-	          <button className="btn secondary" onClick={() => exportPublishCurrent()} disabled={busy || doc.mode !== 'project'}>导出发布包(H5)</button>
-          <button className="btn secondary" onClick={() => openCompletenessModal()} disabled={busy || doc.mode !== 'project'} title="查看完整度核实报告；用真实浏览器逐节点走查导出的可玩 H5 并做视觉评审">完整度核实</button>
-	        </div>
-	      </div>
+      <ComposeTopBar
+        props={props}
+        showProjectManager={showProjectManager}
+        busy={busy}
+        dirty={dirty}
+        doc={doc}
+        projects={projects}
+        problems={problems}
+        openMenu={openMenu}
+        runtimeStartNodeId={runtimeStartNodeId}
+        nodesForList={nodesForList}
+        nodeLabel={nodeLabel}
+        refreshProjects={refreshProjects}
+        createNewProject={createNewProject}
+        openProject={openProject}
+        saveIfDirty={saveIfDirty}
+        saveCurrent={saveCurrent}
+        restartRuntime={restartRuntime}
+        exportCurrent={exportCurrent}
+        exportPublishCurrent={exportPublishCurrent}
+        openCompletenessModal={openCompletenessModal}
+        openSceneReviewPanel={openSceneReviewPanel}
+        runStoryboardOpenChecks={runStoryboardOpenChecks}
+        initStoryboardBatchFromDoc={initStoryboardBatchFromDoc}
+        setOpenMenu={setOpenMenu}
+        setRuntimeStartNodeId={setRuntimeStartNodeId}
+        setSelection={setSelection}
+        setSbOpen={setSbOpen}
+        setSbRenderOpen={setSbRenderOpen}
+        setSbPoseFocusAssetId={setSbPoseFocusAssetId}
+        setToast={setToast}
+      />
 
       {externalNewerRev > 0 && doc.mode === 'project' ? (
-        <div className="external-update-banner">
-          <span>项目已在其他窗口或流程中更新（新版本 {externalNewerRev}）。为避免旧内容覆盖新变更，请刷新加载最新。</span>
-          <div className="banner-actions">
-            <button
-              className="btn secondary"
-              onClick={() => {
-                // 2026-09-30 按用户指令：知道了=本会话内不再提示（含后续版本变化）；
-                // 此前的打盹语义（新版本再提示）被否决——用户确认过即视为已知，只有「刷新加载最新」才复位。
-                setExternalDismissedRev(Number.MAX_SAFE_INTEGER)
-                setExternalNewerRev(0)
-              }}
-              title="本会话内不再提示（刷新加载最新后恢复检测）"
-            >
-              知道了
-            </button>
-            <button
-              className="btn"
-              disabled={busy}
-              onClick={async () => {
-                setExternalDismissedRev(0)
-                setExternalNewerRev(0)
-                try { await openProject(doc.id) } catch {}
-              }}
-            >
-              刷新加载最新
-            </button>
-          </div>
-        </div>
+        <ExternalUpdateBanner
+          busy={busy}
+          doc={doc}
+          externalNewerRev={externalNewerRev}
+          openProject={openProject}
+          setExternalDismissedRev={setExternalDismissedRev}
+          setExternalNewerRev={setExternalNewerRev}
+        />
       ) : null}
 
       <div className="main">
-        <div className="panel">
-          <div className="tabs">
-            <div className={`tab ${leftTab === 'nodes' ? 'active' : ''}`} onClick={() => setLeftTab('nodes')}>节点</div>
-            <div className={`tab ${leftTab === 'characters' ? 'active' : ''}`} onClick={() => setLeftTab('characters')}>角色</div>
-            <div className={`tab ${leftTab === 'assets' ? 'active' : ''}`} onClick={() => setLeftTab('assets')}>资源</div>
-            <div className={`tab ${leftTab === 'materials' ? 'active' : ''}`} onClick={() => setLeftTab('materials')}>素材</div>
-          </div>
-
-	          <div className="section">
-	            {doc.project && doc.story ? null : null}
-
-	            {leftTab === 'nodes' && doc.story ? (
-	              <>
-	                <div className="list">
-	                  {nodesForList.map((n) => (
-	                    <div
-	                      key={n.id}
-                      className={`item ${selection.type === 'node' && selection.id === n.id ? 'active' : ''}`}
-                      onClick={() => setSelection({ type: 'node', id: n.id })}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                        <div>{nodeLabel(n as any) || n.id}</div>
-                        <div className="meta">{nodeKindLabel((n as any).kind)}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : null}
-
-            {leftTab === 'characters' && doc.project ? (
-              <>
-                <div className="hr" />
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button className="btn secondary" onClick={() => addCharacter()} disabled={doc.readonly}>+ 角色</button>
-                </div>
-                <div className="hr" />
-                <div className="list">
-                  {doc.project.characters.map((c) => (
-                    <div
-                      key={c.id}
-                      className={`item ${selection.type === 'character' && selection.id === c.id ? 'active' : ''}`}
-                      onClick={() => setSelection({ type: 'character', id: c.id })}
-                    >
-                      <div>{c.name || c.id}</div>
-                      <div className="meta">id: {c.id}</div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : null}
-
-            {leftTab === 'assets' && doc.project ? (
-              <>
-                <div className="hr" />
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button className="btn secondary" onClick={() => addAsset()} disabled={doc.readonly}>+ 资源</button>
-                </div>
-                <div className="hr" />
-                <div className="list">
-                  {doc.project.assets.map((a) => (
-                    <div
-                      key={a.id}
-                      className={`item ${selection.type === 'asset' && selection.id === a.id ? 'active' : ''}`}
-                      onClick={() => setSelection({ type: 'asset', id: a.id })}
-                    >
-                      <div>{a.name || a.id}</div>
-                      <div className="meta">id: {a.id}</div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : null}
-
-            {leftTab === 'materials' && doc.project ? (
-              <>
-                <div className="hr" />
-                <div className="hint">把素材拖到中间画布即可在当前场景摆放；同一素材可摆放多个。</div>
-                <div className="hr" />
-                <div className="list">
-                  {stageMaterials.map((m) => (
-                    <div
-                      key={m.key}
-                      className="item stage-material-item"
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData('application/x-gamestudio-asset', JSON.stringify({
-                          characterId: m.characterId || '',
-                          imageAssetId: m.imageAssetId,
-                          name: m.name
-                        }))
-                        e.dataTransfer.effectAllowed = 'copy'
-                      }}
-                      title="拖入中间画布摆放"
-                    >
-                      <div>{m.name}</div>
-                      <div className="meta">{m.kind}</div>
-                    </div>
-                  ))}
-                  {stageMaterials.length === 0 ? (
-                    <div className="hint">暂无可摆放素材：请先在「角色」生成角色图，或完成锁定事物主参考。</div>
-                  ) : null}
-                </div>
-              </>
-            ) : null}
-          </div>
-        </div>
+        <ComposeLeftPanel
+          doc={doc}
+          leftTab={leftTab}
+          setLeftTab={setLeftTab}
+          selection={selection}
+          setSelection={setSelection}
+          nodesForList={nodesForList}
+          nodeLabel={nodeLabel}
+          addCharacter={addCharacter}
+          addAsset={addAsset}
+          stageMaterials={stageMaterials}
+        />
 
         <div
           className={`canvas${canvasDropActive ? ' canvas-drop-active' : ''}`}
           onDragOver={(e) => {
-            if (Array.from(e.dataTransfer.types).includes('application/x-gamestudio-asset')) {
+            if (Array.from(e.dataTransfer.types).includes('application/x-talkscene-asset')) {
               e.preventDefault()
               e.dataTransfer.dropEffect = 'copy'
               if (!canvasDropActive) setCanvasDropActive(true)
@@ -11065,7 +6559,7 @@ function ensureNode(n: NodeV1): NodeV1 {
           }}
           onDragLeave={() => setCanvasDropActive(false)}
           onDrop={(e) => {
-            const raw = e.dataTransfer.getData('application/x-gamestudio-asset')
+            const raw = e.dataTransfer.getData('application/x-talkscene-asset')
             setCanvasDropActive(false)
             if (!raw) return
             e.preventDefault()
@@ -11074,346 +6568,42 @@ function ensureNode(n: NodeV1): NodeV1 {
         >
           <div className="canvas-wrap" ref={canvasHostRef} />
           {doc.mode === 'project' && doc.project && doc.story ? (
-            <div className="stage-toolbar">
-              <button
-                type="button"
-                className={`stage-mode-badge ${editMode ? 'edit' : 'preview'}`}
-                onClick={() => setEditMode((v) => !v)}
-                title={editMode ? '当前为编辑模式：可拖动/摆放/编辑元素；点击切换到预览模式' : '当前为预览模式：画布只读；点击切换到编辑模式'}
-              >
-                {editMode ? '编辑模式' : '预览模式'}
-              </button>
-              <span className="stage-toolbar-sep" />
-              <button type="button" className="stage-tool-btn" onClick={() => setStageZoom((z) => Math.max(0.25, Math.round((z / 1.2) * 100) / 100))} title="缩小">−</button>
-              <span className="stage-toolbar-zoom">{Math.round(stageZoom * 100)}%</span>
-              <button type="button" className="stage-tool-btn" onClick={() => setStageZoom((z) => Math.min(4, Math.round(z * 1.2 * 100) / 100))} title="放大">＋</button>
-              <button type="button" className="stage-tool-btn" onClick={() => { setStageZoom(1); setStagePan({ x: 0, y: 0 }) }} title="适应窗口（重置缩放与平移）">适应窗口</button>
-              <button type="button" className={`stage-tool-btn ${panToolActive ? 'active' : ''}`} onClick={() => setPanToolActive((v) => !v)} title="平移工具：开启后拖动画布平移视图">平移</button>
-              <span className="stage-toolbar-sep" />
-              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={() => togglePlacementFlip('flipX')} title="左右反转选中元素">左右反转</button>
-              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={() => togglePlacementFlip('flipY')} title="上下反转选中元素">上下反转</button>
-              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={() => bumpPlacementZ(1)} title="选中元素上移一层">前移</button>
-              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={() => bumpPlacementZ(-1)} title="选中元素下移一层">后移</button>
-              <button type="button" className="stage-tool-btn" disabled={!toolbarPlacement || !editMode} onClick={deleteToolbarPlacement} title="删除选中摆放">删除</button>
-              <span className="stage-toolbar-sep" />
-              <button type="button" className="stage-tool-btn" disabled={!undoCount} onClick={undoPlacementChange} title="撤销上一次摆放操作（Ctrl/Cmd+Z）">撤销</button>
-            </div>
+            <StageToolbar
+              editMode={editMode}
+              setEditMode={setEditMode}
+              stageZoom={stageZoom}
+              setStageZoom={setStageZoom}
+              setStagePan={setStagePan}
+              panToolActive={panToolActive}
+              setPanToolActive={setPanToolActive}
+              undoCount={undoCount}
+              undoPlacementChange={undoPlacementChange}
+              toolbarPlacement={toolbarPlacement}
+              togglePlacementFlip={togglePlacementFlip}
+              bumpPlacementZ={bumpPlacementZ}
+              deleteToolbarPlacement={deleteToolbarPlacement}
+            />
           ) : null}
           {doc.project && doc.story && effectivePreviewNode ? (
-            <div
-              className="stage-ui"
-              ref={stageUiRef}
-              style={
-                stageViewport
-                  ? (() => {
-                      const z = Math.max(0.25, Math.min(4, Number(stageZoom) || 1))
-                      const viewW = canvasSize.w || 0
-                      const viewH = canvasSize.h || 0
-                      const cx0 = viewW / 2
-                      const cy0 = viewH / 2
-                      const rx = cx0 + (stageViewport.offsetX - cx0) * z + stagePan.x
-                      const ry = cy0 + (stageViewport.offsetY - cy0) * z + stagePan.y
-                      return {
-                        width: stageViewport.stageW,
-                        height: stageViewport.stageH,
-                        transform: `translate(${rx}px, ${ry}px) scale(${stageViewport.scale * z})`,
-                        transformOrigin: '0 0'
-                      }
-                    })()
-                  : { width: '100%', height: '100%' }
-              }
-            >
-              <div className="compose-overlay">
-              {(() => {
-                const node = ensureNode(effectivePreviewNode)
-                const showEnding = Boolean(rt.endingCard) || rt.wait.kind === 'end'
-
-                const eventList = Array.isArray(doc.project?.events) ? doc.project.events : []
-
-                const onContinue = () => {
-                  if (rt.wait.kind !== 'click') return
-                  clearRuntimeTimers()
-                  setRt((prev) => runTimelineStable({ ...prev, stepIndex: prev.stepIndex + 1, wait: { kind: 'auto' } }, node))
-                }
-
-                const onChoose = (choice: ChoiceV1) => {
-                  if (rt.wait.kind !== 'choice') return
-                  const enabled = choice.enabledWhen ? evalConditionExpr(choice.enabledWhen, rt.vars) : true
-                  if (!enabled) return
-
-                  const base = rtRef.current
-                  let next: RuntimeState = {
-                    ...base,
-                    vars: { ...base.vars },
-                    eventMemory: { ...base.eventMemory },
-                    stageOverride: { ...base.stageOverride },
-                    nav: null
-                  }
-                  const effects = Array.isArray((choice as any).effects) ? ((choice as any).effects as TimelineActionV1[]) : []
-                  for (const a of effects) {
-                    next = applyTimelineAction(next, a as any, eventList, 0)
-                    if (next.nav) break
-                  }
-                  setRt(next)
-                  if (next.nav) return
-                  const to = String(choice.toNodeId || '').trim()
-                  if (!to) return
-                  window.setTimeout(() => setSelection({ type: 'node', id: to }), 200)
-                }
-
-                const card = showEnding ? (rt.endingCard || (node.kind === 'ending' ? defaultEndingCardForNode(node) : null)) : null
-
-                const dialogPreset = normalizeDialogPreset((node as any)?.visuals?.ui?.dialog?.preset)
-                const dialogX = clamp01(numberOr((node as any)?.visuals?.ui?.dialog?.x, 0.5))
-                const dialogY = clamp01(numberOr((node as any)?.visuals?.ui?.dialog?.y, 0.88))
-                // 对话框底板透明度（节点级，缺省 1）：与导出运行时 storyPixi.js 同一比例（card 0.74×op、textBox 0.35×op）
-                const dialogOpacity = Math.max(0, Math.min(1, numberOr((node as any)?.visuals?.ui?.dialog?.opacity, 1)))
-                const dialogCardBg = `rgba(2, 6, 23, ${(0.74 * dialogOpacity).toFixed(3)})`
-                const dialogTextBg = `rgba(2, 6, 23, ${(0.35 * dialogOpacity).toFixed(3)})`
-                const choicesDir = normalizeChoicesDirection((node as any)?.visuals?.ui?.choices?.direction)
-                const choicesAlign = normalizeChoicesAlign((node as any)?.visuals?.ui?.choices?.align)
-
-                const dialogWrapStyle: CSSProperties = (() => {
-                  if (dialogPreset === 'custom') {
-                    return { position: 'absolute', inset: 0, padding: 0, pointerEvents: 'none' }
-                  }
-                  const base: CSSProperties = {
-                    position: 'absolute',
-                    inset: 0,
-                    padding: 18,
-                    boxSizing: 'border-box',
-                    display: 'flex',
-                    pointerEvents: 'none'
-                  }
-                  if (dialogPreset === 'top') return { ...base, justifyContent: 'center', alignItems: 'flex-start' }
-                  if (dialogPreset === 'center') return { ...base, justifyContent: 'center', alignItems: 'center' }
-                  if (dialogPreset === 'left') return { ...base, justifyContent: 'flex-start', alignItems: 'center' }
-                  if (dialogPreset === 'right') return { ...base, justifyContent: 'flex-end', alignItems: 'center' }
-                  return { ...base, justifyContent: 'center', alignItems: 'flex-end' }
-                })()
-
-                const dialogCardStyle: CSSProperties =
-                  dialogPreset === 'custom' && stageViewport
-                    ? {
-                        position: 'absolute',
-                        left: stageViewport.stageW * dialogX,
-                        top: stageViewport.stageH * dialogY,
-                        transform: 'translate(-50%, -50%)',
-                        background: dialogCardBg
-                      }
-                    : dialogPreset === 'bottom'
-                      ? {} // 字幕式：bottom 预设不上任何底色/暗幕，文字直接显示在画面上
-                      : { background: dialogCardBg }
-
-                const choicesStyle: CSSProperties = (() => {
-                  if (choicesDir !== 'column') {
-                    // 2026-09-30 字幕式：bottom 预设选项按钮一律右下（用户定稿），其他预设保持右对齐
-                    return { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end' }
-                  }
-                  const ai =
-                    choicesAlign === 'start'
-                      ? 'flex-start'
-                      : choicesAlign === 'center'
-                        ? 'center'
-                        : choicesAlign === 'stretch'
-                          ? 'stretch'
-                          : 'flex-end'
-                  return { flexDirection: 'column', flexWrap: 'nowrap', alignItems: ai, justifyContent: 'flex-end' }
-                })()
-
-                const displayText = (() => {
-                  const t = String(rt.text || '')
-                  const raw = t.trim() ? t : String((node as any)?.body?.text || '')
-                  // Runtime text should not repeat "选项1/选项2" lines; buttons already render choices.
-                  const lines = String(raw).split(/\r?\n/)
-                  return lines
-                    .filter((original) => !/^\s*(?:选项|option)\s*(?:\d{1,2}|[A-Z]|[一二三四五六七八九十])\s*[:：]/i.test(original))
-                    .map((ln) => ln.trim())
-                    .filter(Boolean)
-                    .join('\n')
-                })()
-                const hasText = String(displayText || '').trim().length > 0
-
-                const setDialogUi = (next: { preset?: DialogPresetV1; x?: number; y?: number }) => {
-                  if (doc.readonly) return
-                  setDocStory((s) => ({
-                    ...s,
-                    nodes: (s.nodes || []).map((n) => {
-                      if (n.id !== node.id) return n
-                      const nn = ensureNode(n)
-                      const visuals = nn.visuals || {}
-                      const ui = (visuals as any).ui && typeof (visuals as any).ui === 'object' ? (visuals as any).ui : {}
-                      const dialog = ui.dialog && typeof ui.dialog === 'object' ? ui.dialog : { preset: 'bottom', x: 0.5, y: 0.88 }
-                      const merged = { ...dialog, ...next }
-                      return { ...nn, visuals: { ...visuals, ui: { ...ui, dialog: merged } } }
-                    })
-                  }))
-                }
-
-                const startDragDialog = (e: React.PointerEvent) => {
-                  if (!stageViewport) return
-                  if (dialogPreset !== 'custom') return
-                  const uiRect = stageUiRef.current?.getBoundingClientRect()
-                  if (!uiRect || !uiRect.width || !uiRect.height) return
-
-                  const cardEl = (e.currentTarget as HTMLElement)?.closest('.dialog-card') as HTMLElement | null
-                  if (!cardEl) return
-                  const cardRect = cardEl.getBoundingClientRect()
-                  if (!cardRect.width || !cardRect.height) return
-
-                  const scale = stageViewport.scale || 1
-                  const pointerStageX = (e.clientX - uiRect.left) / scale
-                  const pointerStageY = (e.clientY - uiRect.top) / scale
-                  const cardCenterStageX = (cardRect.left + cardRect.width / 2 - uiRect.left) / scale
-                  const cardCenterStageY = (cardRect.top + cardRect.height / 2 - uiRect.top) / scale
-
-                  const deltaX = pointerStageX - cardCenterStageX
-                  const deltaY = pointerStageY - cardCenterStageY
-
-                  dragDialogRef.current = {
-                    dragging: true,
-                    pointerId: e.pointerId,
-                    stageW: stageViewport.stageW,
-                    stageH: stageViewport.stageH,
-                    deltaX,
-                    deltaY
-                  }
-
-                  try {
-                    ;(e.currentTarget as any).setPointerCapture?.(e.pointerId)
-                  } catch {}
-
-                  e.preventDefault()
-                  e.stopPropagation()
-                }
-
-                const onDragDialogMove = (e: React.PointerEvent) => {
-                  const st = dragDialogRef.current
-                  if (!st || !st.dragging || st.pointerId !== e.pointerId) return
-                  const uiRect = stageUiRef.current?.getBoundingClientRect()
-                  if (!uiRect) return
-                  const scale = stageViewport?.scale || 1
-                  const pointerStageX = (e.clientX - uiRect.left) / scale
-                  const pointerStageY = (e.clientY - uiRect.top) / scale
-                  const cx = pointerStageX - st.deltaX
-                  const cy = pointerStageY - st.deltaY
-                  const x = clamp01(cx / st.stageW)
-                  const y = clamp01(cy / st.stageH)
-                  setDialogUi({ preset: 'custom', x, y })
-                  e.preventDefault()
-                }
-
-                const endDragDialog = (e: React.PointerEvent) => {
-                  const st = dragDialogRef.current
-                  if (!st || st.pointerId !== e.pointerId) return
-                  dragDialogRef.current = null
-                  try {
-                    ;(e.currentTarget as any).releasePointerCapture?.(e.pointerId)
-                  } catch {}
-                  e.preventDefault()
-                }
-
-                return showEnding ? (
-                  <div style={dialogWrapStyle}>
-                    <div className={`dialog-card ${dialogPreset === 'bottom' ? 'subtitle' : ''}`} style={dialogCardStyle}>
-                      {card?.bullets?.length ? (
-                        <ul className="ending-bullets">
-                          {card.bullets.map((b, i) => (
-                            <li key={String(i)}>{b}</li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      <div className="dialog-text" style={{ background: dialogTextBg }}>{card?.moral || '故事结束。'}</div>
-                      <div className={`dialog-choices ${choicesDir === 'column' ? 'vertical' : ''}`} style={choicesStyle}>
-                        {(card?.buttons || [])
-                          .filter((b) => String((b as any).type || '') !== 'backToHub')
-                          .map((b, i) => {
-                            const bt = String((b as any).type || '')
-                            const label = String((b as any).label || '')
-                            const key = `${bt}_${i}`
-                            if (bt === 'restart') {
-                              return (
-                                <button
-                                  key={key}
-                                  className="choice-btn"
-                                  onClick={() => restartRuntime()}
-                                  style={choicesDir === 'column' && choicesAlign === 'stretch' ? { width: '100%' } : undefined}
-                                >
-                                  {label || '重新开始'}
-                                </button>
-                              )
-                            }
-                            return (
-                              <button
-                                key={key}
-                                className="choice-btn"
-                                onClick={() => setToast(label || '未实现按钮')}
-                                style={choicesDir === 'column' && choicesAlign === 'stretch' ? { width: '100%' } : undefined}
-                              >
-                                {label || '按钮'}
-                              </button>
-                            )
-                          })}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={dialogWrapStyle}>
-                    <div className={`dialog-card ${dialogPreset === 'bottom' ? 'subtitle' : ''}`} style={dialogCardStyle}>
-                    <div
-                      className={`dialog-meta ${dialogPreset === 'custom' ? 'drag-handle' : ''}`}
-                      title={dialogPreset === 'custom' ? '拖动定位对话框' : undefined}
-                      onPointerDown={dialogPreset === 'custom' ? startDragDialog : undefined}
-                      onPointerMove={dialogPreset === 'custom' ? onDragDialogMove : undefined}
-                      onPointerUp={dialogPreset === 'custom' ? endDragDialog : undefined}
-                      onPointerCancel={dialogPreset === 'custom' ? endDragDialog : undefined}
-                    >
-                      {String((node as any).body?.title || '').trim() ? (
-                        <span className="dialog-node">{String((node as any).body?.title || '').trim()}</span>
-                      ) : null}
-                      {rt.wait.kind === 'timer' ? <span className="dialog-wait">自动推进…</span> : null}
-                      {rt.wait.kind === 'event' ? <span className="dialog-wait">等待事件：{rt.wait.name || '（未命名）'}</span> : null}
-                      {rt.wait.kind === 'condition' ? <span className="dialog-wait">等待条件成立…</span> : null}
-                    </div>
-
-                    {hasText ? <div className="dialog-text" style={dialogPreset === 'bottom' ? undefined : { background: dialogTextBg }}>{displayText}</div> : null}
-
-                    {rt.wait.kind === 'choice' ? (
-                      <div className={`dialog-choices ${choicesDir === 'column' ? 'vertical' : ''}`} style={choicesStyle}>
-                        {(Array.isArray(node.choices) ? node.choices : [])
-                          .filter((c) => (c.visibleWhen ? evalConditionExpr(c.visibleWhen, rt.vars) : true))
-                          .map((c) => {
-                            const enabled = c.enabledWhen ? evalConditionExpr(c.enabledWhen, rt.vars) : true
-                            return (
-                              <button
-                                key={c.id}
-                                className={`choice-btn ${enabled ? '' : 'disabled'}`}
-                                onClick={() => onChoose(c)}
-                                disabled={!enabled}
-                                style={choicesDir === 'column' && choicesAlign === 'stretch' ? { width: '100%' } : undefined}
-                              >
-                                {c.text || '选择'}
-                              </button>
-                            )
-                          })}
-                      </div>
-                    ) : null}
-
-                    {rt.wait.kind === 'click' ? (
-                      <div className="dialog-actions">
-                        <button className="btn" onClick={onContinue}>
-                          继续
-                        </button>
-                      </div>
-                    ) : null}
-                    </div>
-                  </div>
-                )
-              })()}
-
-              {rt.toast ? <div className="runtime-toast">{rt.toast}</div> : null}
-              </div>
-            </div>
+            <StageOverlay
+              doc={doc}
+              effectivePreviewNode={effectivePreviewNode}
+              stageViewport={stageViewport}
+              stageZoom={stageZoom}
+              stagePan={stagePan}
+              canvasSize={canvasSize}
+              stageUiRef={stageUiRef}
+              rt={rt}
+              setRt={setRt}
+              rtRef={rtRef}
+              setSelection={setSelection}
+              setToast={setToast}
+              setDocStory={setDocStory}
+              clearRuntimeTimers={clearRuntimeTimers}
+              restartRuntime={restartRuntime}
+              runTimelineStable={runTimelineStable}
+              dragDialogRef={dragDialogRef}
+            />
           ) : null}
         </div>
 
@@ -11440,373 +6630,47 @@ function ensureNode(n: NodeV1): NodeV1 {
       ) : null}
 
       {sbOverrideModal.open ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 200,
-            display: 'grid',
-            placeItems: 'center',
-            background: 'rgba(2,6,23,0.82)'
-          }}
-        >
-          <div
-            style={{
-              width: 'min(560px, calc(100vw - 32px))',
-              background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
-              border: '1px solid rgba(96,165,250,0.35)',
-              borderRadius: 16,
-              boxShadow: '0 24px 60px rgba(0,0,0,0.45)',
-              padding: 18
-            }}
-          >
-            <div style={{ fontSize: 20, fontWeight: 700, color: '#e5e7eb', marginBottom: 8 }}>人工特批确认</div>
-            <div
-              style={{
-                padding: '10px 12px',
-                borderRadius: 10,
-                border: '1px solid rgba(248,113,113,0.35)',
-                background: 'rgba(15,23,42,0.75)',
-                color: '#fca5a5',
-                fontSize: 13,
-                lineHeight: 1.6
-              }}
-            >
-              {sbOverrideModal.message}
-            </div>
-            <div style={{ fontSize: 14, color: '#cbd5e1', lineHeight: 1.6, marginTop: 12 }}>
-              AI 评审未通过该候选图。是否人工确认，仍将该图设为主参考？此操作会记录人工特批。
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
-              <button
-                className="btn secondary"
-                onClick={() => {
-                  const resolver = sbOverrideResolverRef.current
-                  sbOverrideResolverRef.current = null
-                  setSbOverrideModal({ open: false, message: '' })
-                  if (resolver) resolver(false)
-                }}
-              >
-                取消
-              </button>
-              <button
-                className="btn"
-                onClick={() => {
-                  const resolver = sbOverrideResolverRef.current
-                  sbOverrideResolverRef.current = null
-                  setSbOverrideModal({ open: false, message: '' })
-                  if (resolver) resolver(true)
-                }}
-              >
-                人工确认，设为主参考
-              </button>
-            </div>
-          </div>
-        </div>
+        <StoryboardOverrideModal
+          sbOverrideModal={sbOverrideModal}
+          setSbOverrideModal={setSbOverrideModal}
+          sbOverrideResolverRef={sbOverrideResolverRef}
+        />
       ) : null}
 
       {latestExportModal.open ? (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 80,
-            display: 'grid',
-            placeItems: 'center',
-            background: 'rgba(2,6,23,0.82)'
-          }}
-        >          <div
-            style={{
-              width: 'min(560px, calc(100vw - 32px))',
-              background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
-              border: '1px solid rgba(96,165,250,0.35)',
-              borderRadius: 16,
-              boxShadow: '0 24px 60px rgba(0,0,0,0.45)',
-              padding: 18
-            }}
-          >
-            <div style={{ fontSize: 20, fontWeight: 700, color: '#e5e7eb', marginBottom: 8 }}>导出确认</div>
-            <div style={{ fontSize: 14, color: '#cbd5e1', lineHeight: 1.6 }}>
-              已存在 `latest` 导出，当前操作将覆盖之前的预览内容。请选择接下来的动作。
-            </div>
-            <div
-              style={{
-                marginTop: 14,
-                padding: '10px 12px',
-                borderRadius: 10,
-                border: '1px solid rgba(148,163,184,0.25)',
-                background: 'rgba(15,23,42,0.75)',
-                color: '#bfdbfe',
-                fontSize: 13
-              }}
-            >
-              当前任务：{latestExportModal.mode === 'publish' ? '导出发布包(H5)' : '导出预览'}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
-              <button className="btn secondary" onClick={() => closeLatestExportModal('cancel')}>
-                取消
-              </button>
-              <button className="btn secondary" onClick={() => closeLatestExportModal('delete')}>
-                删除旧导出后继续
-              </button>
-              <button className="btn" onClick={() => closeLatestExportModal('overwrite')}>
-                直接覆盖并继续
-              </button>
-            </div>
-          </div>
-        </div>
+        <LatestExportModal
+          latestExportModal={latestExportModal}
+          closeLatestExportModal={closeLatestExportModal}
+        />
       ) : null}
 
       {/* GS-53 场景图审核面板：逐场景评审卡片（缩略图/分数/判定/问题/建议）+ 打回重出/确认通过 */}
       {srOpen ? (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 80,
-            display: 'grid',
-            placeItems: 'center',
-            background: 'rgba(2,6,23,0.82)'
-          }}
-        >
-          <div
-            style={{
-              width: 'min(980px, calc(100vw - 32px))',
-              maxHeight: 'calc(100vh - 64px)',
-              overflow: 'auto',
-              background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
-              border: '1px solid rgba(96,165,250,0.35)',
-              borderRadius: 16,
-              boxShadow: '0 24px 60px rgba(0,0,0,0.45)',
-              padding: 18
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: '#e5e7eb' }}>场景图审核</div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn secondary" disabled={srBusy || Boolean(srTask && !srTask.done)} onClick={() => void runSceneReview()}>
-                  {srBusy ? '提交中…' : '重新审核全部场景'}
-                </button>
-                <button className="btn secondary" onClick={() => setSrOpen(false)}>关闭</button>
-              </div>
-            </div>
-
-            {srError ? <div className="hint" style={{ color: '#fca5a5', marginBottom: 10 }}>{srError}</div> : null}
-
-            {srTask && !srTask.done ? (
-              <div style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.75)', color: '#bfdbfe', fontSize: 13, marginBottom: 10 }}>
-                正在审核：{srTask.message || '准备中…'}
-              </div>
-            ) : null}
-
-            {!srRound && !(srTask && !srTask.done) ? (
-              <div className="hint" style={{ marginBottom: 10 }}>
-                暂无审核记录。点「重新审核全部场景」把每个场景的整图提交守护台审图中心评审（走查截图优先，无走查用绑定背景图）。
-              </div>
-            ) : null}
-
-            {srRound ? (
-              <>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: '#e5e7eb' }}>
-                    最新一轮：通过 {srRound.summary?.pass ?? 0} · 存疑 {srRound.summary?.suspect ?? 0} · 不合格 {srRound.summary?.fail ?? 0}
-                  </div>
-                  <div className="hint">{srRound.at ? `评审时间：${srRound.at}` : ''}</div>
-                </div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  {(srRound.records || []).map((record) => {
-                    const feedbackStatus = srFeedbackStatusOf(record.sceneId)
-                    return (
-                      <div
-                        key={record.sceneId}
-                        style={{ display: 'flex', gap: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.75)' }}
-                      >
-                        {record.thumbnailDataUrl ? (
-                          <img
-                            src={record.thumbnailDataUrl}
-                            alt={record.sceneName || record.sceneId}
-                            style={{ width: 96, height: 128, objectFit: 'cover', borderRadius: 8, flexShrink: 0, border: '1px solid rgba(148,163,184,0.2)' }}
-                          />
-                        ) : (
-                          <div style={{ width: 96, height: 128, borderRadius: 8, border: '1px dashed rgba(148,163,184,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', fontSize: 11, flexShrink: 0, textAlign: 'center' }}>
-                            无缩略图
-                          </div>
-                        )}
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <span style={{ fontWeight: 700, color: '#e5e7eb' }}>{record.sceneName || record.sceneId}</span>
-                            <span style={{ color: srVerdictColor(record.verdict), fontWeight: 700 }}>
-                              {srVerdictLabel(record.verdict)}{Number.isFinite(Number(record.score)) ? ` ${record.score} 分` : ''}
-                            </span>
-                            {record.imageSource === 'background_only' ? <span className="hint">背景图（未合成摆位）</span> : null}
-                            {feedbackStatus === 'feedback_pending' ? <span style={{ color: '#fbbf24', fontSize: 12 }}>已打回，重出中/待重出</span> : null}
-                            {feedbackStatus === 'human_confirmed' ? <span style={{ color: '#86efac', fontSize: 12 }}>已人工确认通过</span> : null}
-                          </div>
-                          {(record.issues || []).length ? (
-                            <div style={{ marginTop: 6 }}>
-                              <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 2 }}>问题清单</div>
-                              {(record.issues || []).map((issue, i) => (
-                                <div key={i} style={{ fontSize: 12, color: '#fca5a5', lineHeight: 1.6 }}>{issue}</div>
-                              ))}
-                            </div>
-                          ) : null}
-                          {(record.suggestions || []).length ? (
-                            <div style={{ marginTop: 6 }}>
-                              <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', marginBottom: 2 }}>改图建议</div>
-                              {(record.suggestions || []).map((suggestion, i) => (
-                                <div key={i} style={{ fontSize: 12, color: '#93c5fd', lineHeight: 1.6 }}>{suggestion}</div>
-                              ))}
-                            </div>
-                          ) : null}
-                          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                            {record.verdict !== 'pass' ? (
-                              <button
-                                className="btn secondary"
-                                style={{ fontSize: 12, padding: '4px 10px' }}
-                                disabled={Boolean(srReworkBusy)}
-                                title="把改图建议合入重出提示词，重新渲染该场景"
-                                onClick={() => void reworkScene(record)}
-                              >
-                                {srReworkBusy === record.sceneId ? '处理中…' : '打回重出'}
-                              </button>
-                            ) : null}
-                            {record.verdict !== 'pass' || feedbackStatus !== 'human_confirmed' ? (
-                              <button
-                                className="btn secondary"
-                                style={{ fontSize: 12, padding: '4px 10px' }}
-                                disabled={Boolean(srReworkBusy)}
-                                title="人工确认该场景图通过验收"
-                                onClick={() => void confirmScenePass(record)}
-                              >
-                                {srReworkBusy === record.sceneId ? '处理中…' : '确认通过'}
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </>
-            ) : null}
-          </div>
-        </div>
+        <SceneReviewPanel
+          srBusy={srBusy}
+          srError={srError}
+          srRound={srRound}
+          srTask={srTask}
+          srReworkBusy={srReworkBusy}
+          setSrOpen={setSrOpen}
+          runSceneReview={runSceneReview}
+          reworkScene={reworkScene}
+          confirmScenePass={confirmScenePass}
+          srFeedbackStatusOf={srFeedbackStatusOf}
+        />
       ) : null}
 
 	      {ccOpen ? (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 80,
-            display: 'grid',
-            placeItems: 'center',
-            background: 'rgba(2,6,23,0.82)'
-          }}
-        >
-          <div
-            style={{
-              width: 'min(980px, calc(100vw - 32px))',
-              maxHeight: 'calc(100vh - 64px)',
-              overflow: 'auto',
-              background: 'linear-gradient(180deg, #07163a 0%, #061436 100%)',
-              border: '1px solid rgba(96,165,250,0.35)',
-              borderRadius: 16,
-              boxShadow: '0 24px 60px rgba(0,0,0,0.45)',
-              padding: 18
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: '#e5e7eb' }}>完整度核实</div>
-              <button className="btn secondary" onClick={() => setCcOpen(false)}>关闭</button>
-            </div>
-
-            {ccError ? <div className="hint" style={{ color: '#fca5a5', marginBottom: 10 }}>{ccError}</div> : null}
-
-            {ccTask && !ccTask.done ? (
-              <div style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.75)', color: '#bfdbfe', fontSize: 13, marginBottom: 10 }}>
-                正在核实：{ccTask.message || '准备中'}（{ccTask.current}/{ccTask.total}）
-              </div>
-            ) : null}
-
-            {ccReport ? (
-              <>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: ccReport.verdict === 'pass' ? '#86efac' : '#fca5a5' }}>
-                    总判定：{ccReport.verdict === 'pass' ? '通过' : '未通过'}
-                  </div>
-                  <div className="hint">
-                    节点 {ccReport.summary.passed}/{ccReport.summary.total} 通过 · 视觉评审{ccAiReviewStatusText(ccReport.aiReviewStatus)}
-                    {ccReport.review && ccReport.review.provider ? `（${ccReport.review.provider}${ccReport.review.model ? ` / ${ccReport.review.model}` : ''}）` : ''}
-                  </div>
-                </div>
-                <div className="hint" style={{ marginBottom: 10 }}>
-                  核实时间：{ccReport.checkedAt}{ccReportFile ? ` · 报告文件：${ccReportFile}` : ''}
-                </div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  {(ccReport.nodes || []).map((node) => (
-                    <div
-                      key={node.nodeId}
-                      style={{ display: 'flex', gap: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(15,23,42,0.75)' }}
-                    >
-                      {node.screenshot && ccReport.screenshotDir ? (
-                        <img
-                          src={ccScreenshotUrl(ccReport.screenshotDir, node.screenshot)}
-                          alt={node.name || node.nodeId}
-                          title="点击在新窗口查看大图"
-                          style={{ width: 96, height: 128, objectFit: 'cover', borderRadius: 8, cursor: 'pointer', flexShrink: 0, border: '1px solid rgba(148,163,184,0.2)' }}
-                          onClick={() => window.open(ccScreenshotUrl(ccReport.screenshotDir, node.screenshot), '_blank', 'noopener,noreferrer')}
-                        />
-                      ) : null}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 700, color: '#e5e7eb' }}>{node.name || node.nodeId}</span>
-                          <span className="hint">{node.kind === 'ending' ? '结局' : '场景'}</span>
-                          <span className="hint">{node.reachable ? '已到达' : '不可达'}</span>
-                          {node.aiReview && node.aiReview.status === 'completed' ? (
-                            <span style={{ color: node.aiReview.passed ? '#86efac' : '#fca5a5', fontWeight: 700 }}>
-                              视觉评审{node.aiReview.passed ? '通过' : '未通过'}{Number.isFinite(Number(node.aiReview.score)) ? ` ${node.aiReview.score} 分` : ''}
-                            </span>
-                          ) : (
-                            <span className="hint">视觉评审未执行{node.aiReview && node.aiReview.reason ? `：${node.aiReview.reason}` : ''}</span>
-                          )}
-                        </div>
-                        {Array.isArray(node.issues) && node.issues.length ? (
-                          <div style={{ marginTop: 6, fontSize: 12, color: '#fca5a5', lineHeight: 1.6 }}>
-                            {node.issues.map((issue, idx) => (
-                              <div key={idx}>· {issue.message}</div>
-                            ))}
-                          </div>
-                        ) : null}
-                        {node.aiReview && node.aiReview.status === 'completed' && Array.isArray(node.aiReview.issues) && node.aiReview.issues.length ? (
-                          <div style={{ marginTop: 4, fontSize: 12, color: '#cbd5e1', lineHeight: 1.6 }}>
-                            {node.aiReview.issues.map((issue, idx) => (
-                              <div key={idx}>· {issue}</div>
-                            ))}
-                          </div>
-                        ) : null}
-                        {node.aiReview && node.aiReview.status === 'completed' && node.aiReview.summary ? (
-                          <div className="hint" style={{ marginTop: 4 }}>{node.aiReview.summary}</div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : null}
-            {!ccReport && !(ccTask && !ccTask.done) && !ccError ? (
-              <div className="hint">暂无报告。点击「重新核实」开始一次走查。</div>
-            ) : null}
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 14 }}>
-              <button className="btn secondary" onClick={() => runCompletenessCheck()} disabled={ccBusy || Boolean(ccTask && !ccTask.done)}>
-                {ccTask && !ccTask.done ? '核实中…' : '重新核实'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <CompletenessModal
+          ccBusy={ccBusy}
+          ccError={ccError}
+          ccReport={ccReport}
+          ccReportFile={ccReportFile}
+          ccTask={ccTask}
+          setCcOpen={setCcOpen}
+          runCompletenessCheck={runCompletenessCheck}
+          ccScreenshotUrl={ccScreenshotUrl}
+        />
       ) : null}
 
       <AiBackgroundModal
@@ -12286,7 +7150,7 @@ function ensureNode(n: NodeV1): NodeV1 {
             setSbPoseFocusAssetId('')
             try { if (localStorage.getItem(sbWsOpenStorageKey) === doc.id) localStorage.removeItem(sbWsOpenStorageKey) } catch {}
           }}
-          onReloadProject={() => { if (doc.mode === 'project') void openProject(doc.id) }}
+          onReloadProject={() => void reloadProjectAndStoryboard()}
           onSave={async () => saveCurrent()}
           onRunOpenChecks={() => void runStoryboardOpenChecks()}
           onGenerateEntity={runStoryboardGenerateEntitySpec}

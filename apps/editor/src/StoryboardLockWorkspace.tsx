@@ -544,7 +544,7 @@ export default function StoryboardLockWorkspace(props: {
   // 步骤与生产序对齐（2026-08-26 用户修正：提示词必须在抽卡出图之前）：
   // ①环境体检 ②Story Bible ③资产计划 ④全局与事物提示词（中文稿→审核→翻译→批准） ⑤参考图与锁定 ⑥线稿锁定 ⑦完成锁定
   // 2026-08-26 向导状态按项目持久化（用户指令：刷新/重开不能丢失正在操作的提示词阶段与审核闸状态）
-  const wizardStorageKey = String(props.projectId || '').trim() ? `gamestudio.lockWorkspace.wizard.${String(props.projectId || '').trim()}` : ''
+  const wizardStorageKey = String(props.projectId || '').trim() ? `talkscene.lockWorkspace.wizard.${String(props.projectId || '').trim()}` : ''
   const readPersistedWizard = (): { step: number; zh: boolean; en: boolean } | null => {
     if (!wizardStorageKey) return null
     try {
@@ -612,7 +612,7 @@ export default function StoryboardLockWorkspace(props: {
     }
     const missing = missingZhPromptItems()
     if (missing.length > 0) {
-      setPromptGateHint(`还不能确认中文稿：${missing.slice(0, 4).join('、')}${missing.length > 4 ? ` 等 ${missing.length} 项` : ''}为空。可先点「AI 起草中文全局稿 / AI 生成全部事物中文提示词」，或从「公共提示词」插入补齐。`)
+      setPromptGateHint(`还不能确认中文稿：${missing.slice(0, 4).join('、')}${missing.length > 4 ? ` 等 ${missing.length} 项` : ''}为空。可先点「AI 生成中文全局稿 / AI 生成全部事物中文提示词」，或从「公共提示词」插入补齐。`)
       return
     }
     setPromptGateHint('')
@@ -673,9 +673,10 @@ export default function StoryboardLockWorkspace(props: {
         setAiTasks(tasks)
         setAiCoverage(coverage)
         setPendingReviews(reviews)
-        // 批量渲染完成后自动刷新项目数据（场景图写回 story.json/project.json）
+        // 批量渲染/线稿完成后自动刷新项目数据（场景图与线稿都会写回 project.json）
         for (const t of tasks) {
-          if (t.kind === 'story.scenes.render_all' && t.done && !reloadedTaskIdsRef.current.has(t.taskId)) {
+          const shouldReload = t.kind === 'story.scenes.render_all' || (t.kind === 'story.asset.lineart' && t.done && !t.error)
+          if (shouldReload && !reloadedTaskIdsRef.current.has(t.taskId)) {
             reloadedTaskIdsRef.current.add(t.taskId)
             props.onReloadProject?.()
           }
@@ -871,7 +872,7 @@ export default function StoryboardLockWorkspace(props: {
     extraPatch?: Partial<PoseDraftEntry>
   }
   const [poseFillGuard, setPoseFillGuard] = React.useState<PoseFillRequest | null>(null)
-  const poseFillBackupKey = String(props.projectId || '').trim() ? `gamestudio.poseFillBackup.${String(props.projectId || '').trim()}` : ''
+  const poseFillBackupKey = String(props.projectId || '').trim() ? `talkscene.poseFillBackup.${String(props.projectId || '').trim()}` : ''
   const [poseDraftBackups, setPoseDraftBackups] = React.useState<Record<string, { zh: string; en: string; savedAt: number; sourceLabel: string }>>(() => {
     if (!poseFillBackupKey) return {}
     try {
@@ -1071,10 +1072,11 @@ export default function StoryboardLockWorkspace(props: {
   const insertPromptLibEntry = (entry: PromptLibraryEntry) => {
     const target = promptLibTarget
     if (!target) return
-    const zhCur = target.getZh()
-    const enCur = target.getEn()
-    target.setZh(mergePromptFragment(zhCur, entry.textZh, '，'))
-    target.setEn(mergePromptFragment(enCur, entry.textEn, ', '))
+    const nextZh = mergePromptFragment(target.getZh(), entry.textZh, '，')
+    const nextEn = mergePromptFragment(target.getEn(), entry.textEn, ', ')
+    target.setZh(nextZh)
+    target.setEn(nextEn)
+    setPromptLibTarget({ ...target, getZh: () => nextZh, getEn: () => nextEn })
     setPromptLibHint(`已插入「${entry.name}」${entry.textEn ? '' : '（无英文稿：英文栏待翻译）'}`)
   }
 
@@ -1299,13 +1301,16 @@ export default function StoryboardLockWorkspace(props: {
                   const aid = String(asset?.id || '').trim()
                   const hasPrimary = Boolean(String(asset?.primaryReferenceAssetUri || '').trim())
                   const hasLineart = Boolean(String(asset?.lineartFinalAssetUri || '').trim())
+                  const lineartPendingReview = pendingReviews.some((review) => (
+                    review.phase === 'pre_generate' && String(review.targetKey || '').trim() === `lineart:${aid}`
+                  ))
                   const linearting = props.assetLineartId === aid
                   return (
                     <div className="story-lock-plan-row" key={aid}>
                       <span className="story-lock-plan-name">{String(asset?.name || aid || '未命名')}</span>
-                      <span className={`ai-storyboard-status ${hasLineart ? 'ok' : 'bad'}`}>{hasLineart ? '线稿已生成' : '待生成线稿'}</span>
-                      <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetLineart(aid)} disabled={props.assetPlanBusy || linearting || !hasPrimary || !aid}>
-                        {linearting ? '线稿生成中…' : (hasLineart ? '重新生成线稿' : '生成线稿')}
+                      <span className={`ai-storyboard-status ${hasLineart ? 'ok' : (lineartPendingReview ? 'pending' : 'bad')}`}>{hasLineart ? '线稿已生成' : (lineartPendingReview ? '线稿待审核' : '待生成线稿')}</span>
+                      <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetLineart(aid)} disabled={props.assetPlanBusy || linearting || lineartPendingReview || !hasPrimary || !aid}>
+                        {linearting ? '线稿生成中…' : (lineartPendingReview ? '待审核批准' : (hasLineart ? '重新生成线稿' : '生成线稿'))}
                       </button>
                     </div>
                   )
@@ -1334,6 +1339,9 @@ export default function StoryboardLockWorkspace(props: {
             const optimizing = props.assetOptimizingId === assetId
             const selecting = props.assetSelectingId === assetId
             const linearting = props.assetLineartId === assetId
+            const lineartPendingReview = pendingReviews.some((review) => (
+              review.phase === 'pre_generate' && String(review.targetKey || '').trim() === `lineart:${assetId}`
+            ))
             const assetBusy = generating || analyzing || optimizing || selecting || linearting
             const translatingAssetPositive = props.translatingScope === `asset:positive:${assetId}`
             const translatingAssetNegative = props.translatingScope === `asset:negative:${assetId}`
@@ -1387,6 +1395,7 @@ export default function StoryboardLockWorkspace(props: {
                     const candidateScore = scoreOf(candidate)
                     const selected = Boolean(candidatePath && candidatePath === primaryUri)
                     const recommended = Boolean(candidate?.recommended || (candidateScore != null && bestScore != null && candidateScore === bestScore))
+                    const candidateReviewFailed = Boolean(candidate?.analysis && typeof candidate.analysis === 'object' && candidate.analysis.passed !== true)
                     return (
                       <div className={`story-lock-candidate-card ${selected ? 'selected' : ''}`} key={`${assetId}_${idx}`}>
                         <div className="story-lock-candidate-title">候选 {idx + 1}</div>
@@ -1397,6 +1406,7 @@ export default function StoryboardLockWorkspace(props: {
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                             <span className="hint">#{idx + 1} {candidateScore != null ? `${candidateScore}/100` : '未评分'}</span>
                             {recommended ? <span className="ai-storyboard-status ok">推荐</span> : null}
+                            {candidateReviewFailed ? <span className="ai-storyboard-status pending">评审未过</span> : null}
                           </div>
                           <div className="hint">seed: {candidate?.seed != null ? String(candidate.seed) : '-'}</div>
                           <button className="btn secondary" type="button" onClick={() => props.onSelectAssetRef(assetId, candidatePath)} disabled={props.assetPlanBusy || Boolean(props.assetSelectingId) || assetBusy || !candidatePath || selected}>{selecting && selected ? '设置中…' : (selected ? '当前主参考' : '设为主参考')}</button>
@@ -1449,7 +1459,7 @@ export default function StoryboardLockWorkspace(props: {
                           删除此事物
                         </button>
                         {(() => { const chip = getAssetRefChip(asset); return <span className={`ai-storyboard-status ${chip.tone}`}>{chip.label}</span> })()}
-                        <span className={`ai-storyboard-status ${String(asset?.lineartFinalAssetUri || '').trim() ? 'ok' : 'bad'}`}>{String(asset?.lineartFinalAssetUri || '').trim() ? '线稿已生成' : '待生成线稿'}</span>
+                        <span className={`ai-storyboard-status ${String(asset?.lineartFinalAssetUri || '').trim() ? 'ok' : (lineartPendingReview ? 'pending' : 'bad')}`}>{String(asset?.lineartFinalAssetUri || '').trim() ? '线稿已生成' : (lineartPendingReview ? '线稿待审核' : '待生成线稿')}</span>
                       </div>
                     </div>
                     <div className="hint">{getAssetCategoryLabel(String(asset?.category || ''))} / 涉及 {Number(asset?.sceneCount || 0)} 个场景</div>
@@ -1466,7 +1476,7 @@ export default function StoryboardLockWorkspace(props: {
                       <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetRef(assetId, 1)} disabled={props.assetPlanBusy || assetBusy || !assetId}>{selecting ? '主参考处理中…' : (generating ? '抽卡中…' : '生成 1 张')}</button>
                       <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetRef(assetId, 4)} disabled={props.assetPlanBusy || assetBusy || !assetId}>{selecting ? '主参考处理中…' : (generating ? '抽卡中…' : (batch.length ? '再出 4 张' : '生成 4 张参考图'))}</button>
                       <button className="btn secondary" type="button" onClick={() => props.onAnalyzeAssetRef(assetId)} disabled={props.assetPlanBusy || assetBusy || !String(asset?.primaryReferenceAssetUri || '').trim() || !assetId}>{selecting ? '主参考处理中…' : (analyzing ? '分析当前主参考中…' : '分析当前主参考')}</button>
-                      <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetLineart(assetId)} disabled={props.assetPlanBusy || assetBusy || !String(asset?.primaryReferenceAssetUri || '').trim() || !assetId}>{selecting ? '主参考处理中…' : (linearting ? '线稿生成中…' : '生成线稿')}</button>
+                      <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetLineart(assetId)} disabled={props.assetPlanBusy || assetBusy || lineartPendingReview || !String(asset?.primaryReferenceAssetUri || '').trim() || !assetId}>{selecting ? '主参考处理中…' : (linearting ? '线稿生成中…' : (lineartPendingReview ? '待审核批准' : '生成线稿'))}</button>
                       <button className="btn secondary" type="button" onClick={() => props.onOpenAssetGallery(assetId)} disabled={props.assetPlanBusy || assetBusy || !assetId}>{selecting ? '主参考处理中…' : (props.assetGalleryBusy && props.assetGallery?.assetId === assetId ? '加载管理中…' : (batchOverflow > 0 ? `管理图片（更多 ${batchOverflow}）` : '管理图片'))}</button>
                     </div>
                   </div>
@@ -2096,6 +2106,9 @@ export default function StoryboardLockWorkspace(props: {
 
   const renderGlobalPromptSections = () => (
               <div className="story-lock-global-sections">
+                <div className="hint">
+                  正向必含：美术风格、时代/地点/环境、光线/色彩、镜头/构图、角色与关键道具一致性。负向必含：文字水印、模糊/低质量/畸形、变脸/换装/道具替换、多余人物/多视图及设定冲突。全局只写跨场景共性；单个事物特征和场景动作放到各自专属提示词。
+                </div>
                 <div className="story-lock-global-section">
                   <div className="story-lock-global-subhead">
                     <div className="story-lock-global-subtitle">全局正向提示词</div>
@@ -2105,7 +2118,7 @@ export default function StoryboardLockWorkspace(props: {
                   <div className="story-lock-prompt-grid">
                     <label className="story-lock-prompt-field">
                       <span>中文</span>
-                      <textarea className="story-lock-textarea" value={String((props.value as any)?.globalPromptZh || '')} onChange={(e) => props.onChangeGlobalPromptZh(e.target.value)} placeholder="在这里编辑中文全局正向提示词" />
+                      <textarea className="story-lock-textarea" value={String((props.value as any)?.globalPromptZh || '')} onChange={(e) => props.onChangeGlobalPromptZh(e.target.value)} placeholder="例：统一绘本风格、时代地点、光线色彩与镜头语言；角色外观、服装和关键道具在所有场景保持一致" />
                     </label>
                     <label className="story-lock-prompt-field">
                       <span>英文</span>
@@ -2122,7 +2135,7 @@ export default function StoryboardLockWorkspace(props: {
                   <div className="story-lock-prompt-grid">
                     <label className="story-lock-prompt-field">
                       <span>中文</span>
-                      <textarea className="story-lock-textarea" value={String((props.value as any)?.globalNegativePromptZh || '')} onChange={(e) => props.onChangeGlobalNegativePromptZh(e.target.value)} placeholder="在这里编辑中文全局负向提示词" />
+                      <textarea className="story-lock-textarea" value={String((props.value as any)?.globalNegativePromptZh || '')} onChange={(e) => props.onChangeGlobalNegativePromptZh(e.target.value)} placeholder="例：文字、水印、模糊、畸形、变脸、换装、道具替换、多余人物、多视图、与故事设定冲突的元素" />
                     </label>
                     <label className="story-lock-prompt-field">
                       <span>英文</span>
@@ -2662,8 +2675,8 @@ export default function StoryboardLockWorkspace(props: {
               type="button"
               onClick={() => props.onDraftGlobalPromptZh?.()}
               disabled={props.globalDraftBusy || promptOpBusy}
-              title="由 AI 基于 Story Bible 世界锚点起草中文全局正向/负向提示词"
-            >{props.globalDraftBusy ? '起草中…' : 'AI 起草中文全局稿'}</button>
+              title="由 AI 结合 Story Bible 与当前设定生成中文全局正向/负向提示词"
+            >{props.globalDraftBusy ? '生成中…' : 'AI 生成中文全局稿'}</button>
           </div>
         </div>
         )}

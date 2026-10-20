@@ -57,8 +57,8 @@ async function main() {
     await page.setViewport({ width: 1680, height: 1000 })
     // 直达合成工作室（编辑器 stage/projectId 记忆机制）
     await page.evaluateOnNewDocument((pid) => {
-      localStorage.setItem('gamestudio.stage', 'compose')
-      localStorage.setItem('gamestudio.projectId', pid)
+      localStorage.setItem('talkscene.stage', 'compose')
+      localStorage.setItem('talkscene.projectId', pid)
     }, PROJECT_ID)
     await page.goto(EDITOR_BASE, { waitUntil: 'domcontentloaded', timeout: 30_000 })
 
