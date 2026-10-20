@@ -1,13 +1,13 @@
 #!/bin/bash
-# GameStudio Reporter Agent - 定时状态汇报
+# TalkScene Reporter Agent - 定时状态汇报
 
 set -euo pipefail
 
-PROJECT_DIR="/Volumes/ovokit2t/aiwork/gamestudio"
+PROJECT_DIR="/Volumes/ovokit2t/aiwork/talkscene"
 AI_MEMORY_DIR="$PROJECT_DIR/ai/memory"
 cd "$PROJECT_DIR"
 
-echo "📊 GameStudio 项目状态汇报"
+echo "📊 TalkScene 项目状态汇报"
 echo "========================="
 echo ""
 

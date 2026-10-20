@@ -1,5 +1,5 @@
 {
-  "name": "game-studio",
+  "name": "talkscene",
   "private": true,
   "version": "0.1.0",
   "workspaces": [
@@ -7,18 +7,21 @@
     "packages/*"
   ],
   "scripts": {
-    "predev:editor": "npm --workspace @game-studio/schema run build",
-    "dev:editor": "npm --workspace @game-studio/editor run dev",
-    "dev:server": "npm --workspace @game-studio/server run dev",
+    "predev:editor": "npm --workspace @talkscene/schema run build",
+    "dev:editor": "npm --workspace @talkscene/editor run dev",
+    "dev:server": "npm --workspace @talkscene/server run dev",
     "start:server": "bash ./start_server.sh",
     "stop:server": "bash ./stop_server.sh",
     "restart:server": "bash ./restart_server.sh",
-    "build:editor": "npm --workspace @game-studio/editor run build",
-    "build:packages": "npm --workspace @game-studio/schema run build && npm --workspace @game-studio/builder run build && npm --workspace @game-studio/runtime-pixi run build",
-    "typecheck": "npm --workspace @game-studio/editor run typecheck",
+    "build:editor": "npm --workspace @talkscene/editor run build",
+    "build:packages": "npm --workspace @talkscene/schema run build && npm --workspace @talkscene/builder run build && npm --workspace @talkscene/runtime-pixi run build",
+    "typecheck": "npm --workspace @talkscene/editor run typecheck",
     "test:control-production": "bash scripts/test/smoke_test_pipeline.sh",
     "test:dashboard": "node scripts/test-dashboard/server.mjs",
     "sync:from-compose": "node tools/syncFromCompose.mjs",
+    "docsys:scaffold": "node docsys/framework/render.mjs --scaffold",
+    "docsys:build": "node docsys/framework/render.mjs",
+    "docsys:serve": "node docsys/framework/serve.mjs",
     "lint": "echo \"(todo)\""
   },
   "devDependencies": {

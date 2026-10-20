@@ -1,11 +1,11 @@
 #!/bin/bash
-# GameStudio 定时汇报脚本
+# TalkScene 定时汇报脚本
 # 在 macOS 上优先使用 Mail App 发送（可在“已发送”中查看记录）
 
 set -euo pipefail
 
 # 项目根目录
-PROJECT_DIR="/Volumes/ovokit2t/aiwork/gamestudio"
+PROJECT_DIR="/Volumes/ovokit2t/aiwork/talkscene"
 AI_MEMORY_DIR="$PROJECT_DIR/ai/memory"
 cd "$PROJECT_DIR"
 
@@ -18,10 +18,10 @@ if [ -z "${RECIPIENT:-}" ]; then
 fi
 
 # 生成汇报内容
-REPORT_FILE="/tmp/gamestudio_report_$(date +%Y%m%d_%H%M%S).txt"
+REPORT_FILE="/tmp/talkscene_report_$(date +%Y%m%d_%H%M%S).txt"
 
 {
-    echo "📊 GameStudio 项目状态汇报"
+    echo "📊 TalkScene 项目状态汇报"
     echo "汇报时间：$(date '+%Y-%m-%d %H:%M:%S')"
     echo "========================="
     echo ""
@@ -88,7 +88,7 @@ echo "📧 正在发送邮件汇报..."
 SUBJECT_LINE="${SUBJECT_PREFIX} 项目汇报 $(date '+%Y-%m-%d %H:%M')"
 
 send_via_mail_app() {
-    osascript - "$REPORT_FILE" "$RECIPIENT" "$SUBJECT_LINE" "${SENDER_NAME:-GameStudio Reporter}" "${SENDER_EMAIL:-}" <<'APPLESCRIPT'
+    osascript - "$REPORT_FILE" "$RECIPIENT" "$SUBJECT_LINE" "${SENDER_NAME:-TalkScene Reporter}" "${SENDER_EMAIL:-}" <<'APPLESCRIPT'
 on run argv
     set reportPath to item 1 of argv
     set recipientAddress to item 2 of argv

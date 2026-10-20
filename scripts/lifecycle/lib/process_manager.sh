@@ -136,13 +136,13 @@ spawn_detached() {
   echo $!
 }
 
-# 一键清理所有 GameStudio 相关进程
-cleanup_all_gamestudio_processes() {
-  echo "=== 清理 GameStudio 所有进程 ==="
+# 一键清理所有 TalkScene 相关进程
+cleanup_all_talkscene_processes() {
+  echo "=== 清理 TalkScene 所有进程 ==="
   stop_listener "control-server" 2099 || true
   stop_listener "control-console" 8870 || true
-  stop_listener "gamestudio-server" 1999 || true
-  stop_listener "gamestudio-editor" 8868 || true
+  stop_listener "talkscene-server" 1999 || true
+  stop_listener "talkscene-editor" 8868 || true
   stop_listener "hermes-gateway" 8742 || true
   cleanup_processes_by_pattern 'hermes-gateway' 'hermes-gateway' || true
   cleanup_processes_by_pattern 'start-hermes-visible.sh' 'hermes-launcher' || true

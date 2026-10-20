@@ -1,4 +1,4 @@
-# AGENTS.md - GameStudio
+# AGENTS.md - TalkScene
 
 本文档面向 AI 编码代理。阅读本文档前，默认读者对本项目一无所知。
 
@@ -6,7 +6,7 @@
 
 ## 项目概述
 
-GameStudio 是一个 H5 互动故事生产工具仓库。当前主方向是让 `control` 驱动 `Hermes` 完成故事项目的创建、配置、生成与验证。
+TalkScene 是一个 H5 互动故事生产工具仓库。当前主方向是让 `control` 驱动 `Hermes` 完成故事项目的创建、配置、生成与验证。
 
 > **2026-09-13 结构变更**：控制平面（守护台）已拆分为独立仓 **`/Volumes/ovokit2t/aiwork/local-agent-control`**（本仓平级目录），本仓不再包含 `apps/control-server` / `apps/control-console`。守护台的启动、开发与契约维护全部在新仓进行（`sh /Volumes/ovokit2t/aiwork/local-agent-control/restart_control.sh`）；本仓业务后端经 HTTP 租约接入统一互斥（`apps/server/src/ai/resourceLease.js`）。
 
@@ -49,6 +49,7 @@ ai/               # Hermes 项目记忆、契约与工具目录（历史留存�
 config/hermes/    # Hermes 左脑配置、intent、routing、skill（历史留存；生效副本在 local-agent-control）
 state/            # 运行时事件、reasoning sessions、review records（旧守护台历史数据；新运行数据在 local-agent-control/state）
 scripts/          # 构建、生命周期、测试、维护脚本（control 域测试已迁至 local-agent-control/scripts/test）
+docsys/           # 文档体系站点（GB/T 8567）：framework=零依赖渲染/构建/模板（可拷走复用），content=各产品册数据；npm run docsys:build/serve
 ```
 
 ### 关键目录事实
@@ -66,8 +67,8 @@ scripts/          # 构建、生命周期、测试、维护脚本（control 域�
 
 | 服务 | 地址 |
 | --- | --- |
-| GameStudio Server | `http://127.0.0.1:1999` |
-| GameStudio Editor | `http://localhost:8868` |
+| TalkScene Server | `http://127.0.0.1:1999` |
+| TalkScene Editor | `http://localhost:8868` |
 | Control Server | `http://127.0.0.1:2099` |
 | Control Console | `http://127.0.0.1:8870` |
 | OMLX（本地模型） | `http://127.0.0.1:18888/v1` |
@@ -75,7 +76,7 @@ scripts/          # 构建、生命周期、测试、维护脚本（control 域�
 ### 本地模型硬约束（32G；2026-09-14 双核准修订）
 
 - 守护台核准清单（左脑配置 `llmApprovedModels`）是本机唯一合法 LLM 集：
-  - `Qwen3.6-27B-4bit`（8K 窗口）：story 产线（GameStudio `storage/_config/studio_settings.json` 的 scripts/prompt/translation + Hermes 左脑路由）继续统一使用。
+  - `Qwen3.6-27B-4bit`（8K 窗口）：story 产线（TalkScene `storage/_config/studio_settings.json` 的 scripts/prompt/translation + Hermes 左脑路由）继续统一使用。
   - `gpt-oss-20b-MXFP4-Q8`（32K 窗口，2026-09-14 治理决议加入）：下游分析主力（forge-studio / ovo_system 分析链路）。
 - 两模型物理不可共存，同一时刻仅一个在线；切换经 `POST /api/control/resources/model/switch`（操作员或持 `model_switch` scope 的客户端——forge-studio 已签发；审计、静默边界 409 保护）。story 产线开工前若在线模型非 27B，须先切回。
 - **禁止**改回 `Qwen3.6-27B-MLX-4bit`（32K 变体）：KV 预留 ~5.6GB，27B 权重 ~15.7GB，合计超 oMLX prefill 内存护栏（~22.95GB）导致全部 400 拒答；且 control 资源调度器只认配置模型，其他已加载模型会被 `guard_unload_foreign_model` 强杀（生成中请求被断）。
@@ -140,7 +141,7 @@ npm run dev:editor
 npm run typecheck
 
 # 单独项目
-npm --workspace @game-studio/editor run typecheck
+npm --workspace @talkscene/editor run typecheck
 ```
 
 ### 后端语法检查
@@ -159,18 +160,19 @@ node --check apps/server/src/index.js
 - **框架**：Vite + React 18 + TypeScript
 - **入口**：`src/main.tsx` -> `src/App.tsx`
 - **工作室页面**：
-  - `Hub.tsx` — 项目列表与入口
+  - `Hub.tsx` + `src/hub/`（项目库画廊与入口；状态映射/相对时间/色卡封面辅助）
   - `ScriptStudio.tsx` — 脚本层编辑
   - `BlueprintStudio.tsx` — 蓝图层编辑
-  - `ComposeStudio.tsx` — 合成层编辑
+  - `ComposeStudio.tsx` — 合成层编辑（2026-10-20 W6 拆分：装配主件 + `src/studios/compose/` 目录族——canvas/ Pixi 舞台层、orchestration/ 编排纯逻辑、panels/ 右栏属性族、modals/ 弹窗族）
 - **关键文件**：`src/api.ts`（与服务端通信）、`src/studios/`（各工作室页面）
+- **设置页**：`src/pages/SettingsPage.tsx`（设置页，2026-10-20 起；配套组件族 `src/settings/`；旧弹窗已于同日退役删除）
 - **编辑器契约**：节点式交互故事编辑器，严格遵循左/中/右/顶四区布局。详见 `ai/interactive_story_editor.contract.md`。
 
 #### `apps/server`
 - **框架**：Node.js + Hono（`@hono/node-server`）
 - **入口**：`src/index.js`
 - **模块**：
-  - `src/ai/` — AI 相关：脚本生成、提示词、背景图生成、资产计划、Story Bible、诊断等；含剧情姿势提取（storyPoseStates.js）与道具状态提取（storyPropStates.js，道具跨场景视觉状态识别→状态变体生成链 `POST /api/projects/:id/ai/story/assets/:assetId/state-variants/generate`，提取候选 `POST /api/projects/:id/ai/story/prop-states`；事件 GS-47 `asset.propState.generate`）
+  - `src/ai/` — AI 相关：脚本生成、提示词、背景图生成、资产计划、Story Bible、诊断、tts.js（语音合成：edge-tts/say/openai/local，试听预览）、resourceLease.js（租约开关现支持设置页「守护台关联」运行时关闭；env STUDIO_RESOURCE_LEASE_ENABLED 显式设定时优先）等；含剧情姿势提取（storyPoseStates.js）与道具状态提取（storyPropStates.js，道具跨场景视觉状态识别→状态变体生成链 `POST /api/projects/:id/ai/story/assets/:assetId/state-variants/generate`，提取候选 `POST /api/projects/:id/ai/story/prop-states`；事件 GS-47 `asset.propState.generate`）
   - `src/blueprint/` — 蓝图编译与校验
   - `src/studio/` — 项目状态、设置、密钥管理
   - `src/plugins/` — 构建插件（storyPixi.js）
@@ -278,7 +280,7 @@ node scripts/test/control_production_test.mjs
 ### 健康检查
 
 ```bash
-curl -sS http://127.0.0.1:1999/api/health    # GameStudio Server
+curl -sS http://127.0.0.1:1999/api/health    # TalkScene Server
 curl -sS http://localhost:8868               # Editor
 curl -sS http://127.0.0.1:2099/api/health    # Control Server
 curl -sS http://127.0.0.1:2099/api/control/agents/hermes-manager/workflow-diagnostics
@@ -310,6 +312,8 @@ curl -sS "http://127.0.0.1:2099/api/control/hermes/session-search?q=<关键词>"
 | `STUDIO_POSE_REVIEW_PROVIDER` | 姿势一致性评审通道：`auto`（默认，有 Kimi key 走 Kimi 否则本地视觉模型）/ `kimi` / `local_vl` / `off`；也可在 `storage/_config/studio_settings.json` 的 review 节配置 `poseReviewProvider/poseReviewModel/poseReviewBaseUrl` |
 | `HERMES_VISION_MODEL` | 本地视觉评审模型名（默认 `gemma-4-26b-a4b-it-4bit`，经 OMLX 多模态）；同步写入 `config/hermes/manager.left-brain.json` 的 `visionModel` 字段，资源调度器外来模型守卫据此放行 |
 
+语音合成引擎（2026-10-20 起）：`tools/tts-venv/`（edge-tts pip 环境，勿删；重建：`/opt/homebrew/bin/python3 -m venv tools/tts-venv && tools/tts-venv/bin/pip install edge-tts`）。试听预览产物在 `storage/_shared/tts_previews/`（保留最近 10 份）。
+
 出图风格预设（2026-09-28 起）：`storage/_config/studio_settings.json` 的 `image.stylePresets` + `image.activeStylePreset` 是出图风格样本的物理记录——当前激活 `picture_book_v1`（《小猫钓鱼》2026-09-27 生产样本沉淀：checkpoint、LoRA 栈、风格句、背景排除词、安静区措辞、各剖面尺寸、审核链、压缩策略）。提示词/LoRA/尺寸构建端（`storyAssets.js` 的 `resolveStoryStylePreset` 消费）优先读预设，缺省回退代码内置值；设置保存/读取全链路透传不丢字段。**勿随意删改**——后续故事按此样本复现效果。
 
 服务器启动时会自动加载 `.env` / `.env.local`（通过 `apps/server/src/env.js`）。
@@ -324,7 +328,8 @@ curl -sS "http://127.0.0.1:2099/api/control/hermes/session-search?q=<关键词>"
 | --- | --- |
 | `start_project.sh` | 启动 editor + server（前台/后台） |
 | `stop_project.sh` | 停止业务服务 |
-| `restart_server.sh` | 重启 server |
+| `restart_project.sh` | 重启整个项目（server+editor，任意目录可用，参数同 start） |
+| `restart_server.sh` | 仅重启 server（任意目录可用，自定位仓根） |
 | `status_project.sh` | 查看运行状态 |
 | `team_checkin.sh` | 团队签到 |
 | `reporter.sh` | 状态报告 |
@@ -347,7 +352,7 @@ PID 与日志保存在 `.run/` 目录：
 | `docs/README.md` | docs/ 目录入口与维护规则 |
 | `docs/PROJECT_GOVERNANCE.md` | 全系统最高治理规则 |
 | `docs/系统生产级推进方案.md` | 系统分工、启动流程、任务流、路由规则、UI 约束 |
-| `docs/Control + GameStudio 生产工作流联调测试说明.md` | 联调测试标准与验证清单 |
+| `docs/Control + TalkScene 生产工作流联调测试说明.md` | 联调测试标准与验证清单 |
 | `docs/PRODUCTION_DEFECTS.md` | 当前生产缺陷与未实现项 |
 | `docs/运行时能力测试基准.md` | 32G/16K 运行时硬约束与分组测试通过标准（硬基准，不可偏离） |
 | `ai/AGENTS.md` | Hermes 工作契约（控制平面专用） |
@@ -377,8 +382,8 @@ PID 与日志保存在 `.run/` 目录：
 
 ## Agent 定位（最高优先级，不可偏离）
 
-- **我是 control 的建设者，不是生产操作员。** 禁止直接调用 GameStudio 生成类 API（出图、锁定测试、线稿、场景渲染、导出等）替用户完成生产任务——那会造成 token 浪费、绕过审核、产出无证据链的结果。
-- 生产任务（故事生成、场景图生成）必须由 **control 侧通过事件机制**驱动：用户 → control（hermes-manager，独立仓 local-agent-control）→ 事件分发（`apps/server/events/registry.v1.json` + 新仓 `eventDispatcher`）→ GameStudio Server → ComfyUI。
+- **我是 control 的建设者，不是生产操作员。** 禁止直接调用 TalkScene 生成类 API（出图、锁定测试、线稿、场景渲染、导出等）替用户完成生产任务——那会造成 token 浪费、绕过审核、产出无证据链的结果。
+- 生产任务（故事生成、场景图生成）必须由 **control 侧通过事件机制**驱动：用户 → control（hermes-manager，独立仓 local-agent-control）→ 事件分发（`apps/server/events/registry.v1.json` + 新仓 `eventDispatcher`）→ TalkScene Server → ComfyUI。
 - 我的工作范围是修改 `apps/server`（本仓）与新仓 `apps/control-server` / `apps/control-console` 的代码，让 control 具备并持续增强自动化能力：事件注册与映射、工作流编排、审核门禁、可观测执行链、能力自愈。
 - 验证生产链路时，由 control 侧事件链执行，我只观察证据（事件分发记录、reasoning sessions、`/ai/tasks` 进度、审核记录），不越俎代庖。
 - 任何"帮我跑一遍生产"的请求，都转化为"让 control 能跑一遍生产"的代码建设；发现 control 能力不足时，补 control 的能力，而不是自己下场。

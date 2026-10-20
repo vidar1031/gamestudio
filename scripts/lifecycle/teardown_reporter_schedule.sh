@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-LABEL="com.gamestudio.reporter"
+LABEL="com.talkscene.reporter"
 PLIST_DEST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 
 if [ "$(uname -s)" != "Darwin" ]; then

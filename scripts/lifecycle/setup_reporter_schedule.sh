@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PLIST_SRC="${ROOT}/scripts/lifecycle/com.gamestudio.reporter.plist"
+PLIST_SRC="${ROOT}/scripts/lifecycle/com.talkscene.reporter.plist"
 CONFIG_FILE="${ROOT}/config/email_config.sh"
-LABEL="com.gamestudio.reporter"
+LABEL="com.talkscene.reporter"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 PLIST_DEST="${LAUNCH_AGENTS_DIR}/${LABEL}.plist"
 

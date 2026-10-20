@@ -1,5 +1,5 @@
 #!/bin/bash
-# 全栈启动：OMLX 检测 -> GameStudio(server+editor) -> Control(control-server+console)
+# 全栈启动：OMLX 检测 -> TalkScene(server+editor) -> Control(control-server+console)
 # 每步失败即停；OMLX 是外部独立服务，本脚本只检测不代管。
 set -euo pipefail
 
@@ -34,7 +34,7 @@ http_ok() {
 }
 
 echo "=========================================="
-echo "   GameStudio Full-Stack Launcher"
+echo "   TalkScene Full-Stack Launcher"
 echo "=========================================="
 
 echo "▶ [1/3] 检测 OMLX 本地模型服务: ${OMLX_BASE_URL}"
@@ -50,7 +50,7 @@ else
 fi
 
 echo ""
-echo "▶ [2/3] 启动 GameStudio Server + Editor"
+echo "▶ [2/3] 启动 TalkScene Server + Editor"
 bash "${ROOT}/scripts/lifecycle/start_project.sh" --detached
 
 echo ""
@@ -73,8 +73,8 @@ check() {
 
 FAILED=0
 check "OMLX            " "${OMLX_HEALTH_URL}" || [ "${SKIP_OMLX}" = "1" ] || FAILED=1
-check "GameStudio Server" "${SERVER_URL}/api/health" || FAILED=1
-check "GameStudio Editor" "${EDITOR_URL}" || FAILED=1
+check "TalkScene Server" "${SERVER_URL}/api/health" || FAILED=1
+check "TalkScene Editor" "${EDITOR_URL}" || FAILED=1
 check "Control Server  " "${CONTROL_SERVER_URL}/api/health" || FAILED=1
 check "Control Console " "${CONTROL_CONSOLE_URL}" || FAILED=1
 

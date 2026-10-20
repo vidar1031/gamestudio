@@ -23,14 +23,14 @@ print_port_state() {
   fi
 }
 
-echo "Game Studio status"
+echo "TalkScene status"
 print_port_state "server" 1999
 print_port_state "editor" 8868
 
 echo ""
 echo "Reporter schedule"
-PLIST_PATH="${HOME}/Library/LaunchAgents/com.gamestudio.reporter.plist"
-if [ -f "${PLIST_PATH}" ] && launchctl print "gui/$(id -u)/com.gamestudio.reporter" >/dev/null 2>&1; then
+PLIST_PATH="${HOME}/Library/LaunchAgents/com.talkscene.reporter.plist"
+if [ -f "${PLIST_PATH}" ] && launchctl print "gui/$(id -u)/com.talkscene.reporter" >/dev/null 2>&1; then
   INTERVAL="$(/usr/libexec/PlistBuddy -c 'Print :StartInterval' "${PLIST_PATH}" 2>/dev/null || true)"
   if [ -n "${INTERVAL}" ]; then
     HOURS=$((INTERVAL / 3600))

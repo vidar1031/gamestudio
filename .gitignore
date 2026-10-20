@@ -44,3 +44,10 @@ config/hermes/manager.left-brain.state.json
 ai/chat/
 ai/memory/20*.md
 /memory/
+
+# docsys 构建产物
+docsys/dist/
+
+# 语音合成引擎（edge-tts pip 环境，机器本地可重建：/opt/homebrew/bin/python3 -m venv tools/tts-venv && tools/tts-venv/bin/pip install edge-tts）
+tools/tts-venv/
+__pycache__/

@@ -1,6 +1,6 @@
-# GameStudio
+# TalkScene
 
-GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `control` 驱动 `Hermes` 完成故事项目的创建、配置、生成与验证。
+TalkScene 是一个 H5 互动故事生成工具仓库，当前主方向是让 `control` 驱动 `Hermes` 完成故事项目的创建、配置、生成与验证。
 
 ## 当前目标
 
@@ -41,8 +41,8 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 
 ## 端口
 
-- GameStudio Server: `http://127.0.0.1:1999`
-- GameStudio Editor: `http://localhost:8868`
+- TalkScene Server: `http://127.0.0.1:1999`
+- TalkScene Editor: `http://localhost:8868`
 - Control Server: `http://127.0.0.1:2099`
 - Control Console（守护台）: `http://127.0.0.1:8870`
 
@@ -88,6 +88,6 @@ GameStudio 是一个 H5 互动故事生成工具仓库，当前主方向是让 `
 - 文档入口与整理清单：`docs/README.md`
 - 系统生产级推进方案：`docs/系统生产级推进方案.md`
 - 系统分工与推进方案：`docs/系统生产级推进方案.md`
-- 联调测试说明：`docs/Control + GameStudio 生产工作流联调测试说明.md`
+- 联调测试说明：`docs/Control + TalkScene 生产工作流联调测试说明.md`
 - 生产缺陷报告：`docs/PRODUCTION_DEFECTS.md`
 - 交互故事编辑器契约：`ai/interactive_story_editor.contract.md`

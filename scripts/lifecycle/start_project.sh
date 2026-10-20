@@ -162,9 +162,9 @@ restart_existing_services_if_needed() {
     return 0
   fi
   if [ "${server_ok}" = "1" ] && [ "${editor_ok}" = "1" ]; then
-    echo "ℹ️  Game Studio 已在运行，按要求执行自动重启"
+    echo "ℹ️  TalkScene 已在运行，按要求执行自动重启"
   else
-    echo "ℹ️  检测到旧的或异常的 Game Studio 进程，执行自动清理后重启"
+    echo "ℹ️  检测到旧的或异常的 TalkScene 进程，执行自动清理后重启"
   fi
   RESTARTED=1
   stop_listener_if_needed "server" "${SERVER_PORT}"
@@ -187,7 +187,7 @@ trap cleanup EXIT INT TERM
 cd "${ROOT}"
 
 echo "=========================================="
-echo "   Game Studio Dev Launcher"
+echo "   TalkScene Dev Launcher"
 echo "=========================================="
 echo ""
 echo "Workspace: ${ROOT}"
