@@ -1,4 +1,4 @@
-import { extractResponseOutputText, openaiResponsesJsonForTools } from './openai.js'
+import { extractResponseOutputText, openaiResponsesJsonForTools, parseModelJsonLenient } from './openai.js'
 import { generateStrictJsonViaDoubaoChat } from './doubao.js'
 import { generateStrictJsonViaOllamaChat, generateTextViaOllamaChat } from './ollama.js'
 
@@ -62,12 +62,34 @@ export async function translatePromptText({ provider, model, apiUrl, proxyUrl, t
       ...(model ? { model: String(model).trim() } : {}),
       text: { format: { type: 'json_schema', name: 'prompt_translation', strict: true, schema } }
     }
+    // 2026-10-18：先宽松解析（模型偶尔在 JSON 外裹说明文字/围栏），仍无有效译文再退纯文本翻译——
+    // 短名词短语（如"手持梨"）严格 schema 实测偶发 invalid_translation_response，不该让锚点翻译整体陪葬
+    // （孔融兄弟载体锚点中文残留事故）。
     const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, timeoutMs: t })
-    const outText = extractResponseOutputText(json)
-    const parsed = JSON.parse(String(outText || '{}'))
-    const result = normalizeTranslation(parsed)
+    const outText = String(extractResponseOutputText(json) || '')
+    let parsedLenient = null
+    try { parsedLenient = parseModelJsonLenient(outText) } catch { /* 落到纯文本兜底 */ }
+    if (parsedLenient) {
+      const result = normalizeTranslation(parsedLenient)
+      if (validateTranslation(result)) return { result, meta }
+    }
+    const plainInstructions =
+      `你是一个中英文翻译助手。\n` +
+      `任务：把输入文本从源语言翻译为目标语言。\n` +
+      `要求：\n` +
+      `- 只输出翻译结果本身，不要 JSON，不要解释，不要引号。\n` +
+      `- 如果 mode=prompt：保持提示词短语风格，不扩写成句子。\n`
+    const plainBody = {
+      instructions: plainInstructions,
+      input,
+      max_output_tokens: 2048,
+      ...(model ? { model: String(model).trim() } : {})
+    }
+    const { json: plainJson, meta: plainMeta } = await openaiResponsesJsonForTools({ body: plainBody, provider: p, apiUrl, proxyUrl, timeoutMs: t })
+    const plainText = String(extractResponseOutputText(plainJson) || '').trim().replace(/^["'「」]+|["'「」]+$/g, '').trim()
+    const result = normalizeTranslation({ translatedText: plainText, sourceLanguage: src, targetLanguage: target })
     if (!validateTranslation(result)) throw new Error('invalid_translation_response')
-    return { result, meta }
+    return { result, meta: { ...plainMeta, note: 'plain_text_fallback' } }
   }
 
   if (p === 'doubao') {

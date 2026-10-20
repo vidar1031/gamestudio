@@ -76,7 +76,7 @@
   "7": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "gamestudio_story_hat_lock",
+      "filename_prefix": "talkscene_story_hat_lock",
       "images": [
         "6",
         0

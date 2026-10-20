@@ -1,4 +1,5 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { setStudioSecrets } from './secrets.js'
 
@@ -69,6 +70,17 @@ function sanitizeStringList(v, maxLen = 120, maxItems = 64) {
   return out
 }
 
+// 2026-10-20 设置页 V1（ui_设置定义.md §6）：schemaVersion 升 1.1，新增 video/appearance/storage 节与
+// tts.voice/speed/format、enabled.video；读取旧文件时缺省节按默认值回填（内存回填，写回时落盘新版本号）。
+// 2026-10-20 守护台关联：schemaVersion 升 1.2，新增 control 节（租约运行时开关 + 守护台地址）。
+const SETTINGS_SCHEMA_VERSION = '1.2'
+const VIDEO_RESOLUTIONS = ['720p', '1080p', '1080x1920']
+const TTS_FORMATS = ['mp3', 'wav']
+const VIDEO_AUDIO_TRACKS = ['tts', 'none']
+const DEFAULT_SUBTITLE_STYLE = { fontSize: 24, position: 'bottom', bgOpacity: 0.6 }
+const DEFAULT_APPEARANCE = { theme: 'dark', locale: 'zh-CN' }
+const DEFAULT_CONTROL_LINK = { leaseEnabled: true, baseUrl: 'http://127.0.0.1:2099' }
+
 function sanitizeBool(v, fallback) {
   if (typeof v === 'boolean') return v
   if (v == null) return Boolean(fallback)
@@ -83,6 +95,107 @@ function sanitizeSecret(v) {
   if (!s) return null
   // Avoid accidental multi-line secrets; keep it bounded.
   return s.replace(/\r?\n/g, '').slice(0, 512)
+}
+
+function sanitizeEnum(v, allowed, fallback) {
+  const s = String(v || '').trim().toLowerCase()
+  return allowed.includes(s) ? s : fallback
+}
+
+function sanitizeVoice(v) {
+  const s = String(v || '').trim()
+  return s ? s.slice(0, 120) : null
+}
+
+function sanitizeSpeed(v, fallback = 1.0) {
+  if (v == null || v === '') return fallback
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(0.5, Math.min(2.0, Math.round(n * 100) / 100))
+}
+
+function sanitizeFps(v, fallback = 30) {
+  const n = Number(v)
+  return n === 24 ? 24 : n === 30 ? 30 : fallback
+}
+
+function sanitizeBitrate(v) {
+  if (v == null || v === '') return 'auto'
+  const s = String(v).trim().toLowerCase()
+  if (s === 'auto') return 'auto'
+  const n = Math.round(Number(s))
+  if (!Number.isFinite(n) || n <= 0) return 'auto'
+  return Math.min(n, 100000)
+}
+
+function defaultSubtitleStyle() {
+  return { ...DEFAULT_SUBTITLE_STYLE }
+}
+
+function sanitizeSubtitleStyle(v) {
+  if (!v || typeof v !== 'object') return null
+  const fontSize = Number(v.fontSize)
+  const bgOpacity = Number(v.bgOpacity)
+  const position = String(v.position || '').trim().toLowerCase()
+  return {
+    fontSize: Number.isFinite(fontSize) ? Math.max(8, Math.min(120, Math.round(fontSize))) : DEFAULT_SUBTITLE_STYLE.fontSize,
+    position: position === 'top' || position === 'bottom' ? position : DEFAULT_SUBTITLE_STYLE.position,
+    bgOpacity: Number.isFinite(bgOpacity) ? Math.max(0, Math.min(1, Math.round(bgOpacity * 100) / 100)) : DEFAULT_SUBTITLE_STYLE.bgOpacity
+  }
+}
+
+function sanitizeTheme(v, fallback = 'dark') {
+  const s = String(v || '').trim()
+  return s ? s.slice(0, 64) : fallback
+}
+
+function sanitizeLocale(v, fallback = 'zh-CN') {
+  const s = String(v || '').trim()
+  return s ? s.slice(0, 32) : fallback
+}
+
+function sanitizeStorageRoot(v) {
+  const s = String(v || '').trim()
+  return s ? s.slice(0, 512) : null
+}
+
+// 读旧文件自动补齐：缺省的新节/新键按默认值回填（§6 默认：tts/video 关，video 1080p/30fps/码率自动）。
+function withSettingsDefaults(json) {
+  if (!json || typeof json !== 'object') return json
+  const out = { ...json }
+  out.schemaVersion = SETTINGS_SCHEMA_VERSION
+  const enabled = out.enabled && typeof out.enabled === 'object' ? out.enabled : {}
+  out.enabled = { ...enabled, video: sanitizeBool(enabled.video, false) }
+  const tts = out.tts && typeof out.tts === 'object' ? out.tts : {}
+  out.tts = {
+    ...tts,
+    voice: sanitizeVoice(tts.voice),
+    speed: sanitizeSpeed(tts.speed, 1.0),
+    format: sanitizeEnum(tts.format, TTS_FORMATS, 'mp3')
+  }
+  const video = out.video && typeof out.video === 'object' ? out.video : {}
+  out.video = {
+    provider: sanitizeProvider(video.provider),
+    resolution: sanitizeEnum(video.resolution, VIDEO_RESOLUTIONS, '1080p'),
+    fps: sanitizeFps(video.fps, 30),
+    bitrate: sanitizeBitrate(video.bitrate),
+    subtitleStyle: sanitizeSubtitleStyle(video.subtitleStyle) || defaultSubtitleStyle(),
+    audioTrack: sanitizeEnum(video.audioTrack, VIDEO_AUDIO_TRACKS, 'tts'),
+    apiUrl: sanitizeUrl(video.apiUrl)
+  }
+  const appearance = out.appearance && typeof out.appearance === 'object' ? out.appearance : {}
+  out.appearance = {
+    theme: sanitizeTheme(appearance.theme, DEFAULT_APPEARANCE.theme),
+    locale: sanitizeLocale(appearance.locale, DEFAULT_APPEARANCE.locale)
+  }
+  const storage = out.storage && typeof out.storage === 'object' ? out.storage : {}
+  out.storage = { root: sanitizeStorageRoot(storage.root) }
+  const control = out.control && typeof out.control === 'object' ? out.control : {}
+  out.control = {
+    leaseEnabled: sanitizeBool(control.leaseEnabled, DEFAULT_CONTROL_LINK.leaseEnabled),
+    baseUrl: sanitizeUrl(control.baseUrl) || DEFAULT_CONTROL_LINK.baseUrl
+  }
+  return out
 }
 
 export function studioSettingsFilePath(storageRoot) {
@@ -104,9 +217,10 @@ export async function readStudioSettings(storageRoot) {
     const raw = await readFile(p, 'utf-8')
     const json = JSON.parse(raw)
     if (!json || typeof json !== 'object') return null
+    const value = withSettingsDefaults(json)
     cache.mtimeMs = Number(st.mtimeMs) || 0
-    cache.value = json
-    return json
+    cache.value = value
+    return value
   } catch (_) {
     return null
   }
@@ -127,18 +241,23 @@ export async function writeStudioSettings(storageRoot, incoming) {
   const inTranslation = inObj?.translation
   const inImage = inObj?.image
   const inTts = inObj?.tts
+  const inVideo = inObj?.video
+  const inAppearance = inObj?.appearance
+  const inStorage = inObj?.storage
   const inNet = inObj?.network
   const inSecrets = inObj?.secrets
   const inReview = inObj?.review
+  const inControl = inObj?.control
 
   const next = {
-    schemaVersion: '1.0',
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
     updatedAt: nowIso(),
     enabled: {
       scripts: sanitizeBool(has(inEnabled, 'scripts') ? inEnabled.scripts : prev?.enabled?.scripts, prev?.enabled?.scripts ?? false),
       prompt: sanitizeBool(has(inEnabled, 'prompt') ? inEnabled.prompt : prev?.enabled?.prompt, prev?.enabled?.prompt ?? false),
       image: sanitizeBool(has(inEnabled, 'image') ? inEnabled.image : prev?.enabled?.image, prev?.enabled?.image ?? false),
-      tts: sanitizeBool(has(inEnabled, 'tts') ? inEnabled.tts : prev?.enabled?.tts, prev?.enabled?.tts ?? false)
+      tts: sanitizeBool(has(inEnabled, 'tts') ? inEnabled.tts : prev?.enabled?.tts, prev?.enabled?.tts ?? false),
+      video: sanitizeBool(has(inEnabled, 'video') ? inEnabled.video : prev?.enabled?.video, prev?.enabled?.video ?? false)
     },
     scripts: {
       provider: has(inScripts, 'provider') ? sanitizeProvider(inScripts.provider) : sanitizeProvider(prev?.scripts?.provider),
@@ -171,13 +290,46 @@ export async function writeStudioSettings(storageRoot, incoming) {
     tts: {
       provider: has(inTts, 'provider') ? sanitizeProvider(inTts.provider) : sanitizeProvider(prev?.tts?.provider),
       model: has(inTts, 'model') ? sanitizeModel(inTts.model) : sanitizeModel(prev?.tts?.model),
-      apiUrl: has(inTts, 'apiUrl') ? sanitizeUrl(inTts.apiUrl) : sanitizeUrl(prev?.tts?.apiUrl)
+      apiUrl: has(inTts, 'apiUrl') ? sanitizeUrl(inTts.apiUrl) : sanitizeUrl(prev?.tts?.apiUrl),
+      voice: has(inTts, 'voice') ? sanitizeVoice(inTts.voice) : sanitizeVoice(prev?.tts?.voice),
+      speed: has(inTts, 'speed') ? sanitizeSpeed(inTts.speed, 1.0) : sanitizeSpeed(prev?.tts?.speed, 1.0),
+      format: has(inTts, 'format') ? sanitizeEnum(inTts.format, TTS_FORMATS, 'mp3') : sanitizeEnum(prev?.tts?.format, TTS_FORMATS, 'mp3')
+    },
+    // 设置页 V1 新增：视频合成节（ui_设置定义.md §7.7）
+    video: {
+      provider: has(inVideo, 'provider') ? sanitizeProvider(inVideo.provider) : sanitizeProvider(prev?.video?.provider),
+      resolution: has(inVideo, 'resolution') ? sanitizeEnum(inVideo.resolution, VIDEO_RESOLUTIONS, '1080p') : sanitizeEnum(prev?.video?.resolution, VIDEO_RESOLUTIONS, '1080p'),
+      fps: has(inVideo, 'fps') ? sanitizeFps(inVideo.fps, 30) : sanitizeFps(prev?.video?.fps, 30),
+      bitrate: has(inVideo, 'bitrate') ? sanitizeBitrate(inVideo.bitrate) : sanitizeBitrate(prev?.video?.bitrate),
+      subtitleStyle: has(inVideo, 'subtitleStyle')
+        ? (sanitizeSubtitleStyle(inVideo.subtitleStyle) || defaultSubtitleStyle())
+        : (sanitizeSubtitleStyle(prev?.video?.subtitleStyle) || defaultSubtitleStyle()),
+      audioTrack: has(inVideo, 'audioTrack') ? sanitizeEnum(inVideo.audioTrack, VIDEO_AUDIO_TRACKS, 'tts') : sanitizeEnum(prev?.video?.audioTrack, VIDEO_AUDIO_TRACKS, 'tts'),
+      apiUrl: has(inVideo, 'apiUrl') ? sanitizeUrl(inVideo.apiUrl) : sanitizeUrl(prev?.video?.apiUrl)
+    },
+    // 设置页 V1 新增：界面偏好节（§9.1）
+    appearance: {
+      theme: has(inAppearance, 'theme') ? sanitizeTheme(inAppearance.theme, DEFAULT_APPEARANCE.theme) : sanitizeTheme(prev?.appearance?.theme, DEFAULT_APPEARANCE.theme),
+      locale: has(inAppearance, 'locale') ? sanitizeLocale(inAppearance.locale, DEFAULT_APPEARANCE.locale) : sanitizeLocale(prev?.appearance?.locale, DEFAULT_APPEARANCE.locale)
+    },
+    // 设置页 V1 新增：存储节（§9.2；root 可空=默认仓内 storage/）
+    storage: {
+      root: has(inStorage, 'root') ? sanitizeStorageRoot(inStorage.root) : sanitizeStorageRoot(prev?.storage?.root)
+    },
+    // 2026-10-20 守护台关联节：租约运行时开关 + 守护台地址（env 显式设定时优先，见 resourceLease.js）
+    control: {
+      leaseEnabled: sanitizeBool(has(inControl, 'leaseEnabled') ? inControl.leaseEnabled : prev?.control?.leaseEnabled, prev?.control?.leaseEnabled ?? DEFAULT_CONTROL_LINK.leaseEnabled),
+      baseUrl: has(inControl, 'baseUrl') ? (sanitizeUrl(inControl.baseUrl) || DEFAULT_CONTROL_LINK.baseUrl) : (sanitizeUrl(prev?.control?.baseUrl) || DEFAULT_CONTROL_LINK.baseUrl)
     },
     // AUTO-E05：完整度核实的视觉评审模型（moonshot / omlx），缺省走环境默认
     review: {
       provider: has(inReview, 'provider') ? sanitizeProvider(inReview.provider) : sanitizeProvider(prev?.review?.provider),
       model: has(inReview, 'model') ? sanitizeModel(inReview.model) : sanitizeModel(prev?.review?.model),
-      apiUrl: has(inReview, 'apiUrl') ? sanitizeUrl(inReview.apiUrl) : sanitizeUrl(prev?.review?.apiUrl)
+      apiUrl: has(inReview, 'apiUrl') ? sanitizeUrl(inReview.apiUrl) : sanitizeUrl(prev?.review?.apiUrl),
+      // 2026-10-20 修复：poseReview* 此前不在白名单，任何一次保存都会被丢弃（getEffectiveStudioConfig 在读它们）
+      poseReviewProvider: has(inReview, 'poseReviewProvider') ? sanitizeProvider(inReview.poseReviewProvider) : sanitizeProvider(prev?.review?.poseReviewProvider),
+      poseReviewModel: has(inReview, 'poseReviewModel') ? sanitizeModel(inReview.poseReviewModel) : sanitizeModel(prev?.review?.poseReviewModel),
+      poseReviewBaseUrl: has(inReview, 'poseReviewBaseUrl') ? sanitizeUrl(inReview.poseReviewBaseUrl) : sanitizeUrl(prev?.review?.poseReviewBaseUrl)
     },
     secrets: {
       openaiApiKey: has(inSecrets, 'openaiApiKey') ? sanitizeSecret(inSecrets.openaiApiKey) : sanitizeSecret(prev?.secrets?.openaiApiKey),
@@ -207,6 +359,32 @@ function envFirst(...keys) {
     if (v) return v
   }
   return ''
+}
+
+// 2026-10-20 守护台关联：同步读取 control 节（readFileSync + mtime 缓存，容错回默认）。
+// 供 resourceLease.js 等同步路径使用（租约开关判定在 choke point 热路径上，不能 async）。
+const controlLinkCache = { mtimeMs: 0, root: '', value: null }
+export function readControlLinkSync(storageRoot) {
+  const fallback = { ...DEFAULT_CONTROL_LINK }
+  try {
+    const p = studioSettingsFilePath(storageRoot)
+    const st = statSync(p)
+    if (controlLinkCache.value && controlLinkCache.root === String(storageRoot) && Number(st.mtimeMs) === controlLinkCache.mtimeMs) {
+      return controlLinkCache.value
+    }
+    const json = JSON.parse(readFileSync(p, 'utf-8'))
+    const c = json && typeof json === 'object' && json.control && typeof json.control === 'object' ? json.control : {}
+    const value = {
+      leaseEnabled: sanitizeBool(c.leaseEnabled, DEFAULT_CONTROL_LINK.leaseEnabled),
+      baseUrl: sanitizeUrl(c.baseUrl) || DEFAULT_CONTROL_LINK.baseUrl
+    }
+    controlLinkCache.mtimeMs = Number(st.mtimeMs) || 0
+    controlLinkCache.root = String(storageRoot)
+    controlLinkCache.value = value
+    return value
+  } catch (_) {
+    return fallback
+  }
 }
 
 function maskKey(v) {
@@ -310,7 +488,8 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
     scripts: settings ? settings?.enabled?.scripts !== false : false,
     prompt: settings ? settings?.enabled?.prompt !== false : false,
     image: settings ? settings?.enabled?.image !== false : false,
-    tts: settings?.enabled?.tts === true
+    tts: settings?.enabled?.tts === true,
+    video: settings?.enabled?.video === true
   }
 
   const scriptsProvider = (settings?.scripts?.provider ? String(settings.scripts.provider) : 'none') || 'none'
@@ -417,7 +596,31 @@ export async function getEffectiveStudioConfig(storageRoot, options = null) {
     tts: {
       provider: settings?.tts?.provider ? String(settings.tts.provider) : 'none',
       model: settings?.tts?.model ? String(settings.tts.model) : null,
-      apiUrl: settings?.tts?.apiUrl ? String(settings.tts.apiUrl) : null
+      apiUrl: settings?.tts?.apiUrl ? String(settings.tts.apiUrl) : null,
+      voice: settings?.tts?.voice ? String(settings.tts.voice) : null,
+      speed: sanitizeSpeed(settings?.tts?.speed, 1.0),
+      format: sanitizeEnum(settings?.tts?.format, TTS_FORMATS, 'mp3')
+    },
+    // 设置页 V1：视频合成/界面偏好/存储节透出（读取侧已默认回填，此处再兜底一次）
+    video: {
+      provider: settings?.video?.provider ? String(settings.video.provider) : 'none',
+      resolution: sanitizeEnum(settings?.video?.resolution, VIDEO_RESOLUTIONS, '1080p'),
+      fps: sanitizeFps(settings?.video?.fps, 30),
+      bitrate: sanitizeBitrate(settings?.video?.bitrate),
+      subtitleStyle: sanitizeSubtitleStyle(settings?.video?.subtitleStyle) || defaultSubtitleStyle(),
+      audioTrack: sanitizeEnum(settings?.video?.audioTrack, VIDEO_AUDIO_TRACKS, 'tts'),
+      apiUrl: settings?.video?.apiUrl ? String(settings.video.apiUrl) : null
+    },
+    appearance: {
+      theme: sanitizeTheme(settings?.appearance?.theme, DEFAULT_APPEARANCE.theme),
+      locale: sanitizeLocale(settings?.appearance?.locale, DEFAULT_APPEARANCE.locale)
+    },
+    storage: {
+      root: sanitizeStorageRoot(settings?.storage?.root)
+    },
+    control: {
+      leaseEnabled: settings?.control?.leaseEnabled !== false,
+      baseUrl: sanitizeUrl(settings?.control?.baseUrl) || DEFAULT_CONTROL_LINK.baseUrl
     },
     // AUTO-E05：完整度核实视觉评审模型。默认 moonshot/kimi-for-coding；
     // 选 omlx（本地视觉模型）时默认指向 OMLX 端点与 Qwen3.6-27B。

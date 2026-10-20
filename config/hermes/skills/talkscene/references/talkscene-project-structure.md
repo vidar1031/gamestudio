@@ -1,4 +1,4 @@
-# GameStudio 项目目录结构
+# TalkScene 项目目录结构
 
 ## 项目根目录 (storage/projects/<project-id>/)
 

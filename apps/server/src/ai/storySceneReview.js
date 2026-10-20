@@ -33,7 +33,7 @@ function controlBaseUrl() {
 
 // 凭证读取照 resourceLease.js 约定（STUDIO_CONTROL_CLIENT_ID/KEY，缺省按本机操作员通道兜底）
 function controlHeaders() {
-  const clientId = String(process.env.STUDIO_CONTROL_CLIENT_ID || 'gamestudio').trim()
+  const clientId = String(process.env.STUDIO_CONTROL_CLIENT_ID || 'talkscene').trim()
   const key = String(process.env.STUDIO_CONTROL_CLIENT_KEY || '').trim()
   const headers = { 'Content-Type': 'application/json', Accept: 'application/json' }
   if (key) {
@@ -234,6 +234,21 @@ export function collectSceneReviewInputs({ dir, projectId, story, plan, project,
         }
       }
     }
+    // 2026-10-18 剧情状态一致性维：把该场景的状态期望（每资产剧情状态）注入评审描述与验收标准。
+    // 例："盘：空盘（empty_plate）；孔融：持小梨（holding_small_pear）"——评审据此判状态违例（结局二盘应为空等）。
+    const stateLines = []
+    const sceneAssets = asList(plan && plan.assets)
+    for (const asset of sceneAssets) {
+      for (const req of asList(asset && asset.stateRequirements)) {
+        const sceneIdsOfReq = asList(req && req.sceneIds).map((x) => asStr(x).trim())
+        if (!sceneIdsOfReq.includes(sceneId)) continue
+        const stateKey = asStr(req && req.stateKey).trim()
+        if (!stateKey || stateKey === 'unchanged') continue
+        const stateLabel = asStr(req && req.stateLabel).trim() || stateKey
+        stateLines.push(`${asStr(asset && asset.name).trim() || asStr(asset && asset.id).trim()}：应呈现状态「${stateLabel}」（${stateKey}）`)
+        acceptanceCriteriaSet.push(`剧情状态一致性：${asStr(asset && asset.name).trim() || asStr(asset && asset.id).trim()} 应呈现状态「${stateLabel}」（${stateKey}），不一致即为状态违例`)
+      }
+    }
     inputs.push({
       sceneId,
       sceneName: asStr(scene.sceneName).trim() || asStr(body.title).trim() || sceneId,
@@ -243,7 +258,8 @@ export function collectSceneReviewInputs({ dir, projectId, story, plan, project,
         `场景「${asStr(scene.sceneName).trim() || sceneId}」`,
         asStr(scene.summary).trim() || asStr(body.text).trim().slice(0, 600),
         compositionText ? `导演构图：${compositionText}` : '',
-        ...acceptanceLines
+        ...acceptanceLines,
+        ...(stateLines.length ? [`剧情状态期望：${stateLines.join('；')}`] : [])
       ].filter(Boolean).join('。').slice(0, 1500)
     })
   }

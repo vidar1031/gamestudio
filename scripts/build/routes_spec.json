@@ -1,0 +1,170 @@
+{
+  "families": [
+    {
+      "file": "apps/server/src/routes/studio.routes.js",
+      "register": "registerStudioRoutes",
+      "routes": [
+        { "method": "get", "path": "/api/health" },
+        { "method": "get", "path": "/favicon.ico" },
+        { "method": "get", "path": "/api/events/registry" },
+        { "method": "get", "path": "/api/capabilities" },
+        { "method": "get", "path": "/api/runtime/status" },
+        { "method": "get", "path": "/api/studio/selfcheck" },
+        { "method": "get", "path": "/api/ai/status" },
+        { "method": "post", "path": "/api/ai/diagnose" },
+        { "method": "get", "path": "/api/ai/models" },
+        { "method": "get", "path": "/api/studio/settings" },
+        { "method": "put", "path": "/api/studio/settings" },
+        { "method": "get", "path": "/api/studio/sdwebui/models" },
+        { "method": "get", "path": "/api/studio/comfyui/models" },
+        { "method": "post", "path": "/api/studio/image/preflight" },
+        { "method": "post", "path": "/api/studio/image/models" },
+        { "method": "post", "path": "/api/studio/image/test" },
+        { "method": "post", "path": "/api/studio/diagnose" },
+        { "method": "get", "path": "/api/ai/rules" },
+        { "method": "put", "path": "/api/ai/rules" },
+        { "method": "get", "path": "/api/ai/prompt/templates" },
+        { "method": "post", "path": "/api/ai/prompt/templates/generate" },
+        { "method": "post", "path": "/api/ai/prompt/templates" },
+        { "method": "delete", "path": "/api/ai/prompt/templates/:id" },
+        { "method": "get", "path": "/api/ai/prompt-library" },
+        { "method": "post", "path": "/api/ai/prompt-library" },
+        { "method": "put", "path": "/api/ai/prompt-library/:id" },
+        { "method": "delete", "path": "/api/ai/prompt-library/:id" },
+        { "method": "get", "path": "/api/ai/comfyui/capability-check" },
+        { "method": "post", "path": "/api/ai/comfyui/auto-fix" }
+      ]
+    },
+    {
+      "file": "apps/server/src/routes/review.routes.js",
+      "register": "registerReviewRoutes",
+      "routes": [
+        { "method": "post", "path": "/api/ai/prompt/review" },
+        { "method": "post", "path": "/api/projects/:id/ai/storyboard/prompt-review" },
+        { "method": "post", "path": "/api/projects/:id/ai/review/blueprint" },
+        { "method": "get", "path": "/api/projects/:id/ai/review/blueprint" },
+        { "method": "get", "path": "/api/projects/:id/ai/reviews" },
+        { "method": "post", "path": "/api/projects/:id/ai/reviews/:reviewId/approve" },
+        { "method": "post", "path": "/api/projects/:id/ai/reviews/:reviewId/reject" },
+        { "method": "post", "path": "/api/projects/:id/ai/reviews/approve-all" },
+        { "method": "post", "path": "/api/projects/:id/ai/character/pose-review" }
+      ]
+    },
+    {
+      "file": "apps/server/src/routes/export.routes.js",
+      "register": "registerExportRoutes",
+      "routes": [
+        { "method": "post", "path": "/api/projects/:id/export" },
+        { "method": "post", "path": "/api/projects/:id/export/publish" },
+        { "method": "get", "path": "/api/projects/:id/exports" },
+        { "method": "delete", "path": "/api/projects/:id/exports/:buildId" }
+      ]
+    },
+    {
+      "file": "apps/server/src/routes/story.routes.js",
+      "register": "registerStoryRoutes",
+      "routes": [
+        { "method": "get", "path": "/api/projects" },
+        { "method": "get", "path": "/api/projects/summary" },
+        { "method": "post", "path": "/api/projects/:id/confirm-draft" },
+        { "method": "post", "path": "/api/projects" },
+        { "method": "post", "path": "/api/projects/ai/create" },
+        { "method": "post", "path": "/api/projects/:id/ai/regenerate" },
+        { "method": "post", "path": "/api/projects/:id/analyze/scripts" },
+        { "method": "post", "path": "/api/projects/:id/validate/blueprint" },
+        { "method": "post", "path": "/api/projects/:id/ai/fix/scripts" },
+        { "method": "get", "path": "/api/projects/:id" },
+        { "method": "put", "path": "/api/projects/:id" },
+        { "method": "delete", "path": "/api/projects/:id" },
+        { "method": "get", "path": "/api/projects/:id/scripts" },
+        { "method": "put", "path": "/api/projects/:id/scripts" },
+        { "method": "get", "path": "/api/projects/:id/blueprint" },
+        { "method": "put", "path": "/api/projects/:id/blueprint" },
+        { "method": "post", "path": "/api/projects/:id/compile/blueprint" },
+        { "method": "post", "path": "/api/projects/:id/compile/compose" }
+      ]
+    },
+    {
+      "file": "apps/server/src/routes/storyAssets.routes.js",
+      "register": "registerStoryAssetsRoutes",
+      "routes": [
+        { "method": "post", "path": "/api/projects/:id/ai/storyboard/global-prompt-generate" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/plan" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/plan/persist" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/plan/remove-asset" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/plan/repair-links" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/inherit" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/reference" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/reference/review" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/reference/optimize" },
+        { "method": "get", "path": "/api/projects/:id/ai/story/assets/:assetId/gallery" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/:assetId/prompt-enhance" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/:assetId/gallery/delete" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/reference/select" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/assets/lineart" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/lock/test" }
+      ]
+    },
+    {
+      "file": "apps/server/src/routes/storySprites.routes.js",
+      "register": "registerStorySpritesRoutes",
+      "routes": [
+        { "method": "post", "path": "/api/projects/:id/ai/story/pose-variants/auto" },
+        { "method": "post", "path": "/api/projects/:id/ai/character/fingerprint" },
+        { "method": "post", "path": "/api/projects/:id/ai/character/sprite" },
+        { "method": "post", "path": "/api/projects/:id/ai/character/cutout" },
+        { "method": "post", "path": "/api/projects/:id/ai/character/pose-prompt" },
+        { "method": "post", "path": "/api/projects/:id/ai/character/reference" }
+      ]
+    },
+    {
+      "file": "apps/server/src/routes/storyScenes.routes.js",
+      "register": "registerStoryScenesRoutes",
+      "routes": [
+        { "method": "post", "path": "/api/projects/:id/ai/story/walkthrough" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scene-review" },
+        { "method": "get", "path": "/api/projects/:id/ai/story/scene-review" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scene-review/feedback" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/composition" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scenes/:sceneId/render" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scenes/render-all" },
+        { "method": "get", "path": "/api/projects/:id/ai/story/scenes/:sceneId/images" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scenes/:sceneId/bind" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scenes/:sceneId/images/delete" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scenes/batch" },
+        { "method": "get", "path": "/api/projects/:id/ai/story/scenes/batch" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scenes/batch/resume" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scenes/placements" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/scenes/:sceneId/layered-produce" }
+      ]
+    },
+    {
+      "file": "apps/server/src/routes/projectOps.routes.js",
+      "register": "registerProjectOpsRoutes",
+      "routes": [
+        { "method": "get", "path": "/api/projects/:id/assets/ai" },
+        { "method": "post", "path": "/api/projects/:id/assets/open-folder" },
+        { "method": "post", "path": "/api/projects/:id/assets/upload" },
+        { "method": "post", "path": "/api/projects/:id/assets/compress" },
+        { "method": "post", "path": "/api/projects/:id/assets/import" },
+        { "method": "post", "path": "/api/projects/:id/ai/background" },
+        { "method": "post", "path": "/api/projects/:id/ai/background/prompt" },
+        { "method": "post", "path": "/api/projects/:id/ai/translate" },
+        { "method": "get", "path": "/api/projects/:id/ai/tasks" },
+        { "method": "get", "path": "/api/projects/:id/ai/model-dialogs" },
+        { "method": "get", "path": "/api/projects/:id/ai/tasks/:taskId" },
+        { "method": "get", "path": "/api/projects/:id/ai/coverage" },
+        { "method": "get", "path": "/api/projects/:id/creation-buffer" },
+        { "method": "post", "path": "/api/projects/:id/ai/story/completeness-check" },
+        { "method": "get", "path": "/api/projects/:id/ai/story/completeness-check/latest" },
+        { "method": "get", "path": "/api/demos" },
+        { "method": "get", "path": "/api/demos/:id" },
+        { "method": "get", "path": "/demo-library/:demoId/:rest{.*}" },
+        { "method": "get", "path": "/demos/:projectId/:buildId/:rest{.*}" },
+        { "method": "get", "path": "/project-assets/:projectId/assets/uploads/:file" },
+        { "method": "get", "path": "/project-assets/:projectId/:rest{.*}" },
+        { "method": "get", "path": "/api/assets-library" }
+      ]
+    }
+  ]
+}

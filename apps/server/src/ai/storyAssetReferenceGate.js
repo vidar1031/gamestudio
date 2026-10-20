@@ -90,7 +90,7 @@ export function evaluateStoryAssetReferenceReview(analysis) {
     return {
       passed: false,
       code: 'review_not_passed',
-      message: `视觉评审未通过${scoreText}，禁止写入主参考。${summary}`
+      message: `视觉评审未通过${scoreText}。${summary} 如需使用，请在编辑器确认人工特批；文件真实性校验仍会执行。`
     }
   }
   return { passed: true, code: '', message: '' }

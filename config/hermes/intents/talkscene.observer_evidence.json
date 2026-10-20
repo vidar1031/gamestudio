@@ -1,18 +1,18 @@
 {
-  "id": "gamestudio.observer_evidence",
+  "id": "talkscene.observer_evidence",
   "version": 1,
   "source": "json",
   "priority": 85,
-  "description": "Quality gate: GameStudio observability answers must mention observer timeline and operation-level evidence.",
+  "description": "Quality gate: TalkScene observability answers must mention observer timeline and operation-level evidence.",
   "match": {
     "anyRegex": [
       "可观测|观测者|observer|黑盒|静默",
-      "GameStudio.*(执行流|执行链|操作|endpoint|证据)",
-      "gamestudio_observer"
+      "TalkScene.*(执行流|执行链|操作|endpoint|证据)",
+      "talkscene_observer"
     ]
   },
   "evaluation": {
-    "requireArtifactKey": "gameStudioObserver",
+    "requireArtifactKey": "talksceneObserver",
     "minScore": 82,
     "scoreBase": 20,
     "perRequiredHit": 14,
@@ -20,7 +20,7 @@
     "perEvidenceHit": 12,
     "perForbiddenHit": -30,
     "mustInclude": [
-      "gamestudio_observer",
+      "talkscene_observer",
       "endpoint"
     ],
     "optional": [
@@ -43,6 +43,6 @@
       "不可观测",
       "只能看最终结果"
     ],
-    "correctionPrompt": "回答 GameStudio 可观测性问题时，必须明确引用 gamestudio_observer timeline，说明 operation、endpoint、phase、耗时、projectId 或错误证据，不能只给最终结果。"
+    "correctionPrompt": "回答 TalkScene 可观测性问题时，必须明确引用 talkscene_observer timeline，说明 operation、endpoint、phase、耗时、projectId 或错误证据，不能只给最终结果。"
   }
 }

@@ -1,9 +1,9 @@
 // AUTO-E03 / S4-03：批量场景生产队列（scene item 队列）。
 //
-// 分层取舍：队列放在 GameStudio Server 的项目内，而不是 control 侧任务编排。理由：
-// - 仓库硬规则要求批量渲染这类长任务经 /api/projects/:id/ai/tasks 暴露进度，该机制在 GameStudio Server；
+// 分层取舍：队列放在 TalkScene Server 的项目内，而不是 control 侧任务编排。理由：
+// - 仓库硬规则要求批量渲染这类长任务经 /api/projects/:id/ai/tasks 暴露进度，该机制在 TalkScene Server；
 // - 项目产物真相源是 storage/projects/<id>/，per-scene checkpoint 含产物 URI，属于项目数据，
-//   随项目目录持久化后，无论 GameStudio 还是 control 重启都能从同一真相源恢复；
+//   随项目目录持久化后，无论 TalkScene 还是 control 重启都能从同一真相源恢复；
 // - control 侧 persistentQueue 是跨服务工作流编排层，scene 批量是单项目内生产动作，
 //   control 通过本队列的 API 提交并观测 /ai/tasks 即可，无需把 per-scene 状态搬离真相源。
 //

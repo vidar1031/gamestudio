@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/game-studio/story-v2.schema.json",
+  "$id": "https://example.local/talkscene/story-v2.schema.json",
   "title": "StoryV1 (schemaVersion 2.x)",
   "type": "object",
   "required": ["startNodeId", "nodes"],

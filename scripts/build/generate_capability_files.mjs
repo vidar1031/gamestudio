@@ -79,15 +79,15 @@ function generateManifest(registry) {
   
   return {
     version: '1.0',
-    projectId: 'gamestudio',
-    kind: 'gamestudio-story-project',
-    displayName: 'GameStudio 交互故事',
-    rootDir: '/Volumes/ovokit2t/aiwork/gamestudio',
+    projectId: 'talkscene',
+    kind: 'talkscene-story-project',
+    displayName: 'TalkScene 交互故事',
+    rootDir: '/Volumes/ovokit2t/aiwork/talkscene',
     capabilities,
     events: events.map((e) => e.eventId),
     workflows: ['story_production', 'story_review', 'story_export'],
     boundaries: {
-      allowedRoots: ['/Volumes/ovokit2t/aiwork/gamestudio/storage/projects'],
+      allowedRoots: ['/Volumes/ovokit2t/aiwork/talkscene/storage/projects'],
       disallowOutsideWorkspace: true
     },
     generatedAt: new Date().toISOString(),
@@ -105,8 +105,8 @@ function generateCapabilities(registry) {
     generatedAt: new Date().toISOString(),
     generatedFrom: 'registry.v1.json',
     provider: registry.provider || {
-      id: 'gamestudio',
-      name: 'GameStudio 互动故事生产能力层',
+      id: 'talkscene',
+      name: 'TalkScene 互动故事生产能力层',
       baseUrl: 'http://127.0.0.1:1999'
     },
     capabilities

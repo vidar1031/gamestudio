@@ -72,5 +72,5 @@ export function logStage(fields) {
     if (v == null || v === '') continue
     parts.push(`${key}=${String(v)}`)
   }
-  console.log(`[gamestudio] ${parts.join(' ')}`)
+  console.log(`[talkscene] ${parts.join(' ')}`)
 }

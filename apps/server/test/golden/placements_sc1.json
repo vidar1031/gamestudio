@@ -1,0 +1,26 @@
+[
+  {
+    "isCharacter": true,
+    "propAssetId": "",
+    "transform": {
+      "x": 0.5,
+      "y": 1,
+      "scale": 0.62,
+      "rotationDeg": 0
+    },
+    "zIndex": 1,
+    "visible": true
+  },
+  {
+    "isCharacter": false,
+    "propAssetId": "plate",
+    "transform": {
+      "x": 0.66,
+      "y": 0.88,
+      "scale": 0.2,
+      "rotationDeg": 0
+    },
+    "zIndex": 2,
+    "visible": true
+  }
+]

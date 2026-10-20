@@ -105,6 +105,6 @@ export async function generatePoseVariantForGroup({ root, libDir, poseDef, ident
     controlStrength: 0.9,
     controlEndPercent: 0.9,
     timeoutMs,
-    prefix: prefix || 'gamestudio_pose/auto_variant'
+    prefix: prefix || 'talkscene_pose/auto_variant'
   })
 }

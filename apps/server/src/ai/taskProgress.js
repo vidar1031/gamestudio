@@ -1,6 +1,6 @@
 // 轻量 AI 任务进度注册：让编辑器/控制面能感知长任务（锁定测试、场景渲染等）的真实阶段。
 // 内存 Map 为主，按项目落盘 state/task-progress/<projectId>.json 作为重启后的兜底快照。
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, readFile, readdir, writeFile } from 'fs/promises'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
@@ -65,6 +65,31 @@ export function listAiTasks(projectId, { includeDone = true } = {}) {
     .filter((t) => t.projectId === pid)
     .filter((t) => includeDone || !t.done)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+}
+
+// 2026-10-20 全局任务台账：跨项目聚合（用户指令——talkscene 独立运行时任何任务都要有界面进度提示，不经守护台）。
+export function listAllAiTasks({ includeDone = true } = {}) {
+  gcTasks()
+  return Array.from(tasks.values())
+    .filter((t) => includeDone || !t.done)
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+}
+
+export async function loadAllAiTasksFromDisk() {
+  try {
+    const files = await readdir(STATE_DIR).catch(() => [])
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue
+      try {
+        const parsed = JSON.parse(await readFile(path.join(STATE_DIR, f), 'utf-8'))
+        for (const t of Array.isArray(parsed?.tasks) ? parsed.tasks : []) {
+          if (t && t.taskId && !tasks.has(t.taskId)) {
+            tasks.set(t.taskId, t.done ? t : { ...t, done: true, error: t.error || 'interrupted_by_restart', stage: 'interrupted' })
+          }
+        }
+      } catch (_) { /* 单个快照损坏可忽略 */ }
+    }
+  } catch (_) { /* 无目录可忽略 */ }
 }
 
 function gcTasks() {

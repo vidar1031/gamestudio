@@ -214,7 +214,7 @@ async function ollamaChat({ messages, model, temperature, timeoutMs, proxyUrl, a
       for (const m of payload.messages || []) chars += String(m && m.content != null ? m.content : '').length
     } catch (_) {}
     console.log(
-      `[gamestudio] ollama.llm:start api=${url} model=${cfg.model} msgs=${msgCount} chars=${chars} proxy=${useProxyUrl ? 'on' : 'off'} timeoutMs=${useTimeoutMs}`
+      `[talkscene] ollama.llm:start api=${url} model=${cfg.model} msgs=${msgCount} chars=${chars} proxy=${useProxyUrl ? 'on' : 'off'} timeoutMs=${useTimeoutMs}`
     )
   } catch (_) {}
 

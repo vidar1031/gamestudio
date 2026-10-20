@@ -1,10 +1,10 @@
 ---
-name: gamestudio
-description: "Diagnose GameStudio story tool components, verify component status, generate operational reports. Covers Control Server, ComfyUI backend, storage layer, story workflows, and export verification."
+name: talkscene
+description: "Diagnose TalkScene story tool components, verify component status, generate operational reports. Covers Control Server, ComfyUI backend, storage layer, story workflows, and export verification."
 version: 1.0.1
 created: 2026-05-14
 tags:
-  - gamestudio
+  - talkscene
   - story-tool
   - diagnostic
   - status-check
@@ -13,22 +13,22 @@ tags:
   - story-workflow
 ---
 
-# GameStudio — Story Tool Diagnostic and Status Verification
+# TalkScene — Story Tool Diagnostic and Status Verification
 
-Class-level skill for diagnosing GameStudio story tool components, verifying component status, and generating operational reports.
+Class-level skill for diagnosing TalkScene story tool components, verifying component status, and generating operational reports.
 
 ## Triggers
 
-- User asks about GameStudio story tool status, boot, or whether components are running
-- User asks "游戏故事工具是否启动" or similar Chinese queries about GameStudio
-- User references "gamestudio" in context of story creation, asset generation, or workflow
-- Automated quality review flags gamestudio bootstrap/readiness checks
+- User asks about TalkScene story tool status, boot, or whether components are running
+- User asks "游戏故事工具是否启动" or similar Chinese queries about TalkScene
+- User references "talkscene" in context of story creation, asset generation, or workflow
+- Automated quality review flags talkscene bootstrap/readiness checks
 
 ## Component Model
 
-GameStudio consists of these interconnected components:
+TalkScene consists of these interconnected components:
 
-1. **GameStudio Server** — 业务后端 API（默认端口 1999，健康检查 `http://127.0.0.1:1999/api/health`），项目读写/编译/校验/资产/导出
+1. **TalkScene Server** — 业务后端 API（默认端口 1999，健康检查 `http://127.0.0.1:1999/api/health`），项目读写/编译/校验/资产/导出
 2. **Editor** — Vite + React SPA 编辑器（默认端口 8868），无 /health 端点
 3. **Control Server** — 控制平面后端（默认端口 2099，`http://127.0.0.1:2099/api/health`），任务编排/审核/治理
 4. **Control Console（守护台）** — 控制平面 UI（默认端口 8870）
@@ -40,12 +40,12 @@ GameStudio consists of these interconnected components:
 
 ## Diagnostic Procedure
 
-When verifying GameStudio status, follow this sequence:
+When verifying TalkScene status, follow this sequence:
 
-### Step 1: GameStudio Server + Editor Check
+### Step 1: TalkScene Server + Editor Check
 
 ```bash
-# GameStudio Server 健康检查（权威）
+# TalkScene Server 健康检查（权威）
 curl -s -o /dev/null -w "HTTP_CODE:%{http_code}" http://127.0.0.1:1999/api/health
 
 # Editor（Vite SPA，无 /health）可访问性
@@ -126,13 +126,13 @@ ls storage/projects/<project-id>/builds/latest/dist/index.html 2>/dev/null
 When reporting status, always cover:
 
 ```
-## GameStudio 故事工具状态报告 (YYYY-MM-DD HH:MM)
+## TalkScene 故事工具状态报告 (YYYY-MM-DD HH:MM)
 
 ### 总评：[完全运行中 / 部分运行中 / 关键组件缺失]
 
 | 组件 | 状态 | 详情 |
 |------|------|------|
-| GameStudio Server (port 1999) | 运行中/未运行 | [/api/health, HTTP status] |
+| TalkScene Server (port 1999) | 运行中/未运行 | [/api/health, HTTP status] |
 | Editor (port 8868) | 可访问/不可用 | [SPA status] |
 | Control Server (port 2099) | 运行中/未运行 | [/api/health] |
 | ComfyUI (port 8188) | 运行中/未运行 | [port binding, ping result] |
@@ -176,5 +176,5 @@ When reporting status, always cover:
 
 ## References
 
-- See `references/gamestudio-diagnostic-checklist.md` for a condensed one-page diagnostic checklist
-- See `references/gamestudio-project-structure.md` for the expected project directory structure
+- See `references/talkscene-diagnostic-checklist.md` for a condensed one-page diagnostic checklist
+- See `references/talkscene-project-structure.md` for the expected project directory structure

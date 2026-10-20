@@ -1,18 +1,18 @@
 ---
-name: gamestudio-workspace
-description: 'Use when HermesManager handles GameStudio workspace chat, submission preview, or observable execution in the control + hermes workflow. Keywords: control, Hermes, manager, reasoning, context pool, observable execution.'
+name: talkscene-workspace
+description: 'Use when HermesManager handles TalkScene workspace chat, submission preview, or observable execution in the control + hermes workflow. Keywords: control, Hermes, manager, reasoning, context pool, observable execution.'
 user-invocable: false
 ---
 
-# GameStudio Workspace Skill
+# TalkScene Workspace Skill
 
-当 HermesManager 在 GameStudio 工作区内做普通问答、提交前预览或可观测执行时使用本 skill。
+当 HermesManager 在 TalkScene 工作区内做普通问答、提交前预览或可观测执行时使用本 skill。
 
 ## 作用边界
 
 这个 skill 只保留两类信息：
 
-1. GameStudio `control + hermes` 提交链路里的专属执行约束。
+1. TalkScene `control + hermes` 提交链路里的专属执行约束。
 2. 为减少全仓扫描而提供的最小路由提示。
 
 项目事实、目录真相源、长短期状态和稳定规则，以 `ai/AGENTS.md`、`ai/MEMORY.md` 与 `ai/memory/*.md` 为准，不在这里重复展开。
@@ -71,14 +71,14 @@ user-invocable: false
 - 业务后端|后端目录|server目录|backend directory|apps/server => locate_project, generate_default_answer
 - control|Hermes|管理器|reasoning|对话|聊天|后端文件|主要后端|backend => locate_project, inspect_control_backend_surfaces, generate_default_answer
 - 图片生成|出图|image|background|comfyui|服务端入口 => locate_project, inspect_server_image_entrypoints, generate_default_answer
-- 启动 GameStudio|打开 Editor|settings|本地生产配置|自检|diagnose => gamestudio_ensure_running, gamestudio_read_settings, gamestudio_self_check, generate_default_answer
-- 配置本地 OMLX|配置 ComfyUI|图片 provider 预检 => gamestudio_read_settings, gamestudio_configure_local_production, gamestudio_self_check, generate_default_answer
+- 启动 TalkScene|打开 Editor|settings|本地生产配置|自检|diagnose => talkscene_ensure_running, talkscene_read_settings, talkscene_self_check, generate_default_answer
+- 配置本地 OMLX|配置 ComfyUI|图片 provider 预检 => talkscene_read_settings, talkscene_configure_local_production, talkscene_self_check, generate_default_answer
 - 创建互动故事|story workflow|故事项目生产|文本故事闭环 => story_create_project, story_inspect_project, generate_default_answer
 - 写入故事配置|生成 scripts|编译蓝图|编译合成层|校验项目|导出 H5 => story_configure_project, story_generate_scripts_candidate, story_write_scripts, story_compile_blueprint, story_compile_compose, story_validate_project, story_export_project, generate_default_answer
 - 资产计划|角色资产|背景图资产|图片资产闭环 => story_preflight_image_provider, story_create_asset_plan, story_generate_asset_candidate, story_validate_project, generate_default_answer
 - 记忆状态|任务队列|决策记录|上下文池|清理记录 => read_recent_context, generate_default_answer
 - 生产测试|L1|L4|L5|control_production_test => run_workspace_script, generate_default_answer
-- 可观测执行|黑盒|gamestudio_observer|endpoint 证据 => story_inspect_project, generate_default_answer
+- 可观测执行|黑盒|talkscene_observer|endpoint 证据 => story_inspect_project, generate_default_answer
 
 ## 迭代原则
 

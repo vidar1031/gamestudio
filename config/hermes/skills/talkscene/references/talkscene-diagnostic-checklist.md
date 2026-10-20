@@ -1,10 +1,10 @@
-# GameStudio 快速诊断清单
+# TalkScene 快速诊断清单
 
-用此清单在 60 秒内完成 GameStudio 全组件状态检查。按顺序执行，任一组件状态异常即记录为问题。
+用此清单在 60 秒内完成 TalkScene 全组件状态检查。按顺序执行，任一组件状态异常即记录为问题。
 
 ## 60 秒诊断流程
 
-1. **GameStudio Server（端口 1999，权威健康检查）**
+1. **TalkScene Server（端口 1999，权威健康检查）**
    ```
    curl -s -o /dev/null -w "HTTP:%{http_code}" http://127.0.0.1:1999/api/health
    # 期望: 200

@@ -3,12 +3,12 @@ set -e
 
 echo "=== 构建 schema 包 ==="
 cd .
-npm --workspace @game-studio/schema run build
+npm --workspace @talkscene/schema run build
 
 echo "=== 构建 builder 包 ==="
-npm --workspace @game-studio/builder run build
+npm --workspace @talkscene/builder run build
 
 echo "=== 构建 runtime-pixi 包 ==="
-npm --workspace @game-studio/runtime-pixi run build
+npm --workspace @talkscene/runtime-pixi run build
 
 echo "=== 所有包构建完成 ==="

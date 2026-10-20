@@ -1,4 +1,4 @@
-# @game-studio/builder（P0）
+# @talkscene/builder（P0）
 
 P0 仅提供“插件接口 + 产物协议”的约定，实际构建由 server 调用插件实现。
 

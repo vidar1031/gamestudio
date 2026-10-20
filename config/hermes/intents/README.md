@@ -26,6 +26,6 @@ and this folder replace that pattern with:
 3. **Proposals** — agent-suggested rules under `_inbox/`, gated by
    human (or higher-trust agent) approval before they go live.
 
-This gives the GameStudio agent a path to refine its own reasoning
+This gives the TalkScene agent a path to refine its own reasoning
 quality gates without rewriting Node code or unblocking unsafe code
 paths.

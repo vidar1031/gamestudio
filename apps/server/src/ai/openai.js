@@ -814,7 +814,7 @@ function explainOpenAICompatibleDiagnoseFailure(cfg, apiKey, err) {
   const message = err && err.message ? String(err.message) : String(err || '')
   const status = err && typeof err.status === 'number' ? Number(err.status) : null
   if (provider === 'localoxml' && !apiKey && status === 401) {
-    return 'API key required; admin/chat may work via browser session, but Game Studio needs a Bearer API key'
+    return 'API key required; admin/chat may work via browser session, but TalkScene needs a Bearer API key'
   }
   if (provider === 'localoxml' && status === 401) {
     return 'unauthorized_api_key'

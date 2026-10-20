@@ -2,7 +2,7 @@ import {
   isStoryOutputType,
   StoryOutputContractError,
   validateStoryOutput,
-} from '@game-studio/schema'
+} from '@talkscene/schema'
 
 const LOG_PREFIX = '[StoryInputGate]'
 

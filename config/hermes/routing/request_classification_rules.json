@@ -17,14 +17,14 @@
       "requiresHumanReview": false,
       "deterministicPlan": false,
       "route": "answer_only",
-      "note": "问句形态优先于故事工作流强制（2026-08-19 用户明确指令）。实际执行为代码级前置覆盖（apps/control-server/src/server/reasoning/requestClassificationRules.js，在规则表循环之前判定）：咨询问句形态命中 story_workflow_execute / gamestudio_bootstrap_execute 关键词时改判 answer_only（滚动压缩探索路径），不触发生产副作用；祈使句维持 R007 强制工作流不变。取舍记录见 ai/memory/DECISIONS.md。"
+      "note": "问句形态优先于故事工作流强制（2026-08-19 用户明确指令）。实际执行为代码级前置覆盖（apps/control-server/src/server/reasoning/requestClassificationRules.js，在规则表循环之前判定）：咨询问句形态命中 story_workflow_execute / talkscene_bootstrap_execute 关键词时改判 answer_only（滚动压缩探索路径），不触发生产副作用；祈使句维持 R007 强制工作流不变。取舍记录见 ai/memory/DECISIONS.md。"
     },
     {
-      "ruleId": "R012_gamestudio_bootstrap_execute",
-      "requestType": "gamestudio_bootstrap_execute",
+      "ruleId": "R012_talkscene_bootstrap_execute",
+      "requestType": "talkscene_bootstrap_execute",
       "priority": 130,
-      "detector": "gamestudio_bootstrap_execute",
-      "reason": "gamestudio_startup_settings_diagnose_request",
+      "detector": "talkscene_bootstrap_execute",
+      "reason": "talkscene_startup_settings_diagnose_request",
       "needsContext": false,
       "requiresHumanReview": false,
       "deterministicPlan": true,

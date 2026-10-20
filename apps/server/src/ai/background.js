@@ -78,7 +78,7 @@ function getComfyOutputDateFolder(date = new Date()) {
 
 function buildComfySavePrefix(name, date = new Date()) {
   const safeName = String(name || '').trim().replace(/[^a-z0-9_.-]+/gi, '_') || 'image'
-  return `gamestudio/${getComfyOutputDateFolder(date)}/${safeName}`
+  return `talkscene/${getComfyOutputDateFolder(date)}/${safeName}`
 }
 
 function explainRemoteError(v) {
@@ -1490,7 +1490,7 @@ export async function generateComfyuiCutoutFromReference({
   const workflow = {
     '1': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(loadImageSpec, { image: uploaded.imageValue, upload: 'image' }) },
     '2': { class_type: 'RMBG', inputs: buildInputsForComfyNode(rmbgSpec, rmbgInputs) },
-    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || `gamestudio_story_lock/${useAlpha ? 'cutout_alpha' : 'white_bg'}`) }) }
+    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || `talkscene_story_lock/${useAlpha ? 'cutout_alpha' : 'white_bg'}`) }) }
   }
 
   const result = await runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
@@ -1623,7 +1623,7 @@ export async function generateComfyuiLineartFromReference({
     '1': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(loadImageSpec, { image: uploaded.imageValue, upload: 'image' }) },
     '2': { class_type: 'ImageScale', inputs: buildInputsForComfyNode(imageScaleSpec, { image: ['1', 0], upscale_method: 'lanczos', width: w, height: h, crop: 'disabled' }) },
     '3': { class_type: chosenPreprocessor, inputs: buildInputsForComfyNode(preprocessorSpec, { image: ['2', 0], resolution: Math.max(w, h), coarse: 'disable' }) },
-    '4': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['3', 0], filename_prefix: String(hintPrefix || 'gamestudio_story_lock/hint') }) }
+    '4': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['3', 0], filename_prefix: String(hintPrefix || 'talkscene_story_lock/hint') }) }
   }
   if (typeof onStage === 'function') onStage('hint')
   const hint = await runComfyuiPromptWorkflow({ workflow: hintWorkflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
@@ -1641,7 +1641,7 @@ export async function generateComfyuiLineartFromReference({
     '10': { class_type: 'ControlNetApplyAdvanced', inputs: buildInputsForComfyNode(controlApplySpec, { positive: ['7', 0], negative: ['8', 0], control_net: ['6', 0], image: ['4', 0], strength: 1.0, start_percent: 0.0, end_percent: 1.0, vae: ['1', 2] }) },
     '11': { class_type: 'KSampler', inputs: buildInputsForComfyNode(ksamplerSpec, { model: ['1', 0], positive: ['10', 0], negative: ['10', 1], latent_image: ['9', 0], seed: redrawSeed, steps: redrawSteps, cfg: redrawCfg, sampler_name: samplerName, scheduler, denoise: redrawDenoise }) },
     '12': { class_type: 'VAEDecode', inputs: buildInputsForComfyNode(vaeDecodeSpec, { samples: ['11', 0], vae: ['1', 2] }) },
-    '13': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['12', 0], filename_prefix: String(finalPrefix || 'gamestudio_story_lock/final') }) }
+    '13': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['12', 0], filename_prefix: String(finalPrefix || 'talkscene_story_lock/final') }) }
   }
   if (typeof onStage === 'function') onStage('final')
   const final = await runComfyuiPromptWorkflow({ workflow: finalWorkflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
@@ -1710,7 +1710,7 @@ export async function extractComfyuiPoseSkeleton({
   const workflow = {
     '1': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(loadImageSpec, { image: uploaded.imageValue, upload: 'image' }) },
     '2': { class_type: dwClass, inputs: buildInputsForComfyNode(dwSpec, { image: ['1', 0] }) },
-    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || 'gamestudio_pose/skeleton') }) }
+    '3': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(saveImageSpec, { images: ['2', 0], filename_prefix: String(prefix || 'talkscene_pose/skeleton') }) }
   }
   const result = await runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
   return { bytes: result.bytes, ext: result.ext, meta: { provider: 'comfyui', postprocess: dwClass, url: result.meta && result.meta.url ? result.meta.url : '' } }
@@ -1870,7 +1870,7 @@ export async function generateComfyuiPoseVariantSprite({
       })
     },
     '21': { class_type: 'VAEDecode', inputs: buildInputsForComfyNode(specs.vaeDecode, { samples: ['20', 0], vae: ['1', 2] }) },
-    '22': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(specs.saveImage, { images: ['21', 0], filename_prefix: String(prefix || 'gamestudio_pose/variant') }) }
+    '22': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(specs.saveImage, { images: ['21', 0], filename_prefix: String(prefix || 'talkscene_pose/variant') }) }
   }
 
   stage('comfy_generate')

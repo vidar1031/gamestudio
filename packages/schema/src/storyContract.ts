@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-// ===== Base types for Control -> GameStudio story outputs =====
+// ===== Base types for Control -> TalkScene story outputs =====
 
 export const StoryOutputType = z.enum([
   'story.project.create',
@@ -144,6 +144,7 @@ export const StoryAssetsReferenceLockPayloadSchema = z.object({
   projectId: z.string().min(1),
   assetId: z.string().min(1),
   assetPath: z.string().min(1),
+  manualOverride: z.boolean().optional(),
 })
 
 export const StorySceneRenderPayloadSchema = z.object({
@@ -191,7 +192,7 @@ export type StoryOutputPayloadMap = {
   [K in keyof typeof StoryOutputPayloadSchemas]: z.infer<typeof StoryOutputPayloadSchemas[K]>
 }
 
-// ===== Envelope schema for any Control -> GameStudio story message =====
+// ===== Envelope schema for any Control -> TalkScene story message =====
 
 export const StoryOutputEnvelopeSchema = z.object({
   type: StoryOutputType,

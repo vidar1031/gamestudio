@@ -8,26 +8,50 @@
  * 失败语义（显式，不静默）：
  * - control 不可达 -> resource_scheduler_unreachable（control 离线时无法保证内存安全，阻断调用）
  * - 交换失败/客户端取消 -> 透传调度器错误
- * 关闭开关：STUDIO_RESOURCE_LEASE_ENABLED=false（仅限无 control 的独立调试场景）。
+ * 关闭开关：设置页「守护台关联」运行时关闭（storage/_config/studio_settings.json 的 control.leaseEnabled）；
+ * env STUDIO_RESOURCE_LEASE_ENABLED 显式设定时优先（仅限无 control 的独立调试场景）。
  */
 
 const DEFAULT_CONTROL_BASE_URL = 'http://127.0.0.1:2099'
 const DEFAULT_LEASE_TIMEOUT_MS = 45 * 60 * 1000
 
-export function isResourceLeaseEnabled() {
-  const raw = process.env.STUDIO_RESOURCE_LEASE_ENABLED
-  if (raw === undefined || raw === null || String(raw).trim() === '') return true
-  return !/^(false|0|off|no)$/i.test(String(raw).trim())
+// 2026-10-20 守护台关联：设置值经装配处注册同步读取（readControlLinkSync），未注册时回退 env/默认。
+let controlLinkResolver = null
+
+export function registerControlLinkResolver(fn) {
+  controlLinkResolver = typeof fn === 'function' ? fn : null
 }
 
-function controlBaseUrl() {
-  return String(process.env.STUDIO_CONTROL_BASE_URL || DEFAULT_CONTROL_BASE_URL).replace(/\/+$/, '')
+function settingsControlLink() {
+  try {
+    const v = controlLinkResolver ? controlLinkResolver() : null
+    return v && typeof v === 'object' ? v : null
+  } catch (_) {
+    return null
+  }
+}
+
+export function isResourceLeaseEnabled() {
+  const raw = process.env.STUDIO_RESOURCE_LEASE_ENABLED
+  // env 显式设定时优先（独立调试用语保留）
+  if (raw !== undefined && raw !== null && String(raw).trim() !== '') return !/^(false|0|off|no)$/i.test(String(raw).trim())
+  const fromSettings = settingsControlLink()
+  if (fromSettings && typeof fromSettings.leaseEnabled === 'boolean') return fromSettings.leaseEnabled
+  return true
+}
+
+export function controlBaseUrl() {
+  const envUrl = String(process.env.STUDIO_CONTROL_BASE_URL || '').trim()
+  if (envUrl) return envUrl.replace(/\/+$/, '')
+  const fromSettings = settingsControlLink()
+  if (fromSettings && fromSettings.baseUrl) return String(fromSettings.baseUrl).replace(/\/+$/, '')
+  return DEFAULT_CONTROL_BASE_URL
 }
 
 // 接入守则 v1：携带客户端凭证（x-client-id + Bearer key）。
 // key 经 .env 的 STUDIO_CONTROL_CLIENT_KEY 注入；未配置时按守护台本机操作员通道（console-local）兜底。
 function leaseHeaders() {
-  const clientId = String(process.env.STUDIO_CONTROL_CLIENT_ID || 'gamestudio').trim()
+  const clientId = String(process.env.STUDIO_CONTROL_CLIENT_ID || 'talkscene').trim()
   const key = String(process.env.STUDIO_CONTROL_CLIENT_KEY || '').trim()
   const headers = { 'Content-Type': 'application/json', Accept: 'application/json' }
   if (key) {

@@ -1,9 +1,9 @@
 {
   "version": "1.0",
-  "projectId": "gamestudio",
-  "kind": "gamestudio-story-project",
-  "displayName": "GameStudio 交互故事",
-  "rootDir": "/Volumes/ovokit2t/aiwork/gamestudio",
+  "projectId": "talkscene",
+  "kind": "talkscene-story-project",
+  "displayName": "TalkScene 交互故事",
+  "rootDir": "/Volumes/ovokit2t/aiwork/talkscene",
   "capabilities": [
     {
       "id": "project.list",
@@ -483,7 +483,7 @@
       "id": "story.scripts.generate",
       "type": "write",
       "label": "生成故事脚本候选",
-      "description": "由 GameStudio 内部机制（prompt 模板 + 全局规则 + 公式参数 + OMLX）生成脚本候选并写回 scripts.json。brief 只允许故事内容，不允许任务指令。",
+      "description": "由 TalkScene 内部机制（prompt 模板 + 全局规则 + 公式参数 + OMLX）生成脚本候选并写回 scripts.json。brief 只允许故事内容，不允许任务指令。",
       "requiresReview": true,
       "reviewPolicy": "manual_before_write",
       "resourceKind": "llm",
@@ -1359,7 +1359,7 @@
       "id": "studio.runtime.status",
       "type": "read",
       "label": "运行状态检查",
-      "description": "返回 GameStudio server 是否运行中、editor 是否可达及整体运行状态。",
+      "description": "返回 TalkScene server 是否运行中、editor 是否可达及整体运行状态。",
       "requiresReview": false,
       "reviewPolicy": "auto_allowed",
       "resourceKind": "none",
@@ -1403,7 +1403,7 @@
       "id": "studio.selfcheck",
       "type": "read",
       "label": "自检配置项",
-      "description": "返回 GameStudio 各项配置状态清单（server/editor/存储/设置/脚本 provider/图片 provider），不修改任何状态。",
+      "description": "返回 TalkScene 各项配置状态清单（server/editor/存储/设置/脚本 provider/图片 provider），不修改任何状态。",
       "requiresReview": false,
       "reviewPolicy": "auto_allowed",
       "resourceKind": "none",
@@ -2196,7 +2196,7 @@
   ],
   "boundaries": {
     "allowedRoots": [
-      "/Volumes/ovokit2t/aiwork/gamestudio/storage/projects"
+      "/Volumes/ovokit2t/aiwork/talkscene/storage/projects"
     ],
     "disallowOutsideWorkspace": true
   },

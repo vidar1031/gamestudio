@@ -390,6 +390,119 @@ export async function reviewStoryboardPromptWithAi({ input, provider, model, api
   return null
 }
 
+function storyboardGlobalPromptGenerationSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      globalPromptZh: { type: 'string', minLength: 1, maxLength: 1800 },
+      globalNegativePromptZh: { type: 'string', minLength: 1, maxLength: 800 }
+    },
+    required: ['globalPromptZh', 'globalNegativePromptZh']
+  }
+}
+
+function validateStoryboardGlobalPromptGeneration(obj) {
+  return Boolean(obj && typeof obj === 'object' && asStr(obj.globalPromptZh).trim() && asStr(obj.globalNegativePromptZh).trim())
+}
+
+function buildGlobalPromptGenerationInstructions() {
+  return (
+    '你是连续故事出图的全局提示词编写器。根据 Story Bible、项目标题和当前草稿，生成可直接使用的中文全局正向与负向提示词。\n' +
+    '正向必须覆盖：统一美术风格；时代、地点与环境元素；光线与色彩；镜头语言与构图；角色身份、外观、年龄感、服装、配色的一致性；关键道具造型、材质、尺寸的一致性。只写跨场景共性，不写某个场景的具体动作。\n' +
+    '负向必须覆盖：文字、水印、logo、对话框、二维码；模糊、低质量、畸形；变脸、换装、配色漂移、道具替换；多余人物、重复角色、多视图；与故事时代或设定冲突的元素；与目标画风冲突的写实或 3D 跑偏。\n' +
+    '不得编造 Story Bible 中没有的角色、地点、服装或道具细节；当前草稿中的有效设定应保留并整合。\n' +
+    '只输出 JSON，不要 markdown，不要解释。格式：{"globalPromptZh":"中文正向提示词","globalNegativePromptZh":"中文负向提示词"}'
+  )
+}
+
+function buildGlobalPromptGenerationInput(input) {
+  const lines = [
+    `projectTitle: ${asStr(input && input.projectTitle).trim() || '(empty)'}`,
+    `style: ${asStr(input && input.style).trim() || '(empty)'}`,
+    `aspectRatio: ${asStr(input && input.aspectRatio).trim() || '(empty)'}`,
+    `currentGlobalPromptZh: ${asStr(input && input.globalPromptZh).trim() || '(empty)'}`,
+    `currentGlobalPromptEn: ${asStr(input && input.globalPrompt).trim() || '(empty)'}`,
+    `currentGlobalNegativePromptZh: ${asStr(input && input.globalNegativePromptZh).trim() || '(empty)'}`,
+    `currentGlobalNegativePromptEn: ${asStr(input && input.globalNegativePrompt).trim() || '(empty)'}`
+  ]
+  const storyBibleJson = asStr(input && input.storyBibleJson).trim()
+  if (storyBibleJson) lines.push(`storyBibleJson: ${storyBibleJson.slice(0, 4000)}`)
+  return lines.join('\n')
+}
+
+function parseGlobalPromptGenerationText(raw) {
+  const text = asStr(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  const candidates = [text, start >= 0 && end > start ? text.slice(start, end + 1) : '']
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    try {
+      const parsed = JSON.parse(candidate)
+      if (validateStoryboardGlobalPromptGeneration(parsed)) {
+        return { globalPromptZh: asStr(parsed.globalPromptZh).trim(), globalNegativePromptZh: asStr(parsed.globalNegativePromptZh).trim() }
+      }
+    } catch (_) {}
+  }
+  throw new Error('invalid_storyboard_global_prompt_output')
+}
+
+async function generateGlobalPromptViaOpenAICompatible({ input, provider, model, apiUrl, proxyUrl }) {
+  const body = {
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'storyboard_global_prompt_generation',
+        strict: true,
+        schema: storyboardGlobalPromptGenerationSchema()
+      }
+    },
+    instructions: buildGlobalPromptGenerationInstructions(),
+    input: buildGlobalPromptGenerationInput(input),
+    max_output_tokens: 2048,
+    ...(model ? { model: asStr(model).trim() } : {})
+  }
+  const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl, proxyUrl, timeoutMs: 60_000, model })
+  return { result: parseGlobalPromptGenerationText(extractResponseOutputText(json)), meta }
+}
+
+async function generateGlobalPromptViaOllama({ input, model, apiUrl, proxyUrl }) {
+  const { parsed, meta } = await generateStrictJsonViaOllamaChat({
+    instructions: buildGlobalPromptGenerationInstructions(),
+    input: buildGlobalPromptGenerationInput(input),
+    model,
+    apiUrl,
+    proxyUrl,
+    timeoutMs: 60_000,
+    maxRetries: 2,
+    validate: validateStoryboardGlobalPromptGeneration
+  })
+  return { result: { globalPromptZh: asStr(parsed.globalPromptZh).trim(), globalNegativePromptZh: asStr(parsed.globalNegativePromptZh).trim() }, meta }
+}
+
+async function generateGlobalPromptViaDoubao({ input, model, apiUrl, proxyUrl }) {
+  const { parsed, meta } = await generateStrictJsonViaDoubaoChat({
+    instructions: buildGlobalPromptGenerationInstructions(),
+    input: buildGlobalPromptGenerationInput(input),
+    model,
+    apiUrl,
+    proxyUrl,
+    timeoutMs: 60_000,
+    maxRetries: 2,
+    validate: validateStoryboardGlobalPromptGeneration
+  })
+  return { result: { globalPromptZh: asStr(parsed.globalPromptZh).trim(), globalNegativePromptZh: asStr(parsed.globalNegativePromptZh).trim() }, meta }
+}
+
+export async function generateStoryboardGlobalPromptWithAi({ input, provider, model, apiUrl, proxyUrl }) {
+  const p = asStr(provider).trim().toLowerCase()
+  if (p === 'openai' || p === 'localoxml') return generateGlobalPromptViaOpenAICompatible({ input, provider: p, model, apiUrl, proxyUrl })
+  if (p === 'ollama') return generateGlobalPromptViaOllama({ input, model, apiUrl, proxyUrl })
+  if (p === 'doubao') return generateGlobalPromptViaDoubao({ input, model, apiUrl, proxyUrl })
+  return null
+}
+
 export function normalizeStoryboardPromptReviewInput(body) {
   return {
     scope: asStr(body && body.scope).trim() === 'global' ? 'global' : 'scene',

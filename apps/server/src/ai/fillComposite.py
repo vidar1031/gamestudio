@@ -40,7 +40,7 @@ def water_layer(ref, top_y, in_l, in_r, in_b, color, waterline_color):
     return layer
 
 
-def pebbles_layer(ref, pebble_img, spots, brightness, alpha, blue_shift):
+def pebbles_layer(ref, pebble_img, spots, brightness, alpha, blue_shift, scale=1.0):
     W, H = ref.size
     peb = pebble_img.convert('RGBA')
     peb = ImageEnhance.Brightness(peb).enhance(brightness)
@@ -51,6 +51,7 @@ def pebbles_layer(ref, pebble_img, spots, brightness, alpha, blue_shift):
     peb = Image.merge('RGBA', (r, g, b, a))
     layer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
     for cx, cy, wpx in spots:
+        wpx = wpx * scale
         hh = int(peb.height * wpx / peb.width)
         layer.alpha_composite(peb.resize((int(wpx), hh), Image.LANCZOS), (int(cx - wpx / 2), int(cy - hh / 2)))
     mask = ref.getchannel('A').point(lambda v: 255 if v > 30 else 0)
@@ -58,8 +59,9 @@ def pebbles_layer(ref, pebble_img, spots, brightness, alpha, blue_shift):
     return layer
 
 
-def auto_pebble_spots(count, in_l, in_r, in_b):
-    """瓶底自动堆叠：底排 3 + 中排 2 + 顶 1（按 count 截断），间距随内腔宽度"""
+def auto_pebble_spots(count, in_l, in_r, in_b, start=0):
+    """瓶底/盘内自动堆叠：底排 3 + 中排 2 + 顶 1（按 start+count 切片），间距随内腔宽度。
+    start 供多叠加层接续占位——各 overlay 不再从同一位置重启，避免内容物互相叠穿。"""
     cx = (in_l + in_r) // 2
     iw = in_r - in_l
     w0 = iw * 0.30
@@ -68,12 +70,8 @@ def auto_pebble_spots(count, in_l, in_r, in_b):
         [(cx - iw * 0.10, in_b - 100, w0 * 0.80), (cx + iw * 0.14, in_b - 94, w0 * 0.74)],
         [(cx + iw * 0.02, in_b - 152, w0 * 0.66)],
     ]
-    spots = []
-    for row in rows:
-        for s in row:
-            if len(spots) < count:
-                spots.append(s)
-    return spots
+    flat = [s for row in rows for s in row]
+    return flat[start:start + count]
 
 
 def main():
@@ -90,15 +88,18 @@ def main():
 
     out = ref.copy()
     overlays = args.get('overlays') or []
+    slot = 0
     for ov in overlays:
         pimg = Image.open(ov['imagePath'])
         count = int(ov.get('count', 3))
-        spots = ov.get('spots') or auto_pebble_spots(count, in_l, in_r, in_b)
+        spots = ov.get('spots') or auto_pebble_spots(count, in_l, in_r, in_b, start=slot)
+        slot += count
         out = Image.alpha_composite(out, pebbles_layer(
             out, pimg, spots,
             float(ov.get('brightness', 0.58)),
             float(ov.get('alpha', 0.92)),
-            float(ov.get('blueShift', 0.08))
+            float(ov.get('blueShift', 0.08)),
+            float(ov.get('scale', 1.0))
         ))
 
     level = float(args.get('waterLevel', 0))

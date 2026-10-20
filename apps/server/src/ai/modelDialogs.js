@@ -1,4 +1,4 @@
-// 模型对话明细（只读留证，2026-10-12）：GameStudio 侧直连 oMLX 的本地模型调用
+// 模型对话明细（只读留证，2026-10-12）：TalkScene 侧直连 oMLX 的本地模型调用
 // 按日落盘 state/model-dialogs/<yyyy-mm-dd>.jsonl（仓根 state 目录），供守护台
 // 「模型交互」视图经 GET /api/projects/:id/ai/model-dialogs 合并展示。
 // 与 control 侧 modelTaskQueue.js 的记录字段对齐（ts/model/messages/response/usage/
@@ -70,7 +70,7 @@ export function appendStudioModelDialog({ model, body, response, usage, duration
     fs.mkdirSync(MODEL_DIALOGS_DIR, { recursive: true })
     const record = {
       ts: new Date().toISOString(),
-      source: 'gamestudio',
+      source: 'talkscene',
       caller: String(caller || '').trim() || null,
       model: String(model || ''),
       messages: summarizeDialogMessages(body),

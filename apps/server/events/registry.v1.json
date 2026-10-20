@@ -2,8 +2,8 @@
  "registryVersion": "1.0.0",
  "generatedAt": "2026-09-16T09:46:43.934981Z",
  "provider": {
-  "id": "gamestudio",
-  "name": "GameStudio 互动故事生产能力层",
+  "id": "talkscene",
+  "name": "TalkScene 互动故事生产能力层",
   "baseUrl": "http://127.0.0.1:1999",
   "healthEndpoint": "/api/health"
  },
@@ -17,10 +17,10 @@
   "payloadSchemaSource": "packages/schema/src/storyContract.ts（story.* 输出契约）与本文件内联 JSON Schema（项目/系统类）",
   "notes": [
    "command = 有副作用（写文件/调模型/导出），默认经过 Control 审核门；query = 只读，不触发审核。",
-   "transport.http 是过渡期映射：Layer 2 适配器用它把事件转成现有 REST 调用；GameStudio 事件端点落地后切换为 /api/events/dispatch。",
+   "transport.http 是过渡期映射：Layer 2 适配器用它把事件转成现有 REST 调用；TalkScene 事件端点落地后切换为 /api/events/dispatch。",
    "path 中的 :id / :sceneId 由 payload.projectId / payload.sceneId 填充。",
-   "code（GS-01…）为事件短编号；aliases 为中文别名；chatArgs 为聊天激活时的位置参数说明。聊天输入格式：gamestudio <eventId|code|别名> [参数]。",
-   "code（GS-01…）为事件短编号；aliases 为中文别名；chatArgs 为聊天激活时的位置参数说明。聊天输入格式：gamestudio <eventId|code|别名> [参数]。"
+   "code（GS-01…）为事件短编号；aliases 为中文别名；chatArgs 为聊天激活时的位置参数说明。聊天输入格式：talkscene <eventId|code|别名> [参数]。",
+   "code（GS-01…）为事件短编号；aliases 为中文别名；chatArgs 为聊天激活时的位置参数说明。聊天输入格式：talkscene <eventId|code|别名> [参数]。"
   ]
  },
  "categories": [
@@ -642,7 +642,7 @@
    "category": "story",
    "kind": "command",
    "title": "生成故事脚本候选",
-   "description": "由 GameStudio 内部机制（prompt 模板 + 全局规则 + 公式参数 + OMLX）生成脚本候选并写回 scripts.json。brief 只允许故事内容，不允许任务指令。",
+   "description": "由 TalkScene 内部机制（prompt 模板 + 全局规则 + 公式参数 + OMLX）生成脚本候选并写回 scripts.json。brief 只允许故事内容，不允许任务指令。",
    "payloadSchema": {
     "type": "object",
     "required": [
@@ -1732,7 +1732,7 @@
    "category": "studio",
    "kind": "query",
    "title": "运行状态检查",
-   "description": "返回 GameStudio server 是否运行中、editor 是否可达及整体运行状态。",
+   "description": "返回 TalkScene server 是否运行中、editor 是否可达及整体运行状态。",
    "payloadSchema": {
     "type": "object",
     "properties": {},
@@ -1787,7 +1787,7 @@
    "category": "studio",
    "kind": "query",
    "title": "自检配置项",
-   "description": "返回 GameStudio 各项配置状态清单（server/editor/存储/设置/脚本 provider/图片 provider），不修改任何状态。",
+   "description": "返回 TalkScene 各项配置状态清单（server/editor/存储/设置/脚本 provider/图片 provider），不修改任何状态。",
    "payloadSchema": {
     "type": "object",
     "properties": {},
@@ -2770,8 +2770,8 @@
    "version": 1,
    "category": "studio",
    "kind": "command",
-   "title": "启动 GameStudio 项目服务",
-   "description": "本地拉起 GameStudio Server(1999) 与 Editor(8868)：bash ./start_project.sh --detached，随后等待 server/editor 健康检查通过。目标服务可能尚未启动，故由 Control 经 transport.local 本地执行，不走 HTTP。",
+   "title": "启动 TalkScene 项目服务",
+   "description": "本地拉起 TalkScene Server(1999) 与 Editor(8868)：bash ./start_project.sh --detached，随后等待 server/editor 健康检查通过。目标服务可能尚未启动，故由 Control 经 transport.local 本地执行，不走 HTTP。",
    "payloadSchema": {
     "type": "object",
     "properties": {},
@@ -2798,7 +2798,7 @@
     }
    },
    "sideEffects": [
-    "启动本地进程（GameStudio server/editor）"
+    "启动本地进程（TalkScene server/editor）"
    ],
    "idempotent": true,
    "reviewRequired": false,
@@ -2810,7 +2810,7 @@
       "./start_project.sh",
       "--detached"
      ],
-     "cwd": "${GAMESTUDIO_ROOT}",
+     "cwd": "${TALKSCENE_ROOT}",
      "waitHealth": [
       {
        "name": "server",
@@ -2828,8 +2828,8 @@
    "aliases": [
     "启动项目",
     "启动工作室",
-    "启动GameStudio",
-    "启动gamestudio",
+    "启动TalkScene",
+    "启动talkscene",
     "拉起项目"
    ],
    "chatArgs": []
@@ -2945,7 +2945,7 @@
    "version": 1,
    "category": "studio",
    "kind": "query",
-   "title": "查询 GameStudio 项目服务运行状态",
+   "title": "查询 TalkScene 项目服务运行状态",
    "description": "查询 server(1999) 健康状态，作为生命周期 status 标准事件。",
    "payloadSchema": {
     "type": "object",
@@ -2975,15 +2975,15 @@
    "version": 1,
    "category": "studio",
    "kind": "command",
-   "title": "停止 GameStudio 项目服务",
-   "description": "本地停止 GameStudio Server(1999) 与 Editor(8868)：bash ./stop_project.sh。transport.local 本地执行，不走 HTTP。",
+   "title": "停止 TalkScene 项目服务",
+   "description": "本地停止 TalkScene Server(1999) 与 Editor(8868)：bash ./stop_project.sh。transport.local 本地执行，不走 HTTP。",
    "payloadSchema": {
     "type": "object",
     "properties": {},
     "additionalProperties": false
    },
    "sideEffects": [
-    "停止本地进程（GameStudio server/editor）"
+    "停止本地进程（TalkScene server/editor）"
    ],
    "idempotent": true,
    "reviewRequired": false,
@@ -2994,7 +2994,7 @@
      "args": [
       "./stop_project.sh"
      ],
-     "cwd": "${GAMESTUDIO_ROOT}"
+     "cwd": "${TALKSCENE_ROOT}"
     }
    },
    "aliases": [
@@ -3010,15 +3010,15 @@
    "version": 1,
    "category": "studio",
    "kind": "command",
-   "title": "重启 GameStudio 项目服务",
-   "description": "本地重启 GameStudio Server(1999) 与 Editor(8868)：先 stop 再 start --detached，随后等待健康检查通过。",
+   "title": "重启 TalkScene 项目服务",
+   "description": "本地重启 TalkScene Server(1999) 与 Editor(8868)：先 stop 再 start --detached，随后等待健康检查通过。",
    "payloadSchema": {
     "type": "object",
     "properties": {},
     "additionalProperties": false
    },
    "sideEffects": [
-    "重启本地进程（GameStudio server/editor）"
+    "重启本地进程（TalkScene server/editor）"
    ],
    "idempotent": true,
    "reviewRequired": false,
@@ -3030,7 +3030,7 @@
       "-lc",
       "./stop_project.sh || true; ./start_project.sh --detached"
      ],
-     "cwd": "${GAMESTUDIO_ROOT}",
+     "cwd": "${TALKSCENE_ROOT}",
      "waitHealth": [
       {
        "name": "server",

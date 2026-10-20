@@ -1,12 +1,12 @@
 {
   "caseVersion": "1.0.0",
-  "caseId": "gamestudio.story-create",
+  "caseId": "talkscene.story-create",
   "title": "创建故事项目（狼来了）",
   "description": "通过事件层创建一个新互动故事项目，并验证项目目录与初始文件真实落盘。覆盖 registry 事件：project.create、project.inspect。",
-  "provider": "gamestudio",
+  "provider": "talkscene",
   "tags": ["p0", "story", "project"],
   "preconditions": [
-    { "type": "service.reachable", "target": "gamestudio.server", "ref": "http://127.0.0.1:1999/api/health" }
+    { "type": "service.reachable", "target": "talkscene.server", "ref": "http://127.0.0.1:1999/api/health" }
   ],
   "vars": {
     "storyTitle": "狼来了"

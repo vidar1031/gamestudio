@@ -141,7 +141,7 @@ export async function buildStoryboardLockTestWorkflow({
   workflow['5'].inputs.sampler_name = asStr(samplerName).trim() || 'dpmpp_2m'
   workflow['5'].inputs.scheduler = asStr(scheduler).trim() || 'normal'
   workflow['5'].inputs.seed = clampInt(seed, 0, 4294967295, Math.floor(Math.random() * 4_294_967_296))
-  workflow['7'].inputs.filename_prefix = asStr(filenamePrefix).trim() || 'gamestudio_lock_test'
+  workflow['7'].inputs.filename_prefix = asStr(filenamePrefix).trim() || 'talkscene_lock_test'
 
   const normalizedLoras = asList(loras)
     .map((item) => {

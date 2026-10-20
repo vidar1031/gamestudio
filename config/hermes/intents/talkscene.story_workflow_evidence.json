@@ -1,9 +1,9 @@
 {
-  "id": "gamestudio.story_workflow_evidence",
+  "id": "talkscene.story_workflow_evidence",
   "version": 1,
   "source": "json",
   "priority": 84,
-  "description": "Quality gate: story workflow answers must cite project evidence instead of treating GameStudio execution as a silent black box.",
+  "description": "Quality gate: story workflow answers must cite project evidence instead of treating TalkScene execution as a silent black box.",
   "match": {
     "anyRegex": [
       "story\\s*workflow",

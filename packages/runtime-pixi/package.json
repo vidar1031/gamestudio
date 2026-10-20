@@ -1,5 +1,5 @@
 {
-  "name": "@game-studio/runtime-pixi",
+  "name": "@talkscene/runtime-pixi",
   "private": true,
   "version": "0.1.0",
   "type": "module",

@@ -1,18 +1,18 @@
 {
-  "id": "gamestudio.bootstrap_readiness",
+  "id": "talkscene.bootstrap_readiness",
   "version": 1,
   "source": "json",
   "priority": 83,
-  "description": "Quality gate: GameStudio bootstrap answers must report Server, Editor, settings and diagnose evidence.",
+  "description": "Quality gate: TalkScene bootstrap answers must report Server, Editor, settings and diagnose evidence.",
   "match": {
     "anyRegex": [
-      "GameStudio.*(启动|打开|配置|自检|诊断|settings)",
+      "TalkScene.*(启动|打开|配置|自检|诊断|settings)",
       "bootstrap|ensureRunning|openEditor|Studio Settings",
       "本地生产配置|OMLX|ComfyUI|图片 provider"
     ]
   },
   "evaluation": {
-    "requireArtifactKey": "gameStudioBootstrap",
+    "requireArtifactKey": "talksceneBootstrap",
     "minScore": 82,
     "scoreBase": 18,
     "perRequiredHit": 14,
@@ -43,6 +43,6 @@
       "无法确认",
       "没有检查"
     ],
-    "correctionPrompt": "回答 GameStudio 启动、打开、settings、自检或本地生产配置问题时，必须基于 gameStudioBootstrap artifacts 报告 Server/Editor/settings/diagnose 或 provider preflight 证据。"
+    "correctionPrompt": "回答 TalkScene 启动、打开、settings、自检或本地生产配置问题时，必须基于 talksceneBootstrap artifacts 报告 Server/Editor/settings/diagnose 或 provider preflight 证据。"
   }
 }
