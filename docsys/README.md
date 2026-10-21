@@ -29,9 +29,14 @@ npm run docsys:serve      # 预览 http://127.0.0.1:8891/
 
 ## 复用到其它项目
 
+**详细采纳指南见 `docsys/GUIDE.md`**（随目录拷走即送达对方；含文档地图、表达方法论、界面定义五件套、手册写法与验收口径）。
+**模板仓**（2026-10-21 起）：`/Volumes/ovokit2t/aiwork/docsys-template/`（独立 git 仓，零依赖可独立运行，含示例册）——其它项目优先从模板仓克隆/拷贝，本仓 docsys 为织话智坊册的实例。
+
+快速路径：
 1. 拷贝整个 `docsys/` 目录到新仓；
-2. 删掉 `content/storyweaver/`，新建 `content/<新产品册>/manifest.json`（照本仓示例声明分组与文档）；
-3. `scaffold` → `build` → `serve`。
+2. 删掉 `content/` 下旧册，新建 `content/<产品册>/manifest.json`（照本仓示例声明分组与文档）；
+3. 新仓 package.json 补三个 script（`docsys:scaffold`/`docsys:build`/`docsys:serve`，分别指向 framework 下对应 .mjs）；
+4. `scaffold` → `build` → `serve`。
 
 ## 写作约定
 
