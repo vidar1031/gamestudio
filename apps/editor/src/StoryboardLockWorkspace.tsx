@@ -1,7 +1,15 @@
 import React from 'react'
 import { dlgAlert, dlgConfirm } from './dialog'
-import { resolveUrl, listProjectAiTasks, listProjectAiCoverage, renderAllStoryScenesAi, listImageReviewsAi, approveImageReviewAi, rejectImageReviewAi, approveAllImageReviewsAi, getComfyuiModels, getStudioSettings, saveStudioSettings, listPromptLibrary, savePromptLibraryEntry, deletePromptLibraryEntryById, type AiBackgroundRequest, type AiCoverage, type AiTaskProgress, type ImageReviewRecord, type PromptLibraryEntry, type StoryAssetGalleryEntry } from './api'
-import { BUILTIN_POSE_RECIPES, POSE_NEGATIVE_CHIPS, POSE_VIEW_OPTIONS, type PoseRecipe } from './poseRecipes'
+import { resolveUrl, listProjectAiTasks, listProjectAiCoverage, renderAllStoryScenesAi, listImageReviewsAi, approveImageReviewAi, rejectImageReviewAi, approveAllImageReviewsAi, subscribeProjectAiEvents, getComfyuiModels, getStudioSettings, saveStudioSettings, launchStudioTool, assignPlanSceneAsset, listPromptLibrary, savePromptLibraryEntry, deletePromptLibraryEntryById, type AiBackgroundRequest, type AiCoverage, type AiTaskProgress, type ImageReviewRecord, type PromptLibraryEntry, type StoryAssetGalleryEntry } from './api'
+import ScenePoseWorkbench from './components/pose/ScenePoseWorkbench'
+import AutoGrowTextarea from './components/shared/AutoGrowTextarea'
+import DetailWorkspace from './components/shared/DetailWorkspace'
+import BackgroundCenter from './components/scene/BackgroundCenter'
+import LocationTemplateBoard, { locationSceneIdsOf } from './components/scene/LocationTemplateBoard'
+import SceneryElementBoard from './components/scene/SceneryElementBoard'
+import { poseScoreBadgeOf } from './components/pose/poseTypes'
+import { toProjectAssetUrl, toRuntimeUrl } from './components/pose/assetUrl'
+// R 波项 3：配方/组装器常量消费迁至蓝图姿态需求清单（BlueprintStudio），本组件不再引用 poseRecipes
 
 // 公共提示词库插入目标：某个提示词输入对（中文栏+英文栏）的读写通道
 type PromptLibTarget = {
@@ -18,6 +26,7 @@ function getAssetCategoryLabel(category: string) {
   if (c === 'character') return '角色'
   if (c === 'prop') return '道具'
   if (c === 'location') return '地点'
+  if (c === 'scenery') return '背景元素'
   return c || '资产'
 }
 
@@ -36,20 +45,6 @@ function getAssetRefChip(asset: any): { label: string; tone: 'ok' | 'bad' } {
   if (strategy && strategy !== 'ref_required') return { label: '锚点入背景', tone: 'ok' }
   const ready = String(asset?.primaryReferenceAssetUri || '').trim().length > 0
   return { label: getReferenceStatusLabel(String(asset?.referenceStatus || '')), tone: ready ? 'ok' : 'bad' }
-}
-
-function toProjectAssetUrl(projectId: string, rawUri: string) {
-  const uri = String(rawUri || '').trim()
-  if (!uri || !projectId) return ''
-  if (/^https?:\/\//i.test(uri) || uri.startsWith('data:')) return uri
-  return resolveUrl(`/project-assets/${encodeURIComponent(String(projectId))}/${uri.replace(/^\/+/, '')}`)
-}
-
-function toRuntimeUrl(rawUrl: string) {
-  const value = String(rawUrl || '').trim()
-  if (!value) return ''
-  if (/^https?:\/\//i.test(value) || value.startsWith('data:')) return value
-  return resolveUrl(value.startsWith('/') ? value : `/${value}`)
 }
 
 function scoreOf(candidate: any) {
@@ -225,50 +220,6 @@ function parseStoryBibleDetails(raw: string) {
   }
 }
 
-// 2026-09-02 姿势变体生成参数（IPAdapter 高级档位随 opts 传给服务端 sprite 端点；
-// 中英文双稿随 opts 记录进候选/变体，生图用英文稿优先、空则用中文稿由服务端自动翻译；
-// 负向双稿：英文优先，空则生成时由 ComposeStudio 翻译中文稿后下发）
-type PoseGenOpts = {
-  posePrompt: string
-  posePromptZh?: string
-  posePromptEn?: string
-  negativePromptZh?: string
-  negativePromptEn?: string
-  ipadapter?: { enabled: boolean; weight: number; startAt: number; endAt: number }
-}
-
-// 姿势变体区每资产的本地草稿（中英文双稿/负向/选中剧情场景/高级参数/命名输入），本地是覆盖层；持久化本体在 plan 资产 poseDraft
-type PoseDraftEntry = {
-  posePromptZh: string
-  posePromptEn: string
-  negativePromptZh: string
-  negativePromptEn: string
-  sceneId: string
-  advancedOpen: boolean
-  ipadapterOn: boolean
-  ipadapterWeight: number
-  ipadapterStartAt: number
-  ipadapterEndAt: number
-  lockNames: Record<string, string>
-  // 2026-09-10 中文稿来源：user=用户手输（作为「按剧情生成」的额外要求生效）；ai=AI/配方/需求回填（残留不带回模型，防旧姿势重生）
-  promptZhSource?: string
-}
-
-function defaultPoseDraft(): PoseDraftEntry {
-  // 2026-09-01 需求：姿势变体默认延续主参考图（IPAdapter 默认开），高级参数折叠里可关/调档
-  // 默认档位取实测中间值（权重 0.8 / 区间 0.2-0.9）：0.7 档姿势自由但裤鞋颜色漂（评分 45），
-  // 0.9 档服装全锁但姿势被主参考站姿拉回正身——用户按"保姿势↔保服装"需求在高级参数里微调
-  return { posePromptZh: '', posePromptEn: '', negativePromptZh: '', negativePromptEn: '', sceneId: '', advancedOpen: false, ipadapterOn: true, ipadapterWeight: 0.8, ipadapterStartAt: 0.2, ipadapterEndAt: 0.9, lockNames: {}, promptZhSource: '' }
-}
-
-// 评分徽标配色：未评分灰，≥70 绿，40-69 黄，<40 红（与抽卡池同款语义）
-function poseScoreBadge(c: any): { text: string; color: string } {
-  if (!Number.isFinite(Number(c?.score))) return { text: '未评分', color: 'rgba(148,163,184,0.9)' }
-  const s = Math.round(Number(c.score))
-  const color = s >= 70 ? '#4ade80' : s >= 40 ? '#facc15' : '#f87171'
-  return { text: `${s} 分`, color }
-}
-
 // ============ 2026-09-02 事物总览卡片墙：状态推导与卡图（纯函数，供一级卡片/二级弹层共用） ============
 type AssetLockTone = 'locked' | 'lineart' | 'draw' | 'draft'
 
@@ -289,6 +240,31 @@ function assetLockStatusOf(asset: any, promptDrafts: Record<string, any> | undef
   return { tone: 'draft', label: '待起草' }
 }
 
+// 出图管理总览：四段状态点（提示词→主参考→姿态/状态变体→线稿）
+// 口径：全部从 plan 资产字段与提示词草稿派生（done 绿 / partial 黄 / todo 灰）
+export type AssetStageKey = 'prompt' | 'ref' | 'pose' | 'lineart'
+export type AssetStageTone = 'done' | 'partial' | 'todo'
+export function assetFiveStagesOf(asset: any, promptDrafts: Record<string, any> | undefined): { key: AssetStageKey; label: string; tone: AssetStageTone }[] {
+  const aid = String(asset?.id || '').trim()
+  const d = (promptDrafts && promptDrafts[aid]) || {}
+  const zhOk = Boolean(String(d.promptZh || '').trim())
+  const enOk = Boolean(String(d.promptEn || '').trim())
+  const promptTone: AssetStageTone = zhOk && enOk ? 'done' : zhOk || enOk ? 'partial' : 'todo'
+  const hasPrimary = Boolean(String(asset?.primaryReferenceAssetUri || '').trim() || String(asset?.primaryReferenceAssetId || '').trim())
+  const hasCandidates = Array.isArray(asset?.generatedRefs) && asset.generatedRefs.length > 0
+  const refTone: AssetStageTone = hasPrimary ? 'done' : hasCandidates ? 'partial' : 'todo'
+  const poseCount = (Array.isArray(asset?.poseVariants) ? asset.poseVariants.length : 0) + (Array.isArray(asset?.stateVariants) ? asset.stateVariants.length : 0)
+  const poseReqCount = Array.isArray(asset?.poseRequirements) ? asset.poseRequirements.length : 0
+  const poseTone: AssetStageTone = poseCount > 0 && (poseReqCount === 0 || poseCount >= poseReqCount) ? 'done' : poseCount > 0 ? 'partial' : 'todo'
+  const lineartTone: AssetStageTone = String(asset?.lineartFinalAssetUri || '').trim() ? 'done' : String(asset?.lineartHintAssetUri || '').trim() ? 'partial' : 'todo'
+  return [
+    { key: 'prompt', label: '提示词', tone: promptTone },
+    { key: 'ref', label: '主参考', tone: refTone },
+    { key: 'pose', label: '姿态', tone: poseTone },
+    { key: 'lineart', label: '线稿', tone: lineartTone }
+  ]
+}
+
 // 卡片图：主参考（透明底垫深色棋盘格）→ 最新候选 → 空（灰占位）
 function assetCardImageOf(asset: any, projectId: string): string {
   const primary = String(asset?.primaryReferenceAssetUri || '').trim()
@@ -299,6 +275,16 @@ function assetCardImageOf(asset: any, projectId: string): string {
   const latestPath = String(latest?.assetPath || '').trim()
   if (latestPath) return toProjectAssetUrl(projectId, latestPath)
   return ''
+}
+
+// 重抽/单张重出的生成参数（ScenePoseWorkbench 传入；类型与 components/pose/ScenePoseWorkbench 内 PoseGenOpts 同构）
+export type PoseGenOptsForRedraw = {
+  posePrompt: string
+  posePromptZh?: string
+  posePromptEn?: string
+  negativePromptZh?: string
+  negativePromptEn?: string
+  ipadapter?: { enabled: boolean; weight: number; startAt: number; endAt: number }
 }
 
 export default function StoryboardLockWorkspace(props: {
@@ -341,6 +327,8 @@ export default function StoryboardLockWorkspace(props: {
     promptModel?: string
     imageProvider?: string
     imageModel?: string
+    // 2026-11-10：体检定论时间——用于区分"未跑/进行中"与"已出结果"，步骤钳制只在有定论失败后生效
+    checkedAt?: string
   }
   logs: string[]
   error?: string
@@ -355,9 +343,17 @@ export default function StoryboardLockWorkspace(props: {
   onGenerateAllMissingAssetRefs: () => void
   onAnalyzeAssetRef: (assetId: string) => void
   onOptimizeAssetRef: (assetId: string) => void
-  onEnhanceAllPrompts?: () => void
+  // 2026-11-06 支持按资产子集生成（背景中心地点模板/背景元素页签复用同一链）；空参=全部缺失项
+  onEnhanceAllPrompts?: (onlyAssetIds?: string[]) => void
+  // K 波（2026-10-27 姿态需求定义前移蓝图）：姿势区「去蓝图编辑需求」链——关向导回蓝图层
+  onGotoBlueprint?: () => void
   onDraftGlobalPromptZh?: () => void
   enhanceAllProgress?: { current: number; total: number; busy: boolean }
+  // 2026-10-26 缺陷 B：批量增强逐项结果明面化（失败名单+人话原因+一键重试）
+  enhanceAllSummary?: { done: number; failures: Array<{ assetId: string; label: string; reason: string }> } | null
+  onRetryFailedEnhance?: () => void
+  // 2026-10-26 缺陷 C：提示词草稿脏态（向导保存按钮高亮激活感知）
+  promptDraftsDirty?: boolean
   // 2026-10-07 一键翻译全部中文稿（enhance 内联翻译会静默兜底，此为显式可观测通道）
   translateAllProgress?: { current: number; total: number; busy: boolean }
   onTranslateAllPrompts?: () => void
@@ -374,7 +370,8 @@ export default function StoryboardLockWorkspace(props: {
   onDeleteAssetGalleryItem: (assetId: string, assetPath: string) => void
   onDeleteAssetFromPlan: (assetId: string) => void
   onConfirmAssetPlan: () => void
-  onOpenRender: () => void
+  // 背景中心的场景图与地点模板共用资产计划；场景生产仍由 ComposeStudio 注入的共享组件负责。
+  sceneBoard?: React.ReactElement<{ focusSceneId?: string; onEditSceneAssets?: (sceneId: string) => void }>
   onChangeGlobalPromptZh: (value: string) => void
   onChangeGlobalPromptEn: (value: string) => void
   onTranslateGlobalPrompt: () => void
@@ -390,43 +387,35 @@ export default function StoryboardLockWorkspace(props: {
   onTranslateAssetPromptPositive: (assetId: string) => void
   onTranslateAssetPromptNegative: (assetId: string) => void
   // ============ 2026-09-01 姿势变体（出图统一管理在锁定向导，摆放属性降级为纯消费端） ============
+  // 2026-11-01 场景姿态/状态变体两段抽至 components/pose/ScenePoseWorkbench（定义 UI 已前移蓝图，向导侧只执行）
   poseGeneratingId?: string
   poseDrawProgress?: { done: number; total: number } | null
   poseReviewingId?: string
   poseLockingKey?: string
-  posePromptBusyId?: string
-  poseFocusAssetId?: string
+  poseReqBusyId?: string
+  // 深度回跳聚焦（蓝图「管理」入口）：定位到具体资产的场景姿态区，可指定场景+需求
+  poseFocus?: { assetId: string; sceneId?: string; reqId?: string } | null
   // 2026-09-01 剧情感知：该资产关联场景选项（场景序号+名称，节点正文由 ComposeStudio 侧查 doc.story）
   poseSceneOptionsFor?: (assetId: string) => { sceneId: string; label: string }[]
   // 2026-09-01 姿势图片管理画廊（开关状态在 ComposeStudio，复用主参考画廊 overlay 模式）
   poseGalleryAssetId?: string
   onPoseGalleryOpen?: (assetId: string) => void
   onPoseGalleryClose?: () => void
-  onPosePrefill?: (assetId: string) => string
-  // 2026-09-02 姿势草稿持久化（五个时机落 plan 资产 poseDraft，不逐键入）
+  // 2026-09-02 姿势草稿持久化（高级参数/选中场景等执行态落 plan 资产 poseDraft，不逐键入）
   onPoseDraftSave?: (assetId: string, draft: { promptZh: string; promptEn: string; negativePromptZh: string; negativePromptEn: string; sceneId: string; ipadapterOn: boolean; ipadapterWeight: number; ipadapterStartAt: number; ipadapterEndAt: number; promptZhSource?: string }) => void
-  onPoseAiPrompt?: (assetId: string, opts: { userHint: string; sceneId: string; reviewFeedback?: string }) => Promise<{ promptZh: string; promptEn: string } | null>
-  // 2026-09-10 姿势草稿「中文转英文」：返回译稿，向导侧走填充保护落栏
-  onPoseDraftTranslate?: (assetId: string) => Promise<string | null>
-  // 2026-09-02 配方库：项目自定义配方（存 project.state.aiBackground.customPoseRecipes）+ 存为配方回调
-  customPoseRecipes?: { name: string; promptZh: string; promptEn: string }[]
-  onPoseSaveRecipe?: (recipe: { name: string; promptZh: string; promptEn: string }) => void
-  onPoseGenerate?: (assetId: string, opts: PoseGenOpts) => void
-  onPoseGenerateFour?: (assetId: string, opts: PoseGenOpts) => void
-  // 2026-09-10 剧情姿势需求：AI 提取候选清单 → 逐条手改 → 单个/批量手动生成
-  poseReqBusyId?: string
-  onPoseRequirementsExtract?: (assetId: string) => void
-  // 2026-10-06 简谱演绎：表情差分需求一键播种（仅换表情不换姿势，复用姿势链出图）
-  onExpressionRequirementsExtract?: (assetId: string) => void
-  onPoseRequirementGenerate?: (assetId: string, reqId: string) => void
+  onPoseRequirementGenerate?: (assetId: string, reqId: string, count?: 1 | 4) => void
   onPoseRequirementsBatchGenerate?: (assetId: string) => void
-  onPoseRequirementChange?: (assetId: string, reqId: string, patch: { promptZh?: string; promptEn?: string }) => void
-  onPoseRequirementDelete?: (assetId: string, reqId: string) => void
   onPoseReviewAll?: (assetId: string) => void
-  onPoseRedraw?: (assetId: string, assetPath: string, opts: PoseGenOpts) => void
+  onPoseRedraw?: (assetId: string, assetPath: string, opts: PoseGenOptsForRedraw) => void
   onPoseDeleteCandidate?: (assetId: string, assetPath: string) => void
-  onPoseLock?: (assetId: string, assetPath: string, name: string, prompts: { posePrompt: string; posePromptZh?: string; posePromptEn?: string }) => void
+  onPoseLock?: (assetId: string, assetPath: string, name: string, prompts: { posePrompt: string; posePromptZh?: string; posePromptEn?: string }, sceneId?: string) => Promise<{ ok: boolean; projectAssetId?: string; applied?: boolean; message?: string }>
   onPoseDeleteVariant?: (assetId: string, variantId: string) => Promise<{ ok: boolean; message?: string }>
+  // ============ 2026-10-27 R 波：标准系三视图（角色专属）生成/锁定 ============
+  modelSheetBusyId?: string
+  onModelSheetGenerate?: (assetId: string, views?: ('front' | 'side' | 'back')[], mode?: 'sheet' | 'per-view') => void
+  onModelSheetLock?: (assetId: string, view: 'front' | 'side' | 'back') => void
+  // Z 波：sheet 栏序人工指定（pendingCells 三栏 → views）
+  onModelSheetAssign?: (assetId: string, assignments: Record<string, 'front' | 'side' | 'back'>) => void
   // ============ 2026-09-16 道具状态变体（道具/地点等非角色资产专属）：状态需求提取 + 单状态生成（服务端全链写 stateVariants） ============
   propStateBusyId?: string
   propStateGenKey?: string
@@ -443,6 +432,9 @@ export default function StoryboardLockWorkspace(props: {
   const planAssets = Array.isArray(assetPlan?.assets) ? assetPlan.assets : []
   const storyBibleReady = Boolean(String((props.value as any)?.storyBibleJson || '').trim())
   const envReady = Boolean(props.openChecks?.ok)
+  // 体检"有定论且未通过"才算失败：未跑/进行中不判失败——异步结果返回前 maxUnlockedStep 短暂偏低，
+  // 据此钳制步骤会误降级（与下方"打开对齐"注释同语义）。
+  const envFailed = Boolean(props.openChecks?.checkedAt) && !props.openChecks?.checking && !envReady
   // 2026-08-28：就绪计数只统计 ref_required 资产（prompt_only 资产不需要参考图，其主参考/线稿不应计入门槛）
   const primaryReadyCount = planAssets.filter((asset) => String(asset?.renderStrategy || '').trim() === 'ref_required' && String(asset?.primaryReferenceAssetUri || '').trim()).length
   const lineartReadyCount = planAssets.filter((asset) => String(asset?.renderStrategy || '').trim() === 'ref_required' && String(asset?.lineartFinalAssetUri || '').trim()).length
@@ -468,6 +460,11 @@ export default function StoryboardLockWorkspace(props: {
     const s = String(a?.renderStrategy || '').trim()
     return s !== '' && s !== 'ref_required'
   })
+  const promptMissingCount = planAssets.filter((asset) => {
+    const id = String(asset?.id || '').trim()
+    return !String((props.assetPromptDrafts?.[id]?.promptZh || '')).trim()
+  }).length
+  const promptGeneratedCount = planAssets.length - promptMissingCount
 
   // ============ 2026-10-06 第 3 步场景主视图：场景→元素分组 + 每元素跨场景姿态/状态预演 ============
   // 数据源全部来自 plan（scenes 列表 + 资产 sceneIds + 资产上已持久化的 poseRequirements/stateRequirements），无新增接口
@@ -545,19 +542,24 @@ export default function StoryboardLockWorkspace(props: {
   // ①环境体检 ②Story Bible ③资产计划 ④全局与事物提示词（中文稿→审核→翻译→批准） ⑤参考图与锁定 ⑥线稿锁定 ⑦完成锁定
   // 2026-08-26 向导状态按项目持久化（用户指令：刷新/重开不能丢失正在操作的提示词阶段与审核闸状态）
   const wizardStorageKey = String(props.projectId || '').trim() ? `talkscene.lockWorkspace.wizard.${String(props.projectId || '').trim()}` : ''
-  const readPersistedWizard = (): { step: number; zh: boolean; en: boolean } | null => {
+  // 2026-11-02 用户裁决：缓冲上次打开位置——视图（卡片总览/步骤模式）、场景背景维度、筛选，重开回到上次位置而非默认页
+  const readPersistedWizard = (): { step: number; zh: boolean; en: boolean; view?: 'grid' | 'steps'; scope?: 'assets' | 'scenes'; fd?: 'all' | 'todo' | 'done'; fc?: 'all' | 'character' | 'prop' | 'location' } | null => {
     if (!wizardStorageKey) return null
     try {
       const raw = localStorage.getItem(wizardStorageKey)
       if (!raw) return null
       const obj = JSON.parse(raw)
       const step = Math.max(1, Math.min(7, Math.floor(Number(obj?.step) || 1)))
-      return { step, zh: Boolean(obj?.zh), en: Boolean(obj?.en) }
+      const view = obj?.view === 'grid' || obj?.view === 'steps' ? obj.view : undefined
+      const scope = obj?.scope === 'scenes' ? ('scenes' as const) : obj?.scope === 'assets' ? ('assets' as const) : undefined
+      const fd = obj?.fd === 'todo' || obj?.fd === 'done' ? obj.fd : undefined
+      const fc = ['all', 'character', 'prop', 'location'].includes(String(obj?.fc)) ? obj.fc : undefined
+      return { step, zh: Boolean(obj?.zh), en: Boolean(obj?.en), view, scope, fd, fc }
     } catch {
       return null
     }
   }
-  const persistedWizardRef = React.useRef<{ step: number; zh: boolean; en: boolean } | null | undefined>(undefined)
+  const persistedWizardRef = React.useRef<{ step: number; zh: boolean; en: boolean; view?: 'grid' | 'steps'; scope?: 'assets' | 'scenes'; fd?: 'all' | 'todo' | 'done'; fc?: 'all' | 'character' | 'prop' | 'location' } | null | undefined>(undefined)
   if (persistedWizardRef.current === undefined) persistedWizardRef.current = readPersistedWizard()
   const restoredWizard = persistedWizardRef.current || null
   const [wizardStep, setWizardStep] = React.useState(() => restoredWizard?.step || 1)
@@ -624,16 +626,16 @@ export default function StoryboardLockWorkspace(props: {
   // 场景出图是锁定完成后的独立阶段。
   const refLockReady = refRequiredCount === 0 || primaryReadyCount >= refRequiredCount
   const lineartLockReady = refRequiredCount === 0 || lineartReadyCount >= refRequiredCount
+  // 2026-10-27 用户裁决：原 5/6/7 合并——5=出图管理（主参考+标准系+姿态+线稿逐元素工作区），6=完成锁定（总账确认）
   const wizardSteps = [
     { n: 1, label: '环境体检', ready: envReady },
     { n: 2, label: 'Story Bible', ready: storyBibleReady },
     { n: 3, label: '资产计划', ready: planAssets.length > 0 },
     { n: 4, label: '全局与事物提示词', ready: promptZhConfirmed && promptEnApproved },
-    { n: 5, label: '参考图与锁定', ready: refLockReady },
-    { n: 6, label: '线稿锁定', ready: lineartLockReady },
-    { n: 7, label: '完成锁定', ready: refLockReady && lineartLockReady }
+    { n: 5, label: '出图管理', ready: refLockReady && lineartLockReady },
+    { n: 6, label: '完成锁定', ready: refLockReady && lineartLockReady }
   ]
-  const firstNotReady = wizardSteps.find((s) => !s.ready && s.n < 7)?.n ?? 7
+  const firstNotReady = wizardSteps.find((s) => !s.ready && s.n < 6)?.n ?? 6
   const maxUnlockedStep = firstNotReady
   const gotoStep = (n: number) => {
     if (n <= maxUnlockedStep) setWizardStep(n)
@@ -644,13 +646,16 @@ export default function StoryboardLockWorkspace(props: {
       case 2: return storyBibleReady ? '' : '先生成 Story Bible（角色/道具/地点锁定前置数据）'
       case 3: return planAssets.length > 0 ? '' : '先生成资产计划'
       case 4: return promptEnApproved ? '' : (promptZhConfirmed ? '中文稿已确认，请执行翻译并批准英文稿' : '请先完成并确认中文提示词稿（确认后才能翻译）')
-      case 5: return (refRequiredCount === 0 || primaryReadyCount >= refRequiredCount) ? '' : `还有 ${Math.max(0, refRequiredCount - primaryReadyCount)} 个必要事物未锁定主参考`
-      case 6: return (refRequiredCount === 0 || lineartReadyCount >= refRequiredCount) ? '' : '还有资产的线稿未生成'
+      case 5:
+        if (!(refRequiredCount === 0 || primaryReadyCount >= refRequiredCount)) return `还有 ${Math.max(0, refRequiredCount - primaryReadyCount)} 个必要事物未锁定主参考`
+        if (!(refRequiredCount === 0 || lineartReadyCount >= refRequiredCount)) return '还有资产的线稿未生成'
+        return ''
       default: return ''
     }
   }
 
-  // AI 任务进度轮询：锁定测试/场景渲染/批量渲染的真实阶段在此可见（非黑盒）
+  // AI 任务进度订阅：优先 SSE 推送（服务端任务台账/审核/总账变化即推信号，按需重拉），
+  // 服务端不支持或连不上时回退 1.5s 轮询；两种路径首轮都全量拉一次保证首屏一致。
   const [aiTasks, setAiTasks] = React.useState<AiTaskProgress[]>([])
   const [aiCoverage, setAiCoverage] = React.useState<AiCoverage | null>(null)
   const [pendingReviews, setPendingReviews] = React.useState<ImageReviewRecord[]>([])
@@ -662,30 +667,51 @@ export default function StoryboardLockWorkspace(props: {
   React.useEffect(() => {
     if (!props.open || !projectId) return undefined
     let stopped = false
-    const pull = async () => {
+    const loadTasks = async () => {
       try {
-        const [tasks, reviews, coverage] = await Promise.all([
-          listProjectAiTasks(projectId),
-          listImageReviewsAi(projectId, 'pending').catch(() => [] as ImageReviewRecord[]),
-          listProjectAiCoverage(projectId).catch(() => null)
-        ])
+        const tasks = await listProjectAiTasks(projectId)
         if (stopped) return
         setAiTasks(tasks)
-        setAiCoverage(coverage)
-        setPendingReviews(reviews)
-        // 批量渲染/线稿完成后自动刷新项目数据（场景图与线稿都会写回 project.json）
+        // 批量渲染/线稿/参考图抽卡完成后自动刷新项目数据（场景图、线稿与抽卡候选都会写回计划）
+        // 2026-11-10：参考图抽卡纳入——跨会话/刷新后发起的抽卡完成时，本面板候选就地回填
         for (const t of tasks) {
-          const shouldReload = t.kind === 'story.scenes.render_all' || (t.kind === 'story.asset.lineart' && t.done && !t.error)
+          const shouldReload = t.kind === 'story.scenes.render_all'
+            || (t.kind === 'story.asset.lineart' && t.done && !t.error)
+            || (t.kind === 'story.asset.reference_batch' && t.done && !t.error)
           if (shouldReload && !reloadedTaskIdsRef.current.has(t.taskId)) {
             reloadedTaskIdsRef.current.add(t.taskId)
             props.onReloadProject?.()
           }
         }
-      } catch (_) { /* 轮询失败忽略，下轮重试 */ }
+      } catch (_) { /* 拉取失败忽略，下个信号/轮询再试 */ }
     }
+    const loadReviews = async () => {
+      const reviews = await listImageReviewsAi(projectId, 'pending').catch(() => [] as ImageReviewRecord[])
+      if (!stopped) setPendingReviews(reviews)
+    }
+    const loadCoverage = async () => {
+      const coverage = await listProjectAiCoverage(projectId).catch(() => null)
+      if (!stopped) setAiCoverage(coverage)
+    }
+    const pull = async () => { await Promise.all([loadTasks(), loadReviews(), loadCoverage()]) }
     void pull()
-    const timer = window.setInterval(pull, 1500)
-    return () => { stopped = true; window.clearInterval(timer) }
+    let timer: number | undefined
+    const startPolling = () => {
+      if (timer !== undefined) return
+      timer = window.setInterval(() => { void pull() }, 1500)
+    }
+    const dispose = subscribeProjectAiEvents(projectId, {
+      tasks: () => { void loadTasks() },
+      reviews: () => { void loadReviews() },
+      coverage: () => { void loadCoverage() },
+      onUnavailable: startPolling
+    })
+    if (!dispose) startPolling()
+    return () => {
+      stopped = true
+      if (timer !== undefined) window.clearInterval(timer)
+      dispose?.()
+    }
   }, [props.open, projectId])
 
   const reviewPhaseLabel = (phase: string) => {
@@ -796,13 +822,46 @@ export default function StoryboardLockWorkspace(props: {
     setWizardStep(firstNotReady)
   }, [props.open, firstNotReady])
 
-  // 向导状态变化即按项目持久化（刷新后恢复到提示词操作阶段与审核闸状态）
+  // 2026-11-10 用户裁决：体检明确未通过时向导必须停在第 1 步（覆盖"上次打开位置"恢复，不得落到出图管理）；
+  // 只在体检有定论失败后钳制——未跑/进行中不动当前步（同上：异步结果返回前钳制会误降级）。
   React.useEffect(() => {
-    if (!props.open || !wizardStorageKey) return
+    if (!props.open || !envFailed) return
+    if (wizardStep > 1) setWizardStep(1)
+  }, [props.open, envFailed, wizardStep])
+
+  // 2026-11-10：环境体检面板就地拉起本地服务（ComfyUI 走 Terminal.app 可见窗口；OMLX 走 GUI App）；
+  // 拉起后自动重新体检，面板就地转绿，无需手动再点。
+  const [comfyLaunchBusy, setComfyLaunchBusy] = React.useState(false)
+  const [comfyLaunchNote, setComfyLaunchNote] = React.useState('')
+  const launchTool = async (tool: 'omlx' | 'comfyui', label: string) => {
+    if (comfyLaunchBusy) return
+    setComfyLaunchBusy(true)
+    setComfyLaunchNote(`正在拉起 ${label}，就绪最长约 90 秒…`)
     try {
-      localStorage.setItem(wizardStorageKey, JSON.stringify({ step: wizardStep, zh: promptZhConfirmed, en: promptEnApproved, updatedAt: Date.now() }))
-    } catch { /* 存储不可用时忽略 */ }
-  }, [props.open, wizardStorageKey, wizardStep, promptZhConfirmed, promptEnApproved])
+      const res = await launchStudioTool(tool)
+      setComfyLaunchNote(res.message || (res.alreadyRunning ? `${label} 已在运行` : `${label} 已启动`))
+      props.onRunOpenChecks?.()
+    } catch (e) {
+      // launch_timeout 时窗口/App 其实已开：保留服务端原文提示，面板自动复检会在就绪后转绿
+      setComfyLaunchNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setComfyLaunchBusy(false)
+    }
+  }
+  const launchComfyUi = () => launchTool('comfyui', 'ComfyUI（终端可见窗口）')
+
+  // 2026-11-10 用户裁决：体检未通过期间每 7s 自动复检——ComfyUI 经终端拉起（含冷启动慢、按钮超时
+  // 但窗口仍在初始化）或外部恢复后，面板就地转绿解锁，不再要求手动刷新页面；通过/关闭即停。
+  React.useEffect(() => {
+    if (!props.open || !envFailed) return undefined
+    const timer = window.setInterval(() => {
+      if (props.openChecks?.checking) return // 上一轮未结束跳过，防重入
+      props.onRunOpenChecks?.()
+    }, 7000)
+    return () => window.clearInterval(timer)
+  }, [props.open, envFailed, props.openChecks?.checking])
+
+  // 向导状态变化即按项目持久化（刷新后恢复到提示词操作阶段与审核闸状态）
 
   React.useEffect(() => {
     const allowed = new Set((props.assetGallery?.items || []).map((item) => String(item.assetPath || '').trim()).filter(Boolean))
@@ -811,157 +870,16 @@ export default function StoryboardLockWorkspace(props: {
 
   const galleryDeletingSet = React.useMemo(() => new Set((props.assetGalleryDeletingPaths || []).map((item) => String(item || '').trim()).filter(Boolean)), [props.assetGalleryDeletingPaths])
 
-  // ============ 2026-09-01 姿势变体区本地状态（草稿/展开/阻断提示；数据本体在 plan 资产上） ============
-  // 2026-09-02 姿势草稿持久化：本地编辑是覆盖层，未编辑时优先读 plan 资产 poseDraft（刷新/重开不丢）
-  const [poseDrafts, setPoseDrafts] = React.useState<Record<string, PoseDraftEntry>>({})
+  // ============ 2026-09-01 姿势/状态变体区（2026-11-01 起：两段渲染与本地执行态在 components/pose/ScenePoseWorkbench；
+  // 此处仅保留展开态——聚焦回跳/锚点滚动在父级读写；数据本体在 plan 资产上） ============
   const [poseExpanded, setPoseExpanded] = React.useState<Record<string, boolean>>({})
-  const [poseBlockMsg, setPoseBlockMsg] = React.useState('')
-  // 2026-09-16 状态变体区（道具/地点资产）展开态；数据本体在 plan 资产 stateRequirements/stateVariants/stateMergeInto 上
   const [stateExpanded, setStateExpanded] = React.useState<Record<string, boolean>>({})
-  const poseDraftOf = (assetId: string, asset?: any): PoseDraftEntry => {
-    const local = poseDrafts[assetId]
-    if (local) return local
-    const base = defaultPoseDraft()
-    const p = asset && typeof asset.poseDraft === 'object' && asset.poseDraft ? asset.poseDraft : null
-    if (!p) return base
-    return {
-      ...base,
-      // 持久化键为 promptZh/promptEn/negativePromptZh/negativePromptEn（plan 资产 poseDraft），本地草稿键为 posePromptZh/posePromptEn/negativePromptZh/negativePromptEn
-      posePromptZh: String(p.promptZh || ''),
-      posePromptEn: String(p.promptEn || ''),
-      negativePromptZh: String(p.negativePromptZh || ''),
-      negativePromptEn: String(p.negativePromptEn || ''),
-      sceneId: String(p.sceneId || ''),
-      ipadapterOn: p.ipadapterOn !== undefined ? Boolean(p.ipadapterOn) : base.ipadapterOn,
-      ipadapterWeight: Number.isFinite(Number(p.ipadapterWeight)) ? Number(p.ipadapterWeight) : base.ipadapterWeight,
-      ipadapterStartAt: Number.isFinite(Number(p.ipadapterStartAt)) ? Number(p.ipadapterStartAt) : base.ipadapterStartAt,
-      ipadapterEndAt: Number.isFinite(Number(p.ipadapterEndAt)) ? Number(p.ipadapterEndAt) : base.ipadapterEndAt,
-      promptZhSource: String((p as any).promptZhSource || ''),
-      lockNames: {}
-    }
-  }
-  const patchPoseDraft = (assetId: string, patch: Partial<PoseDraftEntry>, asset?: any) =>
-    setPoseDrafts((prev) => ({ ...prev, [assetId]: { ...(prev[assetId] || poseDraftOf(assetId, asset)), ...patch } }))
-  // 2026-09-02 草稿持久化时机统一出口（剧情生成完成/场景预填/抽卡点击/切场景/高级参数变更，不逐键入）
-  const savePoseDraft = (assetId: string, draft: PoseDraftEntry) => {
-    props.onPoseDraftSave?.(assetId, {
-      promptZh: String(draft.posePromptZh || ''),
-      promptEn: String(draft.posePromptEn || ''),
-      negativePromptZh: String(draft.negativePromptZh || ''),
-      negativePromptEn: String(draft.negativePromptEn || ''),
-      sceneId: String(draft.sceneId || ''),
-      ipadapterOn: Boolean(draft.ipadapterOn),
-      ipadapterWeight: Number(draft.ipadapterWeight) || 0.8,
-      ipadapterStartAt: Number(draft.ipadapterStartAt) || 0.2,
-      ipadapterEndAt: Number(draft.ipadapterEndAt) || 0.9,
-      promptZhSource: String(draft.promptZhSource || '')
-    })
-  }
 
-  // ============ 2026-09-10 填充保护（用户指令：非常重要的功能） ============
-  // 任何"填充类"动作（配方/按场景预填/填入草稿/槽位组装/AI 生成回填）在目标栏已有内容时：
-  // 弹 DIV 确认——追加（拼接保留）/ 覆盖（自动备份，可一键恢复）/ 取消；覆盖前备份存 localStorage，刷新可找回。
-  type PoseFillRequest = {
-    assetId: string
-    asset: any
-    sourceLabel: string
-    nextZh: string
-    nextEn?: string | null // null=不动英文栏；''=清空英文栏等自动翻译
-    enOnly?: boolean // 2026-09-10 翻译类填充：只动英文栏，确认弹窗预览与备份针对英文栏，无"追加"选项
-    source?: 'user' | 'ai'
-    extraPatch?: Partial<PoseDraftEntry>
-  }
-  const [poseFillGuard, setPoseFillGuard] = React.useState<PoseFillRequest | null>(null)
-  const poseFillBackupKey = String(props.projectId || '').trim() ? `talkscene.poseFillBackup.${String(props.projectId || '').trim()}` : ''
-  const [poseDraftBackups, setPoseDraftBackups] = React.useState<Record<string, { zh: string; en: string; savedAt: number; sourceLabel: string }>>(() => {
-    if (!poseFillBackupKey) return {}
-    try {
-      const raw = localStorage.getItem(poseFillBackupKey)
-      const obj = raw ? JSON.parse(raw) : {}
-      return obj && typeof obj === 'object' ? obj : {}
-    } catch {
-      return {}
-    }
-  })
-  const persistPoseDraftBackups = (next: Record<string, { zh: string; en: string; savedAt: number; sourceLabel: string }>) => {
-    setPoseDraftBackups(next)
-    try { if (poseFillBackupKey) localStorage.setItem(poseFillBackupKey, JSON.stringify(next)) } catch { /* 存储不可用时忽略 */ }
-  }
-  const applyPoseFill = (req: PoseFillRequest, mode: 'overwrite' | 'append') => {
-    const cur = poseDraftOf(req.assetId, req.asset)
-    if (mode === 'overwrite') {
-      const bak = { zh: String(cur.posePromptZh || ''), en: String(cur.posePromptEn || ''), savedAt: Date.now(), sourceLabel: req.sourceLabel }
-      if (bak.zh.trim() || bak.en.trim()) persistPoseDraftBackups({ ...poseDraftBackups, [req.assetId]: bak })
-    }
-    const zh = req.enOnly ? cur.posePromptZh : (mode === 'append' ? mergePromptFragment(cur.posePromptZh, req.nextZh, '，') : req.nextZh)
-    const en = req.enOnly ? String(req.nextEn || '') : (req.nextEn == null ? cur.posePromptEn : (mode === 'append' ? mergePromptFragment(cur.posePromptEn, req.nextEn, ', ') : req.nextEn))
-    const patch: Partial<PoseDraftEntry> = { posePromptZh: zh, posePromptEn: en, promptZhSource: req.source || 'ai', ...(req.extraPatch || {}) }
-    const next = { ...cur, ...patch }
-    patchPoseDraft(req.assetId, patch, req.asset)
-    savePoseDraft(req.assetId, next)
-  }
-  const requestPoseFill = (req: PoseFillRequest) => {
-    const cur = poseDraftOf(req.assetId, req.asset)
-    const curHas = req.enOnly
-      ? Boolean(String(cur.posePromptEn || '').trim())
-      : Boolean(String(cur.posePromptZh || '').trim() || String(cur.posePromptEn || '').trim())
-    const sameContent = req.enOnly
-      ? String(cur.posePromptEn || '') === String(req.nextEn || '')
-      : String(cur.posePromptZh || '') === String(req.nextZh || '') && (req.nextEn == null || String(cur.posePromptEn || '') === String(req.nextEn || ''))
-    // 空栏或内容相同：直接填入，不打扰；有内容才弹确认
-    if (!curHas || sameContent) {
-      applyPoseFill(req, 'overwrite')
-      return
-    }
-    setPoseFillGuard(req)
-  }
-  const restorePoseFillBackup = (assetId: string, asset: any) => {
-    const bak = poseDraftBackups[assetId]
-    if (!bak) return
-    const patch: Partial<PoseDraftEntry> = { posePromptZh: bak.zh, posePromptEn: bak.en, promptZhSource: 'user' }
-    const next = { ...poseDraftOf(assetId, asset), ...patch }
-    patchPoseDraft(assetId, patch, asset)
-    savePoseDraft(assetId, next)
-    const nextBackups = { ...poseDraftBackups }
-    delete nextBackups[assetId]
-    persistPoseDraftBackups(nextBackups)
-  }
-  const poseGenOptsOf = (assetId: string, asset?: any): PoseGenOpts => {
-    const d = poseDraftOf(assetId, asset)
-    const zh = String(d.posePromptZh || '').trim()
-    const en = String(d.posePromptEn || '').trim()
-    return {
-      // 2026-09-01 生图用英文稿优先，空则用中文稿（sprite 端点本来就会自动翻译中文）
-      posePrompt: en || zh,
-      posePromptZh: zh,
-      posePromptEn: en,
-      // 2026-09-02 姿势负向双稿随草稿下发（英文优先；空则 ComposeStudio 生成时翻译中文稿）
-      negativePromptZh: String(d.negativePromptZh || '').trim(),
-      negativePromptEn: String(d.negativePromptEn || '').trim(),
-      ipadapter: d.ipadapterOn
-        ? { enabled: true, weight: Number(d.ipadapterWeight) || 0.8, startAt: Number(d.ipadapterStartAt) || 0.2, endAt: Number(d.ipadapterEndAt) || 0.9 }
-        : undefined
-    }
-  }
-  const poseBusy = Boolean(props.poseGeneratingId || props.poseReviewingId || props.poseLockingKey || props.posePromptBusyId || props.assetPlanBusy)
-
-  // 2026-09-02 配方库/存为配方/槽位组装的 UI 态（本地，不进 plan）
-  const [poseRecipeOpenId, setPoseRecipeOpenId] = React.useState('')
-  const [poseSaveRecipeAssetId, setPoseSaveRecipeAssetId] = React.useState('')
-  const [poseRecipeName, setPoseRecipeName] = React.useState('')
-  // 2026-09-10 剧情姿势需求行内编辑缓存（失焦/生成时才落 plan，不逐键入持久化）
-  const [poseReqEdits, setPoseReqEdits] = React.useState<Record<string, string>>({})
-  const [poseSlots, setPoseSlots] = React.useState<Record<string, { view: string; action: string; expression: string; costume: string }>>({})
-  const poseSlotsOf = (assetId: string) => poseSlots[assetId] || { view: '', action: '', expression: '', costume: '服装与主参考保持一致' }
-  const patchPoseSlots = (assetId: string, patch: Partial<{ view: string; action: string; expression: string; costume: string }>) =>
-    setPoseSlots((prev) => ({ ...prev, [assetId]: { ...poseSlotsOf(assetId), ...prev[assetId], ...patch } }))
-  // 配方列表：内置（按资产类型过滤 forKind，any/character 对角色卡可见）+ 项目自定义
-  const poseRecipesFor = (asset: any): { name: string; promptZh: string; promptEn: string }[] => {
-    const kind = String(asset?.category || '') === 'prop' ? 'prop' : 'character'
-    const builtin = BUILTIN_POSE_RECIPES.filter((r) => r.forKind === 'any' || r.forKind === kind)
-    const custom = (Array.isArray(props.customPoseRecipes) ? props.customPoseRecipes : []).filter((r) => String(r?.name || '').trim())
-    return [...builtin.map((r) => ({ name: r.name, promptZh: r.promptZh, promptEn: r.promptEn })), ...custom.map((r) => ({ name: String(r.name), promptZh: String(r.promptZh || ''), promptEn: String(r.promptEn || '') }))]
-  }
+  // U 波项 4：三视图区主图当前视角（按资产记，默认正面）
+  const [sheetFocusByAsset, setSheetFocusByAsset] = React.useState<Record<string, string>>({})
+  // Z 波：sheet 栏序人工指定的本地选择态（assetId → {cellIndex: view}）
+  const [sheetAssignByAsset, setSheetAssignByAsset] = React.useState<Record<string, Record<string, string>>>({})
+  // R 波项 3（2026-10-27）：配方/存为配方/槽位组装的本地 UI 态随定义期 UI 退役一并撤（组装器+配方应用迁至蓝图姿态需求清单）
 
   // 2026-09-01 姿势图片管理画廊：当前打开的资产（候选 + 已锁定变体两组陈列）
   const poseGalleryAsset = props.poseGalleryAssetId
@@ -970,7 +888,11 @@ export default function StoryboardLockWorkspace(props: {
 
   // ============ 2026-09-02 事物总览大改版：一级卡片墙 / 二级详情弹层 / 配置 drawer ============
   // 视图模式：未手动切换时跟随确认态（计划已确认→卡片总览，否则步骤向导）；切换按钮只写 override
-  const [viewModeOverride, setViewModeOverride] = React.useState<null | 'grid' | 'steps'>(null)
+  const [viewModeOverride, setViewModeOverride] = React.useState<null | 'grid' | 'steps'>(() => restoredWizard?.view || null)
+  // 第 5 步：角色/道具在事物卡管理；地点模板与每幕场景图统一收进背景中心。
+  const [step5Scope, setStep5Scope] = React.useState<'assets' | 'scenes'>(() => restoredWizard?.scope === 'scenes' ? 'scenes' : 'assets')
+  const [sceneFocus, setSceneFocus] = React.useState<{ id: string; requestId: number } | null>(null)
+
   const viewMode: 'grid' | 'steps' = viewModeOverride || (props.assetConfirmReady ? 'grid' : 'steps')
   const [detailAssetId, setDetailAssetId] = React.useState('')
   const [detailAnchor, setDetailAnchor] = React.useState('')
@@ -1172,10 +1094,37 @@ export default function StoryboardLockWorkspace(props: {
     }
   }
 
-  const [gridFilterDone, setGridFilterDone] = React.useState<'all' | 'todo' | 'done'>('all')
-  const [gridFilterCat, setGridFilterCat] = React.useState<'all' | 'character' | 'prop' | 'location'>('all')
+  const [gridFilterDone, setGridFilterDone] = React.useState<'all' | 'todo' | 'done'>(restoredWizard?.fd || 'all')
+  const [gridFilterCat, setGridFilterCat] = React.useState<'all' | 'character' | 'prop'>(() => restoredWizard?.fc === 'character' || restoredWizard?.fc === 'prop' ? restoredWizard.fc : 'all')
+
+  React.useEffect(() => {
+    if (!props.open || !wizardStorageKey) return
+    try {
+      localStorage.setItem(wizardStorageKey, JSON.stringify({
+        step: wizardStep,
+        zh: promptZhConfirmed,
+        en: promptEnApproved,
+        // 2026-11-02 上次打开位置缓冲（view=有效视图；scope=出图管理维度；fd/fc=卡片筛选）
+        view: viewModeOverride || viewMode,
+        scope: step5Scope,
+        fd: gridFilterDone,
+        fc: gridFilterCat,
+        updatedAt: Date.now()
+      }))
+    } catch { /* 存储不可用时忽略 */ }
+  }, [props.open, wizardStorageKey, wizardStep, promptZhConfirmed, promptEnApproved, viewModeOverride, viewMode, step5Scope, gridFilterDone, gridFilterCat])
   const statusRank: Record<AssetLockTone, number> = { draft: 0, draw: 1, lineart: 2, locked: 3 }
+  const locationAssets = planAssets
+    .filter((asset) => String(asset?.category || '') === 'location')
+    .slice()
+    .sort((x, y) => String(x?.name || x?.id || '').localeCompare(String(y?.name || y?.id || ''), 'zh-CN'))
+  // 2026-11-06 背景元素（scenery）：与地点同归背景中心管理，不进事物卡片墙（避免两处重复管理）
+  const sceneryAssets = planAssets
+    .filter((asset) => String(asset?.category || '') === 'scenery')
+    .slice()
+    .sort((x, y) => String(x?.name || x?.id || '').localeCompare(String(y?.name || y?.id || ''), 'zh-CN'))
   const gridAssetsAll = planAssets
+    .filter((asset) => String(asset?.category || '') !== 'location' && String(asset?.category || '') !== 'scenery')
     .map((asset) => ({ asset, st: assetLockStatusOf(asset, props.assetPromptDrafts as any) }))
     .sort((x, y) => statusRank[x.st.tone] - statusRank[y.st.tone] || String(x.asset?.name || x.asset?.id || '').localeCompare(String(y.asset?.name || y.asset?.id || ''), 'zh-CN'))
   const gridAssets = gridAssetsAll.filter(({ asset, st }) => {
@@ -1190,6 +1139,11 @@ export default function StoryboardLockWorkspace(props: {
     lineart: gridAssetsAll.filter((x) => x.st.tone === 'lineart').length,
     locked: gridAssetsAll.filter((x) => x.st.tone === 'locked').length
   }
+  // 2026-11-06 提示词状态计数（与批量生成链同口径：缺中文稿=缺失；绿=全部完成 / 黄=有缺失 / 红=有失败；事物域=gridAssetsAll）
+  const promptDraftsMap = (props.assetPromptDrafts as any) || {}
+  const thingPromptMissingCount = gridAssetsAll.filter((x) => !String(promptDraftsMap[String(x.asset?.id || '')]?.promptZh || '').trim()).length
+  const thingPromptFailedCount = (props.enhanceAllSummary?.failures || []).filter((f) => gridAssetsAll.some((x) => String(x.asset?.id || '') === f.assetId)).length
+  const thingPromptStatusTone = thingPromptFailedCount > 0 ? 'bad' : (gridAssetsAll.length > 0 && thingPromptMissingCount === 0 ? 'ok' : 'warn')
   // 下一步建议：按状态缺口给一句可执行建议
   const gridSuggestion = gridCounts.draft > 0
     ? `还有 ${gridCounts.draft} 个事物待起草提示词 → 可先批量生成`
@@ -1197,43 +1151,42 @@ export default function StoryboardLockWorkspace(props: {
       ? `还有 ${gridCounts.draw} 个事物待抽卡 → 可批量生成参考图`
       : gridCounts.lineart > 0
         ? `还有 ${gridCounts.lineart} 个事物待锁线稿 → 打开对应资产生成线稿`
-        : (planAssets.length ? '全部事物已锁定，可进入正式场景出图' : '尚无资产计划，请用步骤模式完成初始化')
+        : (gridAssetsAll.length ? '全部事物已锁定，可进入正式场景出图' : '尚无角色或道具，可直接管理场景背景')
   const openAssetDetail = (assetId: string, anchor?: string) => {
     setDetailAssetId(String(assetId || '').trim())
     setDetailAnchor(String(anchor || '').trim())
   }
   const detailAsset = detailAssetId ? planAssets.find((a) => String(a?.id || '').trim() === detailAssetId) || null : null
-  const detailIndex = detailAsset ? gridAssetsAll.findIndex((x) => String(x.asset?.id || '').trim() === String(detailAsset.id || '').trim()) : -1
-  // 上一个/下一个：按一级排序后的数组顺序循环
+  const detailNavAssets = String(detailAsset?.category || '') === 'location'
+    ? locationAssets.map((asset) => ({ asset }))
+    : String(detailAsset?.category || '') === 'scenery'
+      ? sceneryAssets.map((asset) => ({ asset }))
+      : gridAssetsAll
+  const detailIndex = detailAsset ? detailNavAssets.findIndex((x) => String(x.asset?.id || '').trim() === String(detailAsset.id || '').trim()) : -1
+  // 上一个/下一个：地点与角色/道具分别在自己的管理集合内循环。
   const detailNav = (dir: 1 | -1) => {
-    if (!gridAssetsAll.length) return
-    const nextIdx = detailIndex < 0 ? 0 : (detailIndex + dir + gridAssetsAll.length) % gridAssetsAll.length
-    setDetailAssetId(String(gridAssetsAll[nextIdx]?.asset?.id || '').trim())
+    if (!detailNavAssets.length) return
+    const nextIdx = detailIndex < 0 ? 0 : (detailIndex + dir + detailNavAssets.length) % detailNavAssets.length
+    setDetailAssetId(String(detailNavAssets[nextIdx]?.asset?.id || '').trim())
     setDetailAnchor('')
   }
 
-  // 摆放属性「管理姿势变体…」跳转：打开即定位到该角色资产的姿势变体区
-  // 2026-09-02 大改版：grid 模式直接开二级详情弹层并滚到姿势变体区；steps 模式落第 5 步展开资产卡
+  // 摆放属性「管理姿势变体…」跳转 / 蓝图「管理」深度回跳：打开即定位到该资产的场景姿态区（可指定场景+需求）
+  // 2026-09-02 大改版：grid/steps 两模式统一开二级详情弹层并滚到姿势变体区（steps 模式第 5 步是卡片墙，姿态区在详情弹层里）
   React.useEffect(() => {
-    if (!props.open || !props.poseFocusAssetId) return undefined
-    const aid = String(props.poseFocusAssetId).trim()
+    if (!props.open || !props.poseFocus) return undefined
+    const aid = String(props.poseFocus.assetId || '').trim()
     if (!aid) return undefined
     setPoseExpanded((prev) => ({ ...prev, [aid]: true }))
-    if (viewMode === 'grid') {
-      setDetailAssetId(aid)
-      setDetailAnchor('pose')
-      const t = window.setTimeout(() => {
-        try { document.getElementById(`pose-asset-${aid}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) } catch {}
-      }, 400)
-      return () => window.clearTimeout(t)
-    }
-    setWizardStep(5)
+    setDetailAssetId(aid)
+    setDetailAnchor('pose')
+    if (viewMode === 'steps') setWizardStep(5)
     const t = window.setTimeout(() => {
       try { document.getElementById(`pose-asset-${aid}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) } catch {}
-    }, 300)
+    }, 400)
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.open, props.poseFocusAssetId])
+  }, [props.open, props.poseFocus])
 
   // 2026-09-02 二级详情弹层：打开后落到指定环节锚点（快捷动作「起草提示词/抽卡/去锁线稿」直达对应环节）
   React.useEffect(() => {
@@ -1248,20 +1201,43 @@ export default function StoryboardLockWorkspace(props: {
   }, [detailAssetId, detailAnchor])
 
   // ============ 2026-09-02 大改版：每资产卡内容抽成共用渲染函数（步骤模式与二级详情弹层共用同一份渲染，零逻辑分叉） ============
+  // 徽标按真实来源区分 AI 生成、翻译、已有草稿与计划英文稿；中文稿变更晚于翻译时标记待重译。
+  const zhBadge = (hasZh: boolean, aiGenerated = false) =>
+    !hasZh
+      ? <span className="bp-prompt-badge">空</span>
+      : <span className={`bp-prompt-badge ${aiGenerated ? 'is-ok' : ''}`}>{aiGenerated ? 'AI 已生成' : '已有草稿'}</span>
+  const enBadge = (enVal: string, zhUpdatedAt: string, translatedAt: string, aiGenerated: boolean) => {
+    if (!String(enVal || '').trim()) return <span className="bp-prompt-badge">空</span>
+    if (translatedAt && zhUpdatedAt && zhUpdatedAt > translatedAt) return <span className="bp-prompt-badge is-stale">待重译</span>
+    if (translatedAt) return <span className="bp-prompt-badge is-ok">已翻译</span>
+    return <span className={`bp-prompt-badge ${aiGenerated ? 'is-ok' : ''}`}>{aiGenerated ? 'AI 已生成' : '已有英文稿'}</span>
+  }
+
   const renderAssetPromptCard = (asset: any) => {
             const assetId = String(asset?.id || '').trim()
             const promptDraft = (props.assetPromptDrafts && props.assetPromptDrafts[assetId]) || {}
             const promptReview = promptDraft.promptReview || null
             const promptReviewTone = assetPromptReviewTone(promptReview)
             const promptEnhancedAt = String(promptDraft.enhancedAt || '').trim()
+            const promptAiGenerated = Boolean(promptEnhancedAt) && String(promptDraft.enhanceMode || '') === 'ai'
+            const isAnchorAsset = Boolean(String(asset?.renderStrategy || '').trim()) && String(asset?.renderStrategy || '').trim() !== 'ref_required'
+            const promptZhUpdatedAt = String((promptDraft as any).zhUpdatedAt || '').trim()
+            const promptTranslatedAt = String((promptDraft as any).translatedAt || '').trim()
             const optimizing = props.assetOptimizingId === assetId
             const translatingAssetPositive = props.translatingScope === `asset:positive:${assetId}`
             const translatingAssetNegative = props.translatingScope === `asset:negative:${assetId}`
             return (
-              <div className="story-lock-plan-prompt-card" key={assetId}>
+              <div id={`asset-prompt-${assetId}`} className="story-lock-plan-prompt-card" key={assetId} tabIndex={-1}>
                 <div className="story-lock-plan-prompt-head">
                   <span className="story-lock-plan-name">{String(asset?.name || assetId || '未命名')}</span>
                   <span className="hint">{getAssetCategoryLabel(String(asset?.category || ''))}</span>
+                  {isAnchorAsset ? <span className="ai-storyboard-status ok">锚点提示词</span> : null}
+                  <span
+                    className={`ai-storyboard-status ${promptAiGenerated ? 'ok' : ''}`}
+                    title={promptAiGenerated ? `本页 AI 生成时间：${promptEnhancedAt}` : isAnchorAsset ? '来自资产计划；没有本页 AI 生成记录' : '已有提示词草稿'}
+                  >
+                    {promptAiGenerated ? 'AI 已生成' : isAnchorAsset ? '计划已有锚点' : '已有草稿'}
+                  </span>
                   {promptReview ? <span className={`ai-storyboard-status ${promptReviewTone.cls}`}>评分 {Number.isFinite(Number(promptReview.score)) ? `${Math.round(Number(promptReview.score))}/100` : 'n/a'}</span> : null}
                   <button
                     className="btn secondary"
@@ -1277,20 +1253,20 @@ export default function StoryboardLockWorkspace(props: {
                       HTML label 激活行为会把"点在 label 任意位置"转发给第一个可操作子元素（恰好是按钮），
                       导致点 caption/空白处就打开公共库。改为 div 容器（span 仅是说明文字，无 htmlFor 损失）。 */}
                   <div className="story-lock-prompt-field">
-                    <span>正向 · 中文 <button className="story-lock-mini-btn" type="button" onClick={() => openPromptLibrary(assetPromptLibTarget(asset, 'positive'))} title="打开公共提示词库，插入到该事物正向中/英文栏，或存入库">公共库</button></span>
-                    <textarea className="story-lock-textarea compact-rows" value={String(promptDraft.promptZh || '')} onChange={(e) => props.onChangeAssetPrompt(assetId, { promptZh: e.target.value })} placeholder="点「AI 生成提示词」先出中文稿，再按需要微调" />
+                    <span>正向 · 中文 {zhBadge(Boolean(String(promptDraft.promptZh || '').trim()), promptAiGenerated)} <button className="story-lock-mini-btn" type="button" onClick={() => openPromptLibrary(assetPromptLibTarget(asset, 'positive'))} title="打开公共提示词库，插入到该事物正向中/英文栏，或存入库">公共库</button></span>
+                    <AutoGrowTextarea ariaLabel={`${String(asset?.name || assetId)} 正向中文提示词`} value={String(promptDraft.promptZh || '')} onChange={(value) => props.onChangeAssetPrompt(assetId, { promptZh: value })} placeholder="点「AI 生成提示词」先出中文稿，再按需要微调" />
                   </div>
                   <div className="story-lock-prompt-field">
-                    <span>正向 · 英文 <button className="story-lock-mini-btn" type="button" onClick={() => props.onTranslateAssetPromptPositive(assetId)} disabled={promptOpBusy} title="中文转英文">{translatingAssetPositive ? '翻译中…' : '中转英'}</button></span>
-                    <textarea className="story-lock-textarea compact-rows" value={String(promptDraft.promptEn || '')} onChange={(e) => props.onChangeAssetPrompt(assetId, { promptEn: e.target.value })} placeholder="中文稿确认后翻译，或手工编辑" />
+                    <span>正向 · 英文 {enBadge(String(promptDraft.promptEn || ''), promptZhUpdatedAt, promptTranslatedAt, promptAiGenerated)} <button className="story-lock-mini-btn" type="button" onClick={() => props.onTranslateAssetPromptPositive(assetId)} disabled={promptOpBusy} title="中文转英文">{translatingAssetPositive ? '翻译中…' : '中转英'}</button></span>
+                    <AutoGrowTextarea ariaLabel={`${String(asset?.name || assetId)} 正向英文提示词`} value={String(promptDraft.promptEn || '')} onChange={(value) => props.onChangeAssetPrompt(assetId, { promptEn: value })} placeholder="中文稿确认后翻译，或手工编辑" />
                   </div>
                   <div className="story-lock-prompt-field">
-                    <span>反向 · 中文 <button className="story-lock-mini-btn" type="button" onClick={() => openPromptLibrary(assetPromptLibTarget(asset, 'negative'))} title="打开公共提示词库，插入到该事物反向中/英文栏，或存入库">公共库</button></span>
-                    <textarea className="story-lock-textarea compact-rows" value={String(promptDraft.negativePromptZh || '')} onChange={(e) => props.onChangeAssetPrompt(assetId, { negativePromptZh: e.target.value })} placeholder="该事物专属的中文反向提示词" />
+                    <span>反向 · 中文 {zhBadge(Boolean(String(promptDraft.negativePromptZh || '').trim()), promptAiGenerated)} <button className="story-lock-mini-btn" type="button" onClick={() => openPromptLibrary(assetPromptLibTarget(asset, 'negative'))} title="打开公共提示词库，插入到该事物反向中/英文栏，或存入库">公共库</button></span>
+                    <AutoGrowTextarea ariaLabel={`${String(asset?.name || assetId)} 反向中文提示词`} value={String(promptDraft.negativePromptZh || '')} onChange={(value) => props.onChangeAssetPrompt(assetId, { negativePromptZh: value })} placeholder="该事物专属的中文反向提示词" />
                   </div>
                   <div className="story-lock-prompt-field">
-                    <span>反向 · 英文 <button className="story-lock-mini-btn" type="button" onClick={() => props.onTranslateAssetPromptNegative(assetId)} disabled={promptOpBusy} title="中文转英文">{translatingAssetNegative ? '翻译中…' : '中转英'}</button></span>
-                    <textarea className="story-lock-textarea compact-rows" value={String(promptDraft.negativePrompt || '')} onChange={(e) => props.onChangeAssetPrompt(assetId, { negativePrompt: e.target.value })} placeholder="翻译后或手工编辑" />
+                    <span>反向 · 英文 {enBadge(String(promptDraft.negativePrompt || ''), promptZhUpdatedAt, promptTranslatedAt, promptAiGenerated)} <button className="story-lock-mini-btn" type="button" onClick={() => props.onTranslateAssetPromptNegative(assetId)} disabled={promptOpBusy} title="中文转英文">{translatingAssetNegative ? '翻译中…' : '中转英'}</button></span>
+                    <AutoGrowTextarea ariaLabel={`${String(asset?.name || assetId)} 反向英文提示词`} value={String(promptDraft.negativePrompt || '')} onChange={(value) => props.onChangeAssetPrompt(assetId, { negativePrompt: value })} placeholder="翻译后或手工编辑" />
                   </div>
                 </div>
               </div>
@@ -1334,7 +1310,9 @@ export default function StoryboardLockWorkspace(props: {
             }, null)
             const selectedReview = (candidateAll.find((item: any) => normalizeAssetPath(String(item?.assetPath || '')) === normalizeAssetPath(primaryUri))?.analysis) || asset?.latestReferenceReview || null
             const selectedScore = Number(selectedReview?.score)
-            const generating = props.assetGeneratingId === assetId
+            // 2026-11-10：进行中的抽卡任务以服务端任务台账为准（覆盖刷新/跨会话发起，不只信本页内存态）
+            const activeRefTask = aiTasks.find((t) => t.kind === 'story.asset.reference_batch' && !t.done && String(t.assetId || '') === assetId) || null
+            const generating = props.assetGeneratingId === assetId || Boolean(activeRefTask)
             const analyzing = props.assetAnalyzingId === assetId
             const optimizing = props.assetOptimizingId === assetId
             const selecting = props.assetSelectingId === assetId
@@ -1345,46 +1323,7 @@ export default function StoryboardLockWorkspace(props: {
             const assetBusy = generating || analyzing || optimizing || selecting || linearting
             const translatingAssetPositive = props.translatingScope === `asset:positive:${assetId}`
             const translatingAssetNegative = props.translatingScope === `asset:negative:${assetId}`
-            // 2026-09-01 姿势变体（角色资产专属）：候选/已锁定变体持久化在 plan 资产上
-            const isCharacterAsset = String(asset?.category || '') === 'character'
-            const poseCands: any[] = Array.isArray((asset as any)?.poseCandidates) ? (asset as any).poseCandidates : []
-            const poseVariants: any[] = Array.isArray((asset as any)?.poseVariants) ? (asset as any).poseVariants : []
-            const poseDraft = poseDraftOf(assetId, asset)
-            const poseExpandedHere = Boolean(poseExpanded[assetId])
-            const poseGeneratingHere = props.poseGeneratingId === assetId
-            const poseReviewingHere = props.poseReviewingId === assetId
-            const poseProgressHere = poseGeneratingHere ? props.poseDrawProgress || null : null
-            const poseGenOneLabel = poseProgressHere && poseProgressHere.total === 1 ? '生成中…' : '生成 1 张'
-            const poseGenFourLabel = poseProgressHere && poseProgressHere.total > 1 ? `再出 4 张（${poseProgressHere.done}/${poseProgressHere.total}）` : '再出 4 张'
-            // 2026-09-01 剧情感知：关联场景选项（默认选中第一个），无关联场景时「按剧情生成提示词」回退到场景摘要逻辑
-            const poseSceneOpts = (props.poseSceneOptionsFor?.(assetId) || []).filter((o) => o && String(o.sceneId || '').trim())
-            const poseSceneSel = String(poseDraft.sceneId || '').trim() || String(poseSceneOpts[0]?.sceneId || '')
-            const poseGalleryCount = poseCands.length + poseVariants.length
-            // 2026-09-02 评分反馈闭环：该资产最新一张有评分的候选（按 createdAt 倒序取首）
-            const poseLatestScored = poseCands
-              .filter((c: any) => Number.isFinite(Number(c?.score)))
-              .sort((a: any, b: any) => Date.parse(String(b?.createdAt || '')) - Date.parse(String(a?.createdAt || '')))[0] || null
-            const poseSlotsHere = poseSlotsOf(assetId)
-            // 2026-09-10 剧情姿势需求：AI 提取的逐场景姿势需求清单（持久化在 plan 资产 poseRequirements）
-            const poseReqs: any[] = Array.isArray((asset as any)?.poseRequirements) ? (asset as any).poseRequirements : []
-            const poseDoneReqIds = new Set(poseCands.map((c: any) => String(c?.reqId || '')).filter(Boolean))
-            const poseReqTodoCount = poseReqs.filter((r) => String(r?.promptZh || r?.promptEn || '').trim() && !poseDoneReqIds.has(String(r?.reqId || ''))).length
-            // 2026-09-16 状态变体（道具/地点等非角色资产专属）：需求清单持久化在 plan 资产 stateRequirements，
-            // 已锁定变体在 stateVariants（服务端生成时写入）；mergeInto 表示终态并入另一道具，不单独出状态图
-            const isPropStateAsset = !isCharacterAsset
-            const stateReqs: any[] = Array.isArray((asset as any)?.stateRequirements) ? (asset as any).stateRequirements : []
-            const stateVariants: any[] = Array.isArray((asset as any)?.stateVariants) ? (asset as any).stateVariants : []
-            const stateMergeInto = (asset as any)?.stateMergeInto && typeof (asset as any).stateMergeInto === 'object' ? (asset as any).stateMergeInto : null
-            const stateChecked = Boolean(String((asset as any)?.stateCheckedAt || '').trim())
-            const stateExpandedHere = Boolean(stateExpanded[assetId])
-            const stateExtractingHere = props.propStateBusyId === assetId
-            const stateBusy = poseBusy || Boolean(props.propStateBusyId || props.propStateGenKey)
-            const stateMergeContainerId = String(stateMergeInto?.containerPropId || '').trim()
-            const stateMergeContainerName = stateMergeInto
-              ? (String(stateMergeInto?.containerName || '').trim()
-                || String((planAssets.find((a: any) => String(a?.id || '').trim() === stateMergeContainerId) || {})?.name || '').trim()
-                || stateMergeContainerId)
-              : ''
+            // 2026-11-01 姿势/状态变体两段抽至 ScenePoseWorkbench（下方渲染）；此处不再派生姿态本地变量
             return (
               <div className="story-lock-asset-row" key={assetId}>
                 <div className="story-lock-asset-candidate-strip">
@@ -1446,8 +1385,8 @@ export default function StoryboardLockWorkspace(props: {
 
                 <div className="story-lock-asset-detail">
                   <div className="story-lock-asset-info">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-                      <div style={{ fontWeight: 800, fontSize: 24 }}>{String(asset?.name || assetId || '未命名资产')}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ fontWeight: 800, fontSize: 20, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }} title={String(asset?.name || assetId || '未命名资产')}>{String(asset?.name || assetId || '未命名资产')}</div>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                         <button
                           className="btn secondary"
@@ -1464,7 +1403,7 @@ export default function StoryboardLockWorkspace(props: {
                     </div>
                     <div className="hint">{getAssetCategoryLabel(String(asset?.category || ''))} / 涉及 {Number(asset?.sceneCount || 0)} 个场景</div>
                     <div className="hint story-lock-score-summary">
-                      {selectedScore === selectedScore ? `当前主参考评分：${Math.round(selectedScore)} / 100` : (bestScore === bestScore ? `当前批次最佳评分：${bestScore} / 100` : '当前还没有可评分主参考')}
+                      {Number.isFinite(selectedScore) ? `当前主参考评分：${Math.round(selectedScore)} / 100` : (bestScore != null && Number.isFinite(bestScore) ? `当前批次最佳评分：${bestScore} / 100` : '当前还没有可评分主参考')}
                       {selectedReview?.summary ? `，${String(selectedReview.summary)}` : ''}
                     </div>
                     {String((asset?.generatedRefs?.[asset?.generatedRefs?.length - 1]?.negativePrompt) || '').trim() ? (
@@ -1479,627 +1418,50 @@ export default function StoryboardLockWorkspace(props: {
                       <button className="btn secondary" type="button" onClick={() => props.onGenerateAssetLineart(assetId)} disabled={props.assetPlanBusy || assetBusy || lineartPendingReview || !String(asset?.primaryReferenceAssetUri || '').trim() || !assetId}>{selecting ? '主参考处理中…' : (linearting ? '线稿生成中…' : (lineartPendingReview ? '待审核批准' : '生成线稿'))}</button>
                       <button className="btn secondary" type="button" onClick={() => props.onOpenAssetGallery(assetId)} disabled={props.assetPlanBusy || assetBusy || !assetId}>{selecting ? '主参考处理中…' : (props.assetGalleryBusy && props.assetGallery?.assetId === assetId ? '加载管理中…' : (batchOverflow > 0 ? `管理图片（更多 ${batchOverflow}）` : '管理图片'))}</button>
                     </div>
+                    {/* 2026-11-10：抽卡进行中就地状态（蓝=进行中；发起后请勿重复点击——服务端同资产并发护栏兜底拒重） */}
+                    {activeRefTask ? (
+                      <div className="hint" role="status" style={{ marginTop: 6 }}>
+                        <span className="ai-storyboard-status pending">生成中</span>{' '}
+                        {activeRefTask.message || '参考图抽卡进行中…'}
+                        {Number(activeRefTask.total) > 0 ? `（候选 ${Number(activeRefTask.current) || 0}/${Number(activeRefTask.total)}）` : ''}
+                        ，任务完成后候选自动回填，请勿重复点击
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
-                {/* 2026-09-01 姿势变体管理区（角色资产专属）：出图统一在锁定向导，摆放属性只消费已锁定变体 */}
-                {isCharacterAsset ? (
-                  <div className="pose-variant-section" id={`pose-asset-${assetId}`}>
-                    <div className="pose-variant-head" onClick={() => setPoseExpanded((prev) => ({ ...prev, [assetId]: !poseExpandedHere }))}>
-                      <span>姿势变体<span className="hint" style={{ fontWeight: 400 }}>（可选 · 精细档；简谱演绎推荐走「表情差分需求」）</span></span>
-                      <span className="hint">{poseVariants.length ? `已锁定 ${poseVariants.length} 个 · 候选 ${poseCands.length} 张` : (poseCands.length ? `候选 ${poseCands.length} 张` : '未抽卡')}</span>
-                      <span>{poseExpandedHere ? '－' : '＋'}</span>
-                    </div>
-                    {poseExpandedHere ? (
-                      <div className="pose-variant-body">
-                        {/* 2026-09-02 评分反馈闭环：最近评分条（最新有分候选：徽标+理由截断+悬停全文）+ 按评语优化提示词 */}
-                        {poseLatestScored ? (
-                          <div className="pose-review-strip">
-                            <span className="pose-pool-score" style={{ position: 'static', color: poseScoreBadge(poseLatestScored).color }}>
-                              {poseScoreBadge(poseLatestScored).text}
-                            </span>
-                            <span className="hint pose-review-strip-reason" title={String(poseLatestScored.reason || '')}>
-                              最近评分：{String(poseLatestScored.reason || '（无理由）').slice(0, 60)}{String(poseLatestScored.reason || '').length > 60 ? '…' : ''}
-                            </span>
-                            <button
-                              type="button"
-                              className="btn secondary"
-                              style={{ fontSize: 12, padding: '4px 8px' }}
-                              disabled={poseBusy}
-                              title="把评审理由作为改进反馈传给 AI，重新生成中英文稿（剧情动作要求保持不变）"
-                              onClick={() => void (async () => {
-                                const res = await props.onPoseAiPrompt?.(assetId, {
-                                  userHint: String(poseDraft.posePromptZh || '').trim(),
-                                  sceneId: poseSceneSel,
-                                  reviewFeedback: String(poseLatestScored.reason || '').trim()
-                                })
-                                if (res && (res.promptZh || res.promptEn)) {
-                                  // 2026-09-10 填充保护：栏内已有内容时弹确认（追加/覆盖可恢复/取消）
-                                  requestPoseFill({ assetId, asset, sourceLabel: '按评语优化提示词', nextZh: String(res.promptZh || ''), nextEn: String(res.promptEn || '') })
-                                }
-                              })()}
-                            >
-                              {props.posePromptBusyId === assetId ? '优化中…' : '按评语优化提示词'}
-                            </button>
-                          </div>
-                        ) : null}
-                        {/* 2026-09-01 剧情感知：先选关联场景（节点正文作为剧情上下文），再「按剧情生成提示词」 */}
-                        <div className="pose-pool-field">
-                          <label>关联场景（剧情上下文）</label>
-                          <select
-                            className="sel"
-                            value={poseSceneSel}
-                            disabled={poseBusy || poseSceneOpts.length === 0}
-                            onChange={(e) => {
-                              // 2026-09-02 持久化时机 d：切换关联场景即存草稿
-                              const next = { ...poseDraft, sceneId: e.target.value }
-                              patchPoseDraft(assetId, { sceneId: e.target.value }, asset)
-                              savePoseDraft(assetId, next)
-                            }}
-                          >
-                            {poseSceneOpts.length === 0 ? (
-                              <option value="">（无关联场景）</option>
-                            ) : (
-                              poseSceneOpts.map((o) => (
-                                <option key={o.sceneId} value={o.sceneId}>
-                                  {o.label}
-                                </option>
-                              ))
-                            )}
-                          </select>
-                        </div>
-                        {/* 2026-09-10 剧情姿势需求：AI 提取候选清单 → 逐条可改 → 单个/批量手动生成（与上方草稿链互补） */}
-                        {isCharacterAsset ? (
-                          <div className="pose-req-block">
-                            <div className="pose-req-head">
-                              <span className="pose-req-title">剧情姿势需求{poseReqs.length ? `（${poseReqs.length} 条）` : ''}</span>
-                              <button
-                                type="button"
-                                className="btn secondary"
-                                disabled={poseBusy || props.poseReqBusyId === assetId}
-                                title="AI 读取全故事场景与角色出场表，提取该角色在每个剧情点的姿势/朝向/动作/神态需求（候选制，可逐条修改）"
-                                onClick={() => props.onPoseRequirementsExtract?.(assetId)}
-                              >
-                                {props.poseReqBusyId === assetId ? '提取中…' : (poseReqs.length ? '重新提取剧情姿势需求' : '提取剧情姿势需求')}
-                              </button>
-                              <button
-                                type="button"
-                                className="btn secondary"
-                                disabled={poseBusy || props.poseReqBusyId === assetId}
-                                title="简谱演绎推荐：聚合剧情中该角色的全部表情，播种「仅换表情」差分需求（中性站姿+神态特写）。锁定后摆位会按各场景剧情表情自动选用，无需逐场景姿势变体"
-                                onClick={() => props.onExpressionRequirementsExtract?.(assetId)}
-                              >
-                                {props.poseReqBusyId === assetId ? '处理中…' : '表情差分需求'}
-                              </button>
-                              <button
-                                type="button"
-                                className="btn secondary"
-                                disabled={poseBusy || props.poseReqBusyId === assetId || poseReqTodoCount === 0}
-                                title="按需求清单逐条串行出图（已有候选的需求自动跳过；可随时中断，已出候选保留）"
-                                onClick={() => props.onPoseRequirementsBatchGenerate?.(assetId)}
-                              >
-                                {props.poseGeneratingId === assetId && props.poseDrawProgress ? `批量生成中（${props.poseDrawProgress.done}/${props.poseDrawProgress.total}）` : `按需求批量生成（${poseReqTodoCount}）`}
-                              </button>
-                            </div>
-                            {poseReqs.length === 0 ? (
-                              <div className="hint">尚未提取剧情姿势需求。提取后每条可单独修改、单个生成，也可一键批量生成。</div>
-                            ) : (
-                              <div className="pose-req-list">
-                                {poseReqs.map((req: any) => {
-                                  const reqId = String(req?.reqId || '')
-                                  const done = poseDoneReqIds.has(reqId)
-                                  const editValue = poseReqEdits[reqId] != null ? poseReqEdits[reqId] : String(req?.promptZh || '')
-                                  return (
-                                    <div className={`pose-req-row ${done ? 'done' : ''}`} key={reqId}>
-                                      <div className="pose-req-meta">
-                                        <span className="pose-req-scene" title={String(req?.sceneName || req?.sceneId || '')}>{String(req?.sceneName || req?.sceneId || '未命名场景')}</span>
-                                        <span className="pose-req-chips">
-                                          {String(req?.pose || '').trim() ? <span className="pose-req-chip">{String(req.pose)}</span> : null}
-                                          {String(req?.view || '').trim() ? <span className="pose-req-chip">{String(req.view)}</span> : null}
-                                          {String(req?.action || '').trim() ? <span className="pose-req-chip">{String(req.action)}</span> : null}
-                                          {String(req?.expression || '').trim() ? <span className="pose-req-chip">{String(req.expression)}</span> : null}
-                                          {Array.isArray(req?.excludedProps) && req.excludedProps.length ? (
-                                            <span className="pose-req-chip" title="这些道具/地点词已从生成提示词中剔除并加入负向：立绘只画角色本身，道具由独立立绘经摆位合成进场景">已排除：{req.excludedProps.join('、')}</span>
-                                          ) : null}
-                                        </span>
-                                        {done ? <span className="ai-storyboard-status ok">已出候选</span> : null}
-                                      </div>
-                                      <div className="pose-req-actions">
-                                        <input
-                                          className="input pose-req-input"
-                                          type="text"
-                                          value={editValue}
-                                          placeholder="姿势需求中文提示词（可改）"
-                                          onChange={(e) => setPoseReqEdits((prev) => ({ ...prev, [reqId]: e.target.value }))}
-                                          onBlur={() => {
-                                            const v = poseReqEdits[reqId]
-                                            if (v != null && v !== String(req?.promptZh || '')) props.onPoseRequirementChange?.(assetId, reqId, { promptZh: v })
-                                          }}
-                                        />
-                                        <button
-                                          type="button"
-                                          className="story-lock-mini-btn"
-                                          disabled={poseBusy || !editValue.trim()}
-                                          title="把该需求填入下方「姿势需求 · 中文」栏并设为关联场景——即可用现有 生成1张/再出4张/AI评分 草稿链出图"
-                                          onClick={() => {
-                                            const v = editValue.trim()
-                                            if (!v) return
-                                            const nextSceneId = String(req?.sceneId || poseDraft.sceneId || '')
-                                            // 2026-09-10 填充保护：已有内容时弹确认（追加/覆盖可恢复/取消）；同时设为关联场景
-                                            requestPoseFill({ assetId, asset, sourceLabel: `剧情需求「${String(req?.sceneName || req?.sceneId || '')}」`, nextZh: v, nextEn: '', extraPatch: { sceneId: nextSceneId } })
-                                            if (poseReqEdits[reqId] != null && poseReqEdits[reqId] !== String(req?.promptZh || '')) props.onPoseRequirementChange?.(assetId, reqId, { promptZh: v })
-                                          }}
-                                        >
-                                          填入草稿
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="btn secondary"
-                                          disabled={poseBusy || props.poseReqBusyId === assetId || !editValue.trim()}
-                                          title="按这一条需求生成 1 张姿势候选（英文稿缺失时自动生成时翻译）"
-                                          onClick={() => {
-                                            const v = poseReqEdits[reqId]
-                                            if (v != null && v !== String(req?.promptZh || '')) props.onPoseRequirementChange?.(assetId, reqId, { promptZh: v })
-                                            props.onPoseRequirementGenerate?.(assetId, reqId)
-                                          }}
-                                        >
-                                          {props.poseGeneratingId === assetId ? '生成中…' : '生成 1 张'}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="icon-btn danger"
-                                          disabled={poseBusy || props.poseReqBusyId === assetId}
-                                          title="删除这条姿势需求（不影响已出候选）"
-                                          aria-label="删除该条姿势需求"
-                                          onClick={() => props.onPoseRequirementDelete?.(assetId, reqId)}
-                                        >
-                                          ✕
-                                        </button>
-                                      </div>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        ) : null}
-                        {/* 2026-09-01 姿势需求改「中文稿→英文稿」双栏（与第 4 步提示词卡同款 story-lock 样式） */}
-                        <div className="pose-pool-toolbar">
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            disabled={poseBusy || (poseSceneOpts.length > 0 && !poseSceneSel)}
-                            title={
-                              poseSceneOpts.length > 0 && !poseSceneSel
-                                ? '请先选择关联剧情场景'
-                                : 'AI 读取选中场景的剧情正文，判断该角色在此剧情点的视角/动作/表情需求，结合物种解剖约束生成中文稿并自动翻译英文稿（可继续手改）；无关联场景时回退用全部关联场景摘要；生成不携带中文栏旧稿，避免残留姿势重生'
-                            }
-                            onClick={() => void (async () => {
-                              const res = await props.onPoseAiPrompt?.(assetId, { userHint: String(poseDraft.posePromptZh || '').trim(), sceneId: poseSceneSel })
-                              if (res && (res.promptZh || res.promptEn)) {
-                                // 2026-09-10 填充保护：栏内已有内容时弹确认（追加/覆盖可恢复/取消）
-                                requestPoseFill({ assetId, asset, sourceLabel: '按剧情生成提示词', nextZh: String(res.promptZh || ''), nextEn: String(res.promptEn || '') })
-                              }
-                            })()}
-                          >
-                            {props.posePromptBusyId === assetId ? '生成中…' : '按剧情生成提示词'}
-                          </button>
-                          {/* 2026-09-02 配方库：内置 + 项目自定义，点选填入双栏（配方无英文稿则英文栏清空等自动翻译） */}
-                          <span className="pose-recipe-anchor">
-                            <button
-                              type="button"
-                              className="btn secondary"
-                              disabled={poseBusy}
-                              title="从配方库选择姿势提示词填入双栏"
-                              onClick={() => setPoseRecipeOpenId(poseRecipeOpenId === assetId ? '' : assetId)}
-                            >
-                              配方
-                            </button>
-                            {poseRecipeOpenId === assetId ? (
-                              <div className="pose-recipe-pop" role="menu">
-                                {poseRecipesFor(asset).map((r) => (
-                                  <button
-                                    key={r.name}
-                                    type="button"
-                                    className="pose-recipe-item"
-                                    onClick={() => {
-                                      // 2026-09-10 填充保护：已有内容时弹确认（追加/覆盖可恢复/取消）
-                                      requestPoseFill({ assetId, asset, sourceLabel: `配方「${r.name}」`, nextZh: r.promptZh, nextEn: r.promptEn || '' })
-                                      setPoseRecipeOpenId('')
-                                    }}
-                                  >
-                                    {r.name}
-                                  </button>
-                                ))}
-                                {poseRecipesFor(asset).length === 0 ? <div className="hint" style={{ padding: 8 }}>暂无配方</div> : null}
-                              </div>
-                            ) : null}
-                          </span>
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            disabled={poseBusy || !String(poseDraft.posePromptZh || '').trim()}
-                            title="把当前中英文稿存为项目自定义配方（全项目姿势区可用）"
-                            onClick={() => {
-                              setPoseSaveRecipeAssetId(assetId)
-                              setPoseRecipeName('')
-                            }}
-                          >
-                            存为配方
-                          </button>
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            onClick={() => {
-                              // 2026-09-10 填充保护：已有内容时弹确认；预填只动中文栏（英文栏不动）
-                              requestPoseFill({ assetId, asset, sourceLabel: '按场景预填', nextZh: String(props.onPosePrefill?.(assetId) || ''), nextEn: null })
-                            }}
-                            disabled={poseBusy}
-                            title="拼接该资产关联场景的文本摘要填入中文栏作为初稿"
-                          >
-                            按场景预填
-                          </button>
-                          <button type="button" className="btn secondary" onClick={() => patchPoseDraft(assetId, { advancedOpen: !poseDraft.advancedOpen }, asset)}>
-                            {poseDraft.advancedOpen ? '收起高级参数' : '高级参数'}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            onClick={() => props.onPoseGalleryOpen?.(assetId)}
-                            disabled={poseBusy}
-                            title="集中管理该资产的姿势候选与已锁定变体（查看大图/删除）"
-                          >
-                            {poseGalleryCount > 0 ? `管理图片（更多 ${poseGalleryCount}）` : '管理图片'}
-                          </button>
-                        </div>
-                        <div className="story-lock-prompt-grid">
-                          {/* 同 2026-10-07 修复：label 内嵌按钮会导致点 caption 误触按钮，改 div */}
-                          <div className="story-lock-prompt-field">
-                            <span>姿势需求 · 中文
-                              {poseDraftBackups[assetId] ? (
-                                <button
-                                  className="story-lock-mini-btn"
-                                  type="button"
-                                  title={`恢复「${poseDraftBackups[assetId].sourceLabel}」覆盖前的内容（${new Date(poseDraftBackups[assetId].savedAt).toLocaleTimeString('zh-CN', { hour12: false })} 备份）`}
-                                  onClick={() => restorePoseFillBackup(assetId, asset)}
-                                >↩ 恢复覆盖前内容</button>
-                              ) : null}
-                            </span>
-                            <textarea
-                              className="story-lock-textarea compact-rows"
-                              value={poseDraft.posePromptZh}
-                              onChange={(e) => patchPoseDraft(assetId, { posePromptZh: e.target.value, promptZhSource: e.target.value.trim() ? 'user' : '' }, asset)}
-                              placeholder="例如：背身，伸右臂指向泥土地，认真表情，服装与主参考一致"
-                            />
-                          </div>
-                          <div className="story-lock-prompt-field">
-                            <span>姿势需求 · 英文
-                              <button
-                                className="story-lock-mini-btn"
-                                type="button"
-                                disabled={poseBusy || !String(poseDraft.posePromptZh || '').trim()}
-                                title="把中文栏内容翻译成英文稿（已有英文内容时会先弹确认：追加/覆盖可恢复）"
-                                onClick={() => void (async () => {
-                                  const en = await props.onPoseDraftTranslate?.(assetId)
-                                  if (en) requestPoseFill({ assetId, asset, sourceLabel: '中文转英文', nextZh: '', nextEn: en, enOnly: true })
-                                })()}
-                              >
-                                {props.posePromptBusyId === assetId ? '翻译中…' : '中文转英文'}
-                              </button>
-                            </span>
-                            <textarea
-                              className="story-lock-textarea compact-rows"
-                              value={poseDraft.posePromptEn}
-                              onChange={(e) => patchPoseDraft(assetId, { posePromptEn: e.target.value })}
-                              placeholder="AI 生成后自动翻译；可手工编辑，例如：(back view, view from behind, facing away from viewer:1.4), pointing left"
-                            />
-                          </div>
-                        </div>
-                        {/* 2026-09-02 负向词库 chips + 姿势负向中文栏（英文稿在生成时自动翻译；chips 去重追加） */}
-                        <div className="pose-pool-field">
-                          <label>姿势负向（可选）</label>
-                          <div className="pose-neg-chips">
-                            {POSE_NEGATIVE_CHIPS.map((chip) => (
-                              <button
-                                key={chip.label}
-                                type="button"
-                                className="pose-neg-chip"
-                                disabled={poseBusy}
-                                title={`追加排除：${chip.phrase}`}
-                                onClick={() => {
-                                  const cur = String(poseDraft.negativePromptZh || '').trim()
-                                  const parts = cur ? cur.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : []
-                                  if (parts.includes(chip.phrase)) return
-                                  // 中文栏变更后英文稿失效（生成时重新翻译）
-                                  const next = { ...poseDraft, negativePromptZh: [...parts, chip.phrase].join('，'), negativePromptEn: '' }
-                                  patchPoseDraft(assetId, { negativePromptZh: next.negativePromptZh, negativePromptEn: '' }, asset)
-                                  savePoseDraft(assetId, next)
-                                }}
-                              >
-                                {chip.label}
-                              </button>
-                            ))}
-                          </div>
-                          <input
-                            value={poseDraft.negativePromptZh}
-                            onChange={(e) => patchPoseDraft(assetId, { negativePromptZh: e.target.value }, asset)}
-                            onBlur={() => savePoseDraft(assetId, poseDraftOf(assetId, asset))}
-                            placeholder="例如：人物，多只动物，换装，写实"
-                          />
-                        </div>
-                        {/* 2026-09-02 槽位组装：视角+动作+表情+服装约束 拼成中文句填入中文栏（英文栏清空等自动翻译） */}
-                        <div className="pose-assemble-row">
-                          <select className="sel" value={poseSlotsHere.view} disabled={poseBusy} onChange={(e) => patchPoseSlots(assetId, { view: e.target.value })}>
-                            <option value="">视角…</option>
-                            {POSE_VIEW_OPTIONS.map((v) => (
-                              <option key={v} value={v}>{v}</option>
-                            ))}
-                          </select>
-                          <input value={poseSlotsHere.action} disabled={poseBusy} onChange={(e) => patchPoseSlots(assetId, { action: e.target.value })} placeholder="动作（如：指向稻草堆）" />
-                          <input value={poseSlotsHere.expression} disabled={poseBusy} onChange={(e) => patchPoseSlots(assetId, { expression: e.target.value })} placeholder="表情（如：得意）" />
-                          <input value={poseSlotsHere.costume} disabled={poseBusy} onChange={(e) => patchPoseSlots(assetId, { costume: e.target.value })} placeholder="服装约束" />
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            disabled={poseBusy || !poseSlotsHere.view || !String(poseSlotsHere.action || '').trim()}
-                            title="把槽位拼成自然中文句填入中文栏（已有内容时弹确认：追加/覆盖可恢复；英文栏清空等自动翻译）"
-                            onClick={() => {
-                              const sentence = [poseSlotsHere.view, String(poseSlotsHere.action || '').trim(), String(poseSlotsHere.expression || '').trim(), String(poseSlotsHere.costume || '').trim()].filter(Boolean).join('，')
-                              // 槽位组装是用户主动操作：来源记 user（下次「按剧情生成」会把它当额外要求参考）
-                              requestPoseFill({ assetId, asset, sourceLabel: '槽位组装', nextZh: sentence, nextEn: '', source: 'user' })
-                            }}
-                          >
-                            组装进中文栏
-                          </button>
-                        </div>
-                        {poseDraft.advancedOpen ? (
-                          <div className="pose-variant-advanced">
-                            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                              <input
-                                type="checkbox"
-                                checked={poseDraft.ipadapterOn}
-                                onChange={(e) => {
-                                  // 2026-09-02 持久化时机 e：高级参数变更即存（开关 onChange，数字档 onBlur）
-                                  const next = { ...poseDraft, ipadapterOn: e.target.checked }
-                                  patchPoseDraft(assetId, { ipadapterOn: e.target.checked }, asset)
-                                  savePoseDraft(assetId, next)
-                                }}
-                              />
-                              IPAdapter 身份锚定（2026-09-01 起默认开：姿势变体延续主参考图；可关闭或调权重/区间）
-                            </label>
-                            {poseDraft.ipadapterOn ? (
-                              <div className="hint" style={{ marginBottom: 6 }}>实测档位：权重低（0.7）姿势更自由但服装颜色可能漂；权重高（0.9）服装全锁但姿势会被主参考站姿拉回。默认 0.8 / 0.2-0.9 折中，按评分结果微调。</div>
-                            ) : null}
-                            {poseDraft.ipadapterOn ? (
-                              <div className="pose-pool-grid2" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
-                                <div className="pose-pool-field">
-                                  <label>权重</label>
-                                  <input
-                                    type="number"
-                                    step="0.05"
-                                    value={poseDraft.ipadapterWeight}
-                                    onChange={(e) => patchPoseDraft(assetId, { ipadapterWeight: Number(e.target.value) }, asset)}
-                                    onBlur={() => savePoseDraft(assetId, poseDraft)}
-                                  />
-                                </div>
-                                <div className="pose-pool-field">
-                                  <label>区间 start</label>
-                                  <input
-                                    type="number"
-                                    step="0.05"
-                                    value={poseDraft.ipadapterStartAt}
-                                    onChange={(e) => patchPoseDraft(assetId, { ipadapterStartAt: Number(e.target.value) }, asset)}
-                                    onBlur={() => savePoseDraft(assetId, poseDraft)}
-                                  />
-                                </div>
-                                <div className="pose-pool-field">
-                                  <label>区间 end</label>
-                                  <input
-                                    type="number"
-                                    step="0.05"
-                                    value={poseDraft.ipadapterEndAt}
-                                    onChange={(e) => patchPoseDraft(assetId, { ipadapterEndAt: Number(e.target.value) }, asset)}
-                                    onBlur={() => savePoseDraft(assetId, poseDraft)}
-                                  />
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                        <div className="pose-pool-toolbar">
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            onClick={() => {
-                              // 2026-09-02 持久化时机 c：抽卡点击先存草稿再生成
-                              savePoseDraft(assetId, poseDraft)
-                              props.onPoseGenerate?.(assetId, poseGenOptsOf(assetId, asset))
-                            }}
-                            disabled={poseBusy || !String(poseDraft.posePromptEn || poseDraft.posePromptZh || '').trim()}
-                          >
-                            {poseGenOneLabel}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            onClick={() => {
-                              savePoseDraft(assetId, poseDraft)
-                              props.onPoseGenerateFour?.(assetId, poseGenOptsOf(assetId, asset))
-                            }}
-                            disabled={poseBusy || !String(poseDraft.posePromptEn || poseDraft.posePromptZh || '').trim()}
-                          >
-                            {poseGenFourLabel}
-                          </button>
-                          <button type="button" className="btn secondary" onClick={() => props.onPoseReviewAll?.(assetId)} disabled={poseBusy || poseCands.length === 0} title="对未评分候选逐个与锁定主参考对比评分（串行，姿势不同不扣分）">{poseReviewingHere ? '评分中…' : 'AI 评分'}</button>
-                        </div>
-                        {poseCands.length === 0 ? (
-                          <div className="pose-pool-empty">还没有姿势候选：先写姿势需求，再「生成 1 张」或「再出 4 张」。</div>
-                        ) : (
-                          <div className="pose-pool-grid">
-                            {poseCands.map((c: any, idx: number) => {
-                              const cPath = String(c?.assetPath || '').trim()
-                              const badge = poseScoreBadge(c)
-                              const lockingHere = props.poseLockingKey === `${assetId}:${cPath}`
-                              const cReqId = String(c?.reqId || '')
-                              // 2026-10-06 表情差分：expr::{expression} 需求出的候选，默认锁定名「表情·X」——摆位按剧情表情自动选用
-                              const defaultLockName = cReqId.startsWith('expr::') ? `表情·${cReqId.slice(6)}` : `姿势 ${poseVariants.length + 1}`
-                              const lockName = String(poseDraft.lockNames[cPath] ?? defaultLockName)
-                              return (
-                                <div className="pose-pool-card" key={cPath || idx}>
-                                  <img alt="姿势候选" src={toProjectAssetUrl(String(props.projectId || ''), cPath)} />
-                                  <span className="pose-pool-score" style={{ color: badge.color }} title={String(c?.reason || '未评分')}>{badge.text}</span>
-                                  <div className="pose-pool-card-ops">
-                                    <span className="hint">候选 {idx + 1}</span>
-                                    <span style={{ display: 'inline-flex', gap: 4 }}>
-                                      <button type="button" className="icon-btn" title="单张重抽（删除该候选并重新生成 1 张）" disabled={poseBusy} onClick={() => props.onPoseRedraw?.(assetId, cPath, poseGenOptsOf(assetId, asset))}>↻</button>
-                                      <button type="button" className="icon-btn danger" title="删除该候选（文件保留在磁盘）" disabled={poseBusy} onClick={() => props.onPoseDeleteCandidate?.(assetId, cPath)}>✕</button>
-                                    </span>
-                                  </div>
-                                  <div className="pose-variant-lock-row">
-                                    <input
-                                      value={lockName}
-                                      onChange={(e) => patchPoseDraft(assetId, { lockNames: { ...poseDraft.lockNames, [cPath]: e.target.value } })}
-                                      placeholder={defaultLockName}
-                                      disabled={poseBusy}
-                                    />
-                                    <button
-                                      type="button"
-                                      className="btn secondary"
-                                      disabled={poseBusy || !cPath}
-                                      title="RMBG 抠图 → 创建项目资产 → 写入已锁定姿势变体"
-                                      onClick={() =>
-                                        props.onPoseLock?.(assetId, cPath, String(lockName || defaultLockName).trim(), {
-                                          // 2026-09-01 需求 3：候选带的 promptZh/promptEn 随锁写入变体；旧候选无双稿时回退当前草稿
-                                          posePrompt: String(c?.promptEn || c?.promptZh || c?.posePrompt || poseDraft.posePromptEn || poseDraft.posePromptZh || '').trim(),
-                                          posePromptZh: String(c?.promptZh || poseDraft.posePromptZh || '').trim(),
-                                          posePromptEn: String(c?.promptEn || poseDraft.posePromptEn || '').trim()
-                                        })
-                                      }
-                                    >
-                                      {lockingHere ? '锁定中…' : '命名锁定'}
-                                    </button>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
-                        {poseVariants.length ? (
-                          <div>
-                            <div className="hint" style={{ margin: '4px 0 6px' }}>已锁定姿势变体（可在摆放属性「图片（修改）」中选用）：</div>
-                            <div className="pose-variant-list">
-                              {poseVariants.map((v: any, idx: number) => {
-                                const vSrc = toProjectAssetUrl(String(props.projectId || ''), String(v?.projectAssetUri || v?.cutoutPath || '').trim())
-                                return (
-                                  <div className="pose-variant-item" key={String(v?.id || idx)}>
-                                    {vSrc ? <img alt={String(v?.name || '姿势')} src={vSrc} /> : null}
-                                    <div style={{ fontWeight: 700, fontSize: 12 }}>{String(v?.name || `姿势 ${idx + 1}`)}</div>
-                                    {Number.isFinite(Number(v?.score)) ? <div className="hint">评分 {Math.round(Number(v.score))} 分</div> : null}
-                                    <button
-                                      type="button"
-                                      className="btn secondary"
-                                      disabled={poseBusy}
-                                      onClick={() => void (async () => {
-                                        const res = await props.onPoseDeleteVariant?.(assetId, String(v?.id || ''))
-                                        if (res && !res.ok) setPoseBlockMsg(String(res.message || '该姿势变体正被摆放引用，无法删除'))
-                                      })()}
-                                    >
-                                      删除
-                                    </button>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {/* 2026-09-16 状态变体管理区（道具/地点等非角色资产专属）：生成全链在服务端，任务进度见顶部任务条 */}
-                {isPropStateAsset ? (
-                  <div className="pose-variant-section" id={`state-asset-${assetId}`}>
-                    <div className="pose-variant-head" onClick={() => setStateExpanded((prev) => ({ ...prev, [assetId]: !stateExpandedHere }))}>
-                      <span>状态变体</span>
-                      <span className="hint">{stateVariants.length ? `已锁定 ${stateVariants.length} 个 · 需求 ${stateReqs.length} 条` : (stateReqs.length ? `需求 ${stateReqs.length} 条` : '未提取需求')}</span>
-                      <span>{stateExpandedHere ? '－' : '＋'}</span>
-                    </div>
-                    {stateExpandedHere ? (
-                      <div className="pose-variant-body">
-                        <div className="pose-req-block">
-                          <div className="pose-req-head">
-                            <span className="pose-req-title">剧情状态需求{stateReqs.length ? `（${stateReqs.length} 条）` : ''}</span>
-                            <button
-                              type="button"
-                              className="btn secondary"
-                              disabled={stateBusy}
-                              title="AI 读取全故事场景，提取该事物在剧情中的视觉状态变化（候选制，可重复提取）"
-                              onClick={() => props.onPropStatesExtract?.(assetId)}
-                            >
-                              {stateExtractingHere ? '提取中…' : (stateChecked ? '重新提取状态需求' : '提取状态需求')}
-                            </button>
-                          </div>
-                          {stateMergeInto ? (
-                            <div className="hint">已并入 {stateMergeContainerName}，状态在其状态图内呈现，本事物不再单独出状态图。</div>
-                          ) : stateReqs.length === 0 ? (
-                            <div className="hint">{stateChecked ? '该事物在剧情中无视觉状态变化。' : '尚未提取状态需求。提取后每个状态可单独生成状态立绘，同一状态可生成多个版本。'}</div>
-                          ) : (
-                            <div className="pose-req-list">
-                              {stateReqs.map((req: any) => {
-                                const reqKey = String(req?.stateKey || '').trim()
-                                const reqSceneCount = Array.isArray(req?.sceneIds) ? req.sceneIds.length : 0
-                                const versionCount = stateVariants.filter((v: any) => String(v?.stateKey || '').trim() === reqKey).length
-                                const genningHere = Boolean(reqKey) && props.propStateGenKey === `${assetId}:${reqKey}`
-                                return (
-                                  <div className={`pose-req-row ${versionCount ? 'done' : ''}`} key={reqKey}>
-                                    <div className="pose-req-meta">
-                                      <span className="pose-req-scene" title={String(req?.label || reqKey)}>{String(req?.label || reqKey || '未命名状态')}</span>
-                                      <span className="pose-req-chips">
-                                        <span className="pose-req-chip">适用 {reqSceneCount} 个场景</span>
-                                        {versionCount ? <span className="pose-req-chip">已出 {versionCount} 版</span> : null}
-                                      </span>
-                                      {versionCount ? <span className="ai-storyboard-status ok">已出图</span> : null}
-                                    </div>
-                                    {String(req?.description || '').trim() ? <div className="hint">{String(req.description)}</div> : null}
-                                    <div className="pose-req-actions" style={{ justifyContent: 'flex-end' }}>
-                                      <button
-                                        type="button"
-                                        className="btn secondary"
-                                        disabled={stateBusy || !reqKey}
-                                        title="按该状态生成 1 张状态立绘（生成→评审→抠图→登记全自动，进度见顶部任务条；同一状态可生成多个版本）"
-                                        onClick={() => props.onPropStateGenerate?.(assetId, { stateKey: reqKey, label: String(req?.label || reqKey).trim(), description: String(req?.description || '').trim() })}
-                                      >
-                                        {genningHere ? '生成中…' : '生成'}
-                                      </button>
-                                    </div>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          )}
-                        </div>
-                        {stateVariants.length ? (
-                          <div>
-                            <div className="hint" style={{ margin: '4px 0 6px' }}>已锁定状态变体：</div>
-                            <div className="pose-variant-list">
-                              {stateVariants.map((v: any, idx: number) => {
-                                const vSrc = toProjectAssetUrl(String(props.projectId || ''), String(v?.projectAssetUri || v?.cutoutPath || '').trim())
-                                return (
-                                  <div className="pose-variant-item" key={String(v?.id || idx)} title={String(v?.reason || '')}>
-                                    {vSrc ? <img alt={String(v?.name || '状态')} src={vSrc} /> : null}
-                                    <div style={{ fontWeight: 700, fontSize: 12 }}>{String(v?.name || `状态 ${idx + 1}`)}</div>
-                                    {Number.isFinite(Number(v?.score)) ? <div className="hint">评分 {Math.round(Number(v.score))} 分</div> : null}
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
+                <ScenePoseWorkbench
+                  projectId={String(props.projectId || '')}
+                  asset={asset}
+                  planAssets={planAssets}
+                  assetPlanBusy={props.assetPlanBusy}
+                  poseGeneratingId={props.poseGeneratingId}
+                  poseDrawProgress={props.poseDrawProgress}
+                  poseReviewingId={props.poseReviewingId}
+                  poseLockingKey={props.poseLockingKey}
+                  poseReqBusyId={props.poseReqBusyId}
+                  propStateBusyId={props.propStateBusyId}
+                  propStateGenKey={props.propStateGenKey}
+                  poseSceneOptions={props.poseSceneOptionsFor?.(assetId) || []}
+                  poseExpanded={Boolean(poseExpanded[assetId])}
+                  onPoseExpandedChange={(v) => setPoseExpanded((prev) => ({ ...prev, [assetId]: v }))}
+                  stateExpanded={Boolean(stateExpanded[assetId])}
+                  onStateExpandedChange={(v) => setStateExpanded((prev) => ({ ...prev, [assetId]: v }))}
+                  focusReqId={props.poseFocus && String(props.poseFocus.assetId || '') === assetId ? props.poseFocus.reqId : undefined}
+                  focusSceneId={props.poseFocus && String(props.poseFocus.assetId || '') === assetId ? props.poseFocus.sceneId : undefined}
+                  onGotoBlueprint={props.onGotoBlueprint}
+                  onPoseDraftSave={props.onPoseDraftSave}
+                  onPoseRequirementGenerate={props.onPoseRequirementGenerate}
+                  onPoseRequirementsBatchGenerate={props.onPoseRequirementsBatchGenerate}
+                  onPoseReviewAll={props.onPoseReviewAll}
+                  onPoseRedraw={props.onPoseRedraw}
+                  onPoseDeleteCandidate={props.onPoseDeleteCandidate}
+                  onPoseLock={props.onPoseLock}
+                  onPoseDeleteVariant={props.onPoseDeleteVariant}
+                  onPoseGalleryOpen={props.onPoseGalleryOpen}
+                  onPropStatesExtract={props.onPropStatesExtract}
+                  onPropStateGenerate={props.onPropStateGenerate}
+                />
               </div>
             )
   }
@@ -2117,11 +1479,11 @@ export default function StoryboardLockWorkspace(props: {
                   </div>
                   <div className="story-lock-prompt-grid">
                     <label className="story-lock-prompt-field">
-                      <span>中文</span>
+                      <span>中文 {zhBadge(Boolean(String((props.value as any)?.globalPromptZh || '').trim()))}</span>
                       <textarea className="story-lock-textarea" value={String((props.value as any)?.globalPromptZh || '')} onChange={(e) => props.onChangeGlobalPromptZh(e.target.value)} placeholder="例：统一绘本风格、时代地点、光线色彩与镜头语言；角色外观、服装和关键道具在所有场景保持一致" />
                     </label>
                     <label className="story-lock-prompt-field">
-                      <span>英文</span>
+                      <span>英文 {String(props.value?.globalPrompt || '').trim() ? <span className="bp-prompt-badge is-ok">已翻译</span> : <span className="bp-prompt-badge">未翻译</span>}</span>
                       <textarea className="story-lock-textarea" value={String(props.value?.globalPrompt || '')} onChange={(e) => props.onChangeGlobalPromptEn(e.target.value)} placeholder="翻译后或手工编辑英文正向提示词" />
                     </label>
                   </div>
@@ -2134,17 +1496,273 @@ export default function StoryboardLockWorkspace(props: {
                   </div>
                   <div className="story-lock-prompt-grid">
                     <label className="story-lock-prompt-field">
-                      <span>中文</span>
+                      <span>中文 {zhBadge(Boolean(String((props.value as any)?.globalNegativePromptZh || '').trim()))}</span>
                       <textarea className="story-lock-textarea" value={String((props.value as any)?.globalNegativePromptZh || '')} onChange={(e) => props.onChangeGlobalNegativePromptZh(e.target.value)} placeholder="例：文字、水印、模糊、畸形、变脸、换装、道具替换、多余人物、多视图、与故事设定冲突的元素" />
                     </label>
                     <label className="story-lock-prompt-field">
-                      <span>英文</span>
+                      <span>英文 {String(props.value?.globalNegativePrompt || '').trim() ? <span className="bp-prompt-badge is-ok">已翻译</span> : <span className="bp-prompt-badge">未翻译</span>}</span>
                       <textarea className="story-lock-textarea" value={String(props.value?.globalNegativePrompt || '')} onChange={(e) => props.onChangeGlobalNegativePromptEn(e.target.value)} placeholder="翻译后或手工编辑英文负向提示词" />
                     </label>
                   </div>
                 </div>
               </div>
   )
+
+  // 2026-10-27 J2：卡片墙抽成共享渲染函数——卡片总览与第 5 步出图管理主视图同一组件复用（不抄两套）
+  function renderGridWall() {
+    return (
+          <div className="story-lock-gridview">
+            {/* 顶部工具行：出图总账 + 下一步建议 + 批量 + 配置 + 待审核入口 */}
+            <div className="story-lock-grid-toolbar">
+              <span className="ai-storyboard-status ok">已锁定 {gridCounts.locked}/{gridAssetsAll.length}</span>
+              {gridCounts.lineart > 0 ? <span className="ai-storyboard-status pending">待锁线稿 {gridCounts.lineart}</span> : null}
+              {gridCounts.draw > 0 ? <span className="story-lock-thing-status draw">待抽卡 {gridCounts.draw}</span> : null}
+              {gridCounts.draft > 0 ? <span className="story-lock-thing-status draft">待起草 {gridCounts.draft}</span> : null}
+              {pendingReviews.length > 0 ? (
+                <button
+                  type="button"
+                  className="ai-storyboard-status bad story-lock-review-badge"
+                  onClick={() => {
+                    try { document.getElementById('story-lock-review-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) } catch {}
+                  }}
+                  title="滚动到待审核区"
+                >
+                  待审核 {pendingReviews.length}
+                </button>
+              ) : null}
+              <span className="hint story-lock-grid-suggestion">{gridSuggestion}</span>
+              <span style={{ flex: 1 }} />
+              <span className={`ai-storyboard-status ${thingPromptStatusTone}`} title="事物中文提示词已生成计数（缺中文稿计入缺失）">
+                提示词 {gridAssetsAll.length - thingPromptMissingCount}/{gridAssetsAll.length}{thingPromptFailedCount > 0 ? ` · 失败 ${thingPromptFailedCount}` : ''}
+              </span>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => props.onEnhanceAllPrompts?.()}
+                disabled={props.enhanceAllProgress?.busy || promptOpBusy || planAssets.length === 0 || props.assetPlanBusy || thingPromptMissingCount === 0}
+                title="AI 逐个为全部资产生成中文正向/反向提示词"
+              >
+                {props.enhanceAllProgress?.busy ? `生成中…（${props.enhanceAllProgress.current}/${props.enhanceAllProgress.total}）` : `生成全部缺失提示词（${thingPromptMissingCount}）`}
+              </button><button
+                className="btn secondary"
+                type="button"
+                onClick={props.onGenerateAllMissingAssetRefs}
+                disabled={!promptEnApproved || props.assetPlanBusy || !assetPlan || missingBatchCount === 0}
+                title={promptEnApproved ? '为全部缺候选的资产生成参考图' : '请先完成第 4 步提示词批准（步骤模式）'}
+              >
+                生成全部缺失参考图
+              </button>
+              <button className="btn secondary" type="button" onClick={() => setDrawerOpen(true)} title="全局提示词 / 模型与接口 / 采样参数">
+                配置
+              </button>
+            </div>
+
+            {/* 2026-10-26 缺陷 B：批量增强失败明面化——逐项汇总卡（成功/失败+名单+人话原因+一键重试），不再静默回 idle */}
+            {props.enhanceAllSummary && props.enhanceAllSummary.failures.length ? (
+              <div className="story-lock-error-banner" role="alert" style={{ display: 'grid', gap: 6 }}>
+                <div style={{ fontWeight: 700 }}>
+                  提示词生成：成功 {props.enhanceAllSummary.done} / 失败 {props.enhanceAllSummary.failures.length}（失败项已各自动重试一次）
+                </div>
+                {props.enhanceAllSummary.failures.map((f) => (
+                  <div key={f.assetId} style={{ fontSize: 12.5 }}>
+                    · {f.label}：{f.reason}
+                  </div>
+                ))}
+                <div>
+                  <button className="btn secondary" type="button" style={{ padding: '3px 12px', fontSize: 12 }} onClick={() => props.onRetryFailedEnhance?.()} disabled={props.enhanceAllProgress?.busy}>
+                    重试失败项
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {/* 筛选行：前景中心（角色/道具）与背景中心分开管理，地点不再参与前景出图状态筛选。 */}
+            <div className="story-lock-grid-filters">
+              <span className="story-lock-grid-filter-group" role="tablist" aria-label="出图管理模块" title="前景中心=角色/道具的参考图与线稿（摆在背景之上）；背景中心=每幕背景图、地点锚点与背景内元素">
+                {([['assets', '前景中心'], ['scenes', '背景中心']] as const).map(([k, label]) => (
+                  <button key={k} type="button" role="tab" aria-selected={step5Scope === k} className={`story-lock-view-toggle-btn ${step5Scope === k ? 'active lock-navigation-primary' : ''}`} onClick={() => setStep5Scope(k)}>{label}</button>
+                ))}
+              </span>
+              {step5Scope === 'assets' ? (
+                <>
+                  <span className="story-lock-grid-filter-group">
+                    {([['all', '全部'], ['todo', '未完成'], ['done', '已完成']] as const).map(([k, label]) => (
+                      <button key={k} type="button" className={`story-lock-view-toggle-btn ${gridFilterDone === k ? 'active' : ''}`} onClick={() => setGridFilterDone(k)}>{label}</button>
+                    ))}
+                  </span>
+                  <span className="story-lock-grid-filter-group">
+                    {([['all', '全部类型'], ['character', '角色'], ['prop', '道具']] as const).map(([k, label]) => (
+                      <button key={k} type="button" className={`story-lock-view-toggle-btn ${gridFilterCat === k ? 'active' : ''}`} onClick={() => setGridFilterCat(k)}>{label}</button>
+                    ))}
+                  </span>
+                </>
+              ) : null}
+            </div>
+
+            {step5Scope === 'scenes' ? (
+              props.sceneBoard ? (
+                <div className="story-lock-sceneboard">
+                  {(() => {
+                    // 2026-11-10 用户裁决：前景内容不进背景中心（前景在「前景中心」维度管理）；
+                    // 每幕背景是否已出——由场景背景看板 items 的 backgroundUri 派生（location/scenery 卡片场景 chip 同口径）
+                    const sceneItems = Array.isArray((props.sceneBoard as any)?.props?.items) ? (props.sceneBoard as any).props.items : []
+                    const bgByNodeId = new Map<string, boolean>(sceneItems.map((it: any) => [String(it?.nodeId || ''), Boolean(String(it?.backgroundUri || it?.backgroundUrl || '').trim())]))
+                    const sceneBackgroundOf = (sceneId: string) => bgByNodeId.get(String(sceneId || '')) === true
+                    // 背景元素/地点的幕分配管理（服务端三处同步写口：scene.assetIds + scene.promptAssets + asset.sceneIds）：
+                    // 分配后场景出图 prompt 与摆位链才真正纳入该元素——这是"合在一起出完整背景"的管理闭环
+                    const assignAssetScene = async (assetId: string, targetSceneId: string, action: 'add' | 'remove') => {
+                      try {
+                        await assignPlanSceneAsset(projectId, targetSceneId, assetId, action)
+                        props.onReloadProject?.()
+                      } catch (e) {
+                        void dlgAlert(`${action === 'add' ? '分配' : '移除'}失败：${e instanceof Error ? e.message : String(e)}`)
+                      }
+                    }
+                    return (
+                  <BackgroundCenter
+                    sceneBoard={props.sceneBoard}
+                    locationCount={locationAssets.length}
+                    sceneCount={planScenes.length}
+                    sceneryCount={sceneryAssets.length}
+                    focusSceneId={sceneFocus?.id}
+                    focusRequestId={sceneFocus?.requestId}
+                    locationBoard={(
+                      <LocationTemplateBoard
+                        projectId={projectId}
+                        assets={locationAssets}
+                        scenes={planScenes}
+                        promptDrafts={props.assetPromptDrafts || {}}
+                        busy={props.assetPlanBusy}
+                        sceneBackgroundOf={sceneBackgroundOf}
+                        onAssignScene={assignAssetScene}
+                        onGeneratePrompts={(ids) => props.onEnhanceAllPrompts?.(ids)}
+                        promptGenBusy={Boolean(props.enhanceAllProgress?.busy)}
+                        enhanceProgress={props.enhanceAllProgress}
+                        enhanceFailures={props.enhanceAllSummary?.failures || []}
+                        onOpenAsset={(assetId) => openAssetDetail(assetId)}
+                        onOpenScene={(sceneId) => {
+                          if (!planScenes.some((scene) => String(scene?.sceneId || '') === sceneId)) return
+                          setStep5Scope('scenes')
+                          setSceneFocus((prev) => ({ id: sceneId, requestId: (prev?.requestId || 0) + 1 }))
+                        }}
+                        onDelete={props.onDeleteAssetFromPlan}
+                      />
+                    )}
+                    sceneryBoard={(
+                      <SceneryElementBoard
+                        projectId={projectId}
+                        assets={sceneryAssets}
+                        scenes={planScenes}
+                        promptDrafts={props.assetPromptDrafts || {}}
+                        busy={props.assetPlanBusy}
+                        sceneBackgroundOf={sceneBackgroundOf}
+                        onAssignScene={assignAssetScene}
+                        onGeneratePrompts={(ids) => props.onEnhanceAllPrompts?.(ids)}
+                        promptGenBusy={Boolean(props.enhanceAllProgress?.busy)}
+                        enhanceProgress={props.enhanceAllProgress}
+                        enhanceFailures={props.enhanceAllSummary?.failures || []}
+                        onOpenAsset={(assetId) => openAssetDetail(assetId)}
+                        onOpenScene={(sceneId) => {
+                          if (!planScenes.some((scene) => String(scene?.sceneId || '') === sceneId)) return
+                          setStep5Scope('scenes')
+                          setSceneFocus((prev) => ({ id: sceneId, requestId: (prev?.requestId || 0) + 1 }))
+                        }}
+                        onDelete={props.onDeleteAssetFromPlan}
+                      />
+                    )}
+                  />
+                    )
+                  })()}
+                </div>
+              ) : (
+                <div className="hint">背景中心未接入（sceneBoard 未注入）。</div>
+              )
+            ) : null}
+
+            {/* 卡片墙：角色/道具按类型分组；地点模板统一在背景中心维护。 */}
+            {step5Scope === 'assets' ? (
+            <div className="story-lock-cardwall-groups">
+              {(() => {
+                const groups = [
+                  { key: 'character', label: '角色', items: gridAssets.filter((x) => String(x.asset?.category || '') === 'character') },
+                  { key: 'prop', label: '道具', items: gridAssets.filter((x) => String(x.asset?.category || '') === 'prop') },
+                  { key: 'other', label: '其他', items: gridAssets.filter((x) => !['character', 'prop'].includes(String(x.asset?.category || ''))) }
+                ].filter((g) => g.items.length)
+                if (!groups.length) return <div className="hint" style={{ padding: 24 }}>当前筛选下没有事物卡片。</div>
+                return groups.map((g) => (
+                  <div key={g.key} className="story-lock-cardwall-group">
+                    <div className="story-lock-prompt-group-head">
+                      <span className="story-lock-prompt-group-title">{g.label}</span>
+                      <span className="hint">（{g.items.length}）</span>
+                    </div>
+                    <div className="story-lock-cardwall">
+                      {g.items.map(({ asset, st }) => {
+                        const aid = String(asset?.id || '').trim()
+                        const img = assetCardImageOf(asset, projectId)
+                        const sceneCount = Number(asset?.sceneCount || (Array.isArray(asset?.sceneIds) ? asset.sceneIds.length : 0) || 0)
+                        const fiveStages = assetFiveStagesOf(asset, props.assetPromptDrafts as any)
+                        const quickAction =
+                          st.tone === 'draft' ? { label: '起草提示词', anchor: 'prompt' }
+                          : st.tone === 'draw' ? { label: '抽卡', anchor: 'ref' }
+                          : st.tone === 'lineart' ? { label: '去锁线稿', anchor: 'lineart' }
+                          : null
+                        return (
+                          <div className="story-lock-thing-card" key={aid} onClick={() => openAssetDetail(aid)}>
+                            <div className={`story-lock-thing-img ${img ? 'ready' : 'missing'}`}>
+                              {img ? <img src={img} alt={String(asset?.name || aid)} /> : <div className="hint">未生成</div>}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div className="story-lock-thing-name" style={{ flex: 1 }} title={String(asset?.name || aid)}>{String(asset?.name || aid || '未命名')}</div>
+                              <button
+                                className="btn secondary"
+                                type="button"
+                                style={{ padding: '2px 7px', fontSize: 11, color: '#fca5a5', flexShrink: 0 }}
+                                aria-label={`删除 ${String(asset?.name || aid)}`}
+                                title="删除该事物并移除场景分配；已生成图片文件保留"
+                                disabled={props.assetPlanBusy || !aid}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  props.onDeleteAssetFromPlan(aid)
+                                }}
+                              >
+                                删除
+                              </button>
+                            </div>
+                            <div className="story-lock-thing-meta">
+                              <span className="story-lock-thing-cat">{getAssetCategoryLabel(String(asset?.category || ''))}</span>
+                              <span className={`story-lock-thing-status ${st.tone}`}>{st.label}</span>
+                            </div>
+                            {/* 四段状态点（提示词→主参考→姿态→线稿） */}
+                            <div className="story-lock-five-stages" title={fiveStages.map((s) => `${s.label}:${s.tone === 'done' ? '已完成' : s.tone === 'partial' ? '进行中' : '未开始'}`).join(' · ')}>
+                              {fiveStages.map((s) => (
+                                <span key={s.key} className={`story-lock-stage-dot ${s.tone}`} />
+                              ))}
+                            </div>
+                            <div className="hint" style={{ fontSize: 11 }}>涉及 {sceneCount} 个场景</div>
+                            {quickAction ? (
+                              <button
+                                className="btn secondary"
+                                type="button"
+                                style={{ fontSize: 12, padding: '4px 8px' }}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openAssetDetail(aid, quickAction.anchor)
+                                }}
+                              >
+                                {quickAction.label}
+                              </button>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))
+              })()}
+            </div>
+            ) : null}
+          </div>
+    )
+  }
 
   return (
     <div className="ai-modal story-lock-workspace-overlay" role="dialog" aria-modal="true">
@@ -2170,9 +1788,21 @@ export default function StoryboardLockWorkspace(props: {
                   步骤模式
                 </button>
               </div>
-              <div className={`ai-storyboard-status ${props.assetConfirmReady ? 'ok' : (unlockedCount > 0 ? 'bad' : 'ok')}`}>
-                {props.assetConfirmReady ? '已完成锁定' : (unlockedCount > 0 ? '进行中' : '待确认')}
-              </div>
+              {/* 2026-10-27 J2 口径修正：全未开始（出图链事物无候选无锁定且无生成任务在跑）→「待开始」（中性）；有进展→「进行中」（黄）；全锁+确认→「已完成锁定」（绿）；全锁未确认→「待确认」 */}
+              {(() => {
+                const anyGenerationRunning = aiTasks.some((t) => !t.done)
+                // 待开始口径按出图链事物（ref_required）判定：地点类「已锁定」是锚点就绪语义，不算出图已开始
+                const drawableAll = planAssets.filter((a) => String(a?.renderStrategy || '').trim() === 'ref_required')
+                const anyStartedDrawable = drawableAll.some((a) =>
+                  String(a?.primaryReferenceAssetUri || '').trim() ||
+                  String(a?.primaryReferenceAssetId || '').trim() ||
+                  (Array.isArray(a?.generatedRefs) && a.generatedRefs.length > 0)
+                )
+                const allUntouched = drawableAll.length > 0 && !anyStartedDrawable && !anyGenerationRunning
+                const stateText = props.assetConfirmReady ? '已完成锁定' : allUntouched ? '待开始' : (unlockedCount > 0 || anyGenerationRunning) ? '进行中' : '待确认'
+                const stateTone = props.assetConfirmReady ? 'ok' : allUntouched ? 'ok' : (unlockedCount > 0 || anyGenerationRunning) ? 'bad' : 'ok'
+                return <div className={`ai-storyboard-status ${stateTone}`}>{stateText}</div>
+              })()}
             </div>
             {viewMode === 'steps' ? (
             <div className="story-lock-stepper" role="tablist">
@@ -2207,118 +1837,22 @@ export default function StoryboardLockWorkspace(props: {
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {props.onSave ? (
-              <button className="btn secondary" type="button" onClick={() => void handleSave()} disabled={saveBusy}>
-                {saveBusy ? '保存中…' : '保存'}
+              <button
+                className={`btn lock-action-primary${props.promptDraftsDirty ? ' is-dirty' : ''}`}
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={saveBusy}
+                title={props.promptDraftsDirty ? '有提示词草稿未保存——点击落盘' : '保存'}
+              >
+                {saveBusy ? '保存中…' : props.promptDraftsDirty ? '保存（有未保存提示词草稿）' : '保存'}
               </button>
             ) : null}
-            <button className="btn secondary" type="button" onClick={props.onOpenRender} disabled={!props.assetConfirmReady}>进入正式场景出图</button>
             <button type="button" className="icon-btn" onClick={props.onClose} aria-label="关闭" title="关闭">✕</button>
           </div>
         </div>
 
         {/* ============ 2026-09-02 一级「事物总览」卡片墙（默认主视图；保存/出图在右上头部，两模式共用） ============ */}
-        {viewMode === 'grid' ? (
-          <div className="story-lock-gridview">
-            {/* 顶部工具行：出图总账 + 下一步建议 + 批量 + 配置 + 待审核入口 */}
-            <div className="story-lock-grid-toolbar">
-              <span className="ai-storyboard-status ok">已锁定 {gridCounts.locked}/{gridAssetsAll.length}</span>
-              {gridCounts.lineart > 0 ? <span className="ai-storyboard-status pending">待锁线稿 {gridCounts.lineart}</span> : null}
-              {gridCounts.draw > 0 ? <span className="story-lock-thing-status draw">待抽卡 {gridCounts.draw}</span> : null}
-              {gridCounts.draft > 0 ? <span className="story-lock-thing-status draft">待起草 {gridCounts.draft}</span> : null}
-              {pendingReviews.length > 0 ? (
-                <button
-                  type="button"
-                  className="ai-storyboard-status bad story-lock-review-badge"
-                  onClick={() => {
-                    try { document.getElementById('story-lock-review-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) } catch {}
-                  }}
-                  title="滚动到待审核区"
-                >
-                  待审核 {pendingReviews.length}
-                </button>
-              ) : null}
-              <span className="hint story-lock-grid-suggestion">{gridSuggestion}</span>
-              <span style={{ flex: 1 }} />
-              <button
-                className="btn secondary"
-                type="button"
-                onClick={() => props.onEnhanceAllPrompts?.()}
-                disabled={props.enhanceAllProgress?.busy || promptOpBusy || planAssets.length === 0 || props.assetPlanBusy || gridCounts.draft === 0}
-                title="AI 逐个为全部资产生成中文正向/反向提示词"
-              >
-                {props.enhanceAllProgress?.busy ? `生成中…（${props.enhanceAllProgress.current}/${props.enhanceAllProgress.total}）` : '生成全部缺失提示词'}
-              </button>
-              <button
-                className="btn secondary"
-                type="button"
-                onClick={props.onGenerateAllMissingAssetRefs}
-                disabled={!promptEnApproved || props.assetPlanBusy || !assetPlan || missingBatchCount === 0}
-                title={promptEnApproved ? '为全部缺候选的资产生成参考图' : '请先完成第 4 步提示词批准（步骤模式）'}
-              >
-                生成全部缺失参考图
-              </button>
-              <button className="btn secondary" type="button" onClick={() => setDrawerOpen(true)} title="全局提示词 / 模型与接口 / 采样参数">
-                配置
-              </button>
-            </div>
-
-            {/* 筛选行：完成度 + 类型 */}
-            <div className="story-lock-grid-filters">
-              <span className="story-lock-grid-filter-group">
-                {([['all', '全部'], ['todo', '未完成'], ['done', '已完成']] as const).map(([k, label]) => (
-                  <button key={k} type="button" className={`story-lock-view-toggle-btn ${gridFilterDone === k ? 'active' : ''}`} onClick={() => setGridFilterDone(k)}>{label}</button>
-                ))}
-              </span>
-              <span className="story-lock-grid-filter-group">
-                {([['all', '全部类型'], ['character', '角色'], ['prop', '道具'], ['location', '地点']] as const).map(([k, label]) => (
-                  <button key={k} type="button" className={`story-lock-view-toggle-btn ${gridFilterCat === k ? 'active' : ''}`} onClick={() => setGridFilterCat(k)}>{label}</button>
-                ))}
-              </span>
-            </div>
-
-            {/* 卡片墙：未锁定在前（待起草>待抽卡>待锁定>已锁定），同级按名称 */}
-            <div className="story-lock-cardwall">
-              {gridAssets.length ? gridAssets.map(({ asset, st }) => {
-                const aid = String(asset?.id || '').trim()
-                const img = assetCardImageOf(asset, projectId)
-                const sceneCount = Number(asset?.sceneCount || (Array.isArray(asset?.sceneIds) ? asset.sceneIds.length : 0) || 0)
-                const quickAction =
-                  st.tone === 'draft' ? { label: '起草提示词', anchor: 'prompt' }
-                  : st.tone === 'draw' ? { label: '抽卡', anchor: 'ref' }
-                  : st.tone === 'lineart' ? { label: '去锁线稿', anchor: 'lineart' }
-                  : null
-                return (
-                  <div className="story-lock-thing-card" key={aid} onClick={() => openAssetDetail(aid)}>
-                    <div className={`story-lock-thing-img ${img ? 'ready' : 'missing'}`}>
-                      {img ? <img src={img} alt={String(asset?.name || aid)} /> : <div className="hint">未生成</div>}
-                    </div>
-                    <div className="story-lock-thing-name" title={String(asset?.name || aid)}>{String(asset?.name || aid || '未命名')}</div>
-                    <div className="story-lock-thing-meta">
-                      <span className="story-lock-thing-cat">{getAssetCategoryLabel(String(asset?.category || ''))}</span>
-                      <span className={`story-lock-thing-status ${st.tone}`}>{st.label}</span>
-                    </div>
-                    <div className="hint" style={{ fontSize: 11 }}>涉及 {sceneCount} 个场景</div>
-                    {quickAction ? (
-                      <button
-                        className="btn secondary"
-                        type="button"
-                        style={{ fontSize: 12, padding: '4px 8px' }}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          openAssetDetail(aid, quickAction.anchor)
-                        }}
-                      >
-                        {quickAction.label}
-                      </button>
-                    ) : null}
-                  </div>
-                )
-              }) : (
-                <div className="hint" style={{ padding: 24 }}>当前筛选下没有事物卡片。</div>
-              )}
-            </div>
-          </div>
-        ) : null}
+        {viewMode === 'grid' ? renderGridWall() : null}
 
         {viewMode === 'steps' && wizardStep === 1 && (
           <div className="story-lock-step-panel">
@@ -2326,7 +1860,19 @@ export default function StoryboardLockWorkspace(props: {
             <div className="hint">检查出图前置环境：Server 连通、提示词与出图 Provider/Model、ComfyUI 节点与模型完整性、连续性绑定。全部通过才能进入下一步。</div>
             <div className="story-lock-step-actions">
               <button className="btn secondary" type="button" onClick={props.onRunOpenChecks} disabled={props.assetPlanBusy || props.busyEntity}>{props.openChecks?.checking ? '体检中…' : (props.openChecks?.summary ? '重新体检' : '开始体检')}</button>
+              {/* 2026-11-10：提示词能力（OMLX 文本模型）不可用时就地拉起——体检失败项含提示词时显示；GUI App 可见启动 */}
+              {(!props.openChecks?.promptOk && String(props.openChecks?.promptProvider || '') === 'localoxml') ? (
+                <button className="btn secondary" type="button" onClick={() => void launchTool('omlx', 'OMLX 本地模型')} disabled={comfyLaunchBusy || props.assetPlanBusy || props.busyEntity} title="拉起本机 OMLX 本地模型服务（GUI App 可见启动；拉起成功后自动重新体检）">
+                  {comfyLaunchBusy ? '拉起中…' : '拉起 OMLX（App）'}
+                </button>
+              ) : null}
+              {String(props.openChecks?.imageProvider || '') === 'comfyui' ? (
+                <button className="btn secondary" type="button" onClick={() => void launchComfyUi()} disabled={comfyLaunchBusy || props.assetPlanBusy || props.busyEntity} title="在终端可见窗口拉起本机 ComfyUI 出图服务（已在运行时不重复拉起；拉起成功后自动重新体检）">
+                  {comfyLaunchBusy ? '拉起中…' : '拉起 ComfyUI（终端）'}
+                </button>
+              ) : null}
             </div>
+            {comfyLaunchNote ? <div className="hint">{comfyLaunchNote}</div> : null}
             {props.openChecks?.summary ? (
               <div className={`story-lock-check-result ${props.openChecks.ok ? 'ok' : 'bad'}`}>
                 <div className="story-lock-check-summary">{props.openChecks.summary}</div>
@@ -2459,27 +2005,36 @@ export default function StoryboardLockWorkspace(props: {
           </div>
         )}
 
-        {viewMode === 'steps' && wizardStep === 6 && (
-          <div className="story-lock-step-panel">
-            <div className="story-lock-step-panel-title">第 6 步 · 线稿锁定</div>
-            <div className="hint">为需要参考图的资产生成 ControlNet 线稿（hint → final）。已锁主参考的资产才能生成线稿。</div>
-            {planAssets.length > 0 ? (
-              <div className="story-lock-plan-list">
-                {planAssets.map((asset) => renderAssetLineartRow(asset))}
-              </div>
-            ) : <div className="hint">还没有资产。请先完成第 3 步资产计划。</div>}
+        {viewMode === 'steps' && wizardStep === 5 && (
+        <div className="story-lock-step-panel">
+          <div className="story-lock-step-panel-title">第 5 步 · 出图管理</div>
+          <div className="hint">出图管理统一管所有图：维度切「事物」=逐元素完成 主参考抽卡与锁定 → 按需生成场景姿态/状态变体 → 线稿（点卡片进该元素专属工作区）；维度切「场景背景」=每幕背景图 提示词→出图→版本绑定（待审核在卡片上就地处理）。全部锁定后才算完成本步。</div>
+          {!promptEnApproved ? <div className="story-lock-wizard-hint" style={{ textAlign: 'left' }}>按正确流程：请先完成第 4 步「全局与事物提示词」（中文稿确认→翻译→英文稿批准）后再开始抽图。</div> : null}
+          <div className="story-lock-step-actions">
+            <button className="btn secondary" type="button" onClick={props.onGenerateAllMissingAssetRefs} disabled={!promptEnApproved || props.assetPlanBusy || !assetPlan || missingBatchCount === 0} title={promptEnApproved ? '' : '请先完成第 4 步提示词批准'}>生成全部缺失参考图 ({missingBatchCount})</button>
+            <button className="btn secondary" type="button" onClick={props.onConfirmAssetPlan} disabled={props.assetPlanBusy || !assetPlan || unlockedCount > 0}>{props.assetConfirmReady ? '已确认 ✓' : '确认锁定无误'}</button>
           </div>
+        </div>
         )}
 
-        {viewMode === 'steps' && wizardStep === 7 && (
+        {/* 2026-10-27 J2 用户裁决：第 5 步主视图=卡片墙（与卡片总览同一 renderGridWall 复用，不抄两套）；
+            内联平铺 renderAssetRefRow/LineartRow 行收编进元素工作区弹层（功能不删） */}
+        {viewMode === 'steps' && wizardStep === 5 && (
+        <div className="story-lock-workspace-assets">
+          {planAssets.length ? renderGridWall() : (
+            <div className="hint">尚未生成资产计划。请先生成 Story Bible，再生成资产计划。</div>
+          )}
+        </div>
+        )}
+
+        {viewMode === 'steps' && wizardStep === 6 && (
           <div className="story-lock-step-panel">
-            <div className="story-lock-step-panel-title">第 7 步 · 完成锁定</div>
-            <div className="hint">全部前置就绪后进入正式场景出图。批量渲染缺失场景可断点续跑；出图期间本地模型会自动让出内存给 ComfyUI。</div>
+            <div className="story-lock-step-panel-title">第 6 步 · 完成锁定</div>
+            <div className="hint">全部前置就绪后进入场景背景出图——回到第 5 步出图管理，切到「场景背景」维度逐幕出图/绑定；批量渲染缺失场景可断点续跑，出图期间本地模型会自动让出内存给 ComfyUI。</div>
             <div className="story-lock-step-actions">
               <button className="btn secondary" type="button" onClick={() => void runRenderAllScenes()} disabled={renderAllBusy || renderAllActive || !projectId}>{renderAllActive ? '批量渲染进行中…' : '渲染缺失场景'}</button>
-              <button className="btn secondary" type="button" onClick={props.onOpenRender} disabled={!props.assetConfirmReady}>进入正式场景出图</button>
             </div>
-            {!props.assetConfirmReady ? <div className="hint">提示：先在第 4 步完成「确认锁定无误」。</div> : null}
+            {!props.assetConfirmReady ? <div className="hint">提示：建议先在第 5 步出图管理完成「确认锁定无误」再批量出图。</div> : null}
           </div>
         )}
 
@@ -2487,12 +2042,12 @@ export default function StoryboardLockWorkspace(props: {
         <div className="story-lock-wizard-footer">
           <button className="btn secondary" type="button" onClick={() => setWizardStep((v) => Math.max(1, v - 1))} disabled={wizardStep <= 1}>上一步</button>
           <div className="story-lock-wizard-hint">{stepGateHint(Math.min(wizardStep + 1, firstNotReady)) ? `下一步前：${stepGateHint(Math.min(wizardStep + 1, firstNotReady))}` : ''}</div>
-          <button className="btn secondary" type="button" onClick={() => gotoStep(wizardStep + 1)} disabled={wizardStep >= 7 || wizardStep + 1 > maxUnlockedStep}>下一步</button>
+          <button className="btn secondary" type="button" onClick={() => gotoStep(wizardStep + 1)} disabled={wizardStep >= 6 || wizardStep + 1 > maxUnlockedStep}>下一步</button>
         </div>
         ) : null}
 
         {/* 2026-08-30：第 6 步也显示待审核列表——线稿在 manual 模式会挂出图前审核，不显示用户找不到批准入口 */}
-        {((viewMode === 'steps' && (wizardStep === 5 || wizardStep === 6 || wizardStep === 7)) || viewMode === 'grid') && pendingReviews.length > 0 && (
+        {((viewMode === 'steps' && (wizardStep === 5 || wizardStep === 6)) || viewMode === 'grid') && pendingReviews.length > 0 && (
           <div className="ai-review-pending-list" id="story-lock-review-anchor">
             <div className="ai-review-pending-head">
               <span className="ai-review-pending-title">待审核（{pendingReviews.length}）</span>
@@ -2635,34 +2190,37 @@ export default function StoryboardLockWorkspace(props: {
         </div>
         )}
 
-        <div className="story-lock-workspace-log-section">
-          <div className="story-lock-section-head">
-            <div className="story-lock-workspace-log-title">日志</div>
-            <button className="btn secondary" type="button" onClick={() => setLogsExpanded((v) => !v)}>{logsExpanded ? '收起' : '展开'}</button>
-          </div>
-          {logsExpanded ? (
-            <div className="story-lock-workspace-log-box">
-              {props.error ? <div className="hint" style={{ color: '#fca5a5', marginBottom: 8 }}>{props.error}</div> : null}
-              {taskHistoryLines.length ? (
-                <pre style={{ opacity: 0.72, borderBottom: '1px dashed rgba(148,163,184,0.25)', paddingBottom: 6, marginBottom: 6 }}>{`—— 本项目任务历史（跨会话，含 API/其他会话驱动）——\n${taskHistoryLines.join('\n')}`}</pre>
-              ) : null}
-              <pre>{sessionLogLines.join('\n') || '暂无日志'}</pre>
-            </div>
-          ) : null}
-        </div>
-
         {viewMode === 'steps' && wizardStep === 4 && (
         <div className="story-lock-step-panel">
           <div className="story-lock-step-panel-title">第 4 步 · 全局与事物提示词</div>
           <div className="hint">先写中文：全局提示词与每个事物的专属提示词全部先生成中文稿，逐条审阅修改；确认后才允许翻译成英文并批准。批准后才进入抽图阶段——提示词锁定才能把图出对。</div>
+          {/* 2026-10-26 缺陷 B：失败汇总卡挂步骤视图同款位置（总览墙那张只在总览可见，第 4 步操作位也要明面可见） */}
+          {props.enhanceAllSummary && props.enhanceAllSummary.failures.length ? (
+            <div className="story-lock-error-banner" role="alert" style={{ display: 'grid', gap: 6, margin: '8px 0' }}>
+              <div style={{ fontWeight: 700 }}>
+                提示词生成：成功 {props.enhanceAllSummary.done} / 失败 {props.enhanceAllSummary.failures.length}（失败项已各自动重试一次）
+              </div>
+              {props.enhanceAllSummary.failures.map((f) => (
+                <div key={f.assetId} style={{ fontSize: 12.5 }}>
+                  · {f.label}：{f.reason}
+                </div>
+              ))}
+              <div>
+                <button className="btn secondary" type="button" style={{ padding: '3px 12px', fontSize: 12 }} onClick={() => props.onRetryFailedEnhance?.()} disabled={props.enhanceAllProgress?.busy}>
+                  重试失败项
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="story-lock-step-actions">
             <button
               className="btn secondary"
               type="button"
               onClick={() => props.onEnhanceAllPrompts?.()}
-              disabled={props.enhanceAllProgress?.busy || promptOpBusy || planAssets.length === 0 || props.assetPlanBusy}
-              title="AI 逐个为需抽卡的事物（角色/道具）生成中文正向/反向提示词；背景锚点事物不参与（它们的锚点词直接写入场景背景）"
-            >{props.enhanceAllProgress?.busy ? `生成中…（${props.enhanceAllProgress.current}/${props.enhanceAllProgress.total}）` : 'AI 生成全部事物中文提示词'}</button>
+              disabled={props.enhanceAllProgress?.busy || promptOpBusy || planAssets.length === 0 || promptMissingCount === 0 || props.assetPlanBusy}
+              title="只处理中文提示词为空的事物；已有中文稿和人工修改不会覆盖"
+            >{props.enhanceAllProgress?.busy ? `生成中…（${props.enhanceAllProgress.current}/${props.enhanceAllProgress.total}）` : promptMissingCount ? `AI 生成缺失事物提示词（${promptMissingCount}）` : `事物提示词已齐全（${planAssets.length}/${planAssets.length}）`}</button>
+            <span className="hint" data-testid="prompt-generation-count" style={{ alignSelf: 'center' }}>已生成 {promptGeneratedCount}/{planAssets.length} · 待生成 {promptMissingCount}</span>
             <button
               className="btn secondary"
               type="button"
@@ -2741,36 +2299,52 @@ export default function StoryboardLockWorkspace(props: {
 
         {viewMode === 'steps' && wizardStep === 4 && planAssets.length > 0 && (
         <div className="story-lock-plan-list">
-          {/* 2026-10-07 只列出需抽卡的事物（角色/道具）：prompt_only/optional_ref 地点不出立绘，
-              其锚点词直接烘进场景背景，提示词栏对它们是死重且误导（假日出游用户误报事件） */}
-          {planAssets.filter((a) => String(a?.renderStrategy || '').trim() === 'ref_required').map((asset) => renderAssetPromptCard(asset))}
+          {/* 所有计划资产共用同一份提示词草稿；是否抽卡/线稿仍由 renderStrategy 决定。 */}
+          {(() => {
+            const promptAssets = planAssets.slice()
+            const groups = [
+              { key: 'character', label: '角色', items: promptAssets.filter((a) => String(a?.category || '').trim() === 'character') },
+              { key: 'prop', label: '道具', items: promptAssets.filter((a) => String(a?.category || '').trim() === 'prop') },
+              { key: 'other', label: '地点 / 背景模板', items: promptAssets.filter((a) => !['character', 'prop'].includes(String(a?.category || '').trim())) }
+            ].filter((g) => g.items.length)
+            return groups.map((g) => (
+              <div key={g.key} className="story-lock-prompt-group">
+                <div className="story-lock-prompt-group-head">
+                  <span className="story-lock-prompt-group-title">{g.label}</span>
+                  <span className="hint">（{g.items.length}）</span>
+                </div>
+                {g.items.map((asset) => renderAssetPromptCard(asset))}
+              </div>
+            ))
+          })()}
           {backgroundAnchorAssets.length > 0 ? (
             <div className="hint" style={{ padding: '6px 2px' }}>
-              背景锚点事物（无需提示词与抽卡，锚点词已直接写入场景背景）：{backgroundAnchorAssets.map((a) => String(a?.name || a?.id || '未命名')).join('、')}
+              背景锚点事物无需强制抽卡或线稿；其提示词仍用于场景背景，可在上方逐条审阅编辑：{backgroundAnchorAssets.map((a) => String(a?.name || a?.id || '未命名')).join('、')}
             </div>
           ) : null}
         </div>
         )}
 
-        {viewMode === 'steps' && wizardStep === 5 && (
-        <div className="story-lock-step-panel">
-          <div className="story-lock-step-panel-title">第 5 步 · 参考图与锁定</div>
-          <div className="hint">为每个资产抽卡生成候选参考图，选定主参考并锁定；图片审核在本步内联处理。全部锁定后才能进入下一步。</div>
-          {!promptEnApproved ? <div className="story-lock-wizard-hint" style={{ textAlign: 'left' }}>按正确流程：请先完成第 4 步「全局与事物提示词」（中文稿确认→翻译→英文稿批准）后再开始抽图。</div> : null}
-          <div className="story-lock-step-actions">
-            <button className="btn secondary" type="button" onClick={props.onGenerateAllMissingAssetRefs} disabled={!promptEnApproved || props.assetPlanBusy || !assetPlan || missingBatchCount === 0} title={promptEnApproved ? '' : '请先完成第 4 步提示词批准'}>生成全部缺失参考图 ({missingBatchCount})</button>
-            <button className="btn secondary" type="button" onClick={props.onConfirmAssetPlan} disabled={props.assetPlanBusy || !assetPlan || unlockedCount > 0}>{props.assetConfirmReady ? '已确认 ✓' : '确认锁定无误'}</button>
+        {/* 2026-11-10 用户裁决：日志区统一停靠向导底部（所有步骤/视图共用同一份）——
+            必须渲染在所有步骤面板之后（此前夹在 step2/step4 之间，第 4 步时日志跑到内容上方）；
+            默认展开，可收起为底部一行；停靠样式见 compose.css .story-lock-workspace-log-section */}
+        <div className="story-lock-workspace-log-section">
+          <div className="story-lock-section-head">
+            <div className="story-lock-workspace-log-title">日志</div>
+            <button className="btn secondary" type="button" onClick={() => setLogsExpanded((v) => !v)}>{logsExpanded ? '收起' : '展开'}</button>
           </div>
+          {logsExpanded ? (
+            <div className="story-lock-workspace-log-box">
+              {props.error ? <div className="hint" style={{ color: '#fca5a5', marginBottom: 8 }}>{props.error}</div> : null}
+              {taskHistoryLines.length ? (
+                <pre style={{ opacity: 0.72, borderBottom: '1px dashed rgba(148,163,184,0.25)', paddingBottom: 6, marginBottom: 6 }}>{`—— 本项目任务历史（跨会话，含 API/其他会话驱动）——\n${taskHistoryLines.join('\n')}`}</pre>
+              ) : null}
+              <pre>{sessionLogLines.join('\n') || '暂无日志'}</pre>
+            </div>
+          ) : null}
         </div>
-        )}
 
-        {viewMode === 'steps' && wizardStep === 5 && (
-        <div className="story-lock-workspace-assets">
-          {planAssets.length ? planAssets.map((asset) => renderAssetRefRow(asset)) : (
-            <div className="hint">尚未生成资产计划。请先生成 Story Bible，再生成资产计划。</div>
-          )}
-        </div>
-        )}
+
 
         {props.assetGallery ? (
           <div className="story-lock-gallery-overlay" role="dialog" aria-modal="true" aria-label="图片管理">
@@ -2929,7 +2503,7 @@ export default function StoryboardLockWorkspace(props: {
                         {gCands.map((c: any, idx: number) => {
                           const cPath = String(c?.assetPath || '').trim()
                           const cSrc = toProjectAssetUrl(projectId, cPath)
-                          const badge = poseScoreBadge(c)
+                          const badge = poseScoreBadgeOf(c)
                           return (
                             <div className="story-lock-gallery-item" key={cPath || idx}>
                               <div className={`ai-storyboard-asset-candidate-preview ${cSrc ? 'ready' : 'missing'}`}>
@@ -2943,7 +2517,7 @@ export default function StoryboardLockWorkspace(props: {
                                 <div className="hint">{formatGalleryTime(String(c?.createdAt || '')) || '时间未知'}</div>
                                 <div className="story-lock-gallery-actions">
                                   <button className="btn secondary" type="button" onClick={() => window.open(cSrc, '_blank', 'noopener,noreferrer')} disabled={!cSrc}>查看大图</button>
-                                  <button className="btn secondary" type="button" disabled={poseBusy || !cPath} onClick={() => props.onPoseDeleteCandidate?.(gAssetId, cPath)}>删除</button>
+                                  <button className="btn secondary" type="button" disabled={Boolean(props.poseGeneratingId || props.poseReviewingId || props.poseLockingKey || props.poseReqBusyId || props.assetPlanBusy) || !cPath} onClick={() => props.onPoseDeleteCandidate?.(gAssetId, cPath)}>删除</button>
                                 </div>
                               </div>
                             </div>
@@ -2976,10 +2550,10 @@ export default function StoryboardLockWorkspace(props: {
                                   <button
                                     className="btn secondary"
                                     type="button"
-                                    disabled={poseBusy}
+                                    disabled={Boolean(props.poseGeneratingId || props.poseReviewingId || props.poseLockingKey || props.assetPlanBusy)}
                                     onClick={() => void (async () => {
                                       const res = await props.onPoseDeleteVariant?.(gAssetId, String(v?.id || ''))
-                                      if (res && !res.ok) setPoseBlockMsg(String(res.message || '该姿势变体正被摆放引用，无法删除'))
+                                      if (res && !res.ok) void dlgAlert(String(res.message || '该姿势变体正被摆放引用，无法删除'))
                                     })()}
                                   >
                                     删除
@@ -3000,63 +2574,481 @@ export default function StoryboardLockWorkspace(props: {
           )
         })() : null}
 
-        {/* ============ 2026-09-02 二级资产详情弹层（环节锚点导航 + 上一个/下一个循环；内容复用 renderAsset*Row 渲染函数） ============ */}
+        {/* ============ 2026-09-02 二级资产详情弹层 → 2026-10-27 升级为「元素出图工作区」（用户裁决：出图管理总览层逐元素工作区） ============ */}
         {detailAsset ? (() => {
           const dAsset = detailAsset
           const dAid = String(dAsset?.id || '').trim()
           const dStatus = assetLockStatusOf(dAsset, props.assetPromptDrafts as any)
           const dIsCharacter = String(dAsset?.category || '') === 'character'
-          const navItems = [
+          const dIsLocation = String(dAsset?.category || '') === 'location'
+          // 标准系三视图已从默认生产 UI 退役，历史数据仅保留兼容
+          const dHasSheet = false
+          const dStrategy = String(dAsset?.renderStrategy || '').trim()
+          const dDraft = (props.assetPromptDrafts && (props.assetPromptDrafts as any)[dAid]) || {}
+          const dPromptReview = dDraft.promptReview && typeof dDraft.promptReview === 'object' ? dDraft.promptReview : null
+          const dPromptMissing = [
+            !String(dDraft.promptZh || '').trim() ? '正向中文' : '',
+            !String(dDraft.promptEn || '').trim() ? '正向英文' : '',
+            !String(dDraft.negativePromptZh || '').trim() ? '反向中文' : '',
+            !String(dDraft.negativePrompt || '').trim() ? '反向英文' : ''
+          ].filter(Boolean)
+          const dPromptAiAt = String(dDraft.enhanceMode || '') === 'ai' ? String(dDraft.enhancedAt || '').trim() : ''
+          const dPromptTranslatedAt = String(dDraft.translatedAt || '').trim()
+          const dPromptSource = [
+            dPromptAiAt ? `AI 已生成（${formatGalleryTime(dPromptAiAt) || dPromptAiAt}）` : '',
+            dPromptTranslatedAt ? `已翻译（${formatGalleryTime(dPromptTranslatedAt) || dPromptTranslatedAt}）` : ''
+          ].filter(Boolean).join(' · ') || (dStrategy && dStrategy !== 'ref_required' ? '计划已有锚点（无本页 AI 生成/翻译记录）' : '已有草稿（无本页 AI 生成/翻译记录）')
+          const dStages = assetFiveStagesOf(dAsset, props.assetPromptDrafts as any)
+          const dSheetViews = Array.isArray(dAsset?.modelSheet?.views) ? dAsset.modelSheet.views : []
+          const dSheetLocked = dSheetViews.filter((v: any) => String(v?.lockedAt || '').trim()).length
+          const dPrimaryLocked = Boolean(String(dAsset?.primaryReferenceAssetUri || '').trim() || String(dAsset?.primaryReferenceAssetId || '').trim())
+          const dLocationSceneIds = dIsLocation ? locationSceneIdsOf(dAsset, planScenes) : []
+          const dLocationImage = dIsLocation ? assetCardImageOf(dAsset, projectId) : ''
+          const dLocationReady = Boolean(String(dDraft.promptZh || dDraft.promptEn || dAsset?.anchorPrompt || dAsset?.referencePromptEn || '').trim())
+          const navItems = dIsLocation ? [
             { key: 'prompt', label: '提示词', anchor: `detail-sec-prompt-${dAid}` },
-            { key: 'ref', label: '参考图', anchor: `detail-sec-ref-${dAid}` },
+            { key: 'ref', label: '环境锚点', anchor: `detail-sec-ref-${dAid}` },
+            { key: 'scenes', label: '使用场景', anchor: `detail-sec-scenes-${dAid}` }
+          ] : [
+            { key: 'prompt', label: '提示词', anchor: `detail-sec-prompt-${dAid}` },
+            { key: 'ref', label: '主参考与变体', anchor: `detail-sec-ref-${dAid}` },
+            ...(dHasSheet ? [{ key: 'sheet', label: '标准系三视图', anchor: `detail-sec-sheet-${dAid}` }] : []),
             { key: 'lineart', label: '线稿', anchor: `detail-sec-lineart-${dAid}` },
+            { key: 'done', label: '完成态', anchor: `detail-sec-done-${dAid}` },
             ...(dIsCharacter ? [{ key: 'pose', label: '姿势变体', anchor: `pose-asset-${dAid}` }] : [{ key: 'state', label: '状态变体', anchor: `state-asset-${dAid}` }])
           ]
           const scrollToAnchor = (anchor: string) => {
             if (dIsCharacter) setPoseExpanded((prev) => ({ ...prev, [dAid]: true }))
-            else setStateExpanded((prev) => ({ ...prev, [dAid]: true }))
+            else if (!dIsLocation) setStateExpanded((prev) => ({ ...prev, [dAid]: true }))
             window.setTimeout(() => {
               try { document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) } catch {}
             }, 80)
           }
           return (
-            <div className="story-lock-detail-overlay" role="dialog" aria-modal="true" aria-label="资产详情">
-              <div className="story-lock-detail-card">
-                <div className="story-lock-detail-head">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                    <div style={{ fontWeight: 800, fontSize: 18, whiteSpace: 'nowrap' }}>{String(dAsset?.name || dAid || '未命名资产')}</div>
-                    <span className="story-lock-thing-cat">{getAssetCategoryLabel(String(dAsset?.category || ''))}</span>
-                    <span className={`story-lock-thing-status ${dStatus.tone}`}>{dStatus.label}</span>
+            <DetailWorkspace
+              ariaLabel={dIsLocation ? '地点模板管理' : '元素出图工作区'}
+              title={<span className={dIsLocation ? 'location-template-title' : ''}>{String(dAsset?.name || dAid || '未命名资产')}</span>}
+              badges={(
+                <>
+                  <span className="story-lock-thing-cat">{dIsLocation ? '地点模板' : getAssetCategoryLabel(String(dAsset?.category || ''))}</span>
+                  <span className={`story-lock-thing-status ${dIsLocation ? (dLocationReady ? 'locked' : 'draft') : dStatus.tone}`}>{dIsLocation ? (dLocationReady ? '锚点就绪' : '待起草') : dStatus.label}</span>
+                  {!dIsLocation ? (
+                    <span className="story-lock-five-stages" title={dStages.map((s) => `${s.label}:${s.tone === 'done' ? '已完成' : s.tone === 'partial' ? '进行中' : '未开始'}`).join(' · ')}>
+                      {dStages.map((s) => (
+                        <span key={s.key} className={`story-lock-stage-dot ${s.tone}`} />
+                      ))}
+                    </span>
+                  ) : null}
+                </>
+              )}
+              previousDisabled={detailNavAssets.length < 2}
+              nextDisabled={detailNavAssets.length < 2}
+              onPrevious={() => detailNav(-1)}
+              onNext={() => detailNav(1)}
+              onClose={() => { setDetailAssetId(''); setDetailAnchor('') }}
+              navItems={navItems.map((it) => ({
+                ...it,
+                active: detailAnchor === it.key,
+                onClick: () => { setDetailAnchor(it.key); scrollToAnchor(it.anchor) }
+              }))}
+            >
+                  <div className="story-lock-detail-lead">
+                    <div id={`detail-sec-prompt-${dAid}`} className="story-lock-detail-sec">
+                      <div className="story-lock-detail-sec-title">提示词摘要</div>
+                      <div className="story-lock-prompt-summary">
+                        <div className="hint" data-testid="prompt-detail-source"><b>来源与状态</b>：{dPromptSource}</div>
+                        <div className="hint" data-testid="prompt-detail-completeness"><b>内容缺口</b>：{dPromptMissing.length ? dPromptMissing.join('、') : '无，四个字段均已有内容'}</div>
+                        {dPromptReview ? (
+                          <div className="hint" data-testid="prompt-detail-review">
+                            <div><b>AI 评审</b>：{dPromptReview.score != null && Number.isFinite(Number(dPromptReview.score)) ? `${Math.round(Number(dPromptReview.score))}/100` : '未评分'}</div>
+                            {dPromptReview.summary ? <div>评语：{String(dPromptReview.summary)}</div> : null}
+                            {Array.isArray(dPromptReview.strengths) && dPromptReview.strengths.length ? <div>优点：{dPromptReview.strengths.map(String).join('；')}</div> : null}
+                            {Array.isArray(dPromptReview.risks) && dPromptReview.risks.length ? <div>风险：{dPromptReview.risks.map(String).join('；')}</div> : null}
+                            {Array.isArray(dPromptReview.suggestions) && dPromptReview.suggestions.length ? <div>建议：{dPromptReview.suggestions.map(String).join('；')}</div> : null}
+                          </div>
+                        ) : null}
+                        <div className="hint"><b>正向·中</b>：{String(dDraft.promptZh || '').trim() || '（未起草）'}</div>
+                        <div className="hint"><b>正向·英</b>：{String(dDraft.promptEn || '').trim() || '（未翻译）'}</div>
+                        <div className="hint"><b>反向·中</b>：{String(dDraft.negativePromptZh || '').trim() || '（未起草）'}</div>
+                        <div className="hint"><b>反向·英</b>：{String(dDraft.negativePrompt || '').trim() || '（未翻译）'}</div>
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          style={{ justifySelf: 'start', padding: '3px 12px', fontSize: 12 }}
+                          onClick={() => {
+                            setDetailAssetId('')
+                            setDetailAnchor('')
+                            setViewModeOverride('steps')
+                            setWizardStep(4)
+                            window.setTimeout(() => {
+                              const card = document.getElementById(`asset-prompt-${dAid}`)
+                              card?.scrollIntoView({ block: 'center' })
+                              card?.focus({ preventScroll: true })
+                            }, 120)
+                          }}
+                        >
+                          去第 4 步编辑提示词
+                        </button>
+                      </div>
+                    </div>
+
+                    {dIsLocation ? (
+                      <>
+                        <div id={`detail-sec-ref-${dAid}`} className="story-lock-detail-sec">
+                          <div className="story-lock-detail-sec-title">环境锚点与可选参考图</div>
+                          <div className="location-template-detail">
+                            <div className="hint"><b>锚点词</b>：{String(dAsset?.anchorPrompt || dAsset?.referencePromptHint || '').trim() || '（无）'}</div>
+                            <div className="hint">环境提示词用于每幕场景背景；地点模板不要求独立抽卡、线稿或完成态。</div>
+                            {dLocationImage ? (
+                              <>
+                                <div className="location-template-reference"><img src={dLocationImage} alt={`${String(dAsset?.name || dAid)}参考图`} /></div>
+                                <div><button type="button" className="btn secondary" disabled={props.assetPlanBusy} onClick={() => props.onOpenAssetGallery(dAid)}>管理已有参考图</button></div>
+                              </>
+                            ) : <div className="hint">当前没有独立参考图，不影响用于场景出图。</div>}
+                          </div>
+                        </div>
+                        <div id={`detail-sec-scenes-${dAid}`} className="story-lock-detail-sec">
+                          <div className="story-lock-detail-sec-title">使用场景（{dLocationSceneIds.length}）</div>
+                          <div className="location-template-scenes">
+                            {dLocationSceneIds.map((sceneId) => (
+                              <button key={sceneId} type="button" className="btn secondary" onClick={() => {
+                                setDetailAssetId('')
+                                setDetailAnchor('')
+                                setStep5Scope('scenes')
+                                setSceneFocus((prev) => ({ id: sceneId, requestId: (prev?.requestId || 0) + 1 }))
+                              }}>
+                                用于：{String(planScenes.find((scene) => String(scene?.sceneId || '') === sceneId)?.sceneName || sceneId)}
+                              </button>
+                            ))}
+                            {!dLocationSceneIds.length ? (
+                              <button type="button" className="btn secondary" disabled={!planScenes.length} onClick={() => {
+                                const edit = props.sceneBoard?.props.onEditSceneAssets
+                                if (edit) edit(String(planScenes[0]?.sceneId || ''))
+                                else void dlgAlert('请返回蓝图选择场景后分配要素。')
+                              }}>去蓝图分配场景</button>
+                            ) : null}
+                          </div>
+                          {!dLocationSceneIds.length ? <div className="hint" style={{ marginTop: 8 }}>未分配场景。地点模板会保留，可在蓝图的任意一幕分配后使用。</div> : null}
+                        </div>
+                      </>
+                    ) : (
+                      <div id={`detail-sec-ref-${dAid}`} className="story-lock-detail-sec">
+                        <div className="story-lock-detail-sec-title">主参考与姿态/状态变体</div>
+                        {renderAssetRefRow(dAsset)}
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button className="btn secondary" type="button" onClick={() => detailNav(-1)} disabled={gridAssetsAll.length < 2}>← 上一个</button>
-                    <button className="btn secondary" type="button" onClick={() => detailNav(1)} disabled={gridAssetsAll.length < 2}>下一个 →</button>
-                    <button type="button" className="icon-btn" onClick={() => { setDetailAssetId(''); setDetailAnchor('') }} aria-label="关闭资产详情" title="关闭">✕</button>
-                  </div>
-                </div>
-                <div className="story-lock-detail-nav">
-                  {navItems.map((it) => (
-                    <button key={it.key} type="button" className={`story-lock-view-toggle-btn ${detailAnchor === it.key ? 'active' : ''}`} onClick={() => { setDetailAnchor(it.key); scrollToAnchor(it.anchor) }}>
-                      {it.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="story-lock-detail-body">
-                  <div id={`detail-sec-prompt-${dAid}`} className="story-lock-detail-sec">
-                    <div className="story-lock-detail-sec-title">提示词</div>
-                    {renderAssetPromptCard(dAsset)}
-                  </div>
-                  <div id={`detail-sec-ref-${dAid}`} className="story-lock-detail-sec">
-                    <div className="story-lock-detail-sec-title">参考图</div>
-                    {renderAssetRefRow(dAsset)}
-                  </div>
-                  <div id={`detail-sec-lineart-${dAid}`} className="story-lock-detail-sec">
-                    <div className="story-lock-detail-sec-title">线稿</div>
-                    {renderAssetLineartRow(dAsset)}
-                  </div>
-                </div>
-              </div>
-            </div>
+
+                      {/* 区 3：标准系三视图（R 波服务端链落地；T 波扩道具）——角色/道具出，地点不出 */}
+                      {dHasSheet ? (
+                        <div id={`detail-sec-sheet-${dAid}`} className="story-lock-detail-sec">
+                          <div className="story-lock-detail-sec-title">标准系三视图（正/侧/背）</div>
+                          {!dPrimaryLocked ? (
+                            <div className="hint" style={{ color: '#fde68a' }}>先锁定主参考，再生成标准系三视图（三视图以已锁主参考为身份锚）。</div>
+                          ) : (
+                            (() => {
+                              // U 波项 4（2026-10-28 用户实测：图像占满 UI 太占地）：三视图改左右布局——
+                              // 左栏主图（限高，点击进图片管理看大图）+缩略图横排切视角；右栏操作面板（状态/评审/按钮+摘要入口）。
+                              // Z 波：sheet 栏序待人工指定（评审通道死时兜底，明面执行不猜）
+                              const dSheetPending = (Array.isArray((dAsset as any)?.modelSheet?.pendingCells) ? (dAsset as any).modelSheet.pendingCells : []) as any[]
+                              const assignSel = sheetAssignByAsset[dAid] || {}
+                              const assignReady = dSheetPending.length >= 3 && ['0', '1', '2'].every((k) => ['front', 'side', 'back'].includes(String(assignSel[k] || ''))) && new Set(['0', '1', '2'].map((k) => String(assignSel[k] || ''))).size === 3
+                              const focusKey = (sheetFocusByAsset[dAid] as 'front' | 'side' | 'back') || 'front'
+                              const viewOf = (k: string) => dSheetViews.find((v: any) => String(v?.key || '') === k)
+                              const focusView = viewOf(focusKey)
+                              const focusLocked = Boolean(String(focusView?.lockedAt || '').trim())
+                              const focusHas = Boolean(String(focusView?.assetUri || '').trim())
+                              const focusLabel = focusKey === 'front' ? '正面' : focusKey === 'side' ? '侧面' : '背面'
+                              const sheetBusy = props.modelSheetBusyId === dAid
+                              const statusOf = (view: any, vk: string) => {
+                                const locked = Boolean(String(view?.lockedAt || '').trim())
+                                const hasCandidate = Boolean(String(view?.assetUri || '').trim())
+                                if (locked) return '已锁定'
+                                if (!hasCandidate) return '待生成'
+                                if (String(view?.prevLockedAt || '').trim()) return '重出待锁'
+                                if (view?.reviewStatus === 'pending') return '评审挂起·待人工复核'
+                                if (view?.reviewStatus === 'rejected') return `评审未过 ${Number(view?.score) || 0} 分`
+                                if (Number.isFinite(Number(view?.score))) return `评审 ${Number(view.score)} 分`
+                                return vk === 'front' ? '同源主参考' : '待复核'
+                              }
+                              return (
+                                <>
+                                  <div className="hint" style={{ marginBottom: 8 }}>
+                                    逐视角生成单图（侧面/背面走骨架约束+身份锚定+配色一致评审）；逐张人工锁定后生效；姿势变体出图按视角语义自动吃对应锁定视图。
+                                    {dSheetViews.some((v: any) => String(v?.lockedAt || '').trim()) ? <span style={{ color: '#5eccff' }}> 已锁 {dSheetLocked}/3。</span> : null}
+                                    {dSheetViews.some((v: any) => String(v?.prevLockedAt || '').trim() && !String(v?.lockedAt || '').trim()) ? <span style={{ color: '#fde68a' }}> 有视角重出待锁（旧锁定图保留在图片管理可查）。</span> : null}
+                                  </div>
+                                  {/* AA 波（sheet 整图即标准系）：有 sheet 候选时整图大卡优先——正/侧/背同图同源；逐视角小卡仅 fallback 链产物时显示 */}
+                                  {(() => {
+                                    const sheetUri = String((dAsset as any)?.modelSheet?.sheetAssetUri || '').trim()
+                                    if (!sheetUri) return null
+                                    const sheetLocked = Boolean(String((dAsset as any)?.modelSheet?.sheetLockedAt || '').trim())
+                                    const sheetScore = Number((dAsset as any)?.modelSheet?.sheetReviewScore)
+                                    const sheetStatus = String((dAsset as any)?.modelSheet?.sheetReviewStatus || '')
+                                    const sheetReason = String((dAsset as any)?.modelSheet?.sheetReviewReason || '').trim()
+                                    const statusLabel = sheetLocked
+                                      ? '已锁定'
+                                      : sheetStatus === 'rejected'
+                                        ? `评审未过 ${Number.isFinite(sheetScore) ? sheetScore : 0} 分`
+                                        : sheetStatus === 'pending'
+                                          ? '评审挂起·待人工复核'
+                                          : Number.isFinite(sheetScore)
+                                            ? `评审 ${sheetScore} 分`
+                                            : '待复核'
+                                    return (
+                                      <div style={{ marginBottom: 10 }}>
+                                        <div className="hint" style={{ marginBottom: 6 }}>
+                                          标准系 sheet（正/侧/背同图同源；整图评审：视角齐全+身份+配色+底纯）。
+                                          {sheetLocked ? <span style={{ color: '#5eccff' }}> 已锁定，姿势变体出图吃本 sheet。</span> : null}
+                                        </div>
+                                        <div className="story-lock-sheet2" style={{ gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)' }}>
+                                          <div className="story-lock-sheet2-left">
+                                            <button
+                                              type="button"
+                                              className={`story-lock-sheet2-main ready`}
+                                              style={{ maxHeight: 260 }}
+                                              title="点击进入图片管理查看大图"
+                                              onClick={() => props.onPoseGalleryOpen?.(dAid)}
+                                            >
+                                              <img src={toProjectAssetUrl(projectId || '', sheetUri)} alt="标准系 sheet" style={{ maxHeight: 260 }} />
+                                            </button>
+                                          </div>
+                                          <div className="story-lock-sheet2-ops">
+                                            <div className="story-lock-thing-meta">
+                                              <span className="story-lock-thing-cat">整 sheet</span>
+                                              <span className={`story-lock-thing-status ${sheetLocked ? 'locked' : 'draft'}`} title={sheetReason}>{statusLabel}</span>
+                                            </div>
+                                            {sheetReason ? <div className="hint" style={{ fontSize: 12 }}>评审：{sheetReason.slice(0, 90)}</div> : null}
+                                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                              <button
+                                                className="btn secondary"
+                                                type="button"
+                                                disabled={props.modelSheetBusyId === dAid}
+                                                title="重新生成整 sheet（charturn 主导整图三栏；旧 sheet 留图片管理历史）"
+                                                onClick={() => props.onModelSheetGenerate?.(dAid, undefined, 'sheet')}
+                                              >
+                                                {props.modelSheetBusyId === dAid ? '生成中…' : '重出 sheet'}
+                                              </button>
+                                              {!sheetLocked ? (
+                                                <button
+                                                  className="btn secondary"
+                                                  type="button"
+                                                  disabled={props.modelSheetBusyId === dAid}
+                                                  title="人工确认整 sheet 可用并锁定（写入 lock_confirm 审核留痕）；锁定后姿势变体吃本 sheet"
+                                                  onClick={() => props.onModelSheetLock?.(dAid, 'sheet' as any)}
+                                                >
+                                                  锁定 sheet
+                                                </button>
+                                              ) : null}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )
+                                  })()}
+                                  {dSheetPending.length >= 3 ? (
+                                    <div className="story-lock-sheet2">
+                                      <div className="story-lock-sheet2-left" style={{ gridColumn: '1 / -1' }}>
+                                        <div className="hint" style={{ color: '#fde68a', marginBottom: 8 }}>
+                                          sheet 已生成并切割为三栏；评审通道不可用，栏序需人工指定（看图指定各栏视角后写入）。
+                                        </div>
+                                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                                          {dSheetPending.map((cell: any) => {
+                                            const ci = String(cell?.index ?? '')
+                                            return (
+                                              <div key={ci} style={{ display: 'grid', gap: 4, justifyItems: 'center' }}>
+                                                <img src={toProjectAssetUrl(projectId || '', String(cell?.assetUri || ''))} alt={`栏 ${Number(ci) + 1}`} style={{ maxHeight: 160, maxWidth: 110, objectFit: 'contain', borderRadius: 8, border: '1px solid rgba(148,163,184,0.18)' }} />
+                                                <select
+                                                  className="sel"
+                                                  style={{ fontSize: 12, padding: '3px 6px' }}
+                                                  value={String(assignSel[ci] || '')}
+                                                  onChange={(e) => setSheetAssignByAsset((prev) => ({ ...prev, [dAid]: { ...(prev[dAid] || {}), [ci]: e.target.value } }))}
+                                                >
+                                                  <option value="">栏 {Number(ci) + 1} 视角…</option>
+                                                  <option value="front">正面</option>
+                                                  <option value="side">侧面</option>
+                                                  <option value="back">背面</option>
+                                                </select>
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                        <div style={{ marginTop: 8 }}>
+                                          <button
+                                            className="btn secondary"
+                                            type="button"
+                                            disabled={!assignReady || props.modelSheetBusyId === dAid}
+                                            title="确认三栏视角指定并写入三视图（写入后逐张可锁定）"
+                                            onClick={() => {
+                                              props.onModelSheetAssign?.(dAid, { '0': assignSel['0'], '1': assignSel['1'], '2': assignSel['2'] } as Record<string, 'front' | 'side' | 'back'>)
+                                              setSheetAssignByAsset((prev) => ({ ...prev, [dAid]: {} }))
+                                            }}
+                                          >
+                                            确认指定并写入
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                  <div className="story-lock-sheet2">
+                                    <div className="story-lock-sheet2-left">
+                                      <button
+                                        type="button"
+                                        className={`story-lock-sheet2-main ${focusHas ? 'ready' : 'missing'}`}
+                                        title={focusHas ? '点击进入图片管理查看大图' : '该视角还没有候选图'}
+                                        disabled={!focusHas}
+                                        onClick={() => props.onPoseGalleryOpen?.(dAid)}
+                                      >
+                                        {focusHas ? <img src={toProjectAssetUrl(projectId || '', String(focusView.assetUri))} alt={focusLabel} /> : <span className="hint">待生成</span>}
+                                      </button>
+                                      <div className="story-lock-sheet2-thumbs">
+                                        {(['front', 'side', 'back'] as const).map((vk) => {
+                                          const v = viewOf(vk)
+                                          const has = Boolean(String(v?.assetUri || '').trim())
+                                          const vLabel = vk === 'front' ? '正面' : vk === 'side' ? '侧面' : '背面'
+                                          const locked = Boolean(String(v?.lockedAt || '').trim())
+                                          return (
+                                            <button
+                                              key={vk}
+                                              type="button"
+                                              className={`story-lock-sheet2-thumb ${focusKey === vk ? 'active' : ''}`}
+                                              title={`${vLabel} · ${statusOf(v, vk)}`}
+                                              onClick={() => setSheetFocusByAsset((prev) => ({ ...prev, [dAid]: vk }))}
+                                            >
+                                              {has ? <img src={toProjectAssetUrl(projectId || '', String(v.assetUri))} alt={vLabel} /> : <span className="hint">—</span>}
+                                              <span className="story-lock-sheet2-thumb-label">{vLabel}{locked ? '·锁' : ''}</span>
+                                            </button>
+                                          )
+                                        })}
+                                      </div>
+                                    </div>
+                                    <div className="story-lock-sheet2-ops">
+                                      <div className="story-lock-thing-meta">
+                                        <span className="story-lock-thing-cat">{focusLabel}</span>
+                                        <span className={`story-lock-thing-status ${focusLocked ? 'locked' : 'draft'}`} title={String(focusView?.reason || '')}>{statusOf(focusView, focusKey)}</span>
+                                      </div>
+                                      {String(focusView?.reason || '').trim() ? <div className="hint" style={{ fontSize: 12 }}>评审：{String(focusView.reason).slice(0, 80)}</div> : null}
+                                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                        {focusKey === 'front' ? (
+                                          <button
+                                            className="btn secondary"
+                                            type="button"
+                                            disabled={sheetBusy}
+                                            title="正面视角不允许生成（采样必漂）——front 永远=主参考登记；点此把当前主参考同步进三视图正面位并锁定"
+                                            onClick={() => props.onModelSheetGenerate?.(dAid, ['front'], 'per-view')}
+                                          >
+                                            {sheetBusy ? '同步中…' : '同步主参考'}
+                                          </button>
+                                        ) : (
+                                          <button
+                                            className="btn secondary"
+                                            type="button"
+                                            disabled={sheetBusy}
+                                            title={focusHas ? '重新生成该视角（新候选需重新人工锁定）' : '生成该视角单图（骨架约束+一致性评审）'}
+                                            onClick={() => props.onModelSheetGenerate?.(dAid, [focusKey], 'per-view')}
+                                          >
+                                            {sheetBusy ? '生成中…' : focusHas ? '再出一张' : '生成'}
+                                          </button>
+                                        )}
+                                        {focusKey !== 'front' && focusHas && !focusLocked ? (
+                                          <button
+                                            className="btn secondary"
+                                            type="button"
+                                            disabled={sheetBusy}
+                                            title="人工确认该视角候选可用并锁定（写入 lock_confirm 审核留痕）；锁定后姿势变体按视角语义吃本图"
+                                            onClick={() => props.onModelSheetLock?.(dAid, focusKey)}
+                                          >
+                                            锁定
+                                          </button>
+                                        ) : null}
+                                        <button
+                                          className="btn secondary"
+                                          type="button"
+                                          disabled={sheetBusy}
+                                          title="侧面/背面逐视角串行生成（正面恒为主参考登记不生成）；已有候选的视角会被新候选覆盖（需重新锁定）"
+                                          onClick={() => props.onModelSheetGenerate?.(dAid, ['side', 'back'], 'per-view')}
+                                        >
+                                          一次生成侧/背
+                                        </button>
+                                      </div>
+                                      <div className="hint" style={{ fontSize: 12 }}>
+                                        摘要：<button type="button" className="story-lock-mini-btn" onClick={() => { setDetailAnchor('lineart'); scrollToAnchor(`detail-sec-lineart-${dAid}`) }}>线稿区</button>
+                                        {' '}<button type="button" className="story-lock-mini-btn" onClick={() => { setDetailAnchor('done'); scrollToAnchor(`detail-sec-done-${dAid}`) }}>完成态清单</button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  {(() => {
+                                    const runs = (Array.isArray((dAsset as any)?.modelSheet?.testRuns) ? (dAsset as any).modelSheet.testRuns : []) as any[]
+                                    const latestRuns = runs.slice(-12).reverse()
+                                    if (!latestRuns.length) return null
+                                    return (
+                                      <details style={{ marginTop: 10 }}>
+                                        <summary className="hint" style={{ cursor: 'pointer' }}>A/B 试验记录（{latestRuns.length} 组，不影响正式锁定）</summary>
+                                        <div style={{ display: 'grid', gap: 10, marginTop: 8 }}>
+                                          {latestRuns.map((run: any) => (
+                                            <div key={String(run.runId)} style={{ border: '1px solid rgba(148,163,184,0.18)', borderRadius: 8, padding: 8 }}>
+                                              <div className="hint" style={{ marginBottom: 6 }}>
+                                                {run.engine === 'mvadapter' ? 'MV-Adapter' : 'CharTurn'} · seed {run.seed ?? '随机'} · {run.status === 'reviewed' ? '已评审' : run.status === 'rejected' ? '评审打回' : run.status === 'pending' ? '待复核' : '生成失败'}
+                                                {run.createdAt ? ` · ${formatGalleryTime(String(run.createdAt))}` : ''}
+                                              </div>
+                                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                                                {(['front', 'side', 'back'] as const).map((key) => {
+                                                  const view = key === 'front'
+                                                    ? { assetUri: String(run.primaryReferenceAssetUri || dAsset?.primaryReferenceAssetUri || ''), reviewStatus: 'skipped' }
+                                                    : (Array.isArray(run.views) ? run.views : []).find((item: any) => String(item?.key || item?.view || '') === key)
+                                                  const label = key === 'front' ? '正面·主参考' : key === 'side' ? '侧面' : '背面'
+                                                  const uri = String(view?.assetUri || '')
+                                                  return (
+                                                    <div key={`${run.runId}-${key}`} title={String(view?.reason || '')}>
+                                                      <div style={{ height: 150, display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, overflow: 'hidden' }}>
+                                                        {uri ? <img src={toProjectAssetUrl(projectId || '', uri)} alt={label} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span className="hint">无候选</span>}
+                                                      </div>
+                                                      <div className="hint" style={{ fontSize: 12, marginTop: 4 }}>
+                                                        {label}{Number.isFinite(Number(view?.score)) ? ` · ${Number(view.score)} 分` : ''}{Number.isFinite(Number(view?.bgPurity)) ? ` · 白底 ${Math.round(Number(view.bgPurity) * 100)}%` : ''}
+                                                      </div>
+                                                    </div>
+                                                  )
+                                                })}
+                                              </div>
+                                              {run.error ? <div className="hint" style={{ color: '#fca5a5', marginTop: 4 }}>{String(run.error)}</div> : null}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </details>
+                                    )
+                                  })()}
+                                </>
+                              )
+                            })()
+                          )}
+                        </div>
+                      ) : null}
+
+                      {/* 区 4：线稿区（地点不显示） */}
+                      {!dIsLocation ? (
+                        <div id={`detail-sec-lineart-${dAid}`} className="story-lock-detail-sec">
+                          <div className="story-lock-detail-sec-title">线稿</div>
+                          {renderAssetLineartRow(dAsset)}
+                        </div>
+                      ) : null}
+
+                  {!dIsLocation ? (
+                    <div id={`detail-sec-done-${dAid}`} className="story-lock-detail-sec">
+                      <div className="story-lock-detail-sec-title">完成态</div>
+                      <div className="story-lock-prompt-summary">
+                        {dStages.map((s) => (
+                          <div key={s.key} className="hint" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span className={`story-lock-stage-dot ${s.tone}`} />
+                            <span>{s.label}：{s.tone === 'done' ? '已完成' : s.tone === 'partial' ? '进行中' : '未开始'}</span>
+                          </div>
+                        ))}
+                        {dStages.every((s) => s.tone === 'done') ? (
+                          <div className="hint" style={{ color: '#86efac' }}>✓ 该元素出图准备全部完成</div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+            </DetailWorkspace>
           )
         })() : null}
 
@@ -3178,81 +3170,8 @@ export default function StoryboardLockWorkspace(props: {
           </div>
         ) : null}
 
-        {/* 2026-09-02 存为配方：小 div 弹窗输入名称（禁止系统弹窗），存 project 自定义配方 */}
-        {poseSaveRecipeAssetId ? (() => {
-          const rAsset = planAssets.find((a) => String(a?.id || '').trim() === poseSaveRecipeAssetId) || null
-          const rDraft = poseDraftOf(poseSaveRecipeAssetId, rAsset)
-          const doSave = () => {
-            const name = String(poseRecipeName || '').trim()
-            if (!name) return
-            props.onPoseSaveRecipe?.({ name, promptZh: String(rDraft.posePromptZh || '').trim(), promptEn: String(rDraft.posePromptEn || '').trim() })
-            setPoseSaveRecipeAssetId('')
-            setPoseRecipeName('')
-          }
-          return (
-            <div className="pose-variant-block-overlay" role="dialog" aria-modal="true">
-              <div className="pose-variant-block-card">
-                <div style={{ fontWeight: 700 }}>存为配方</div>
-                <div className="hint">把当前中英文稿存为项目自定义配方，全项目姿势变体区可用。</div>
-                <input
-                  className="pose-recipe-name-input"
-                  value={poseRecipeName}
-                  onChange={(e) => setPoseRecipeName(e.target.value)}
-                  placeholder="配方名称（如：背身·指稻草）"
-                  autoFocus
-                />
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                  <button type="button" className="btn secondary" onClick={() => { setPoseSaveRecipeAssetId(''); setPoseRecipeName('') }}>取消</button>
-                  <button type="button" className="btn secondary" disabled={!String(poseRecipeName || '').trim()} onClick={doSave}>保存配方</button>
-                </div>
-              </div>
-            </div>
-          )
-        })() : null}
+        {/* R 波项 3（2026-10-27）：「存为配方」弹窗随定义期 UI 退役撤除（配方应用迁至蓝图姿态需求清单，配方库读写路径不变） */}
 
-        {/* 2026-09-01 姿势变体删除阻断提示（div 弹窗，禁止系统弹窗）：变体正被摆放引用时先解除引用 */}
-        {poseBlockMsg ? (
-          <div className="pose-variant-block-overlay" role="dialog" aria-modal="true">
-            <div className="pose-variant-block-card">
-              <div style={{ fontWeight: 700 }}>无法删除姿势变体</div>
-              <div className="hint">{poseBlockMsg}</div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <button type="button" className="btn secondary" onClick={() => setPoseBlockMsg('')}>知道了</button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {/* 2026-09-10 填充保护确认（div 弹窗）：栏内已有内容时，填充类动作先选 追加/覆盖(可恢复)/取消 */}
-        {poseFillGuard ? (
-          <div className="pose-variant-block-overlay" role="dialog" aria-modal="true" aria-label="填充确认">
-            <div className="pose-variant-block-card">
-              <div style={{ fontWeight: 700 }}>{poseFillGuard.enOnly ? '英文栏已有内容' : '姿势需求栏已有内容'}</div>
-              <div className="hint">
-                {poseFillGuard.enOnly
-                  ? '「中文转英文」将用中文栏的新译稿替换英文栏。覆盖=替换现有英文内容（自动备份，栏位旁可一键恢复，刷新不丢）。'
-                  : `「${poseFillGuard.sourceLabel}」要填入新内容。追加=保留现有内容并拼接；覆盖=替换现有内容（自动备份，栏位旁可一键恢复，刷新不丢）。`}
-              </div>
-              <div className="pose-fill-preview">
-                <div className="pose-fill-preview-block">
-                  <div className="pose-fill-preview-label">{poseFillGuard.enOnly ? '当前英文' : '当前内容'}</div>
-                  <div className="pose-fill-preview-text">{String((poseFillGuard.enOnly ? poseDraftOf(poseFillGuard.assetId, poseFillGuard.asset).posePromptEn : poseDraftOf(poseFillGuard.assetId, poseFillGuard.asset).posePromptZh) || '（空）').slice(0, 160)}</div>
-                </div>
-                <div className="pose-fill-preview-block">
-                  <div className="pose-fill-preview-label">{poseFillGuard.enOnly ? '新译稿' : '新内容'}</div>
-                  <div className="pose-fill-preview-text">{String((poseFillGuard.enOnly ? poseFillGuard.nextEn : poseFillGuard.nextZh) || '（空）').slice(0, 160)}</div>
-                </div>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-                <button type="button" className="btn secondary" onClick={() => setPoseFillGuard(null)}>取消</button>
-                {poseFillGuard.enOnly ? null : (
-                  <button type="button" className="btn secondary" onClick={() => { applyPoseFill(poseFillGuard, 'append'); setPoseFillGuard(null) }}>追加到现有内容</button>
-                )}
-                <button type="button" className="btn secondary" onClick={() => { applyPoseFill(poseFillGuard, 'overwrite'); setPoseFillGuard(null) }}>覆盖（可恢复）</button>
-              </div>
-            </div>
-          </div>
-        ) : null}
 
         {/* ============ 2026-09-10 公共提示词库弹层：正/负向筛选插入 + 当前内容回存 + 条目删除 ============ */}
         {promptLibTarget ? (

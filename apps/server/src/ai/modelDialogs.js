@@ -65,7 +65,7 @@ function extractDialogResponseText(data) {
  * 追加一条本地模型对话记录（仅调用方判定为本地 localoxml 时调用）。
  * 写盘失败静默吞掉，不影响模型调用主链路。
  */
-export function appendStudioModelDialog({ model, body, response, usage, durationMs, ok, error, caller } = {}) {
+export function appendStudioModelDialog({ model, body, response, rawResponse, usage, durationMs, ok, error, caller } = {}) {
   try {
     fs.mkdirSync(MODEL_DIALOGS_DIR, { recursive: true })
     const record = {
@@ -75,6 +75,7 @@ export function appendStudioModelDialog({ model, body, response, usage, duration
       model: String(model || ''),
       messages: summarizeDialogMessages(body),
       response: String(response || '').slice(0, MODEL_DIALOG_TEXT_CHARS),
+      ...(rawResponse ? { rawResponse: String(rawResponse).slice(0, MODEL_DIALOG_TEXT_CHARS) } : {}),
       usage: usage && typeof usage === 'object' ? usage : null,
       durationMs: Number.isFinite(Number(durationMs)) ? Number(durationMs) : null,
       ok: ok !== false,

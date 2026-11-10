@@ -20,7 +20,8 @@ function clampText(v, max) { return asStr(v).slice(0, max) }
 export const STORY_STATE_UNCHANGED = 'unchanged'
 
 function sanitizeStateKey(v) {
-  return asStr(v).toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
+  // 2026-11-10 对齐 K 波裁决：CJK 语义名保留原文作键（匹配按字符串相等），其余非法字符归并为 _
+  return asStr(v).toLowerCase().replace(/[^a-z0-9_\u4e00-\u9fff]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
 }
 
 function storyStatesSchema() {

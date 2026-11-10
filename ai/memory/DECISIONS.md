@@ -55,13 +55,13 @@
 
 ## 写意图→可确认提案（2026-08-25，用户指令："主动弹出让我确认继续"）
 - **问题**：咨询中提写请求（"能把故事重命名为《X》吗"），模型只能空说"请回复确认"，确认了也没人能执行——提案与执行脱节。
-- **机制**：`agent-stream` 路由在分类后、模型调用前确定性识别写意图（首版覆盖"重命名项目"：意图正则 + 新名称引号提取 + 从当前问题与近 4 轮历史按 uuid/标题解析唯一目标项目），命中即返回 `action_proposal` JSON（eventId=project.update/GS-05、payload={projectId, project:{title}}、人话摘要），不调模型。
+- **机制**：`agent-stream` 路由在分类后、模型调用前确定性识别写意图（首版覆盖"重命名项目"：意图正则 + 新名称引号提取 + 从当前问题与近 4 轮历史按 uuid/标题解析唯一目标项目），命中即返回 `action_proposal` JSON（eventId=project.update/TS-05、payload={projectId, project:{title}}、人话摘要），不调模型。
 - **承接**：console `tryAgentStreamSubmission` 把提案落到**既有事件确认卡**（`eventConfirmPending`），用户「确认执行」→ `dispatchEventFromChat(confirmed:true)` → command 审核门 → TalkScene Server 执行 → 事件证据；「取消」则终止。目标/名称解析不唯一时不拦截，落回模型追问。
 - **实测**：改名问题→提案正确（7c04ca64→三只小猪）；未确认 dispatch→`review_required` 拦截；已确认 dispatch→真实执行成功（用同标题幂等写入验证，未改用户数据）。
 - **锁定/出图阶段聊天驱动（同日追加）**：阶段意图表 `PRODUCTION_STAGE_INTENTS`（顺序即优先级）：环境体检→`studio.selfcheck`（query 直发直答）、检查项目→`project.inspect`（query）、生成 Story Bible→`story.bible.generate`、主参考锁定→`asset.reference.lock`、生成参考图→`asset.reference.generate`、锁定测试→`asset.lock.test`、渲染缺失场景→`asset.scene.renderAll`（onlyMissing 断点续跑）。command 走确认卡门禁；query 由 console 直接 dispatch 并把结果卡读回聊天。改名 > 具体阶段 > 宽泛出图推进（资产计划）三级匹配顺序。
 - **编辑器"点击无反应"根因**：①环境体检未通过（实测 ComfyUI 8188 不可达）→ 出图类按钮按门禁设计禁用；②`生成 Story Bible` 在"未打开有效项目"时静默 return 无反馈——已修为可见错误提示（ComposeStudio.tsx runStoryboardGenerateEntitySpec）。
 - 语义边界：提案本身不是执行；只有用户点确认才写。后续可扩展更多写意图类型（当前仅重命名）。
-- **生产推进提案（同日追加）**：识别"出场景图/渲染/补齐资产/继续生产"等推进意图（须含推进动词：生成/创建/开始/推进/继续/渲染/出图/补齐——纯分析类问法不拦截，落回咨询查证），产出 `asset.plan.create`（GS-18，P1 场景图生产链入口）提案，摘要写明后续链路（参考图锁定→场景渲染→校验导出，逐步审核）。实测：推进问法→提案正确解析到当前项目；分析问法→正常落链。另修：回答阶段剥离 hermes 原生 `<tool_call>` XML 伪迹（咨询路径无 shell 工具，泄漏即脏输出），规划/回答提示明确"不存在 shell/终端/写文件工具"。
+- **生产推进提案（同日追加）**：识别"出场景图/渲染/补齐资产/继续生产"等推进意图（须含推进动词：生成/创建/开始/推进/继续/渲染/出图/补齐——纯分析类问法不拦截，落回咨询查证），产出 `asset.plan.create`（TS-18，P1 场景图生产链入口）提案，摘要写明后续链路（参考图锁定→场景渲染→校验导出，逐步审核）。实测：推进问法→提案正确解析到当前项目；分析问法→正常落链。另修：回答阶段剥离 hermes 原生 `<tool_call>` XML 伪迹（咨询路径无 shell 工具，泄漏即脏输出），规划/回答提示明确"不存在 shell/终端/写文件工具"。
 - 注意：机器重启后 `iogpu.wired_limit_mb` 复位为 0 必须重跑提限 + `omlx-cli restart`，否则大 prompt 再被 prefill guard 拒（2026-08-25 晨实测复现）。
 
 ## 启动内存闸自愈（2026-08-25，用户指令：提限做进启动逻辑）
@@ -132,11 +132,11 @@
 ## 分层合成工艺定型（2026-09-08，场景3/4 实测定论）
 - **场景图一律分层合成**：背景只画环境（background-only，禁写房屋/角色/动物，显式 prompt 覆盖时不拼 worldAnchor），角色用姿势变体立绘、房屋/道具用透明立绘摆入。道具锚点必须从场景 promptAssets 剔除（否则模型把房子画进背景）。
 - **分层场景标记**：`plan.scenes[].layeredComposition=true`——repairStoryAssetPlanSceneLinks 与渲染链路尊重该标记（promptAssets 只收角色；道具 sceneIds 仍记录供姿势场景选项）。
-- **规格文件驱动**：`creation-buffer/sceneN_layered_spec.json`（background/poses/propSprites/placements）+ 守护台事件 `GS-44 asset.scene.layeredProduce` 触发；两阶段纪律：先生成→目检→再写摆位（占位符经摆位校验拦截）。
+- **规格文件驱动**：`creation-buffer/sceneN_layered_spec.json`（background/poses/propSprites/placements）+ 守护台事件 `TS-44 asset.scene.layeredProduce` 触发；两阶段纪律：先生成→目检→再写摆位（占位符经摆位校验拦截）。
 
 ## 出图即压（2026-09-09，用户指令，强制规则）
 - 生成图写盘时按用途分层压缩（`apps/server/src/ai/imageOptimize.js`）：立绘/cutout/主参考=无损 WebP（真相源零质量损失）；场景背景=JPEG q90；候选/绿幕/线稿/测试图=WebP q92。禁止再落未压缩大 PNG。
-- 存量批压 `POST /api/projects/:id/assets/compress`（GS-45）幂等可复跑，同步改写 project.json/plan.json 引用。
+- 存量批压 `POST /api/projects/:id/assets/compress`（TS-45）幂等可复跑，同步改写 project.json/plan.json 引用。
 - 导出包目标 ≤5MB：storyPixi 构建只收集 story.json 引用资产并压缩（背景 JPEG q82/立绘 WebP≤512px），不再整树复制。
 
 ## 视觉评审本地化（2026-09-08，Kimi 周配额耗尽倒逼）

@@ -21,6 +21,7 @@ import {
   type StoryPromptReview
 } from '../api'
 import { consumeCreatePrefill, recordAiDraftHistory, removeAiDraftHistory } from '../hub/draftHistory'
+import { markStartupReady } from '../startupReady'
 
 // ---- 以下模块级助手自 Hub.tsx 创建弹窗逐行迁移（公式/模板/表单持久化），语义未改 ----
 const AI_PROMPT_KEY = 'talkscene.ai.prompt'
@@ -192,6 +193,7 @@ export default function CreateStoryPage(props: Props) {
 
   // 挂载：消费草稿 prefill（优先于 localStorage 表单记忆）；拉模板清单与项目列表（同名检测用）；主输入自动聚焦
   useEffect(() => {
+    markStartupReady() // 启动覆盖层就绪信号：本页是可恢复 stage，挂载即发（否则恢复进本页时启动屏挂到 15s 兜底）
     const pre = consumeCreatePrefill()
     if (pre) {
       setAiTitle(pre.title)

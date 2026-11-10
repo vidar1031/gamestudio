@@ -113,6 +113,34 @@ export async function persistSceneBackgroundBinding({ dir, rawProject, story, sc
   }
   await writeJson(path.join(dir, 'project.json'), nextProject)
   await writeJson(path.join(dir, 'story.json'), nextStory)
+
+  // 2026-11-03 用户裁决：地点类资产（prompt_only/optional_ref）的就绪判据应以"该幕已绑定背景"为准——
+  // 绑定时把成品背景回填为该地点的主参考（仅当为空），让要素库/要素分配的状态点变绿（elementStageOf=imaged）。
+  // 不写 referenceStatus（地点不出立绘，仅补齐"已有图"证据，不伪造抽卡流程）。
+  try {
+    const planPath = path.join(dir, 'story-assets', 'plan.json')
+    const plan = await readFile(planPath, 'utf-8').then((t) => JSON.parse(t)).catch(() => null)
+    if (plan && Array.isArray(plan.assets)) {
+      const scene = (Array.isArray(plan.scenes) ? plan.scenes : []).find((s) => String(s && s.sceneId || '').trim() === String(sceneId || '').trim()) || null
+      const ids = new Set([
+        ...(Array.isArray(scene?.assetIds) ? scene.assetIds.map((x) => String(x || '').trim()) : []),
+        ...(Array.isArray(scene?.promptAssets) ? scene.promptAssets.map((x) => String(x && x.id || '').trim()) : [])
+      ])
+      if (ids.size) {
+        let changed = false
+        const nextAssets = plan.assets.map((a) => {
+          if (!a || !ids.has(String(a.id || '').trim())) return a
+          if (String(a.category || '').trim() !== 'location') return a
+          if (String(a.primaryReferenceAssetUri || '').trim()) return a
+          changed = true
+          return { ...a, primaryReferenceAssetUri: String(assetPath || ''), primaryReferenceAssetId: projectAssetId }
+        })
+        if (changed) {
+          await writeJson(planPath, { ...plan, assets: nextAssets, generatedAt: new Date().toISOString() })
+        }
+      }
+    }
+  } catch (_) { /* 计划回填失败不阻断绑定主链 */ }
   recordCreationEvent(dir, {
     type: 'scene_bound',
     summary: `场景图绑定：${sceneName || sceneId} -> ${assetPath}`,

@@ -11,6 +11,8 @@ export type ComposeTopBarProps = {
   showProjectManager: boolean
   busy: boolean
   dirty: boolean
+  // 2026-10-26 缺陷 C：提示词草稿等独立脏源（不进 dirty——dirty 有 1.2s 防抖自动保存链，提示词语义=点保存才落盘）
+  extraDirty?: boolean
   doc: EditorDoc
   projects: ProjectV1[]
   problems: string[]
@@ -35,7 +37,7 @@ export type ComposeTopBarProps = {
   setSelection: Dispatch<SetStateAction<Selection>>
   setSbOpen: Dispatch<SetStateAction<boolean>>
   setSbRenderOpen: Dispatch<SetStateAction<boolean>>
-  setSbPoseFocusAssetId: Dispatch<SetStateAction<string>>
+  setSbPoseFocus: Dispatch<SetStateAction<{ assetId: string; sceneId?: string; reqId?: string } | null>>
   setToast: Dispatch<SetStateAction<string>>
 }
 
@@ -45,6 +47,7 @@ export function ComposeTopBar(p: ComposeTopBarProps) {
     showProjectManager,
     busy,
     dirty,
+    extraDirty,
     doc,
     projects,
     problems,
@@ -69,7 +72,7 @@ export function ComposeTopBar(p: ComposeTopBarProps) {
     setSelection,
     setSbOpen,
     setSbRenderOpen,
-    setSbPoseFocusAssetId,
+    setSbPoseFocus,
     setToast
   } = p
 
@@ -108,13 +111,15 @@ export function ComposeTopBar(p: ComposeTopBarProps) {
             <button
               className="btn secondary compose-quiet"
               onClick={async () => {
+                // 2026-10-26 缺陷 C：提示词草稿不在 dirty 自动保存链——离开前单独 confirm
+                if (extraDirty && !window.confirm('提示词草稿未保存，离开将丢失（点「保存」落盘后再走可保留）。确定离开？')) return
                 const ok = await saveIfDirty()
                 if (!ok) return
                 props.onBackToHub?.()
               }}
               disabled={busy}
             >
-              返回工作台
+              返回首页
             </button>
           ) : null}
 
@@ -122,6 +127,7 @@ export function ComposeTopBar(p: ComposeTopBarProps) {
             <button
               className="btn secondary compose-quiet"
               onClick={async () => {
+                if (extraDirty && !window.confirm('提示词草稿未保存，离开将丢失（点「保存」落盘后再走可保留）。确定离开？')) return
                 const ok = await saveIfDirty()
                 if (!ok) return
                 props.onBack?.()
@@ -164,7 +170,7 @@ export function ComposeTopBar(p: ComposeTopBarProps) {
             </span>
           )}
           <button className="btn secondary" onClick={() => restartRuntime()} disabled={!doc.story}>播放</button>
-          <button className="btn" onClick={() => saveCurrent()} disabled={busy || doc.mode !== 'project' || !dirty}>保存</button>
+          <button className="btn" onClick={() => saveCurrent()} disabled={busy || doc.mode !== 'project' || (!dirty && !extraDirty)} title={extraDirty && !dirty ? '有提示词草稿未保存' : undefined}>保存</button>
 
           <div className="compose-menu-wrap">
             <button
@@ -230,7 +236,7 @@ export function ComposeTopBar(p: ComposeTopBarProps) {
                       onClick={async () => {
                         setOpenMenu('')
                         await initStoryboardBatchFromDoc()
-                        setSbPoseFocusAssetId('')
+                        setSbPoseFocus(null)
                         setSbRenderOpen(false)
                         setSbOpen(true)
                         void runStoryboardOpenChecks()

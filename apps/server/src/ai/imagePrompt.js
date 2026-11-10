@@ -1,4 +1,4 @@
-import { openaiResponsesJsonForTools } from './openai.js'
+import { extractResponseOutputText, openaiResponsesJsonForTools, parseModelJsonLenient } from './openai.js'
 import { generateBackgroundPromptViaDoubao } from './doubao.js'
 import { generateStrictJsonViaOllamaChat } from './ollama.js'
 
@@ -108,7 +108,8 @@ export async function generateBackgroundPromptViaOpenAI({
   provider,
   apiUrl,
   proxyUrl,
-  timeoutMs
+  timeoutMs,
+  backgroundOnly
 }) {
   const ar = normalizeAspectRatio(aspectRatio) || '9:16'
   const st = normalizeStyle(style) || 'picture_book'
@@ -116,10 +117,17 @@ export async function generateBackgroundPromptViaOpenAI({
   const langLabel = lang === 'en' ? '英文（English）' : '中文'
   const lineJoinHint = lang === 'en' ? '逗号分隔（英文）' : '逗号分隔（中文）'
   const oneLineHint = lang === 'en' ? 'prompt/negativePrompt 必须是一行英文，不要换行。' : 'prompt/negativePrompt 必须是一行中文，不要换行。'
+  // 2026-11-02 交互故事分层链（用户裁决）：背景图=纯环境空镜——角色/动物/可互动元素一律不写入背景稿，
+  // 角色一致性由立绘链（主参考+IPAdapter+摆位）保证。backgroundOnly 时替换角色相关指令为硬排除规则。
+  const bgOnly = backgroundOnly === true
   const worldAnchorHint =
     lang === 'en'
-      ? `- globalPrompt 必须包含“WORLD_ANCHOR”段落：明确时代/地理/建筑、色彩与光照、镜头语言、角色外观锁定（服装/发型/配饰/色彩），并要求所有场景保持连续一致。\n`
-      : `- globalPrompt 必须包含“世界观锚点”段落：明确时代/地理/建筑、色彩与光照、镜头语言、角色外观锁定（服装/发型/配饰/色彩），并要求所有场景保持连续一致。\n`
+      ? (bgOnly
+          ? `- globalPrompt 必须包含“WORLD_ANCHOR”段落：明确时代/地理/建筑、色彩与光照、镜头语言，并要求所有场景保持连续一致。禁止描述任何人物/动物/角色的外观、服装、动作或数量。\n`
+          : `- globalPrompt 必须包含“WORLD_ANCHOR”段落：明确时代/地理/建筑、色彩与光照、镜头语言、角色外观锁定（服装/发型/配饰/色彩），并要求所有场景保持连续一致。\n`)
+      : (bgOnly
+          ? `- globalPrompt 必须包含“世界观锚点”段落：明确时代/地理/建筑、色彩与光照、镜头语言，并要求所有场景保持连续一致。禁止描述任何人物/动物/角色的外观、服装、动作或数量。\n`
+          : `- globalPrompt 必须包含“世界观锚点”段落：明确时代/地理/建筑、色彩与光照、镜头语言、角色外观锁定（服装/发型/配饰/色彩），并要求所有场景保持连续一致。\n`)
 
   const instructions =
     `你是“交互故事制作工具”的美术提示词助手。\n` +
@@ -129,9 +137,13 @@ export async function generateBackgroundPromptViaOpenAI({
     `- 输出语言固定为：${langLabel}。\n` +
     `- 你需要维护“全局设定”（globalPrompt/globalNegativePrompt），用于锁定整个故事的时代/环境/美术风格/禁用元素，避免后续场景跑偏。\n` +
     worldAnchorHint +
-    `- 如果 globalPrompt 尚未包含明确的“角色设定”，且本场景出现人物/动物/关键物体：请在 globalPrompt 中补充一段简短“角色设定/外观指纹”（衣着、发型、面部特征、颜色、配饰等），供后续场景复用以保持一致。\n` +
-    `- 当用户提到“锁定/同一人物/保持一致/沿用上一张/同一个角色/同一只动物”等一致性要求时：你必须在 globalPrompt 中新增“角色设定/一致性锁定”段落，明确列出主要角色与关键物体的固定外观（脸型/发型/服饰/颜色/配饰等），并要求后续所有场景保持同一角色与同一只动物（避免变脸/换装/变色/数量变化）。\n` +
-    `- 如果场景中出现动物/道具（例如兔子），请明确数量（例如“仅一只兔子（唯一）”），避免模型画出多只。\n` +
+    (bgOnly
+      ? `- 本任务为“背景空镜”：scenePrompt/finalPrompt 只描述环境与静态陈设（地点、时间、天气、光线、背景道具、构图氛围），画面必须是无人空镜——禁止出现任何人物/动物/角色及其局部（手/脚/脸/影子），也不要用“某人/某动物”视角描述。\n` +
+        `- 即使用户原文提到角色或动物，也只提取其所在的环境信息（如“草屋前”“森林边”），角色与动物由其他工序分层绘制，绝不写进提示词。\n` +
+        `- 静态陈设道具（房屋/家具/井/桥等不可互动背景物）可以且应该描述；可互动的活物一律排除。\n`
+      : `- 如果 globalPrompt 尚未包含明确的“角色设定”，且本场景出现人物/动物/关键物体：请在 globalPrompt 中补充一段简短“角色设定/外观指纹”（衣着、发型、面部特征、颜色、配饰等），供后续场景复用以保持一致。\n` +
+        `- 当用户提到“锁定/同一人物/保持一致/沿用上一张/同一个角色/同一只动物”等一致性要求时：你必须在 globalPrompt 中新增“角色设定/一致性锁定”段落，明确列出主要角色与关键物体的固定外观（脸型/发型/服饰/颜色/配饰等），并要求后续所有场景保持同一角色与同一只动物（避免变脸/换装/变色/数量变化）。\n` +
+        `- 如果场景中出现动物/道具（例如兔子），请明确数量（例如“仅一只兔子（唯一）”），避免模型画出多只。\n`) +
     `- 如果用户已提供全局设定：不得改变其含义，只能做“补全/精炼/结构化”；不要把故事内容写成剧情，只写视觉设定。\n` +
     `- scenePrompt/sceneNegativePrompt 只描述“本场景的增量”，不要重复全局设定。\n` +
     `- 禁止输出“面临选择/关键节点/后果总结”等抽象叙事词，必须改写为可见画面动作与构图。\n` +
@@ -140,7 +152,9 @@ export async function generateBackgroundPromptViaOpenAI({
     `- style 使用枚举值：picture_book/cartoon/national_style/watercolor。\n` +
     `- 比例使用枚举值：9:16/16:9/1:1/9:1。\n` +
     `- 额外返回推荐参数：steps/cfgScale/sampler/scheduler（如无把握可留空）。\n` +
-    `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：text, watermark, logo, qr code, low quality, blurry, deformed, photorealistic.\n` +
+    (bgOnly
+      ? `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认必须包含：text, watermark, logo, qr code, low quality, blurry, deformed, photorealistic, people, person, human, character, animal, animals, creature, creatures, children, crowd, hands, face。\n`
+      : `- negativePrompt/globalNegativePrompt/sceneNegativePrompt 以${lineJoinHint}的短词为主；默认补充：text, watermark, logo, qr code, low quality, blurry, deformed, photorealistic.\n`) +
     `- 用户要求中出现“不要/避免/无…”的内容必须反映到 prompt 或 negativePrompt。\n` +
     `- 不要输出解释文字，只输出 JSON。`
 
@@ -167,28 +181,13 @@ export async function generateBackgroundPromptViaOpenAI({
   }
 
   const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl, proxyUrl, timeoutMs })
-  let outText = ''
-  try {
-    outText = typeof json.output_text === 'string' ? json.output_text : ''
-  } catch (_) {}
-  if (!outText) {
-    // fallback: collect message output_text
-    try {
-      const items = Array.isArray(json.output) ? json.output : []
-      const parts = []
-      for (const it of items) {
-        if (!it || typeof it !== 'object' || String(it.type) !== 'message') continue
-        const content = Array.isArray(it.content) ? it.content : []
-        for (const c of content) {
-          if (c && typeof c === 'object' && String(c.type) === 'output_text' && typeof c.text === 'string') parts.push(c.text)
-        }
-      }
-      outText = parts.join('').trim()
-    } catch (_) {}
-  }
+  // 2026-11-01 根修：openaiResponsesJsonForTools 在 localoxml 直走 chat/completions（返回 choices 形状），
+  // 此前只按 Responses 形状（output_text/output[]）抽取 → 本地通道恒定 empty_ai_output（场景提示词生成必败）。
+  // 统一改用 extractResponseOutputText（双形状兼容，含 reasoning_content 兜底）；JSON 用 lenient 解析抗代码围栏。
+  const outText = extractResponseOutputText(json)
   if (!outText) throw new Error('empty_ai_output')
 
-  const parsed = JSON.parse(outText)
+  const parsed = parseModelJsonLenient(outText) || {}
   return {
     result: {
       globalPrompt: parsed.globalPrompt == null ? '' : String(parsed.globalPrompt || '').trim(),

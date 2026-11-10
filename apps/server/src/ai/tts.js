@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { listTtsVoiceGroups, resolveTtsVoice } from './ttsVoices.js'
+import { onAiTaskCancel, throwIfAiTaskCancelled } from './taskCancellation.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '../../../..')
@@ -48,6 +49,7 @@ function runCommand(cmd, args, { timeoutMs = 60_000 } = {}) {
       return
     }
     const errChunks = []
+    const removeCancel = onAiTaskCancel(() => { try { p.kill('SIGKILL') } catch (_) {} })
     const killTimer = setTimeout(() => {
       try {
         p.kill('SIGKILL')
@@ -57,10 +59,13 @@ function runCommand(cmd, args, { timeoutMs = 60_000 } = {}) {
     p.stderr.on('data', (d) => errChunks.push(d))
     p.on('error', (e) => {
       clearTimeout(killTimer)
+      removeCancel()
       reject(new TtsError('tts_spawn_failed', e && e.message ? String(e.message) : String(e)))
     })
     p.on('close', (code) => {
       clearTimeout(killTimer)
+      removeCancel()
+      try { throwIfAiTaskCancelled() } catch (error) { reject(error); return }
       const errText = Buffer.concat(errChunks).toString('utf-8').trim()
       if (code === 0) {
         resolve({ stderr: errText })
@@ -162,10 +167,13 @@ async function synthesizeOpenAiCompat({ provider, voice, speed, format, text, ap
       const p = spawn('curl', args, { stdio: ['pipe', 'pipe', 'pipe'] })
       const chunks = []
       const errChunks = []
+      const removeCancel = onAiTaskCancel(() => { try { p.kill('SIGKILL') } catch (_) {} })
       p.stdout.on('data', (d) => chunks.push(d))
       p.stderr.on('data', (d) => errChunks.push(d))
-      p.on('error', (e) => reject(new TtsError('tts_spawn_failed', e && e.message ? String(e.message) : String(e))))
+      p.on('error', (e) => { removeCancel(); reject(new TtsError('tts_spawn_failed', e && e.message ? String(e.message) : String(e))) })
       p.on('close', (code) => {
+        removeCancel()
+        try { throwIfAiTaskCancelled() } catch (error) { reject(error); return }
         const outText = Buffer.concat(chunks).toString('utf-8').trim()
         const errText = Buffer.concat(errChunks).toString('utf-8').trim()
         if (code !== 0) {
@@ -199,6 +207,7 @@ async function synthesizeOpenAiCompat({ provider, voice, speed, format, text, ap
  * 失败抛 TtsError（code 结构化：tts_disabled 之外详见各分支），不静默。
  */
 export async function synthesizeTts({ provider, voice, pitch, speed, format, text, apiUrl, model, secrets, proxyUrl }) {
+  throwIfAiTaskCancelled()
   const p = String(provider || '').trim().toLowerCase()
   const t = String(text || '').trim()
   if (!t) throw new TtsError('tts_empty_text', '合成文本为空')

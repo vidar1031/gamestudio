@@ -10,6 +10,8 @@ import { createTraceId, logStage } from '../ai/runtime.js'
 import { createAiTask, updateAiTask } from '../ai/taskProgress.js'
 import { buildPoseStateExtractionInput, extractStoryPoseStates } from '../ai/storyPoseStates.js'
 import { buildPoseVariantPrompt, generatePoseVariantForGroup, groupPoseRequirements, isAnimalLikeAnchor, loadPoseLibraryManifest } from '../ai/storyPoseVariants.js'
+import { pickPoseIdentityView } from '../ai/storyModelSheet.js'
+import { renderSizeOf } from '../ai/storyRenderSizes.js'
 import { generateBackgroundImage, generateComfyuiCutoutFromReference } from '../ai/background.js'
 import { optimizeGeneratedImage, IMAGE_KIND } from '../ai/imageOptimize.js'
 import { sniffImageMetaFromBytes } from '../ai/storyAssetReferenceGate.js'
@@ -17,10 +19,13 @@ import { translatePromptText } from '../ai/translate.js'
 import { generateCharacterFingerprint, generateCharacterPosePrompt } from '../ai/characterPrompt.js'
 import { getEffectiveStudioConfig } from '../studio/settings.js'
 import { serveStatic } from '@hono/node-server/serve-static'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export function registerStorySpritesRoutes(app, ctx) {
 // ---------------------------------------------------------------------------
-// 2026-10-10 姿势变体自动编排（asset.poseVariants.autoGenerate，GS-51；自动化②落地）：
+// 2026-10-10 姿势变体自动编排（asset.poseVariants.autoGenerate，TS-51；自动化②落地）：
 // 提取剧情姿势需求（storyPoseStates LLM）→ 按（角色×姿势）分组 → 匹配公共姿势库骨架
 // → 骨架驱动生成变体（generateComfyuiPoseVariantSprite）→ layered-produce 登记绑场景。
 // 全程 aiTask 进度 + logStage；站立类不出变体；无骨架匹配记 unmatched（姿势库扩展线索）。
@@ -89,12 +94,18 @@ app.post('/api/projects/:id/ai/story/pose-variants/auto', async (c) => {
           updateAiTask(task.taskId, { current: cursor, message: `已存在跳过：${label}` })
           continue
         }
-        const identityRel = ctx.asStr(asset.primaryReferenceAssetUri).trim()
+        // R 波项 2（2026-10-27）：资产已锁三视图时按姿势需求视角语义选对应视角图作身份输入
+        // （背身姿势吃 back 视图；无匹配视角回退 front 锁定视图；全无回退主参考=现状）。
+        const poseViewPick = pickPoseIdentityView({ asset, text: `${group.poseKey} ${ctx.asStr(group.action)} ${ctx.asStr(group.expression)}` })
+        const identityRel = (poseViewPick.uri || ctx.asStr(asset.primaryReferenceAssetUri)).trim()
         const identityAbs = identityRel ? path.resolve(dir, identityRel) : ''
         if (!identityAbs || !identityAbs.startsWith(path.resolve(dir) + path.sep) || !(await ctx.existsFile(identityAbs))) {
           errors.push({ group: label, error: 'identity_reference_missing' })
           updateAiTask(task.taskId, { current: cursor, message: `缺主参考跳过：${label}` })
           continue
+        }
+        if (poseViewPick.source !== 'primary') {
+          logStage({ stage: 'story.pose_variants.auto', event: 'identity_from_model_sheet', traceId, project: id, item: label, ok: true, detail: poseViewPick.source })
         }
         const poseDef = poses[group.poseKey]
         try {
@@ -232,8 +243,9 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
   const negativePromptIn = String(body?.negativePrompt || '').trim()
   const style = ctx.normalizeStyleEnum(body?.style)
 
-  const width = Number(body?.width || 720)
-  const height = Number(body?.height || 1280)
+  // X 波尺寸策略表：sprite 缺省尺寸归位姿态变体档（768×1152 立绘档，与主参考同源；原 720×1280 退役）
+  const width = Number(body?.width || renderSizeOf('pose_variant')[0])
+  const height = Number(body?.height || renderSizeOf('pose_variant')[1])
   if (!fingerprintPrompt && !posePrompt) return c.json({ success: false, error: 'missing_prompt', message: 'fingerprintPrompt/posePrompt 至少填写一个' }, 400)
 
   const studio = await getEffectiveStudioConfig(ctx.ROOT)
@@ -273,6 +285,21 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
       const planDoc = await ctx.readStoryAssetPlanIfExists(id)
       const pa = (planDoc && Array.isArray(planDoc.assets) ? planDoc.assets : []).find((a) => String(a && a.id || '').trim() === planAssetIdIn) || null
       ipaRel = String((pa && (pa.primaryReferenceAssetUri || pa.latestRecommendedReferenceAssetUri)) || '').trim()
+    } catch (_) {}
+  }
+  // R 波项 2 收口（代跑实测缺口补齐）：姿势视角语义的三视图身份锚覆盖——两主分支（characterId/planAssetId）
+  // 解析出主参考后，调用方带姿势视角文本且计划资产已锁对应视角三视图时，换吃对应视图图（背身吃 back 等）；
+  // 无匹配视角回退 front 锁定视图，全无保持主参考不变（现状）。
+  const poseViewText = String(body?.poseViewText || body?.viewKey || '').trim()
+  if (ipadapterOn && planAssetIdIn && poseViewText) {
+    try {
+      const planDoc = await ctx.readStoryAssetPlanIfExists(id)
+      const pa = (planDoc && Array.isArray(planDoc.assets) ? planDoc.assets : []).find((a) => String(a && a.id || '').trim() === planAssetIdIn) || null
+      const pick = pickPoseIdentityView({ asset: pa, text: poseViewText })
+      if (pick.uri) {
+        ipaRel = pick.uri
+        try { console.log(`[talkscene] ch.sprite:identity_from_model_sheet project=${id} asset=${planAssetIdIn} source=${pick.source}`) } catch (_) {}
+      }
     } catch (_) {}
   }
   ipaRel = ipaRel
@@ -487,7 +514,8 @@ app.post('/api/projects/:id/ai/character/sprite', async (c) => {
       comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
       apiUrl: studio.effective.image.apiUrl,
       model: studio.effective.image.model,
-      loras: studio.effective.image.loras,
+      // V 波：body.loras 附加栈（三视图 charturn 低权档入口）——叠加在全局风格栈尾；不传则原样（姿态/其他链不受影响）
+      loras: [...(Array.isArray(studio.effective.image.loras) ? studio.effective.image.loras : []), ...(Array.isArray(body?.loras) ? body.loras : [])],
       proxyUrl: studio.effective.network.proxyUrl
     })
 
@@ -611,6 +639,7 @@ app.post('/api/projects/:id/ai/character/pose-prompt', async (c) => {
     )
   } catch (_) {}
 
+  const posePromptTask = createAiTask(id, 'story.pose.prompt', { total: 1, message: `AI 建议姿态提示词：${characterName}` })
   try {
     // 2026-09-01 实测：OMLX 偶发把 token 烧进 reasoning 导致空输出（empty_ai_output），串行重试一次兜底（不并行，守 KV 护栏）
     let gen = null
@@ -663,9 +692,11 @@ app.post('/api/projects/:id/ai/character/pose-prompt', async (c) => {
     try {
       console.log(`[talkscene] ch.pose_prompt:ok project=${id} ms=${Math.max(0, Date.now() - startedAt)} zhChars=${promptZh.length} enChars=${promptEn.length}`)
     } catch (_) {}
-    return c.json({ success: true, result: { promptZh, promptEn }, meta: gen.meta || null })
+    updateAiTask(posePromptTask.taskId, { done: true, stage: 'done', current: 1, message: '姿态提示词已生成' })
+    return c.json({ success: true, result: { promptZh, promptEn }, meta: gen.meta || null, taskId: posePromptTask.taskId })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
+    updateAiTask(posePromptTask.taskId, { done: true, stage: 'failed', error: msg })
     try {
       console.log(`[talkscene] ch.pose_prompt:fail project=${id} ms=${Math.max(0, Date.now() - startedAt)} err=${msg}`)
     } catch (_) {}
@@ -809,5 +840,15 @@ if (editorDistReady) {
   })
 } else {
   app.get('/', (c) => c.text('talkscene_server'))
+}
+
+// 2026-10-21 docsys 文档站托管（编辑器「帮助」入口）：业务后端直接伺服 docsys/dist，
+// 用户不必另起 docsys 预览服务；产物缺失时给构建指引而非 404 白板。
+const DOCSYS_DIST = path.resolve(__dirname, '..', '..', '..', '..', 'docsys', 'dist')
+if (existsSync(path.join(DOCSYS_DIST, 'index.html'))) {
+  app.get('/docs', (c) => c.redirect('/docs/'))
+  app.use('/docs/*', serveStatic({ root: DOCSYS_DIST, rewriteRequestPath: (p) => p.replace(/^\/docs/, '') }))
+} else {
+  app.get(['/docs', '/docs/*'], (c) => c.text('文档站未构建：请先运行 npm run docsys:build', 404))
 }
 }

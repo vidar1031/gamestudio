@@ -18,6 +18,7 @@ import { getCraftSkill } from '../ai/craftLibrary.js'
 import { generateComfyuiPoseVariantSprite } from '../ai/background.js'
 import { optimizeGeneratedImage, IMAGE_KIND } from '../ai/imageOptimize.js'
 import { summarizeStoryAssetPlan } from '../ai/storyAssets.js'
+import { renderSizeOf } from '../ai/storyRenderSizes.js'
 import { createImageReview, decideImageReview, findPendingReview } from '../review/imageReviewStore.js'
 
 export function registerStoryStatesRoutes(app, ctx) {
@@ -37,6 +38,11 @@ app.post('/api/projects/:id/ai/story/pose-states', async (c) => {
     return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“提示词生成”并选择 Provider/Model' }, 400)
   }
 
+  // L 波（2026-10-27 黑盒治理+超时根修）：逐幕分批串行（storyPoseStates.js 内）+ 任务台账阶段进度
+  //（声明在 try 外：catch 里要收口失败台账；total 依赖 input，input 在 try 内构建——task 移到 input 构建后、catch 需访问的最近点不可行，
+  //  故 task 在 try 内声明但 catch 的 updateAiTask 兜底用 try 内闭包引用不到时静默跳过——改为：task 声明提到 try 前的条件是 input 已知；
+  //  现实做法：保持 task 在 try 内（input 依赖），catch 里用 taskRef 读取）
+  let poseExtractTaskRef = null
   try {
     const bundle = await ctx.readProjectBundle(id)
     const storyBible = ctx.readStoryBibleFromProjectDoc(bundle.project)
@@ -49,14 +55,18 @@ app.post('/api/projects/:id/ai/story/pose-states', async (c) => {
     }
     const body = await c.req.json().catch(() => ({}))
     const timeoutMs = ctx.clampInt(body?.timeoutMs, 5_000, 600_000, ctx.clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 600_000, 90_000))
+    const task = createAiTask(id, 'story.pose_states.extract', { total: input.scenes.length, message: `剧情姿势需求提取：${input.scenes.length} 幕串行` })
+    poseExtractTaskRef = task
     const { result, meta } = await extractStoryPoseStates({
       provider: studio.effective.prompt.provider,
       model: studio.effective.prompt.model,
       apiUrl: studio.effective.prompt.apiUrl,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs,
-      input
+      input,
+      onProgress: (i, total, label) => updateAiTask(task.taskId, { stage: 'running', current: i + 1, message: `提取姿势需求 ${i + 1}/${total}：${label}` })
     })
+    updateAiTask(task.taskId, { done: true, stage: 'done', current: input.scenes.length, message: '姿势需求提取完成' })
     // 附带角色→计划资产映射（同 id 直接对应），编辑器按资产挂载需求清单
     const plan = await ctx.readStoryAssetPlanIfExists(id).catch(() => null)
     const assetByCharacterId = {}
@@ -65,12 +75,147 @@ app.post('/api/projects/:id/ai/story/pose-states', async (c) => {
         assetByCharacterId[String(asset.id).trim()] = { assetId: String(asset.id).trim(), assetName: String(asset.name || asset.id).trim() }
       }
     }
-    return c.json({ success: true, poseStates: result, assetByCharacterId, meta })
+    // K 波（2026-10-27）：body.persist=true 时提取结果直接写回 plan 资产 poseRequirements（蓝图定义期入口一键写回；
+    // 编辑器组装的 POSE_SPRITE_ONLY_PREFIX 组装规则同款内联——服务端同源，需求项带 stateKey）
+    let persisted = false
+    if (body?.persist === true && plan) {
+      const POSE_SPRITE_ONLY_PREFIX = '仅画角色本身，纯白背景，不含道具与场景'
+      const normStateKey = (v) => {
+        const s = String(v || '').trim()
+        if (!s) return ''
+        if (/^[\x20-\x7e]+$/.test(s)) return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
+        return s.slice(0, 48)
+      }
+      const scenes = Array.isArray(result?.scenes) ? result.scenes : []
+      const nextAssets = (Array.isArray(plan.assets) ? plan.assets : []).map((a) => ({ ...a }))
+      for (const a of nextAssets) {
+        if (String(a?.category || '') !== 'character') continue
+        const aid = String(a?.id || '').trim()
+        const charId = Object.keys(assetByCharacterId).find((cid) => String(assetByCharacterId[cid]?.assetId || '').trim() === aid) || aid
+        const reqs = []
+        const seenKeys = new Set()
+        for (const scene of scenes) {
+          for (const st of Array.isArray(scene?.characterStates) ? scene.characterStates : []) {
+            if (String(st?.characterId || '').trim() !== charId) continue
+            const parts = [st?.pose, st?.view ? `${String(st.view).trim()}视角` : '', st?.action, st?.expression].map((x) => String(x || '').trim()).filter(Boolean)
+            const stateKey = normStateKey(st?.stateKey || st?.pose || st?.action)
+            if (!stateKey || seenKeys.has(stateKey)) continue
+            seenKeys.add(stateKey)
+            reqs.push({
+              reqId: `${String(scene?.sceneId || '').trim()}::${charId}`,
+              stateKey,
+              label: String(st?.pose || st?.action || stateKey).trim().slice(0, 48),
+              sceneId: String(scene?.sceneId || '').trim(),
+              sceneName: String(scene?.sceneName || scene?.sceneId || '').trim().slice(0, 64),
+              sceneIds: [String(scene?.sceneId || '').trim()].filter(Boolean),
+              characterId: charId,
+              pose: String(st?.pose || '').trim().slice(0, 120),
+              view: String(st?.view || '').trim().slice(0, 24),
+              action: String(st?.action || '').trim().slice(0, 120),
+              expression: String(st?.expression || '').trim().slice(0, 64),
+              excludedProps: [],
+              promptZh: [POSE_SPRITE_ONLY_PREFIX, ...parts].join('，'),
+              promptEn: '',
+              createdAt: ctx.nowIso()
+            })
+          }
+        }
+        if (reqs.length) {
+          // 表情差分需求（expr:: 前缀）是手工/快捷播种的，重提剧情姿势时保留不覆盖（与编辑器同款语义）
+          const preservedExpr = (Array.isArray(a.poseRequirements) ? a.poseRequirements : []).filter((r) => String(r?.reqId || '').startsWith('expr::'))
+          a.poseRequirements = [...reqs, ...preservedExpr]
+        }
+      }
+      const nextPlan = { ...plan, generatedAt: ctx.nowIso(), assets: nextAssets }
+      nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+      await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+      persisted = true
+      logStage({ stage: 'story.pose_states.persist', event: 'ok', traceId: createTraceId(), project: id, item: 'poseRequirements written' })
+    }
+    return c.json({ success: true, poseStates: result, assetByCharacterId, meta, persisted })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
-    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+    // L 波：失败台账收口 + 人话化（empty_ai_output/超时/格式异常→中文原因+可重试引导；批失败含幕名）
+    const human = (() => {
+      const m = msg
+      const batchHit = m.match(/^pose_batch_failed:([^:]+):/)
+      const batchNote = batchHit ? `（失败幕：${batchHit[1]}）` : ''
+      if (/empty_ai_output/.test(m)) return `AI 未产出内容${batchNote}（本地模型繁忙或内存不足），可重试`
+      if (/timeout|timed out|超时/i.test(m)) return `生成超时${batchNote}，可重试`
+      if (/invalid_pose_states|invalid_json_response|invalid_.*output/i.test(m)) return `AI 输出格式异常${batchNote}，可重试`
+      if (/fetch failed|ECONNREFUSED|ETIMEDOUT/i.test(m)) return '文本模型服务不可达：请确认本地模型服务（OMLX :18888）已启动'
+      return `${m.slice(0, 160)}${batchNote}`
+    })()
+    try {
+      if (poseExtractTaskRef) updateAiTask(poseExtractTaskRef.taskId, { done: true, stage: 'failed', error: human })
+    } catch {}
+    return c.json({ success: false, error: mapped.code, message: human }, mapped.httpStatus)
   }
+})
+
+// K 波（2026-10-27 用户裁决：姿态需求定义前移蓝图）：poseRequirements 需求清单写口——
+// 蓝图侧需求增删改经此窄写口走 saveStoryAssetPlan 链（mergeAssetsById 纪律），即时落盘（计划真相源编辑，非编排草稿）。
+// 校验：stateKey 规范化（ASCII 小写下划线化；中文语义名保留原文作键——变体匹配按字符串相等）+ 按 stateKey 去重 + 字段消毒。
+app.put('/api/projects/:id/ai/story/assets/:assetId/pose-requirements', async (c) => {
+  await ctx.ensureDirs()
+  const id = c.req.param('id')
+  const assetId = String(c.req.param('assetId') || '').trim()
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+  const plan = await ctx.readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+  const assets = Array.isArray(plan.assets) ? plan.assets : []
+  const asset = assets.find((a) => String(a?.id || '').trim() === assetId)
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const listIn = Array.isArray(body?.requirements) ? body.requirements : null
+  if (!listIn) return c.json({ success: false, error: 'missing_requirements', message: 'requirements 必须是数组' }, 400)
+
+  const normStateKey = (v) => {
+    const s = String(v || '').trim()
+    if (!s) return ''
+    if (/^[\x20-\x7e]+$/.test(s)) return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
+    return s.slice(0, 48) // 中文语义名保留原文作键（变体匹配按字符串相等，语言无碍）
+  }
+  const seen = new Set()
+  const requirements = []
+  for (const raw of listIn) {
+    if (!raw || typeof raw !== 'object') continue
+    const stateKey = normStateKey(raw.stateKey || raw.label)
+    if (!stateKey || seen.has(stateKey)) continue
+    seen.add(stateKey)
+    requirements.push({
+      reqId: String(raw.reqId || '').trim() || `custom::${stateKey}`,
+      stateKey,
+      label: String(raw.label || stateKey).trim().slice(0, 48),
+      sceneId: String(raw.sceneId || '').trim(),
+      sceneName: String(raw.sceneName || '').trim().slice(0, 64),
+      sceneIds: (Array.isArray(raw.sceneIds) ? raw.sceneIds : []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, 24),
+      characterId: String(raw.characterId || '').trim(),
+      pose: String(raw.pose || '').trim().slice(0, 120),
+      view: String(raw.view || '').trim().slice(0, 24),
+      action: String(raw.action || '').trim().slice(0, 120),
+      expression: String(raw.expression || '').trim().slice(0, 64),
+      excludedProps: (Array.isArray(raw.excludedProps) ? raw.excludedProps : []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, 12),
+      promptZh: String(raw.promptZh || '').trim().slice(0, 1600),
+      promptEn: String(raw.promptEn || '').trim().slice(0, 1600),
+      createdAt: String(raw.createdAt || '').trim() || ctx.nowIso()
+    })
+    if (requirements.length >= 24) break
+  }
+
+  const nextPlan = {
+    ...plan,
+    generatedAt: ctx.nowIso(),
+    assets: assets.map((a) => (String(a?.id || '').trim() === assetId ? { ...a, poseRequirements: requirements } : a))
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+  logStage({ stage: 'story.pose_requirements.write', event: 'ok', traceId: createTraceId(), project: id, item: `${assetId} reqs=${requirements.length}` })
+  return c.json({ success: true, assetId, poseRequirements: requirements })
 })
 
 // AI：提取道具状态需求（2026-09-16，候选制不写盘）——逐道具识别跨场景视觉状态变化（水位/满空/破碎…）
@@ -89,6 +234,9 @@ app.post('/api/projects/:id/ai/story/prop-states', async (c) => {
     return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用“提示词生成”并选择 Provider/Model' }, 400)
   }
 
+  // M 波（2026-10-27）：任务台账；N 波：逐幕分批进度（total=有道具出场的幕数；input 在 try 内构建，
+  // 故 task 在 try 内声明、ref 镜像供 catch 收口——与 pose-states 同款）
+  let propExtractTaskRef = null
   try {
     const bundle = await ctx.readProjectBundle(id)
     const storyBible = ctx.readStoryBibleFromProjectDoc(bundle.project)
@@ -101,14 +249,18 @@ app.post('/api/projects/:id/ai/story/prop-states', async (c) => {
     }
     const body = await c.req.json().catch(() => ({}))
     const timeoutMs = ctx.clampInt(body?.timeoutMs, 5_000, 600_000, ctx.clampInt(process.env.STUDIO_PROMPT_TIMEOUT_MS, 5_000, 600_000, 90_000))
+    const task = createAiTask(id, 'story.prop_states.extract', { total: input.scenes.length, message: `道具状态需求提取：${input.scenes.length} 幕串行` })
+    propExtractTaskRef = task
     const { result, meta } = await extractStoryPropStates({
       provider: studio.effective.prompt.provider,
       model: studio.effective.prompt.model,
       apiUrl: studio.effective.prompt.apiUrl,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs,
-      input
+      input,
+      onProgress: (i, total, label) => updateAiTask(task.taskId, { stage: 'running', current: i + 1, message: `提取道具状态 ${i + 1}/${total}：${label}` })
     })
+    updateAiTask(task.taskId, { done: true, stage: 'done', current: input.scenes.length, message: '道具状态需求提取完成' })
     // 附带道具→计划资产映射（bible propId 与计划资产同 id 直接对应），编辑器按资产挂载需求清单
     const plan = await ctx.readStoryAssetPlanIfExists(id).catch(() => null)
     const assetByPropId = {}
@@ -116,11 +268,61 @@ app.post('/api/projects/:id/ai/story/prop-states', async (c) => {
       const aid = String(asset?.id || '').trim()
       if (aid) assetByPropId[aid] = { assetId: aid, assetName: String(asset.name || aid).trim() }
     }
-    return c.json({ success: true, propStates: result, assetByPropId, meta })
+    // M 波（2026-10-27）：body.persist=true 时道具状态需求直接写回 plan 资产 stateRequirements
+    //（按 stateKey 合并不覆盖：同键更新 sceneIds 并集+label/evidence，新键追加；与 states/extract 写回语义同构）
+    let persisted = false
+    if (body?.persist === true && plan) {
+      const props = Array.isArray(result?.props) ? result.props : []
+      const byPropId = new Map(props.map((p) => [String(p?.propId || '').trim(), p]))
+      const nextAssets = (Array.isArray(plan.assets) ? plan.assets : []).map((a) => {
+        const aid = String(a?.id || '').trim()
+        const hit = byPropId.get(aid)
+        if (!hit) return a
+        const statesIn = Array.isArray(hit.states) ? hit.states : []
+        if (!statesIn.length) return a
+        const kept = (Array.isArray(a.stateRequirements) ? a.stateRequirements : []).map((r) => ({ ...r }))
+        for (const st of statesIn) {
+          const stateKey = String(st?.stateKey || '').trim()
+          if (!stateKey) continue
+          const sceneIds = (Array.isArray(st?.sceneIds) ? st.sceneIds : []).map((x) => String(x || '').trim()).filter(Boolean)
+          const existing = kept.find((r) => String(r?.stateKey || '') === stateKey)
+          if (existing) {
+            existing.label = String(st?.label || existing.label || stateKey).trim().slice(0, 48)
+            existing.sceneIds = [...new Set([...(Array.isArray(existing.sceneIds) ? existing.sceneIds : []), ...sceneIds])]
+            if (String(st?.evidence || '').trim()) existing.evidence = String(st.evidence).trim().slice(0, 120)
+          } else {
+            kept.push({
+              stateKey,
+              label: String(st?.label || stateKey).trim().slice(0, 48),
+              sceneIds,
+              ...(String(st?.evidence || '').trim() ? { evidence: String(st.evidence).trim().slice(0, 120) } : {})
+            })
+          }
+        }
+        return { ...a, stateRequirements: kept }
+      })
+      const nextPlan = { ...plan, generatedAt: ctx.nowIso(), assets: nextAssets }
+      nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+      await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+      persisted = true
+      logStage({ stage: 'story.prop_states.persist', event: 'ok', traceId: createTraceId(), project: id, item: 'stateRequirements written' })
+    }
+    return c.json({ success: true, propStates: result, assetByPropId, meta, persisted })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
-    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+    // M 波：人话化 + 台账收口（与 pose-states 同款口径）
+    const human = (() => {
+      if (/empty_ai_output/.test(msg)) return 'AI 未产出内容（本地模型繁忙或内存不足），可重试'
+      if (/timeout|timed out|超时/i.test(msg)) return '生成超时，可重试'
+      if (/invalid_.*output|invalid_.*json/i.test(msg)) return 'AI 输出格式异常，可重试'
+      if (/fetch failed|ECONNREFUSED|ETIMEDOUT/i.test(msg)) return '文本模型服务不可达：请确认本地模型服务（OMLX :18888）已启动'
+      return msg.slice(0, 160)
+    })()
+    try {
+      if (propExtractTaskRef) updateAiTask(propExtractTaskRef.taskId, { done: true, stage: 'failed', error: human })
+    } catch {}
+    return c.json({ success: false, error: mapped.code, message: human }, mapped.httpStatus)
   }
 })
 
@@ -314,7 +516,7 @@ app.post('/api/projects/:id/ai/story/craft/carrier-variant', async (c) => {
       await mkdir(path.dirname(outAbs), { recursive: true })
       await writeFile(outAbs, gen.bytes)
 
-      // 登记：与 GS-51 同通道 layered-produce（抠图/评审/计划写回/审核留痕一致）；
+      // 登记：与 TS-51 同通道 layered-produce（抠图/评审/计划写回/审核留痕一致）；
       // 审核模式控制面已做步骤级审核，内部转发带 off 旁路
       updateAiTask(task.taskId, { stage: 'registering', message: '载体变体登记（抠图/评审/写回）' })
       // 2026-10-18 根修：登记场景域优先取调用方显式 sceneIds（states/generate 传剧情状态的需求场景），
@@ -416,7 +618,7 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/state-variants/generate', a
   if (!planAssetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
 
   const body = await c.req.json().catch(() => ({}))
-  const stateKey = String(body?.stateKey || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_')
+  const stateKey = String(body?.stateKey || '').trim().toLowerCase().replace(/[^a-z0-9_\u4e00-\u9fff]/g, '_') // 2026-11-10 对齐 K 波裁决：CJK 键保留（此前中文键被归并成 '_'，变体与需求断链）
   const label = String(body?.label || body?.stateKey || '').trim()
   const description = String(body?.description || body?.promptZh || '').trim()
   const customPrompt = String(body?.prompt || '').trim()
@@ -613,8 +815,9 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/state-variants/generate', a
         posePrompt: statePrompt,
         negativePrompt: [String(body?.negativePrompt || '').trim(), String(planAsset.negativePrompt || '').trim()].filter(Boolean).join(', '),
         style: 'picture_book',
-        width: 720,
-        height: 1280,
+        // X 波尺寸策略表：道具状态变体=道具单件档 768×768（原 720×1280 退役）
+        width: renderSizeOf('prop_single')[0],
+        height: renderSizeOf('prop_single')[1],
         steps: 20,
         cfgScale: 7
       })
@@ -851,7 +1054,7 @@ app.post('/api/projects/:id/ai/story/states/generate', async (c) => {
           generated.push({ ...gapRef(gap), skillId, projectAssetId: String(json.projectAssetId || '').trim() })
         } else {
           // 姿态/表情：sprite 身份锚定绿幕出图（planAssetId 经 IPAdapter 锚定锁定主参考，中文提示词端点内自动翻译）
-          // → layered-produce 登记（抠图/评审/计划写回同 GS-51）→ 回写 poseKey=stateKey
+          // → layered-produce 登记（抠图/评审/计划写回同 TS-51）→ 回写 poseKey=stateKey
           updateAiTask(task.taskId, { stage: 'pose_sprite', current: cursor - 1, message: `姿态状态出图：${label}` })
           const statePrompt = `同一个${gap.assetName}，${gap.description}`
           const spriteJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/sprite`, {

@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { getProxyUrl } from '../net/proxy.js'
 import { generateImageViaDoubaoArkImages } from './doubao.js'
 import { withResourceLease } from './resourceLease.js'
+import { mapMvAdapterViews } from './mvAdapterViews.js'
+import { linkAiTaskAbort, onAiTaskCancel, throwIfAiTaskCancelled } from './taskCancellation.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -560,6 +562,7 @@ export function setBackgroundImageGeneratorForTest(fn) {
 }
 
 export async function generateBackgroundImage(input) {
+  throwIfAiTaskCancelled()
   if (process.env.STUDIO_ENABLE_TEST_HOOKS === '1' && backgroundImageGeneratorForTest) {
     return backgroundImageGeneratorForTest(input)
   }
@@ -613,6 +616,10 @@ async function generateBackgroundViaSdWebui(input) {
 
   let json = null
   const controller = new AbortController()
+  linkAiTaskAbort(controller)
+  const removeInterrupt = onAiTaskCancel(() => {
+    void fetch(`${baseUrl}/sdapi/v1/interrupt`, { method: 'POST' }).catch(() => {})
+  })
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const resp = await fetch(apiUrl, {
@@ -636,11 +643,13 @@ async function generateBackgroundViaSdWebui(input) {
       throw e
     }
   } catch (e) {
+    if (e?.code === 'AI_TASK_CANCELLED') throw e
     const err = new Error(e && e.message ? e.message : String(e))
     err.status = 502
     throw err
   } finally {
     clearTimeout(t)
+    removeInterrupt()
   }
 
   const b64 = String(json.images[0]).split(',').pop()
@@ -909,10 +918,12 @@ async function uploadComfyImage({ baseUrl, bytes, filename, overwrite = false, t
   }
 }
 
-async function waitComfyImage({ baseUrl, promptId, timeoutMs }) {
+async function waitComfyImage({ baseUrl, promptId, timeoutMs, allImages = false }) {
   const started = Date.now()
   while (timeoutMs <= 0 || Date.now() - started < timeoutMs) {
+    throwIfAiTaskCancelled()
     const controller = new AbortController()
+    linkAiTaskAbort(controller)
     const t = setTimeout(() => controller.abort(), 4000)
     try {
       const r = await fetch(`${baseUrl}/history/${encodeURIComponent(String(promptId))}`, { method: 'GET', signal: controller.signal })
@@ -937,21 +948,23 @@ async function waitComfyImage({ baseUrl, promptId, timeoutMs }) {
         }
         const outputs = item && item.outputs && typeof item.outputs === 'object' ? item.outputs : null
         if (outputs) {
+          const found = []
           for (const k of Object.keys(outputs)) {
             const out = outputs[k]
             const images = out && Array.isArray(out.images) ? out.images : []
-            if (images.length) {
-              const im = images[0]
+            for (const im of images) {
               const filename = String(im && im.filename ? im.filename : '').trim()
               const subfolder = String(im && im.subfolder ? im.subfolder : '').trim()
               const type = String(im && im.type ? im.type : 'output').trim() || 'output'
-              if (filename) return { filename, subfolder, type }
+              if (filename) found.push({ filename, subfolder, type })
             }
           }
+          if (found.length) return allImages ? found : found[0]
         }
       }
-    } catch (_) {
-      // ignore transient poll errors
+    } catch (error) {
+      if (error?.code === 'AI_TASK_CANCELLED') throw error
+      if (String(error?.message || '').startsWith('comfyui_execution_error')) throw error
     } finally {
       clearTimeout(t)
     }
@@ -964,11 +977,40 @@ async function waitComfyImage({ baseUrl, promptId, timeoutMs }) {
 
 // ComfyUI 出图统一经 control 资源调度器租约准入（gpu 独占写卡，出图前换出 OMLX 模型）
 export async function runComfyuiPromptWorkflow(params) {
-  return withResourceLease('gpu', 'gs:comfyui:prompt_workflow', () => runComfyuiPromptWorkflowInner(params))
+  throwIfAiTaskCancelled()
+  return withResourceLease('gpu', 'ts:compose:comfyui', () => runComfyuiPromptWorkflowInner(params))
 }
 
-async function runComfyuiPromptWorkflowInner({ workflow, comfyuiBaseUrl, timeoutMs }) {
+async function runComfyuiPromptWorkflowInner({ workflow, comfyuiBaseUrl, timeoutMs, returnAllImages = false }) {
   const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
+  let activePromptId = ''
+  const interrupt = () => {
+    if (activePromptId) {
+      void fetch(`${baseUrl}/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delete: [activePromptId] })
+      }).catch(() => {})
+    }
+    void fetch(`${baseUrl}/interrupt`, { method: 'POST' }).catch(() => {})
+  }
+  const removeInterrupt = onAiTaskCancel(interrupt)
+  try {
+    return await runComfyuiPromptWorkflowCancellable({ workflow, baseUrl, timeoutMs, returnAllImages, onPromptId: (id) => {
+      activePromptId = id
+      try {
+        throwIfAiTaskCancelled()
+      } catch (error) {
+        interrupt()
+        throw error
+      }
+    } })
+  } finally {
+    removeInterrupt()
+  }
+}
+
+async function runComfyuiPromptWorkflowCancellable({ workflow, baseUrl, timeoutMs, returnAllImages = false, onPromptId = () => {} }) {
   const effectiveTimeoutMs = parseComfyTimeoutMs(timeoutMs)
   if (!workflow || typeof workflow !== 'object') {
     const e = new Error('comfyui_invalid_workflow')
@@ -978,6 +1020,7 @@ async function runComfyuiPromptWorkflowInner({ workflow, comfyuiBaseUrl, timeout
 
   let promptId = ''
   const controller = new AbortController()
+  linkAiTaskAbort(controller)
   const submitAbortMs = effectiveTimeoutMs <= 0 ? 30_000 : Math.min(effectiveTimeoutMs, 30_000)
   const t = setTimeout(() => controller.abort(), submitAbortMs)
   try {
@@ -992,12 +1035,17 @@ async function runComfyuiPromptWorkflowInner({ workflow, comfyuiBaseUrl, timeout
       const msg = json && (json.error || json.message || json.detail)
         ? explainRemoteError(json.error || json.message || json.detail)
         : `HTTP ${resp.status}`
-      const e = new Error(`comfyui_prompt_failed: ${msg}`)
+      const validation = json && json.node_errors && typeof json.node_errors === 'object'
+        ? ` ${JSON.stringify(json.node_errors).slice(0, 4000)}`
+        : ''
+      const e = new Error(`comfyui_prompt_failed: ${msg}${validation}`)
       e.status = 502
       throw e
     }
     promptId = String(json.prompt_id || '').trim()
+    onPromptId(promptId)
   } catch (e) {
+    if (e?.code === 'AI_TASK_CANCELLED') throw e
     const err = new Error(e && e.message ? e.message : String(e))
     err.status = 502
     throw err
@@ -1005,23 +1053,33 @@ async function runComfyuiPromptWorkflowInner({ workflow, comfyuiBaseUrl, timeout
     clearTimeout(t)
   }
 
-  const img = await waitComfyImage({ baseUrl, promptId, timeoutMs: effectiveTimeoutMs })
-  const q = new URLSearchParams({ filename: img.filename, type: img.type || 'output' })
-  if (img.subfolder) q.set('subfolder', img.subfolder)
-  const viewUrl = `${baseUrl}/view?${q.toString()}`
-  const dl = await curlDownload({ url: viewUrl, timeoutMs: effectiveTimeoutMs <= 0 ? 120_000 : effectiveTimeoutMs, proxyUrl: '' })
-  const sniff = sniffImageMetaFromBytes(dl.bytes)
-  if (!sniff) {
-    const e = new Error('comfyui_view_download_invalid_image')
-    e.status = 502
-    throw e
+  const found = await waitComfyImage({ baseUrl, promptId, timeoutMs: effectiveTimeoutMs, allImages: returnAllImages })
+  const images = Array.isArray(found) ? found : [found]
+  const downloaded = []
+  for (const img of images) {
+    const q = new URLSearchParams({ filename: img.filename, type: img.type || 'output' })
+    if (img.subfolder) q.set('subfolder', img.subfolder)
+    const viewUrl = `${baseUrl}/view?${q.toString()}`
+    const dl = await curlDownload({ url: viewUrl, timeoutMs: effectiveTimeoutMs <= 0 ? 120_000 : effectiveTimeoutMs, proxyUrl: '' })
+    const sniff = sniffImageMetaFromBytes(dl.bytes)
+    if (!sniff) {
+      const e = new Error('comfyui_view_download_invalid_image')
+      e.status = 502
+      throw e
+    }
+    downloaded.push({
+      bytes: dl.bytes,
+      ext: sniff.ext || extFromContentType(dl.contentType),
+      meta: { provider: 'comfyui', url: viewUrl, promptId, filename: img.filename, subfolder: img.subfolder, type: img.type }
+    })
   }
   return {
-    bytes: dl.bytes,
-    ext: sniff.ext || extFromContentType(dl.contentType),
+    bytes: downloaded[0].bytes,
+    ext: downloaded[0].ext,
+    ...(returnAllImages ? { images: downloaded } : {}),
     meta: {
       provider: 'comfyui',
-      url: viewUrl,
+      url: downloaded[0].meta.url,
       promptId
     }
   }
@@ -1738,7 +1796,9 @@ export async function generateComfyuiPoseVariantSprite({
   controlEndPercent,
   timeoutMs,
   prefix,
-  onStage
+  onStage,
+  // V 波（2026-10-28）：可选 LoRA 栈（字符串档 "name:model:clip"，parseComfyLoras 解析）——三视图 charturn 用；缺省空零改动
+  loras
 }) {
   const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
   const effectiveTimeoutMs = parseComfyTimeoutMs(timeoutMs)
@@ -1873,6 +1933,33 @@ export async function generateComfyuiPoseVariantSprite({
     '22': { class_type: 'SaveImage', inputs: buildInputsForComfyNode(specs.saveImage, { images: ['21', 0], filename_prefix: String(prefix || 'talkscene_pose/variant') }) }
   }
 
+  // V 波（2026-10-28）：可选 LoRA 栈串联（三视图 charturn 用）——LoraLoader 依次串在 checkpoint 之后，
+  // model 尾进 IPAdapter（节点 13），clip 尾进正/负向文本编码（节点 3/4）；空数组零改动（既有调用不变）
+  const sheetLoras = parseComfyLoras(loras)
+  if (sheetLoras.length) {
+    let modelRef = ['1', 0]
+    let clipRef = ['1', 1]
+    let nid = 30
+    for (const lora of sheetLoras) {
+      workflow[String(nid)] = {
+        class_type: 'LoraLoader',
+        inputs: {
+          model: modelRef,
+          clip: clipRef,
+          lora_name: lora.name,
+          strength_model: lora.strengthModel,
+          strength_clip: lora.strengthClip
+        }
+      }
+      modelRef = [String(nid), 0]
+      clipRef = [String(nid), 1]
+      nid += 1
+    }
+    workflow['13'].inputs.model = modelRef
+    workflow['3'].inputs.clip = clipRef
+    workflow['4'].inputs.clip = clipRef
+  }
+
   stage('comfy_generate')
   const result = await runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl: baseUrl, timeoutMs: effectiveTimeoutMs })
   return {
@@ -1881,10 +1968,192 @@ export async function generateComfyuiPoseVariantSprite({
     meta: {
       provider: 'comfyui',
       postprocess: 'pose_variant_openpose_ipadapter',
+      checkpoint,
+      loras: parseComfyLoras(loras),
       controlnetModel: chosenControlnet,
       ipadapterModel: chosenIpModel,
+      width: w,
+      height: h,
+      steps: clampInt(steps, 8, 60, 24),
+      cfgScale: clampFloat(cfgScale, 1, 20, 6),
+      sampler: 'dpmpp_2m_sde',
+      scheduler: 'karras',
       seed: useSeed,
       url: result.meta && result.meta.url ? result.meta.url : ''
+    }
+  }
+}
+
+export async function generateComfyuiMvAdapterModelSheet({
+  identityReferenceBytes,
+  identityReferenceFilename,
+  comfyuiBaseUrl,
+  model,
+  prompt,
+  negativePrompt,
+  width = 768,
+  height = 768,
+  steps = 50,
+  cfgScale = 3,
+  seed,
+  loras,
+  timeoutMs = 900_000,
+  prefix = 'talkscene_mvadapter/sheet'
+}) {
+  const baseUrl = normalizeComfyuiBaseUrl(comfyuiBaseUrl)
+  const checkpoint = normalizeComfyCheckpointName(model)
+  if (!checkpoint) {
+    const e = new Error('mvadapter_checkpoint_required')
+    e.status = 400
+    throw e
+  }
+  const specs = {
+    pipeline: await fetchComfyNodeSpec(baseUrl, 'LdmPipelineLoader', 5000),
+    vae: await fetchComfyNodeSpec(baseUrl, 'LdmVaeLoader', 5000),
+    scheduler: await fetchComfyNodeSpec(baseUrl, 'DiffusersMVSchedulerLoader', 5000),
+    makeup: await fetchComfyNodeSpec(baseUrl, 'DiffusersMVModelMakeup', 5000),
+    sampler: await fetchComfyNodeSpec(baseUrl, 'DiffusersMVSampler', 5000),
+    birefnet: await fetchComfyNodeSpec(baseUrl, 'BiRefNet', 5000),
+    preprocessor: await fetchComfyNodeSpec(baseUrl, 'ImagePreprocessor', 5000),
+    loadImage: await fetchComfyNodeSpec(baseUrl, 'LoadImage', 5000),
+    saveImage: await fetchComfyNodeSpec(baseUrl, 'SaveImage', 5000),
+    lora: await fetchComfyNodeSpec(baseUrl, 'CustomLoraModelLoader', 5000),
+    viewSelector: await fetchComfyNodeSpec(baseUrl, 'ViewSelector', 5000)
+  }
+  const required = ['pipeline', 'vae', 'scheduler', 'makeup', 'sampler', 'birefnet', 'preprocessor', 'loadImage', 'saveImage', 'viewSelector']
+  const missing = required.filter((key) => !specs[key])
+  if (missing.length) {
+    const e = new Error(`mvadapter_nodes_missing:${missing.join(',')}`)
+    e.status = 502
+    throw e
+  }
+  const vaeModels = await fetchComfyModelList(baseUrl, '/models/vae', 5000)
+  const vaeName = pickPreferredComfyModel(vaeModels, ['sdxl_vae.safetensors', 'sdxl_vae', 'vae-ft-mse'])
+  if (!vaeName) {
+    const e = new Error('mvadapter_vae_missing')
+    e.status = 502
+    throw e
+  }
+  const uploaded = await uploadComfyImage({
+    baseUrl,
+    bytes: identityReferenceBytes,
+    filename: identityReferenceFilename || 'model_sheet_primary.png',
+    overwrite: true,
+    type: 'input',
+    timeoutMs: 15_000
+  })
+  const workflow = {
+    '1': { class_type: 'LdmPipelineLoader', inputs: buildInputsForComfyNode(specs.pipeline, { ckpt_name: checkpoint, pipeline_name: 'MVAdapterI2MVSDXLPipeline' }) },
+    '2': { class_type: 'LdmVaeLoader', inputs: buildInputsForComfyNode(specs.vae, { vae_name: vaeName, upcast_fp32: false }) },
+    '4': { class_type: 'BiRefNet', inputs: buildInputsForComfyNode(specs.birefnet, { ckpt_name: 'ZhengPeng7/BiRefNet' }) },
+    '5': { class_type: 'LoadImage', inputs: buildInputsForComfyNode(specs.loadImage, { image: uploaded.imageValue, upload: 'image' }) },
+    '6': {
+      class_type: 'ImagePreprocessor',
+      inputs: buildInputsForComfyNode(specs.preprocessor, {
+        remove_bg_fn: ['4', 0],
+        image: ['5', 0],
+        height: clampInt(height, 256, 1024, 768),
+        width: clampInt(width, 256, 1024, 768)
+      })
+    }
+  }
+  const normalizedLoras = parseComfyLoras(loras)
+  let pipelineRef = ['1', 0]
+  let nextNodeId = 20
+  for (let index = 0; index < normalizedLoras.length; index += 1) {
+    if (!specs.lora) {
+      const e = new Error('mvadapter_lora_node_missing:CustomLoraModelLoader')
+      e.status = 502
+      throw e
+    }
+    const lora = normalizedLoras[index]
+    const nodeId = String(nextNodeId++)
+    workflow[nodeId] = {
+      class_type: 'CustomLoraModelLoader',
+      inputs: buildInputsForComfyNode(specs.lora, {
+        pipeline: pipelineRef,
+        lora_name: lora.name,
+        strength_model: lora.strengthModel,
+        enable: true,
+        last_lora_node: index === normalizedLoras.length - 1
+      })
+    }
+    pipelineRef = [nodeId, 0]
+  }
+  workflow['3'] = {
+    class_type: 'DiffusersMVSchedulerLoader',
+    inputs: buildInputsForComfyNode(specs.scheduler, {
+      pipeline: pipelineRef,
+      scheduler_name: 'DDPM',
+      shift_snr: true,
+      shift_mode: 'interpolated',
+      shift_scale: 8
+    })
+  }
+  workflow['7'] = {
+    class_type: 'DiffusersMVModelMakeup',
+    inputs: buildInputsForComfyNode(specs.makeup, {
+      pipeline: pipelineRef,
+      scheduler: ['3', 0],
+      autoencoder: ['2', 0],
+      load_mvadapter: true,
+      adapter_path: 'huanngzh/mv-adapter',
+      adapter_name: 'mvadapter_i2mv_sdxl.safetensors',
+      num_views: 3,
+      enable_vae_slicing: true,
+      enable_vae_tiling: false
+    })
+  }
+  workflow['10'] = {
+    class_type: 'ViewSelector',
+    inputs: buildInputsForComfyNode(specs.viewSelector, {
+      front_view: true,
+      front_right_view: false,
+      right_view: true,
+      back_view: true,
+      left_view: false,
+      front_left_view: false
+    })
+  }
+  const useSeed = clampSeed(seed, null) ?? Math.floor(Math.random() * 4_294_967_295)
+  workflow['8'] = {
+    class_type: 'DiffusersMVSampler',
+    inputs: buildInputsForComfyNode(specs.sampler, {
+      pipeline: ['7', 0],
+      reference_image: ['6', 0],
+      num_views: 3,
+      prompt: String(prompt || '').trim(),
+      negative_prompt: String(negativePrompt || '').trim(),
+      width: clampInt(width, 256, 1024, 768),
+      height: clampInt(height, 256, 1024, 768),
+      steps: clampInt(steps, 8, 100, 50),
+      cfg: clampFloat(cfgScale, 1, 20, 3),
+      seed: useSeed,
+      azimuth_degrees: ['10', 0]
+    })
+  }
+  workflow['9'] = {
+    class_type: 'SaveImage',
+    inputs: buildInputsForComfyNode(specs.saveImage, { images: ['8', 0], filename_prefix: String(prefix || 'talkscene_mvadapter/sheet') })
+  }
+  const result = await runComfyuiPromptWorkflow({ workflow, comfyuiBaseUrl: baseUrl, timeoutMs, returnAllImages: true })
+  return {
+    views: mapMvAdapterViews(result.images),
+    meta: {
+      provider: 'comfyui',
+      engine: 'mvadapter',
+      checkpoint,
+      vaeName,
+      loras: normalizedLoras,
+      adapter: 'huanngzh/mv-adapter/mvadapter_i2mv_sdxl.safetensors',
+      azimuthDegrees: [0, 90, 180],
+      elevationDegrees: 0,
+      width: clampInt(width, 256, 1024, 768),
+      height: clampInt(height, 256, 1024, 768),
+      steps: clampInt(steps, 8, 100, 50),
+      cfgScale: clampFloat(cfgScale, 1, 20, 3),
+      seed: useSeed,
+      promptId: result.meta?.promptId || ''
     }
   }
 }
@@ -2067,7 +2336,10 @@ async function generateBackgroundViaComfyui(input) {
       const msg = json && (json.error || json.message || json.detail)
         ? explainRemoteError(json.error || json.message || json.detail)
         : `HTTP ${resp.status}`
-      const e = new Error(`comfyui_prompt_failed: ${msg}`)
+      const validation = json && json.node_errors && typeof json.node_errors === 'object'
+        ? ` ${JSON.stringify(json.node_errors).slice(0, 4000)}`
+        : ''
+      const e = new Error(`comfyui_prompt_failed: ${msg}${validation}`)
       e.status = 502
       throw e
     }

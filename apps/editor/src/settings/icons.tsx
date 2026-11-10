@@ -94,3 +94,11 @@ export function IconLink(p: SVGProps<SVGSVGElement>) {
     children: (<><path d="M6.5 9.5a3.5 3.5 0 0 0 5 .5l2-2a3.5 3.5 0 0 0-5-5l-1 1" /><path d="M9.5 6.5a3.5 3.5 0 0 0-5-.5l-2 2a3.5 3.5 0 0 0 5 5l1-1" /></>)
   })
 }
+
+// 本地服务（2026-10-25 设置页「本地服务」卡）
+export function IconServer(p: SVGProps<SVGSVGElement>) {
+  return IconBase({
+    ...p,
+    children: (<><rect x="2.5" y="3" width="11" height="4.5" rx="1" /><rect x="2.5" y="8.5" width="11" height="4.5" rx="1" /><path d="M5 5.2h.01M5 10.7h.01" /></>)
+  })
+}

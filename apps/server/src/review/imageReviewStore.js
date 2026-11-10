@@ -2,6 +2,7 @@
 // 存储于 <project>/reviews/image_reviews.jsonl，人工 approve 后才执行生成或写回。
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import path from 'path'
+import { publishProjectEvent } from '../ai/projectEventBus.js'
 
 function nowIso() {
   return new Date().toISOString()
@@ -9,6 +10,14 @@ function nowIso() {
 
 function asStr(v) {
   return typeof v === 'string' ? v.trim() : ''
+}
+
+// SSE 信号：审核记录以项目目录路径为 key（本模块只感知路径，SSE 路由订阅同一 key）。
+// 审核变化同时影响待审列表与出图总账（待审数/结果图回写），两个信号一起发。
+function emitReviewsChanged(projectDirPath) {
+  const at = nowIso()
+  publishProjectEvent(projectDirPath, { type: 'reviews', at })
+  publishProjectEvent(projectDirPath, { type: 'coverage', at })
 }
 
 function reviewsFilePath(projectDirPath) {
@@ -90,6 +99,7 @@ export async function createImageReview(projectDirPath, {
   }
   all.push(review)
   await writeAllReviews(projectDirPath, all)
+  emitReviewsChanged(projectDirPath)
   return review
 }
 
@@ -100,6 +110,7 @@ export async function attachImageReviewResult(projectDirPath, reviewId, { result
   if (resultImagePath) all[idx].resultImagePath = asStr(resultImagePath)
   if (aiReview) all[idx].aiReview = aiReview
   await writeAllReviews(projectDirPath, all)
+  emitReviewsChanged(projectDirPath)
   return all[idx]
 }
 
@@ -113,5 +124,6 @@ export async function decideImageReview(projectDirPath, reviewId, { approved, de
   all[idx].decidedBy = asStr(decidedBy) || 'user'
   all[idx].rejectReason = approved ? '' : asStr(rejectReason)
   await writeAllReviews(projectDirPath, all)
+  emitReviewsChanged(projectDirPath)
   return all[idx]
 }

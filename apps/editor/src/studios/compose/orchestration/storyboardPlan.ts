@@ -5,6 +5,7 @@ import {
   type StoryAssetGalleryEntry,
   type StoryAssetPlan
 } from '../../../api'
+import type { ScenePromptAlignment, ScenePromptGeneration } from '../../../components/scene/scenePromptAlignment'
 
 export type StoryboardSceneAiBackgroundRequest = AiBackgroundRequest & {
   assetRefs?: Array<{
@@ -60,6 +61,9 @@ export type StoryboardLockAssetPromptDraft = {
   } | null
   enhancedAt?: string
   enhanceMode?: string
+  // 2026-10-27 徽标口径：中文稿最后变更时间（手工编辑/AI 增强回填时打戳）与英文稿最后回填时间（翻译/手工译时打戳）
+  zhUpdatedAt?: string
+  translatedAt?: string
 }
 
 export type StoryboardScenePromptStore = {
@@ -71,6 +75,8 @@ export type StoryboardScenePromptStore = {
   negativePromptZh?: string
   negativePrompt: string
   promptReview?: StoryboardPromptQualityReview | null
+  promptAlignment?: ScenePromptAlignment
+  promptGeneration?: ScenePromptGeneration
   updatedAt: string
 }
 
@@ -169,6 +175,8 @@ export function normalizeStoryboardAssetPlan(plan: StoryAssetPlan | null | undef
     excludedAssetIds: Array.isArray((plan as any).excludedAssetIds) ? (plan as any).excludedAssetIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [],
     assets,
     scenes,
+    // B 波（2026-10-25）：sceneVoices 透传（配音维度真相源；白名单重建曾把它丢掉，声音区永远「未生成」——实测踩坑）
+    sceneVoices: (plan as any).sceneVoices && typeof (plan as any).sceneVoices === 'object' ? (plan as any).sceneVoices : {},
     summary: {
       assetCount: Number(summaryIn.assetCount || assets.length || 0),
       sceneCount: Number(summaryIn.sceneCount || scenes.length || 0),
@@ -281,7 +289,8 @@ export function chooseEnglishAssetPrompt(candidate: string | null | undefined, f
   if (looksLikeEnglishPromptText(preferred)) return preferred
   const alt = String(fallback || '').trim()
   if (looksLikeEnglishPromptText(alt)) return alt
-  return preferred || alt
+  // 2026-10-26 缺陷 A 修复：两者都不像英文时返回空串（英文栏空着等翻译链），不得把中文漏进英文栏
+  return ''
 }
 
 export function isProtectedAssetLockProfile(asset: any): boolean {
@@ -319,6 +328,10 @@ export function normalizeStoryboardLockAssetPromptDrafts(
     if (category === 'location') {
       return '角色特写，人群，文字，水印'
     }
+    // 2026-11-06 背景元素：单件环境元素，禁人物/完整场景/远景构图
+    if (category === 'scenery') {
+      return '人物，角色，动物，完整场景，远景构图，地平线，天空，多个元素，拼贴，多视图，文字，水印'
+    }
     return ''
   }
 
@@ -334,16 +347,24 @@ export function normalizeStoryboardLockAssetPromptDrafts(
     const fallbackPromptEn = String(asset?.referencePromptEn || asset?.anchorPrompt || asset?.referencePromptHint || '').trim()
     const preferredPromptEn = chooseEnglishAssetPrompt(hasOwn(prev, 'promptEn') ? prev.promptEn : (asset?.referencePromptEn || ''), fallbackPromptEn)
     const safePromptEn = isProtectedAssetLockProfile(asset) && looksContaminatedProtectedAssetPrompt(preferredPromptEn, asset)
-      ? fallbackPromptEn
+      ? looksLikeEnglishPromptText(fallbackPromptEn)
+        ? fallbackPromptEn
+        : '' // 2026-10-26 缺陷 A：污染回退也不得把中文 anchorPrompt 兜进英文栏
       : preferredPromptEn
     next[assetId] = {
       promptZh: hasOwn(prev, 'promptZh') ? String(prev.promptZh ?? '') : String(asset?.referencePromptZh || ''),
       promptEn: safePromptEn,
       negativePromptZh: hasOwn(prev, 'negativePromptZh') ? String(prev.negativePromptZh ?? '') : String(asset?.referenceNegativePromptZh || defaultAssetNegativePromptZh(asset) || ''),
-      negativePrompt: hasOwn(prev, 'negativePrompt') ? String(prev.negativePrompt ?? '') : String(asset?.referenceNegativePrompt || asset?.negativePrompt || ''),
+      negativePrompt: hasOwn(prev, 'negativePrompt')
+        ? looksLikeEnglishPromptText(String(prev.negativePrompt ?? ''))
+          ? String(prev.negativePrompt ?? '')
+          : '' // 2026-10-26 缺陷 A 根治：prev 草稿里的污染值（如"狼， 其他动物"）也过滤——prev 路径此前被直接信任
+        : chooseEnglishAssetPrompt(String(asset?.referenceNegativePrompt || asset?.negativePrompt || ''), ''), // 2026-10-26 缺陷 A：反向英文栏同款过滤（实证 8 栏含反向）
       promptReview: prev.promptReview && typeof prev.promptReview === 'object' ? prev.promptReview : null,
       enhancedAt: String(prev.enhancedAt || '').trim(),
-      enhanceMode: String(prev.enhanceMode || '').trim()
+      enhanceMode: String(prev.enhanceMode || '').trim(),
+      zhUpdatedAt: String(prev.zhUpdatedAt || '').trim(),
+      translatedAt: String(prev.translatedAt || '').trim()
     }
   }
   if (assets.length === 0) {
@@ -355,7 +376,9 @@ export function normalizeStoryboardLockAssetPromptDrafts(
         negativePromptZh: String((draft as any)?.negativePromptZh ?? ''),
         negativePrompt: String((draft as any)?.negativePrompt ?? ''),
         enhancedAt: String((draft as any)?.enhancedAt || '').trim(),
-        enhanceMode: String((draft as any)?.enhanceMode || '').trim()
+        enhanceMode: String((draft as any)?.enhanceMode || '').trim(),
+        zhUpdatedAt: String((draft as any)?.zhUpdatedAt || '').trim(),
+        translatedAt: String((draft as any)?.translatedAt || '').trim()
       }
     }
   }

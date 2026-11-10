@@ -112,7 +112,7 @@ for j in jobs:
 }
 
 
-function renderIndexHtml({ title }) {
+function renderIndexHtml({ title, sceneVoices = {} }) {
   // P0：最小运行时（ESM + Pixi CDN）+ Timeline/Event/State/EndingCard
   // 运行时约定：同目录 story.json + project.json + assets/*
   return `<!doctype html>
@@ -250,6 +250,48 @@ function renderIndexHtml({ title }) {
       const storyNodes = Array.isArray(story && story.nodes) ? story.nodes : []
       const nodeByIdMap = new Map(storyNodes.filter(Boolean).map(n => [String(n.id), n]))
       const projectId = String(project && project.id || '')
+
+      // 2026-11-03 场景音频管理器（用户裁决）：进入场景自动播、切幕即停、快进防串、首次交互解锁自动播放限制。
+      const sceneVoices = ${JSON.stringify(sceneVoices)}
+      const audioMgr = (() => {
+        let ctx = null, current = null, token = 0, muted = false, unlocked = false
+        const stop = () => {
+          token += 1
+          if (current) {
+            try { current.pause() } catch (_) {}
+            try { current.src = '' } catch (_) {}
+            current = null
+          }
+        }
+        const play = (sceneId) => {
+          stop()
+          if (muted) return
+          const rec = sceneVoices[sceneId]
+          const uri = String((rec && rec.audioAssetUri) || '').trim()
+          if (!uri) return
+          const el = new Audio(resolveAssetUri(uri))
+          current = el
+          el.preload = 'auto'
+          const p = el.play()
+          if (p && p.catch) p.catch(() => {})
+        }
+        const unlock = () => {
+          if (unlocked) return
+          unlocked = true
+          try {
+            const AC = window.AudioContext || window.webkitAudioContext
+            if (AC) { ctx = new AC(); if (ctx.state === 'suspended') ctx.resume().catch(() => {}) }
+          } catch (_) {}
+          play(nodeId)
+        }
+        // 浏览器自动播放策略：首次用户交互解锁后重试当前幕
+        document.addEventListener('pointerdown', unlock, { once: true })
+        return {
+          play,
+          stop,
+          setMuted(v) { muted = !!v; if (muted) stop() }
+        }
+      })()
 
       function resolveAssetUri(uri) {
         const raw = String(uri || '').trim()
@@ -836,6 +878,8 @@ function renderIndexHtml({ title }) {
         wait = { kind: 'auto' }
         stageOverride = {}
         nav = null
+        // 2026-11-03 进入场景自动播放该幕配音（无音频=静音不报错）
+        audioMgr.play(nodeId)
       }
 
       function runStable(node) {
@@ -921,6 +965,8 @@ function renderIndexHtml({ title }) {
       function gotoNode(id, delayMs) {
         const to = String(id || '').trim()
         if (!to) return
+        // 2026-11-03 切幕即停旧音轨（代际令牌失效），再进入新幕播放
+        audioMgr.stop()
         clearTimers()
         if (delayMs && delayMs > 0) {
           timerId = setTimeout(() => { nodeId = to; enterNode(); tick() }, delayMs)
@@ -1032,6 +1078,22 @@ export default {
     // （背景 JPEG q82 / 立绘 WebP≤512px），uri 改写为压缩后文件名；不再整树复制 assets/。
     const { uriRewrites, stats } = await exportReferencedAssets({ projectDir, outDir, project, story })
 
+    // 2026-11-03 场景配音导出：读取 plan.sceneVoices，复制音频文件进包（assets/ai/voice 保留项目内相对路径），
+    // 并把 场景→音频 映射注入 index.html 供运行时音频管理器消费（进入自动播/切幕停止/快进防串）
+    const planPath = path.join(projectDir, 'story-assets', 'plan.json')
+    const plan = await readFile(planPath, 'utf-8').then((t) => JSON.parse(t)).catch(() => null)
+    const sceneVoices = (plan && plan.sceneVoices && typeof plan.sceneVoices === 'object') ? plan.sceneVoices : {}
+    for (const rec of Object.values(sceneVoices)) {
+      const uri = String(rec?.audioAssetUri || '').trim()
+      if (!uri.startsWith('assets/')) continue
+      const abs = path.join(projectDir, uri)
+      const st = await stat(abs).catch(() => null)
+      if (!st || !st.isFile()) continue
+      const outAbs = path.join(outDir, uri)
+      await mkdir(path.dirname(outAbs), { recursive: true })
+      await copyFile(abs, outAbs)
+    }
+
     // 输出 project.json（包含 assets/characters 等对象信息）
     // 导出包内统一改写为相对路径，避免依赖 /project-assets 动态路由。
     const projectWithCompressedUris = (() => {
@@ -1050,7 +1112,7 @@ export default {
     await writeFile(path.join(outDir, 'project.json'), JSON.stringify(projectForDist, null, 2), 'utf-8')
 
     const title = project?.title || `Story ${projectId}`
-    await writeFile(path.join(outDir, 'index.html'), renderIndexHtml({ title }), 'utf-8')
+    await writeFile(path.join(outDir, 'index.html'), renderIndexHtml({ title, sceneVoices }), 'utf-8')
 
     // 自包含导出：随包携带 Pixi 运行时，避免播放器依赖 CDN（网络慢/断网时画布无法初始化）
     const require = createRequire(import.meta.url)

@@ -161,23 +161,85 @@ export async function touchProjectUpdatedAt(dir) {
   } catch (_) {}
 }
 
-export function deriveProjectStage({ cards, blueprintNodes, storyNodes, distExists }) {
-  return !(Number(cards) > 0) ? 'script'
-    : !(Number(blueprintNodes) > 0) ? 'blueprint'
-    : !(Number(storyNodes) > 2) ? 'compose'
-    : !distExists ? 'export'
-    : 'playable'
+// Q 波（2026-10-27 阶段梯子倒挂根修，用户实测：三只小猪无 dist 却显示「已导出」）：
+// 旧口径把 !distExists 直接映射 export、前端再把 export 标成「已导出」——双重倒挂。
+// 新口径=真实生产进度语义，逐级判定（单一来源，前端只翻译 stage 不自行推断）：
+//   script   无脚本卡片
+//   blueprint 蓝图结构未编译(nodes=0) 或 蓝图就绪未满（资产计划缺失/场景元素分析未覆盖/事物未全锁定/构图预演未覆盖；
+//             口径参照 editor readiness.ts + StageStepper（K 波）的同源磁盘可判定字段；配音为全局开关增强项，不进阶段门槛）
+//   compose  蓝图就绪但出图链未完（story 场景未编译出 或 场景图未齐）
+//   export   生产齐（场景图齐）但无 dist → 前端标「已完成 · 待导出」
+//   playable dist 存在 → 前端标「已导出 · 可试玩」（已导出=dist 存在，单一判定）
+// planStats 派生：plan 存于 project.json state.aiBackground.storyAssetPlan（与 readiness.ts 同源）；
+// 分析/构图分母只计蓝图场景幕（sceneNodeIds，结局条目永不分析/构图，计入会永远不满——StageStepper 2026-10-25 同款修正）。
+export function derivePlanStats(plan, sceneNodeIds) {
+  if (!plan || typeof plan !== 'object') return { exists: false, scenes: 0, analyzed: 0, locked: 0, totalAssets: 0, composed: 0 }
+  const assets = Array.isArray(plan.assets) ? plan.assets : []
+  const allScenes = Array.isArray(plan.scenes) ? plan.scenes : []
+  const idSet = sceneNodeIds instanceof Set && sceneNodeIds.size ? sceneNodeIds : null
+  const scenes = idSet ? allScenes.filter((s) => idSet.has(String(s?.sceneId || ''))) : allScenes
+  const analyzed = scenes.filter((s) => String(s?.analyzedAt || '').trim() || (Array.isArray(s?.assetIds) && s.assetIds.length)).length
+  const composed = scenes.filter((s) => s?.composition && Array.isArray(s.composition.items) && s.composition.items.length).length
+  const locked = assets.filter((a) => a?.referenceStatus === 'ready' || Boolean(a?.primaryReferenceAssetId)).length
+  return { exists: true, scenes: scenes.length, analyzed, locked, totalAssets: assets.length, composed }
 }
 
-export async function deriveProjectStageFromDisk(dir) {
+// story.json 场景图覆盖（readiness.ts storyImageCoverage 同口径：结尾幕不计分母；全 ending 时回退全量）
+export function deriveSceneStats(story) {
+  const nodes = Array.isArray(story?.nodes) ? story.nodes : Object.values(story?.nodes || {})
+  const scenes = nodes.filter((n) => String(n?.kind || 'scene') !== 'ending')
+  const withImages = scenes.filter((n) => {
+    const bgId = n?.visuals?.backgroundAssetId
+    if (typeof bgId === 'string' && bgId.trim()) return true
+    const bg = n?.visuals?.background ?? n?.background
+    if (!bg) return false
+    if (typeof bg === 'string') return bg.trim().length > 0
+    if (typeof bg === 'object') return Boolean(bg.uri || bg.src || bg.url || bg.path)
+    return false
+  }).length
+  return { total: scenes.length || nodes.length, withImages }
+}
+
+export function deriveProjectStage({ cards, blueprintNodes, planStats, sceneStats, distExists }) {
+  if (!(Number(cards) > 0)) return 'script'
+  if (!(Number(blueprintNodes) > 0)) return 'blueprint'
+  if (!planStats || !planStats.exists) return 'blueprint'
+  if (planStats.scenes > 0 && planStats.analyzed < planStats.scenes) return 'blueprint'
+  if (planStats.totalAssets > 0 && planStats.locked < planStats.totalAssets) return 'blueprint'
+  if (planStats.scenes > 0 && planStats.composed < planStats.scenes) return 'blueprint'
+  if (!sceneStats || sceneStats.total <= 0) return 'compose'
+  if (sceneStats.withImages < sceneStats.total) return 'compose'
+  return distExists ? 'playable' : 'export'
+}
+
+// 阶段输入磁盘采集单一收口：summary 端点与 meta.json 回写链（touchProjectUpdatedAt）共用，
+// 返回原始 story/project 供调用方继续派生（imageStats/封面等），避免二次读盘。
+export async function collectProjectStageInput(dir) {
   const scripts = await readJson(path.join(dir, 'scripts.json')).catch(() => null)
   const blueprint = await readJson(path.join(dir, 'blueprint.json')).catch(() => null)
   const story = await readJson(path.join(dir, 'story.json')).catch(() => null)
+  const project = await readJson(path.join(dir, 'project.json')).catch(() => null)
   const cards = Array.isArray(scripts?.cards) ? scripts.cards.length : 0
-  const blueprintNodes = Array.isArray(blueprint?.nodes) ? blueprint.nodes.length : 0
-  const storyNodes = story?.nodes && typeof story.nodes === 'object' ? Object.keys(story.nodes).length : 0
-  const distExists = await existsFile(path.join(dir, 'builds', 'latest', 'dist', 'index.html'))
-  return deriveProjectStage({ cards, blueprintNodes, storyNodes, distExists })
+  const bpNodes = Array.isArray(blueprint?.nodes) ? blueprint.nodes : []
+  const sceneNodeIds = new Set(
+    bpNodes.filter((n) => String(n?.kind || 'scene') !== 'ending').map((n) => String(n?.id || '')).filter(Boolean)
+  )
+  const plan = project?.state?.aiBackground?.storyAssetPlan || null
+  const storyNodes = story?.nodes && typeof story.nodes === 'object' ? (Array.isArray(story.nodes) ? story.nodes.length : Object.keys(story.nodes).length) : 0
+  return {
+    cards,
+    blueprintNodes: bpNodes.length,
+    storyNodes,
+    planStats: derivePlanStats(plan, sceneNodeIds),
+    sceneStats: deriveSceneStats(story),
+    distExists: await existsFile(path.join(dir, 'builds', 'latest', 'dist', 'index.html')),
+    story,
+    project
+  }
+}
+
+export async function deriveProjectStageFromDisk(dir) {
+  return deriveProjectStage(await collectProjectStageInput(dir))
 }
 
 export function normalizeAiStoryFormula(input) {

@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
+import { Application, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js'
 import AiBackgroundModal from '../AiBackgroundModal'
 import AiStoryboardBatchModal, { type StoryboardBatchItem } from '../AiStoryboardBatchModal'
+import SceneBackgroundBoard from '../components/scene/SceneBackgroundBoard'
+import { createScenePromptPairAlignment, getScenePromptAlignment, scenePromptsCanRender, SCENE_PROMPT_REQUIREMENTS_VERSION, type ScenePromptTranslationDirection } from '../components/scene/scenePromptAlignment'
+import { confirmRerun } from '../components/shared/confirmRerun'
+import { onTaskStop, stopActiveAiTasks } from '../tasks/stopTask'
 import StoryboardLockWorkspace from '../StoryboardLockWorkspace'
 import { translateStoryboardPromptText } from '../storyboardPromptTranslate'
 import { markStartupReady } from '../startupReady'
@@ -27,6 +31,9 @@ import {
   extractStoryPoseStatesAi,
   extractStoryPropStatesAi,
   generatePropStateVariantAi,
+  generateModelSheetAi,
+  lockModelSheetView,
+  assignModelSheetViews,
   listPromptLibrary,
   exportProject,
   exportPublishPackage,
@@ -88,7 +95,11 @@ import {
   startStorySceneReview,
   getLatestStorySceneReview,
   submitSceneReviewFeedback,
-  compileCompose
+  compileCompose,
+  applyStoryCompositionPlacements,
+  saveAssetPoseRequirements,
+  produceStorySceneLayeredAi,
+  uploadStorySceneCompositeImage
 } from '../api'
 
 import { renderStage } from './compose/canvas/renderStage'
@@ -239,7 +250,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [ccReportFile, setCcReportFile] = useState('')
   const ccReportLoadedTaskRef = useRef<string>('')
 
-  // GS-53 场景图审核（2026-10-14，守护台审图中心接入）：逐场景整图评审（分数/问题清单/改图建议），
+  // TS-53 场景图审核（2026-10-14，守护台审图中心接入）：逐场景整图评审（分数/问题清单/改图建议），
   // 面板打开期间轮询任务进度，完成后拉取最新一轮记录；打回重出把建议合入重出提示词。
   const [srOpen, setSrOpen] = useState(false)
   const [srBusy, setSrBusy] = useState(false)
@@ -315,7 +326,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbBusyGenerate, setSbBusyGenerate] = useState(false)
   const [sbBusyApply, setSbBusyApply] = useState(false)
   const [sbBusyEntity, setSbBusyEntity] = useState(false)
-  const [sbQueuePhase, setSbQueuePhase] = useState<'idle' | 'generate' | 'apply'>('idle')
+  const [sbQueuePhase, setSbQueuePhase] = useState<'idle' | 'generate' | 'align' | 'apply'>('idle')
   const [sbQueuePaused, setSbQueuePaused] = useState(false)
   const [sbError, setSbError] = useState('')
   const [sbLogs, setSbLogs] = useState<string[]>([])
@@ -324,6 +335,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbGeneratingNodeStartedAt, setSbGeneratingNodeStartedAt] = useState(0)
   const [sbGeneratingNodeElapsedMs, setSbGeneratingNodeElapsedMs] = useState(0)
   const [sbItems, setSbItems] = useState<StoryboardBatchItem[]>([])
+  const sbItemsRef = useRef<StoryboardBatchItem[]>([])
+  useEffect(() => { sbItemsRef.current = sbItems }, [sbItems])
   const [sbTestSceneId, setSbTestSceneId] = useState('')
   const [sbContinuityBusy, setSbContinuityBusy] = useState(false)
   const [sbContinuityReady, setSbContinuityReady] = useState(false)
@@ -405,13 +418,24 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const pendingBgAssetIdRef = useRef<string>('')
   const sbQueueRef = useRef<{ paused: boolean; cancelRequested: boolean }>({ paused: false, cancelRequested: false })
 
+  useEffect(() => onTaskStop((detail) => {
+    if (detail.projectId && (doc.mode !== 'project' || detail.projectId !== doc.id)) return
+    sbQueueRef.current = { ...sbQueueRef.current, cancelRequested: true, paused: false }
+    setSbQueuePaused(false)
+  }), [doc])
+
   useEffect(() => {
     setSbAssetPromptDrafts((prev) => normalizeStoryboardLockAssetPromptDrafts(sbAssetPlan, prev))
   }, [sbAssetPlan])
 
   // ============ 2026-08-26 锁定事物工作区打开状态持久化与恢复（用户指令：刷新不能丢正在操作的流程） ============
   const sbWsOpenStorageKey = 'talkscene.lockWorkspace.openProject'
+  const sbWsReturnStageKey = 'talkscene.lockWorkspace.returnStage'
+  // 蓝图「管理」深度回跳载荷键（2026-11-01；消费在下方专用 effect，先于 openProject 恢复执行）
+  const sbWsPoseFocusKey = 'talkscene.lockWorkspace.poseFocus'
   const sbWsRestoreDoneRef = useRef(false)
+  // 蓝图层进入时的返回落点（2026-10-25 用户实测 P3：从蓝图进锁定后关闭应回蓝图，不是留在合成）
+  const sbWsReturnStageRef = useRef('')
   // 打开即记录（只记最后操作的项目）；清除只发生在用户主动关闭/离开工作区的路径（onClose / onOpenRender），
   // 不能在 effect 里按 sbOpen=false 反推删除——挂载首轮 sbOpen 恒为 false，会先误删再导致恢复失败
   useEffect(() => {
@@ -419,13 +443,22 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     try { localStorage.setItem(sbWsOpenStorageKey, doc.id) } catch { /* 存储不可用时忽略 */ }
   }, [sbOpen, doc.mode, doc.id])
   // 刷新后项目数据就绪时，若上次离开也开着锁定事物工作区，自动回到该工作区（沿用顶部按钮的打开序列）
+  // 2026-11-01：有蓝图「管理」回跳载荷时让位——专用 effect 会带聚焦打开（避免双开序列竞争）
   useEffect(() => {
     if (sbWsRestoreDoneRef.current || sbOpen) return
     if (doc.mode !== 'project' || !doc.id || !doc.project || !doc.story) return
     let shouldRestore = false
     try { shouldRestore = localStorage.getItem(sbWsOpenStorageKey) === doc.id } catch {}
+    if (shouldRestore) {
+      try {
+        const rawFocus = localStorage.getItem(sbWsPoseFocusKey) || ''
+        const focusPayload = rawFocus ? JSON.parse(rawFocus) : null
+        if (focusPayload && String(focusPayload.projectId || '') === doc.id) shouldRestore = false
+      } catch { /* 解析失败按原恢复语义走 */ }
+    }
     if (!shouldRestore) return
     sbWsRestoreDoneRef.current = true
+    try { sbWsReturnStageRef.current = localStorage.getItem(sbWsReturnStageKey) || '' } catch {}
     void (async () => {
       await initStoryboardBatchFromDoc()
       setSbRenderOpen(false)
@@ -434,6 +467,30 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.mode, doc.id, sbOpen])
+
+  // 蓝图「管理」深度回跳（2026-11-01）：蓝图预演元素面板写 poseFocus 载荷后跳来合成层，此处消费——
+  // projectId 匹配才打开向导并聚焦 资产/场景/需求；消费即清键，防刷新重复触发。
+  useEffect(() => {
+    if (doc.mode !== 'project' || !doc.id || !doc.project || !doc.story) return
+    let raw = ''
+    try { raw = localStorage.getItem(sbWsPoseFocusKey) || '' } catch {}
+    if (!raw) return
+    let payload: any = null
+    try { payload = JSON.parse(raw) } catch { payload = null }
+    try { localStorage.removeItem(sbWsPoseFocusKey) } catch {}
+    if (!payload || String(payload.projectId || '') !== doc.id) return
+    void (async () => {
+      await openAssetLockInWizard({
+        planAssetId: String(payload.assetId || ''),
+        sceneId: String(payload.sceneId || ''),
+        reqId: String(payload.reqId || '')
+      })
+      // 从蓝图来：关闭向导应回蓝图（与 onGotoBlueprint 反向路径同语义）
+      sbWsReturnStageRef.current = 'blueprint'
+      try { localStorage.setItem(sbWsReturnStageKey, 'blueprint') } catch {}
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.mode, doc.id, doc.project, doc.story])
 
   useEffect(() => {
     if (!sbItems.length) {
@@ -493,8 +550,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   const [sbPoseDrawProgress, setSbPoseDrawProgress] = useState<{ done: number; total: number } | null>(null)
   const [sbPoseReviewingId, setSbPoseReviewingId] = useState('')
   const [sbPoseLockingKey, setSbPoseLockingKey] = useState('')
-  const [sbPosePromptBusyId, setSbPosePromptBusyId] = useState('')
-  const [sbPoseFocusAssetId, setSbPoseFocusAssetId] = useState('')
+  const [sbPoseFocus, setSbPoseFocus] = useState<{ assetId: string; sceneId?: string; reqId?: string } | null>(null)
   const [sbPoseGalleryAssetId, setSbPoseGalleryAssetId] = useState('')
   const sbPosePlanRef = useRef<StoryAssetPlan | null>(null)
   sbPosePlanRef.current = sbAssetPlan
@@ -768,6 +824,36 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     undoStackRef.current = []
     setUndoCount(0)
   }, [doc.id])
+  // 2026-11-10（用户裁决：支持"整体一张图"）：把当前幕的合成结果（底图+立绘分层）离屏渲成单图，
+  // 存进该幕图库版本（绑定仍走背景中心 /bind 链：AI 评审+人工确认）。离屏按舞台真实分辨率重渲，
+  // 不带编辑器视图变换与选中态（renderStage 无 interaction 即纯渲染）。
+  const [compositeExportBusy, setCompositeExportBusy] = useState(false)
+  const exportCompositeImage = async () => {
+    if (doc.mode !== 'project' || !doc.project || !doc.story || !effectivePreviewNode || compositeExportBusy) return
+    setCompositeExportBusy(true)
+    try {
+      const stageCfg = (doc.project as any).stage
+      const w = Number(stageCfg?.width) > 0 ? Number(stageCfg.width) : 720
+      const h = Number(stageCfg?.height) > 0 ? Number(stageCfg.height) : 1280
+      const offApp = new Application()
+      await offApp.init({ width: w, height: h, backgroundAlpha: 0, antialias: true, resolution: 1 })
+      try {
+        await renderStage({ app: offApp, doc, node: effectivePreviewNode })
+        const dataUrl = await offApp.renderer.extract.base64({ target: offApp.stage, frame: new Rectangle(0, 0, w, h), resolution: 1 })
+        const sceneId = String(effectivePreviewNode.id || '').trim()
+        const res = await uploadStorySceneCompositeImage(doc.id, sceneId, String(dataUrl || ''))
+        setToast(`合成图已存进该幕图库（${String(res?.assetPath || '').split('/').pop() || '新版本'}），去背景中心「图片管理」绑定`)
+      } finally {
+        try { offApp.destroy(true) } catch {}
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setToast(`导出合成图失败：${msg}`)
+    } finally {
+      setCompositeExportBusy(false)
+    }
+  }
+
   // Ctrl/Cmd+Z 撤销（输入框/下拉内不拦截，保留原生文本撤销）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1375,6 +1461,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       const p = await saveProject(doc.id, { project: projectToSave, story: doc.story, _rev: Number((doc.project as any)._rev || 0) })
       setDoc((prev) => ({ ...prev, project: p, title: p.title }))
       setDirty(false)
+      clearPromptDraftsDirty() // 缺陷 C：保存落盘含提示词草稿（buildStoryboardLockProjectSnapshot 快照已带），保存后清脏
       setToast('已保存')
       await refreshProjects()
       return true
@@ -1389,6 +1476,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           const p2 = await saveProject(doc.id, { project: buildStoryboardLockProjectSnapshot(doc.project), story: doc.story, _rev: freshRev })
           setDoc((prev) => ({ ...prev, project: p2, title: p2.title }))
           setDirty(false)
+          clearPromptDraftsDirty()
           setToast('已保存（已合并最新变更）')
           await refreshProjects()
           return true
@@ -1568,7 +1656,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     return () => { stopped = true; window.clearInterval(timer) }
   }, [ccOpen, doc.mode, doc.id])
 
-  // GS-53 场景图审核：面板打开期间轮询 story.scene.review 任务进度；任务终结后拉最新一轮记录
+  // TS-53 场景图审核：面板打开期间轮询 story.scene.review 任务进度；任务终结后拉最新一轮记录
   useEffect(() => {
     if (!srOpen || doc.mode !== 'project' || !doc.id) return undefined
     let stopped = false
@@ -1982,12 +2070,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     if (sbQueueRef.current.cancelRequested) return
     sbQueueRef.current = { ...sbQueueRef.current, cancelRequested: true, paused: false }
     setSbQueuePaused(false)
-    appendSbLog('已请求取消：当前场景结束后停止，已完成项会保留，可稍后继续未完成任务')
+    appendSbLog('已请求停止：正在中断当前项，后续项不再执行；已完成项保留')
+    if (doc.mode === 'project') void stopActiveAiTasks(doc.id).catch(() => {})
   }
 
   async function waitForSbQueueGate() {
     // P1:storyboard-prompt
-    // 任务门控：支持“暂停/取消”，并保证当前项完成后再安全切换状态。
+    // 任务门控：暂停时等待继续；停止时中断当前服务端请求，并阻止后续项推进。
     while (sbQueueRef.current.paused && !sbQueueRef.current.cancelRequested) {
       await new Promise((r) => window.setTimeout(r, 120))
     }
@@ -2485,6 +2574,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       if (!String(testScene.promptZh || '').trim() || !String(testScene.prompt || '').trim()) {
         throw new Error('请先为当前测试场景生成中英文提示词')
       }
+      if (!scenePromptsCanRender(testScene)) {
+        throw new Error(`当前测试场景暂不能出图：${getScenePromptAlignment(testScene).hint}`)
+      }
 
       appendSbLog(
         `场景测试参数：scene=${String(testScene.nodeName || testScene.nodeId || '').trim()} / model=${String(sbReq.model || '(default)').trim() || '(default)'} / loras=${Array.isArray(sbReq.loras) && sbReq.loras.length ? sbReq.loras.join(' | ') : '(none)'}`
@@ -2636,6 +2728,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         negativePromptZh: String((v as any).negativePromptZh || '').trim(),
         negativePrompt: String((v as any).negativePrompt || '').trim(),
         promptReview: (v as any).promptReview && typeof (v as any).promptReview === 'object' ? ((v as any).promptReview as StoryboardPromptQualityReview) : null,
+        promptAlignment: (v as any).promptAlignment && typeof (v as any).promptAlignment === 'object' ? (v as any).promptAlignment : undefined,
+        promptGeneration: (v as any).promptGeneration && typeof (v as any).promptGeneration === 'object' ? (v as any).promptGeneration : undefined,
         updatedAt: String((v as any).updatedAt || '').trim() || new Date().toISOString()
       }
     }
@@ -2851,6 +2945,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         negativePromptZh: patch.negativePromptZh != null ? String(patch.negativePromptZh || '').trim() : String(prev.negativePromptZh || '').trim(),
         negativePrompt: patch.negativePrompt != null ? String(patch.negativePrompt || '').trim() : String(prev.negativePrompt || '').trim(),
         promptReview: patch.promptReview !== undefined ? ((patch.promptReview as StoryboardPromptQualityReview | null) || null) : (((prev as any).promptReview as StoryboardPromptQualityReview | null) || null),
+        promptAlignment: patch.promptAlignment !== undefined ? patch.promptAlignment : prev.promptAlignment,
+        promptGeneration: patch.promptGeneration !== undefined ? patch.promptGeneration : prev.promptGeneration,
         updatedAt: new Date().toISOString()
       }
       const nextScenes = { ...mapIn, [id]: nextEntry }
@@ -2988,6 +3084,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         negativePromptZh: (map[n.id] && map[n.id].negativePromptZh) ? map[n.id].negativePromptZh : '',
         negativePrompt: (map[n.id] && map[n.id].negativePrompt) ? map[n.id].negativePrompt : '',
         promptReview: (map[n.id] && map[n.id].promptReview) ? map[n.id].promptReview : null,
+        promptAlignment: (map[n.id] && map[n.id].promptAlignment) ? map[n.id].promptAlignment : undefined,
+        promptGeneration: (map[n.id] && map[n.id].promptGeneration) ? map[n.id].promptGeneration : undefined,
         status: 'idle',
         note: '',
         backgroundAssetId: bgAssetId,
@@ -3169,6 +3267,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     const lockWorkflow = String(asset?.lockWorkflow || '').trim()
     if (category === 'character') return { width: 768, height: 1152, label: '768x1152' }
     if (category === 'location') return { width: 960, height: 544, label: '960x544' }
+    if (category === 'scenery') return { width: 768, height: 768, label: '768x768' }
     if (lockWorkflow === 'prop_hat') return { width: 1024, height: 768, label: '1024x768' }
     if (lockProfile === 'slender_prop') return { width: 640, height: 1024, label: '640x1024' }
     if (lockProfile === 'ambient_prop' || lockProfile === 'soft_prop') return { width: 896, height: 896, label: '896x896' }
@@ -3217,7 +3316,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     const currentDrafts = sbAssetPromptDraftsRef.current
     const prevDraft = currentDrafts[key] && typeof currentDrafts[key] === 'object'
       ? currentDrafts[key]
-      : { promptZh: '', promptEn: '', negativePromptZh: '', negativePrompt: '', enhancedAt: '', enhanceMode: '' }
+      : { promptZh: '', promptEn: '', negativePromptZh: '', negativePrompt: '', enhancedAt: '', enhanceMode: '', zhUpdatedAt: '', translatedAt: '' }
     const enhancedAt = options?.markEnhanced
       ? new Date().toISOString()
       : options?.preserveEnhanced
@@ -3228,6 +3327,12 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       : options?.preserveEnhanced
         ? String(prevDraft.enhanceMode || '').trim()
         : String(patch.enhanceMode || '').trim()
+    // 2026-10-27 徽标打戳：中文栏变更（手工/AI 增强回填）打 zhUpdatedAt；英文栏回填（翻译/手工译）打 translatedAt
+    const nowIso = new Date().toISOString()
+    const zhTouched = patch.promptZh !== undefined || patch.negativePromptZh !== undefined
+    const enTouched = patch.promptEn !== undefined || patch.negativePrompt !== undefined
+    const zhUpdatedAt = zhTouched ? nowIso : String((prevDraft as any).zhUpdatedAt || '').trim()
+    const translatedAt = enTouched ? nowIso : String((prevDraft as any).translatedAt || '').trim()
     const nextDrafts = normalizeStoryboardLockAssetPromptDrafts(sbAssetPlan, {
       ...currentDrafts,
       [key]: {
@@ -3237,7 +3342,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         negativePrompt: String(patch.negativePrompt ?? prevDraft.negativePrompt ?? ''),
         promptReview: patch.promptReview !== undefined ? (patch.promptReview || null) : (prevDraft.promptReview || null),
         enhancedAt,
-        enhanceMode
+        enhanceMode,
+        zhUpdatedAt,
+        translatedAt
       }
     })
     sbAssetPromptDraftsRef.current = nextDrafts // 立即同步 ref，保证批量串行的下一次迭代读到最新值
@@ -3261,6 +3368,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       })
     } : null)
     if (nextPlan) setSbAssetPlan(nextPlan)
+    // 2026-10-26 缺陷 C：提示词草稿变更（AI 增强/翻译回填/手工编辑）置脏——向导/顶栏「保存」激活；
+    // 不并入 Compose dirty（那条链 1.2s 防抖自动保存——本波用户裁决：不自动写盘，要点保存才落盘）
+    markPromptDraftsDirty()
     if (doc.mode === 'project') {
       setDocProject((p) => {
         const stateIn = (p && (p as any).state && typeof (p as any).state === 'object') ? (p as any).state : {}
@@ -3316,7 +3426,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     const label = String(asset?.name || key).trim() || key
-    const ok = await dlgConfirm(`确认从当前锁定事物计划中删除“${label}”？\n\n这只会从当前锁定计划里移除；如果之后重新从 Story Bible 全量生成资产计划，它仍可能再次出现。`, { danger: true, okText: '删除' })
+    const ok = await dlgConfirm(`确认删除“${label}”？\n\n将从锁定计划及所有场景的元素分配中移除；已生成的图片文件会保留。`, { danger: true, okText: '删除' })
     if (!ok) return
 
     const nextDrafts = { ...(sbAssetPromptDraftsRef.current || {}) }
@@ -3380,6 +3490,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbError('请先填写中文提示词，再执行翻译')
       return
     }
+    const existingEn = String(kind === 'globalPrompt' ? sbReq.globalPrompt || '' : sbReq.globalNegativePrompt || '').trim()
+    if (!(await confirmRerun({ action: '翻译全局提示词', hasExisting: Boolean(existingEn) }))) return
     setSbTranslatingScope(kind)
     setSbTranslateDeadlineAt(Date.now() + 60_000)
     appendSbLog(`开始翻译${kind === 'globalPrompt' ? '全局正向' : '全局负向'}提示词`)
@@ -3414,6 +3526,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbError(`请先填写中文${kind === 'positive' ? '正向' : '反向'}提示词，再执行翻译`)
       return
     }
+    const existingEn = String(kind === 'positive' ? sbAssetPromptDrafts[key]?.promptEn || '' : sbAssetPromptDrafts[key]?.negativePrompt || '').trim()
+    if (!(await confirmRerun({ action: '翻译事物提示词', hasExisting: Boolean(existingEn) }))) return
     setSbTranslatingScope(`asset:${kind}:${key}`)
     setSbTranslateDeadlineAt(Date.now() + 60_000)
     appendSbLog(`开始翻译资产${kind === 'positive' ? '正向' : '反向'}提示词：${key}`)
@@ -3438,6 +3552,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
   async function runStoryboardReviewGlobalPrompt() {
     if (doc.mode !== 'project' || !doc.project) return
+    if (!(await confirmRerun({ action: 'AI 评分全局提示词', hasExisting: Boolean(sbGlobalPromptReview) }))) return
     setSbGlobalPromptReviewBusy(true)
     appendSbLog('开始评分全局提示词')
     try {
@@ -3491,6 +3606,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     const item = sbItems.find((x) => x.nodeId === nodeId) || null
     if (!item) return null
     const silent = Boolean(opts && opts.silent)
+    if (!silent && item.promptReview && !(await confirmRerun({ action: 'AI 评分场景提示词', hasExisting: true }))) return null
     setSbPromptReviewingNodeId(nodeId)
     if (!silent) appendSbLog(`开始评分场景提示词：${item.nodeName}`)
     try {
@@ -3546,21 +3662,25 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     setToast(`已强化：${item.nodeName}`)
   }
 
-  async function runStoryboardGenerateAssetReference(assetId: string, batchSizeIn?: number) {
+  async function runStoryboardGenerateAssetReference(assetId: string, batchSizeIn?: number, confirmed = false) {
     if (doc.mode !== 'project' || !doc.project) return
     if (sbAssetPlanBusy || sbBusyGenerate || sbBusyApply || sbBusyEntity) return
-    const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
-    if (!plan) {
-      setSbError('请先生成必要事物资产计划')
-      return
-    }
-    const asset = (Array.isArray(plan.assets) ? plan.assets : []).find((x: any) => String(x && x.id ? x.id : '').trim() === String(assetId || '').trim()) || null
-    if (!asset) {
-      setSbError('未找到对应的必要事物资产')
-      return
-    }
-    const label = String(asset && asset.name ? asset.name : assetId).trim() || assetId
-    setSbAssetPlanBusy(true)
+    // 2026-11-03 用户裁决：已有主参考/候选时先二次确认（防误点重抽覆盖）
+    const existingAsset = (Array.isArray(sbAssetPlan?.assets) ? sbAssetPlan.assets : []).find((x: any) => String(x?.id || '').trim() === String(assetId || '').trim()) || null
+    const hasExistingRef = !confirmed && Boolean(String(existingAsset?.primaryReferenceAssetUri || '').trim() || (Array.isArray(existingAsset?.latestReferenceBatch) && existingAsset.latestReferenceBatch.length) || (Array.isArray(existingAsset?.generatedRefs) && existingAsset.generatedRefs.length))
+    const ran = await confirmRerun({ action: '生成参考图', hasExisting: hasExistingRef, run: async () => {
+      const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
+      if (!plan) {
+        setSbError('请先生成必要事物资产计划')
+        return
+      }
+      const asset = (Array.isArray(plan.assets) ? plan.assets : []).find((x: any) => String(x && x.id ? x.id : '').trim() === String(assetId || '').trim()) || null
+      if (!asset) {
+        setSbError('未找到对应的必要事物资产')
+        return
+      }
+      const label = String(asset && asset.name ? asset.name : assetId).trim() || assetId
+      setSbAssetPlanBusy(true)
     setSbGeneratingAssetId(String(assetId || '').trim())
     setSbAnalyzingAssetId('')
     setSbOptimizingAssetId('')
@@ -3607,6 +3727,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbAssetPlanBusy(false)
       setSbGeneratingAssetId('')
     }
+    } })
+    void ran
   }
 
   async function runStoryboardAnalyzeAssetReference(assetId: string) {
@@ -3623,6 +3745,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     const label = String(asset && asset.name ? asset.name : assetId).trim() || assetId
+    if (!(await confirmRerun({ action: '分析事物参考图', hasExisting: Boolean(asset?.analysis || asset?.referenceAnalysis || asset?.referenceReview) }))) return
     setSbAssetPlanBusy(true)
     setSbGeneratingAssetId('')
     setSbAnalyzingAssetId(String(assetId || '').trim())
@@ -3647,9 +3770,14 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
-  async function runStoryboardOptimizeAssetReference(assetId: string) {
+  async function runStoryboardOptimizeAssetReference(assetId: string, confirmed = false) {
     if (doc.mode !== 'project' || !doc.project) return
     if (sbAssetPlanBusy || sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    if (!confirmed) {
+      const asset = sbAssetPlan?.assets?.find((x: any) => String(x?.id || '') === String(assetId || ''))
+      await confirmRerun({ action: '增强提示并重生参考图', hasExisting: Boolean(asset?.primaryReferenceAssetUri || asset?.latestReferenceBatch?.length || asset?.generatedRefs?.length), run: () => runStoryboardOptimizeAssetReference(assetId, true) })
+      return
+    }
     const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
     if (!plan) {
       setSbError('请先生成必要事物资产计划')
@@ -3705,8 +3833,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
-  async function runStoryboardEnhanceAssetPrompt(assetId: string) {
+  async function runStoryboardEnhanceAssetPrompt(assetId: string, confirmed = false): Promise<boolean | void> {
     if (doc.mode !== 'project' || !doc.project) return
+    if (!confirmed) {
+      const draft = sbAssetPromptDrafts[String(assetId || '').trim()] || {}
+      await confirmRerun({ action: '增强事物提示词', hasExisting: Object.values(draft).some((value) => typeof value === 'string' && value.trim()), run: async () => { await runStoryboardEnhanceAssetPrompt(assetId, true) } })
+      return
+    }
     if (storyboardPromptOpsBusy()) {
       setSbError('当前已有提示词增强或翻译任务在执行，请等待完成后再操作')
       return
@@ -3741,6 +3874,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       // 照样写回会把已有草稿洗成模板（实测批量 14 资产全中招）。只有 AI 稿真正上桌才允许落盘
       if (res.aiError && !(res.result?.context && (res.result.context as any).aiGenerated === true)) {
         const msg = String(res.aiError.message || 'AI 增强失败')
+        sbLastEnhanceFailRef.current = { assetId: String(assetId || '').trim(), label, reason: humanizeEnhanceError(res.aiError) }
         setSbError(msg)
         appendSbLog(`资产提示词增强失败（已保留原稿）：${label} - ${msg}`)
         return false
@@ -3762,6 +3896,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return true
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
+      sbLastEnhanceFailRef.current = { assetId: String(assetId || '').trim(), label, reason: humanizeEnhanceError(e) }
       setSbError(msg)
       appendSbLog(`资产提示词增强失败：${label} - ${msg}`)
       return false
@@ -3773,40 +3908,102 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   // ============ 2026-08-26 提示词流程修正（用户指令：中文优先 → 审核 → 翻译 → 批准 → 出图） ============
   // AI 逐个为全部资产生成中文提示词（串行避开并发限流，进度可见；中文稿先出，再逐条微调确认后翻译）
   const [sbEnhanceAllProgress, setSbEnhanceAllProgress] = useState({ current: 0, total: 0, busy: false })
-  async function runStoryboardEnhanceAllAssetPrompts() {
+  // 2026-10-26 缺陷 B 修复：批量增强失败明面化——逐项结果汇总（成功 X/失败 Y+名单+人话原因）+ 一键重试失败项
+  const [sbEnhanceAllSummary, setSbEnhanceAllSummary] = useState<{ done: number; failures: Array<{ assetId: string; label: string; reason: string }> } | null>(null)
+  const sbLastEnhanceFailRef = useRef<{ assetId: string; label: string; reason: string } | null>(null)
+  // 2026-10-26 缺陷 C 修复：提示词草稿独立脏标记（不进 Compose dirty——dirty 有 1.2s 防抖自动保存链，本波语义=不自动写盘）
+  const [sbPromptDraftsDirty, setSbPromptDraftsDirty] = useState(false)
+  const sbPromptDraftsDirtyRef = useRef(false)
+  function markPromptDraftsDirty() {
+    sbPromptDraftsDirtyRef.current = true
+    setSbPromptDraftsDirty(true)
+  }
+  function clearPromptDraftsDirty() {
+    sbPromptDraftsDirtyRef.current = false
+    setSbPromptDraftsDirty(false)
+  }
+  // 失败原因人话化（不裸写错误码；用户可据此判断要不要重试）
+  function humanizeEnhanceError(raw: unknown): string {
+    const msg = String((raw as any)?.message || raw || '')
+    if (/invalid_story_asset_prompt_enhance_output/i.test(msg)) return 'AI 输出格式异常'
+    if (/resource_scheduler|lease/i.test(msg)) return '资源调度繁忙（租约竞争）'
+    if (/fetch failed|ECONNREFUSED|ETIMEDOUT|socket|network/i.test(msg)) return '模型服务不可达'
+    if (/metal_cap|insufficient memory|内存/i.test(msg)) return '本地内存护栏拦截'
+    return msg.slice(0, 120) || '未知原因'
+  }
+  async function runStoryboardEnhanceAllAssetPrompts(onlyAssetIds?: string[]) {
     if (doc.mode !== 'project' || !doc.project) return
     if (sbEnhanceAllProgress.busy) return
+    resetSbQueueControl()
     const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
-    // 2026-10-07 只增强需抽卡的事物：背景锚点事物（prompt_only/optional_ref）不出立绘，
-    // 其提示词无消费端——此前对它们也跑 AI 增强，纯浪费模型调用（每资产 1~2 分钟）
-    const assets = (Array.isArray(plan?.assets) ? plan.assets : []).filter((a) => {
-      const s = String(a?.renderStrategy || '').trim()
-      return !s || s === 'ref_required'
+    const allAssets = Array.isArray(plan?.assets) ? plan.assets : []
+    const only = Array.isArray(onlyAssetIds) && onlyAssetIds.length ? new Set(onlyAssetIds.map((x) => String(x || '').trim())) : null
+    const candidates = only ? allAssets.filter((a) => only.has(String(a?.id || '').trim())) : allAssets
+    const drafts = sbAssetPromptDraftsRef.current || {}
+    const assets = candidates.filter((asset) => {
+      const assetId = String(asset?.id || '').trim()
+      return assetId && !String(drafts[assetId]?.promptZh || '').trim()
     })
     if (!assets.length) {
-      setSbError('请先生成必要事物资产计划')
+      if (allAssets.length) {
+        setSbError('')
+        setToast('所有目标事物已有中文提示词，未重复生成或覆盖')
+        appendSbLog('批量提示词检查：已有中文稿的事物全部跳过，没有待生成项')
+      } else {
+        setSbError(only ? '没有可重试的失败项' : '请先生成必要事物资产计划')
+      }
       return
     }
+    setSbEnhanceAllSummary(null)
     setSbEnhanceAllProgress({ current: 0, total: assets.length, busy: true })
-    appendSbLog(`开始批量生成全部事物中文提示词（${assets.length} 个资产，逐个串行）`)
+    appendSbLog(`开始补齐缺失的事物中文提示词：待生成 ${assets.length} 个，已有中文稿的事物不进入队列；逐个串行，失败自动重试一次`)
     let done = 0
     let failed = 0
+    const failures: Array<{ assetId: string; label: string; reason: string }> = []
     for (const asset of assets) {
+      if (!(await waitForSbQueueGate())) break
       const assetId = String(asset?.id || '').trim()
       if (!assetId) continue
-      try {
-        // 返回 false 表示 AI 失败已保留原稿（不计入成功）
-        const ok = await runStoryboardEnhanceAssetPrompt(assetId)
-        if (ok === false) failed += 1
-        else done += 1
-      } catch {
+      const label = String(asset?.name || assetId).trim() || assetId
+      // 返回 false 表示 AI 失败已保留原稿；2026-10-26 缺陷 B：失败自动重试 1 次（瞬时竞争/预填秒败要能自愈）
+      let okResult = await runStoryboardEnhanceAssetPrompt(assetId, true)
+      if (okResult === false) {
+        if (!(await waitForSbQueueGate())) break
+        sbLastEnhanceFailRef.current = null
+        appendSbLog(`增强失败，自动重试一次：${label}`)
+        okResult = await runStoryboardEnhanceAssetPrompt(assetId, true)
+      }
+      if (okResult === false) {
         failed += 1
+        const rec = sbLastEnhanceFailRef.current
+        failures.push({ assetId, label, reason: rec && rec.assetId === assetId ? rec.reason : '未知原因' })
+      } else {
+        done += 1
       }
       setSbEnhanceAllProgress((prev) => ({ ...prev, current: done + failed }))
     }
     setSbEnhanceAllProgress({ current: done + failed, total: assets.length, busy: false })
-    appendSbLog(`批量中文提示词完成：成功 ${done}，失败 ${failed}${failed ? '（失败资产可单独点"AI 生成提示词"重试）' : ''}。请逐条审阅微调，「确认中文稿」后再执行翻译。`)
-    setToast(done > 0 ? `已生成 ${done} 个事物的中文提示词` : '批量生成提示词失败')
+    setSbEnhanceAllSummary({ done, failures })
+    if (sbQueueRef.current.cancelRequested) {
+      appendSbLog(`批量中文提示词已停止：成功 ${done}，失败 ${failed}，已保留完成项`)
+      return
+    }
+    if (failures.length) {
+      appendSbLog(
+        `批量中文提示词完成：成功 ${done}，失败 ${failed}——失败项：${failures.map((f) => `${f.label}（${f.reason}）`).join('、')}。可在上方失败汇总卡点「重试失败项」。`
+      )
+      setToast(`提示词生成：成功 ${done} / 失败 ${failed}（详见向导内失败汇总卡）`)
+    } else {
+      appendSbLog(`批量中文提示词完成：成功 ${done}。请逐条审阅微调，「确认中文稿」后再执行翻译。`)
+      setToast(`已生成 ${done} 个事物的中文提示词`)
+    }
+  }
+
+  // 2026-10-26 缺陷 B：失败汇总卡的一键重试入口（只跑失败项；每项仍带一次自动重试）
+  async function runStoryboardEnhanceRetryFailed() {
+    const ids = (sbEnhanceAllSummary?.failures || []).map((f) => f.assetId)
+    if (!ids.length) return
+    await runStoryboardEnhanceAllAssetPrompts(ids)
   }
 
   // 2026-10-07 一键翻译全部中文稿：全局正/负向 + 每个抽卡事物的正/反向。
@@ -3849,11 +4046,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     setSbError('')
+    resetSbQueueControl()
     setSbTranslateAllProgress({ current: 0, total: jobs.length, busy: true })
     appendSbLog(`一键翻译开始：${jobs.length} 条中文稿 → 英文（串行）`)
     let done = 0
     let failed = 0
     for (const job of jobs) {
+      if (!(await waitForSbQueueGate())) break
       try {
         const res = await translateStoryboardPromptText(doc.id, { text: job.zh, sourceLang: 'zh', targetLang: 'en', mode: 'prompt', timeoutMs: 60_000 })
         const en = String(res?.result?.translatedText || '').trim()
@@ -4041,6 +4240,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     const label = String(asset && asset.name ? asset.name : assetId).trim() || assetId
+    if (!(await confirmRerun({ action: '生成线稿', hasExisting: Boolean(asset?.lineartAssetUri || asset?.lineartUrl || asset?.lineart) }))) return
     setSbAssetPlanBusy(true)
     setSbLineartAssetId(String(assetId || '').trim())
     setSbGeneratingAssetId('')
@@ -4238,7 +4438,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
-  async function runStoryboardGenerateAllMissingAssetReferences() {
+  async function runStoryboardGenerateAllMissingAssetReferences(confirmed = false) {
     if (doc.mode !== 'project' || !doc.project) return
     if (sbAssetPlanBusy || sbBusyGenerate || sbBusyApply || sbBusyEntity) return
     const plan = normalizeStoryboardAssetPlan(sbAssetPlan)
@@ -4251,9 +4451,15 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setToast('当前没有缺失的必要事物参考图')
       return
     }
+    if (!confirmed && missing.some((asset: any) => asset.latestReferenceBatch?.length || asset.generatedRefs?.length)) {
+      await confirmRerun({ action: '批量生成必要事物参考图', hasExisting: true, run: () => runStoryboardGenerateAllMissingAssetReferences(true) })
+      return
+    }
+    resetSbQueueControl()
     appendSbLog(`开始批量生成必要事物参考图：共 ${missing.length} 项`)
     for (const item of missing) {
-      await runStoryboardGenerateAssetReference(String(item.id || '').trim())
+      if (!(await waitForSbQueueGate())) break
+      await runStoryboardGenerateAssetReference(String(item.id || '').trim(), undefined, true)
     }
     appendSbLog('批量生成流程已完成，请检查卡片状态并确认资产')
   }
@@ -4296,12 +4502,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbError('无法生成 Story Bible：故事内容为空')
       return
     }
+    await confirmRerun({ action: '生成 Story Bible', hasExisting: Boolean(String(sbReq.storyBibleJson || sbReq.entitySpec || '').trim()), run: async () => {
     setSbBusyEntity(true)
     setSbError('')
     appendSbLog('开始生成 Story Bible（角色/道具/地点锁定）')
     try {
       // Build structured input for Story Bible generation.
-      const sceneNodes = (doc.story.nodes || []).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene' || n.kind === 'ending')
+      const sceneNodes = ((doc.story?.nodes || []) as any[]).map((n) => ensureNode(n as any)).filter((n) => n.kind === 'scene' || n.kind === 'ending')
       const scenes = sceneNodes.slice(0, 60).map((n, idx) => {
         const placements = Array.isArray((n as any).visuals?.placements) ? ((n as any).visuals.placements as any[]) : []
         const charIds = Array.from(new Set(placements.map((p) => String((p && p.characterId) || '').trim()).filter(Boolean)))
@@ -4427,9 +4634,179 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     } finally {
       setSbBusyEntity(false)
     }
+    } })
   }
 
-  async function runStoryboardGenerateAllPrompts(mode: 'all' | 'pending' = 'all') {
+  // 场景提示词编辑统一写口：手工改稿使既有同源翻译记录失效；翻译写回由下方函数登记新记录。
+  function updateStoryboardSceneItemPrompt(nodeId: string, patch: Partial<StoryboardBatchItem>) {
+    setSbItems((prev) => {
+      const shouldResetReview = (patch as any).promptZh != null || (patch as any).prompt != null || (patch as any).negativePromptZh != null || (patch as any).negativePrompt != null
+      const nextPatch = shouldResetReview ? { ...patch, promptReview: null } : patch
+      const next = prev.map((x) => (x.nodeId === nodeId ? { ...x, ...nextPatch } : x))
+      sbItemsRef.current = next
+      const changed = next.find((x) => x.nodeId === nodeId) || null
+      if (changed) {
+        upsertStoryboardScenePrompt(nodeId, changed.nodeName, {
+          userInput: (nextPatch as any).userInput != null ? String((nextPatch as any).userInput || '') : undefined,
+          promptZh: (nextPatch as any).promptZh != null ? String((nextPatch as any).promptZh || '') : undefined,
+          prompt: (nextPatch as any).prompt != null ? String((nextPatch as any).prompt || '') : undefined,
+          negativePromptZh: (nextPatch as any).negativePromptZh != null ? String((nextPatch as any).negativePromptZh || '') : undefined,
+          negativePrompt: (nextPatch as any).negativePrompt != null ? String((nextPatch as any).negativePrompt || '') : undefined,
+          promptReview: shouldResetReview ? null : undefined
+        })
+      }
+      return next
+    })
+  }
+
+  async function translateStoryboardScenePromptField(
+    nodeId: string,
+    kind: 'positive' | 'negative',
+    options?: { direction?: ScenePromptTranslationDirection; confirmExisting?: boolean }
+  ): Promise<string | null> {
+    if (doc.mode !== 'project' || !doc.project) return null
+    if (sbTranslatingScope) return null
+    const item = sbItemsRef.current.find((x) => String(x.nodeId || '') === String(nodeId || '')) || null
+    if (!item) return null
+    const direction = options?.direction || 'zh-en'
+    const fromEnglish = direction === 'en-zh'
+    const source = String(kind === 'negative'
+      ? (fromEnglish ? item.negativePrompt : item.negativePromptZh) || ''
+      : (fromEnglish ? item.prompt : item.promptZh) || '').trim()
+    if (!source) {
+      setSbError(`${kind === 'negative' ? '负向' : '正向'}${fromEnglish ? '英文' : '中文'}稿为空，无法翻译`)
+      return null
+    }
+    const target = String(kind === 'negative'
+      ? (fromEnglish ? item.negativePromptZh : item.negativePrompt) || ''
+      : (fromEnglish ? item.promptZh : item.prompt) || '').trim()
+    if (options?.confirmExisting !== false && !(await confirmRerun({ action: fromEnglish ? '英文转中文' : '中文转英文', hasExisting: Boolean(target) }))) return null
+    setSbError('')
+    setSbTranslatingScope(`scene:${kind}:${nodeId}`)
+    setSbTranslateDeadlineAt(Date.now() + 60_000)
+    appendSbLog(`场景${kind === 'negative' ? '负向' : '正向'}${fromEnglish ? '英文转中文' : '中文转英文'}开始：${item.nodeName}（${source.length} 字）`)
+    try {
+      const res = await translateStoryboardPromptText(doc.id, {
+        text: source,
+        sourceLang: fromEnglish ? 'en' : 'zh',
+        targetLang: fromEnglish ? 'zh' : 'en',
+        mode: 'prompt',
+        timeoutMs: 60_000
+      })
+      const translated = String(res?.result?.translatedText || '').trim()
+      if (!translated) throw new Error('empty_translation')
+      const cur = sbItemsRef.current.find((x) => String(x.nodeId || '') === String(nodeId || '')) || item
+      const promptAlignment = { ...(cur.promptAlignment || {}), [kind]: createScenePromptPairAlignment(source, translated, direction) }
+      const fieldPatch = kind === 'negative'
+        ? (fromEnglish ? { negativePromptZh: translated } : { negativePrompt: translated })
+        : (fromEnglish ? { promptZh: translated } : { prompt: translated })
+      const nextItem = { ...cur, ...fieldPatch, promptAlignment }
+      setSbItems((prev) => {
+        const next = prev.map((x) => (x.nodeId === nodeId ? nextItem : x))
+        sbItemsRef.current = next
+        return next
+      })
+      upsertStoryboardScenePrompt(nodeId, cur.nodeName, { ...fieldPatch, promptAlignment })
+      appendSbLog(`场景双稿已对齐：${cur.nodeName} · ${kind === 'negative' ? '负向' : '正向'}`)
+      setToast('场景双稿已对齐')
+      return translated
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`场景提示词翻译失败：${msg}`)
+      return null
+    } finally {
+      setSbTranslatingScope('')
+      setSbTranslateDeadlineAt(0)
+    }
+  }
+
+  async function alignStoryboardScenePrompts(onlyNodeId = '') {
+    if (doc.mode !== 'project' || !doc.project || sbBusyGenerate || sbBusyApply || sbBusyEntity) return
+    const singleNodeId = String(onlyNodeId || '').trim()
+    const selected = singleNodeId ? sbItemsRef.current.filter((x) => x.nodeId === singleNodeId) : sbItemsRef.current
+    const targets = selected.filter((x) => {
+      const hasEnglish = Boolean(String(x.prompt || '').trim() && String(x.negativePrompt || '').trim())
+      return hasEnglish && (singleNodeId ? true : !getScenePromptAlignment(x).ready)
+    })
+    if (!targets.length) {
+      setSbError(singleNodeId ? '请先准备该幕完整的正向、负向英文稿' : '没有待对齐的完整英文稿；缺失场景请先生成提示词')
+      return
+    }
+    const confirmed = await confirmRerun({
+      action: singleNodeId ? '对齐本幕中英文' : '批量对齐中英文',
+      hasExisting: targets.some((x) => String(x.promptZh || x.negativePromptZh || '').trim())
+    })
+    if (!confirmed) return
+    setSbBusyGenerate(true)
+    setSbQueuePhase('align')
+    resetSbQueueControl()
+    setSbGeneratingNodeId('')
+    setSbGeneratingNodeStartedAt(0)
+    setSbGeneratingNodeElapsedMs(0)
+    setSbError('')
+    appendSbLog(`开始双稿对齐：${targets.length} 个场景，正向与负向逐项串行翻译`)
+    let done = 0
+    let failed = 0
+    try {
+      for (const it of targets) {
+        let sceneComplete = true
+        setSbGeneratingNodeId(it.nodeId)
+        setSbGeneratingNodeStartedAt(Date.now())
+        for (const kind of ['positive', 'negative'] as const) {
+          if (!(await waitForSbQueueGate())) { sceneComplete = false; break }
+          const translated = await translateStoryboardScenePromptField(it.nodeId, kind, { direction: 'en-zh', confirmExisting: false })
+          if (!translated) {
+            sceneComplete = false
+            if (!sbQueueRef.current.cancelRequested) failed += 1
+            break
+          }
+        }
+        if (sceneComplete) {
+          done += 1
+          appendSbLog(`本幕双稿对齐完成：${it.nodeName}`)
+        } else if (!sbQueueRef.current.cancelRequested) {
+          appendSbLog(`本幕双稿未完整对齐，后续场景已停止：${it.nodeName}`)
+          break
+        }
+        if (sbQueueRef.current.cancelRequested) break
+      }
+      if (sbQueueRef.current.cancelRequested) {
+        appendSbLog(`双稿对齐已停止，保留已完成字段：完成 ${done} 幕`)
+      } else if (failed) {
+        setSbError(`双稿对齐未完成：成功 ${done} 幕，失败 ${failed} 幕；请处理失败项后重试`)
+      } else {
+        appendSbLog(`双稿对齐完成：${done} 幕`)
+        setToast(`双稿对齐完成：${done} 幕`)
+      }
+    } finally {
+      resetSbQueueControl()
+      setSbQueuePhase('idle')
+      setSbGeneratingNodeId('')
+      setSbGeneratingNodeStartedAt(0)
+      setSbGeneratingNodeElapsedMs(0)
+      setSbBusyGenerate(false)
+    }
+  }
+
+  // 2026-11-02 场景背景卡「编辑元素」：写蓝图场景聚焦载荷 → 关向导/弹窗回蓝图层；BlueprintStudio 消费后定位该幕预演+要素分配
+  function gotoBlueprintSceneAssets(nodeId: string) {
+    if (doc.mode !== 'project') return
+    const id = String(nodeId || '').trim()
+    if (!id) return
+    if (sbPromptDraftsDirtyRef.current) {
+      if (!window.confirm('提示词草稿未保存，离开将丢失（点「保存」落盘后再走可保留）。确定离开？')) return
+      clearPromptDraftsDirty()
+    }
+    try { localStorage.setItem('talkscene.blueprint.sceneFocus', JSON.stringify({ projectId: doc.id, sceneId: id })) } catch { /* 存储不可用时忽略 */ }
+    closeStoryboardAssetGallery()
+    setSbOpen(false)
+    setSbRenderOpen(false)
+    try { if (localStorage.getItem(sbWsOpenStorageKey) === doc.id) localStorage.removeItem(sbWsOpenStorageKey) } catch {}
+    props.onBack?.()
+  }
+
+  async function runStoryboardGenerateAllPrompts(mode: 'all' | 'pending' = 'all', onlyNodeId = '') {
     if (doc.mode !== 'project' || !doc.story || !doc.project) return
     if (sbBusyGenerate || sbBusyApply || sbBusyEntity) return
     if (!sbAssetConfirmReady) {
@@ -4441,15 +4818,21 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbError('没有可处理的场景节点')
       return
     }
-    const onlyPending = mode === 'pending'
-    const targets = onlyPending
-      ? sbItems.filter((x) => x.status === 'error' || !String(x.prompt || '').trim() || !String(x.promptZh || '').trim())
-      : sbItems.slice()
+    const singleNodeId = String(onlyNodeId || '').trim()
+    const onlyPending = mode === 'pending' || Boolean(singleNodeId)
+    const targets = singleNodeId
+      ? sbItems.filter((x) => String(x.nodeId || '') === singleNodeId).slice(0, 1)
+      : onlyPending
+        ? sbItems.filter((x) => x.status === 'error' || !String(x.prompt || '').trim() || !String(x.promptZh || '').trim())
+        : sbItems.slice()
     if (!targets.length) {
       setSbError('')
-      appendSbLog('没有需要重试的场景（全部已生成）')
+      appendSbLog(singleNodeId ? '未找到目标场景' : '没有需要重试的场景（全部已生成）')
       return
     }
+    // 2026-11-03 用户裁决：已有场景提示词时先二次确认（防误点覆盖现稿）
+    const hasExistingPrompt = targets.some((x) => String(x.prompt || x.promptZh || '').trim())
+    const confirmed = await confirmRerun({ action: singleNodeId ? 'AI 生成场景提示词' : '批量生成场景提示词', hasExisting: hasExistingPrompt, run: async () => {
     setSbBusyGenerate(true)
     setSbQueuePhase('generate')
     resetSbQueueControl()
@@ -4498,11 +4881,13 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         try {
           const globalRes = await analyzeBackgroundPromptAi(doc.id, {
             userInput: wholeStoryInput,
-            globalPrompt: [entitySpec, currGlobalPrompt].filter(Boolean).join('，'),
+            // 2026-11-02 背景纯环境：全局锚点不再注入角色设定（entitySpec 由立绘链保证一致性）
+            globalPrompt: [currGlobalPrompt].filter(Boolean).join('，'),
             globalNegativePrompt: currGlobalNegativePrompt,
             aspectRatio: sbReq.aspectRatio,
             style: sbReq.style,
             outputLanguage: 'en',
+            backgroundOnly: true,
             timeoutMs: 90_000
           })
           const gp = String(globalRes.result?.globalPrompt || '').trim()
@@ -4538,7 +4923,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         setSbGeneratingNodeId(it.nodeId)
         setSbGeneratingNodeStartedAt(sceneStartedAt)
         setSbGeneratingNodeElapsedMs(0)
-        const node0 = (doc.story.nodes || []).find((n) => n.id === it.nodeId) || null
+        const node0 = ((doc.story?.nodes || []) as any[]).find((n) => n.id === it.nodeId) || null
         const node = node0 ? ensureNode(node0 as any) : null
         const userInput = it.userInput || (node ? buildSceneUserInputForBatch(node, projectTitle) : '')
         if (!userInput) {
@@ -4548,8 +4933,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           continue
         }
         try {
-          const sceneLocks = node ? buildSceneCharacterLocks(node as any) : ''
-          const gpForAi = [entitySpec, currGlobalPrompt, sceneLocks].filter(Boolean).join('，').slice(0, 1200)
+          // 2026-11-02 背景纯环境：不注入 entitySpec/角色锁（角色一致性由立绘链 IPAdapter 保证），只带风格/世界观锚点
+          const gpForAi = [currGlobalPrompt].filter(Boolean).join('，').slice(0, 1200)
           const res = await analyzeBackgroundPromptAi(doc.id, {
             userInput,
             globalPrompt: gpForAi,
@@ -4557,6 +4942,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
             aspectRatio: sbReq.aspectRatio,
             style: sbReq.style,
             outputLanguage: 'en',
+            backgroundOnly: true,
             timeoutMs: 90_000
           })
           const gp = String(res.result?.globalPrompt || '').trim()
@@ -4605,15 +4991,40 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           } catch (reviewErr) {
             appendSbLog(`场景评分回退：${it.nodeName} - ${reviewErr instanceof Error ? reviewErr.message : String(reviewErr)}`)
           }
-          setSbItems((prev) =>
-            prev.map((x) => (
+          // 英文是本次场景分析的执行稿，中文必须来自同一英文的正向/负向翻译。
+          // 任一翻译失败都按生成失败停止，不再回退到评审通道的泛化中文建议。
+          try {
+            const trPos = await translateStoryboardPromptText(doc.id, { text: sp, sourceLang: 'en', targetLang: 'zh', mode: 'prompt', timeoutMs: 60_000 })
+            promptZh = String(trPos?.result?.translatedText || '').trim()
+            if (!promptZh) throw new Error('empty_positive_translation')
+            const trNeg = await translateStoryboardPromptText(doc.id, { text: sneg, sourceLang: 'en', targetLang: 'zh', mode: 'prompt', timeoutMs: 60_000 })
+            negativePromptZh = String(trNeg?.result?.translatedText || '').trim()
+            if (!negativePromptZh) throw new Error('empty_negative_translation')
+          } catch (trErr) {
+            throw new Error(`scene_prompt_alignment_failed: ${trErr instanceof Error ? trErr.message : String(trErr)}`)
+          }
+          const promptAlignment = {
+            positive: createScenePromptPairAlignment(sp, promptZh, 'en-zh'),
+            negative: createScenePromptPairAlignment(sneg, negativePromptZh, 'en-zh')
+          }
+          const promptGeneration = {
+            createdAt: new Date().toISOString(),
+            method: 'scene-en-translation-zh' as const,
+            requirementId: 'scene_prompt_requirements' as const,
+            requirementVersion: SCENE_PROMPT_REQUIREMENTS_VERSION,
+            reviewIncluded: Boolean(promptReview?.ai)
+          }
+          setSbItems((prev) => {
+            const next = prev.map((x) => (
               x.nodeId === it.nodeId
-                ? { ...x, userInput, promptZh, prompt: sp, negativePromptZh, negativePrompt: sneg, promptReview, status: 'generated', note: 'ok' }
+                ? { ...x, userInput, promptZh, prompt: sp, negativePromptZh, negativePrompt: sneg, promptReview, promptAlignment, promptGeneration, status: 'generated' as const, note: '双稿已同源翻译' }
                 : x
             ))
-          )
-          upsertStoryboardScenePrompt(it.nodeId, it.nodeName, { userInput, promptZh, prompt: sp, negativePromptZh, negativePrompt: sneg, promptReview })
-          appendSbLog(`场景提示词已生成：${it.nodeName}（${Math.max(1, Date.now() - sceneStartedAt)}ms）`)
+            sbItemsRef.current = next
+            return next
+          })
+          upsertStoryboardScenePrompt(it.nodeId, it.nodeName, { userInput, promptZh, prompt: sp, negativePromptZh, negativePrompt: sneg, promptReview, promptAlignment, promptGeneration })
+          appendSbLog(`场景提示词已生成并完成双稿对齐：${it.nodeName}（${Math.max(1, Date.now() - sceneStartedAt)}ms）`)
           okCount += 1
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e)
@@ -4698,6 +5109,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbGeneratingNodeElapsedMs(0)
       setSbBusyGenerate(false)
     }
+    } })
+    void confirmed
   }
 
   async function runStoryboardValidateAndApply(mode: 'all' | 'pending' = 'all') {
@@ -4729,6 +5142,12 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbError(`目标场景中有 ${missing.length} 个缺少提示词，请先补齐或重新生成提示词`)
       return
     }
+    const misaligned = targets.filter((x) => !scenePromptsCanRender(x))
+    if (misaligned.length) {
+      setSbError(`目标场景中有 ${misaligned.length} 个中英文双稿未对齐，请先完成对齐再出图`)
+      return
+    }
+    if (!(await confirmRerun({ action: '批量场景出图', hasExisting: targets.some((x) => Boolean(x.backgroundUri || x.backgroundUrl)) }))) return
     const promptMeta = readStoryboardPromptMetaFromProject(doc.project)
     if (promptMeta) {
       const styleMismatch = promptMeta.style && promptMeta.style !== String(sbReq.style || '')
@@ -5069,7 +5488,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 
   // 2026-09-01 出图统一管理在锁定向导：摆放属性不再承担生成管理。
   // 通用打开器：按 planAssetId 优先、name 兜底匹配 plan.assets（不限 category），打开锁定向导并定位到该资产的详情/姿势变体区。
-  async function openAssetLockInWizard(input: { planAssetId?: string; name?: string }) {
+  // sceneId/reqId：蓝图「管理」深度回跳的可选聚焦载荷（定位到具体场景+姿态需求）。
+  async function openAssetLockInWizard(input: { planAssetId?: string; name?: string; sceneId?: string; reqId?: string }) {
     if (!doc.project || !doc.story || doc.mode !== 'project') return
     const planAssetId = String(input?.planAssetId || '').trim()
     const name = String(input?.name || '').trim()
@@ -5080,7 +5500,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     const hit = (planAssetId ? planAssets.find((a: any) => String(a?.id || '').trim() === planAssetId) : null)
       || (name ? planAssets.find((a: any) => String(a?.name || '').trim() === name) : null)
       || null
-    setSbPoseFocusAssetId(hit ? String(hit.id || '').trim() : '')
+    setSbPoseFocus(hit
+      ? { assetId: String(hit.id || '').trim(), ...(String(input?.sceneId || '').trim() ? { sceneId: String(input.sceneId).trim() } : {}), ...(String(input?.reqId || '').trim() ? { reqId: String(input.reqId).trim() } : {}) }
+      : null)
     setSbRenderOpen(false)
     setSbOpen(true)
     void runStoryboardOpenChecks()
@@ -5306,6 +5728,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     ipadapter?: { enabled: boolean; weight: number; startAt: number; endAt: number }
     // 2026-09-10 剧情姿势需求：候选回写需求 id，用于"该需求已出候选"标记与批量去重
     reqId?: string
+    sceneId?: string
+    // R 波项 2：姿势视角语义文本（需求 view/pose 拼接），服务端据此吃已锁三视图对应视角
+    poseViewText?: string
   }
 
   // 计划资产补丁统一入口：内存 sbAssetPlan + project.json 副本 + plan.json（persist 端点）三处一致。
@@ -5359,41 +5784,6 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     return (Array.isArray(plan?.assets) ? plan!.assets : []).find((a: any) => String(a?.id || '').trim() === assetId) || null
   }
 
-  // 2026-09-02 姿势草稿持久化：向导五个时机（剧情生成完成/场景预填/抽卡点击/切场景/高级参数变更）落 plan 资产 poseDraft
-  // 2026-09-10 姿势草稿手动翻译：姿势区缺「中文转英文」按钮，手改中文后旧英文会被生成链优先采用（en || zh）。
-  // 返回译稿由向导侧走填充保护（覆盖确认+可恢复），不在这里直写。
-  async function runStoryboardPoseDraftTranslate(assetId: string): Promise<string | null> {
-    if (doc.mode !== 'project' || !doc.project) return null
-    if (sbPosePromptBusyId || sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return null
-    const asset = findPosePlanAsset(assetId)
-    if (!asset) {
-      setSbError('未找到对应的角色资产')
-      return null
-    }
-    const zh = String((asset as any)?.poseDraft?.promptZh || '').trim()
-    if (!zh) {
-      setSbError('中文栏为空，无法翻译')
-      return null
-    }
-    setSbError('')
-    setSbPosePromptBusyId(assetId)
-    appendSbLog(`姿势草稿中文转英文开始：${String(asset?.name || assetId)}（${zh.length} 字）`)
-    try {
-      const res = await translateStoryboardPromptText(doc.id, { text: zh, sourceLang: 'zh', targetLang: 'en', mode: 'prompt', timeoutMs: 60_000 })
-      const en = String(res.result?.translatedText || '').trim()
-      if (!en) throw new Error('empty_translation')
-      appendSbLog('姿势草稿翻译完成')
-      return en
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setSbError(msg)
-      appendSbLog(`姿势草稿翻译失败：${msg}`)
-      return null
-    } finally {
-      setSbPosePromptBusyId('')
-    }
-  }
-
   async function runStoryboardPoseDraftSave(
     assetId: string,
     draft: { promptZh: string; promptEn: string; negativePromptZh: string; negativePromptEn: string; sceneId: string; ipadapterOn: boolean; ipadapterWeight: number; ipadapterStartAt: number; ipadapterEndAt: number; promptZhSource?: string }
@@ -5440,6 +5830,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     const res = await generateCharacterSpriteAi(doc.id, {
       // 与单发流程同款身份锁定：传 characterId，服务端解析锁定主参考
       characterId: String(ch?.id || '').trim() || undefined,
+      // R 波项 2：planAssetId + 视角语义下发——已锁三视图时服务端按视角吃对应视图作 IPAdapter 身份锚
+      planAssetId: String(asset?.id || '').trim() || undefined,
+      poseViewText: String(opts.poseViewText || '').trim() || undefined,
       // 画风常量，不用世界锚点（锚点里的山谷/城市会把生成带成场景图，2026-09-01 实测）
       globalPrompt: 'cartoon fairy tale picture book style, flat 2D illustration, bold clean outlines, cel shading, warm soft color palette',
       fingerprintPrompt: fp,
@@ -5473,6 +5866,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           ...(promptEn ? { promptEn } : {}),
           ...(negPose ? { negativePrompt: negPose } : {}),
           ...(String(opts.reqId || '').trim() ? { reqId: String(opts.reqId || '').trim() } : {}),
+          sceneId: opts.sceneId,
           createdAt: new Date().toISOString()
         }
       ]
@@ -5559,6 +5953,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     const label = String(asset?.name || assetId).trim() || assetId
+    if (!(await confirmRerun({ action: '提取剧情姿势需求', hasExisting: Boolean(asset?.poseRequirements?.length) }))) return
     setSbError('')
     setSbPoseReqBusyId(assetId)
     appendSbLog(`剧情姿势需求提取开始：${label}（AI 读取全故事场景×出场表，候选制）`)
@@ -5631,6 +6026,87 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }
   }
 
+  // ============ 2026-10-27 R 波：标准系三视图（角色专属）生成/锁定（服务端写 plan modelSheet.views） ============
+  const [sbModelSheetBusyId, setSbModelSheetBusyId] = useState('')
+
+  async function runStoryboardModelSheetGenerate(assetId: string, views?: ('front' | 'side' | 'back')[], mode?: 'sheet' | 'per-view') {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbModelSheetBusyId || sbAssetPlanBusy) return
+    const asset = (Array.isArray(sbAssetPlan?.assets) ? (sbAssetPlan!.assets as any[]) : []).find((x) => String(x?.id || '') === assetId)
+    const label = String(asset?.name || assetId).trim() || assetId
+    const effectiveMode = mode || (views ? 'per-view' : 'sheet')
+    const modelSheet = asset?.modelSheet || {}
+    const hasExisting = Boolean(modelSheet.sheetAssetUri || Object.keys(modelSheet.views || {}).length || modelSheet.candidates?.length)
+    if (!(await confirmRerun({ action: '生成标准系三视图', hasExisting }))) return
+    setSbError('')
+    setSbModelSheetBusyId(assetId)
+    appendSbLog(`标准系三视图生成开始：${label}（${views ? views.join('/') : '正/侧/背'}，${effectiveMode === 'sheet' ? '整 sheet' : '逐视角串行'}；IPAdapter 延续已锁主参考身份）`)
+    try {
+      const res = await generateModelSheetAi(doc.id, assetId, { ...(views ? { views } : {}), mode: effectiveMode })
+      if (res.pendingReview) {
+        appendSbLog(`三视图出图前审核待批准：${label}（批准后自动执行，审核中心可见）`)
+        setToast('已挂出图前审核，批准后自动执行')
+        return
+      }
+      if (res.plan) setSbAssetPlan(res.plan)
+      const scored = (res.views || []).filter((v: any) => Number.isFinite(Number(v?.score)))
+      const pending = (res.views || []).filter((v: any) => v?.reviewStatus === 'pending')
+      appendSbLog(`标准系三视图完成：${label}（${(res.views || []).length} 视角候选已落盘${scored.length ? `，评审 ${scored.map((v: any) => `${v.view}:${v.score}分`).join(' ')}` : ''}${pending.length ? '，部分视角评审通道不可用已挂起待人工复核' : ''}；逐张人工锁定后生效）`)
+      setToast(`三视图候选已生成：${label}`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`标准系三视图生成失败：${label} - ${msg}`)
+    } finally {
+      setSbModelSheetBusyId('')
+    }
+  }
+
+  // Z 波：sheet 栏序人工指定（评审通道死时兜底）
+  async function runStoryboardModelSheetAssign(assetId: string, assignments: Record<string, 'front' | 'side' | 'back'>) {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbModelSheetBusyId || sbAssetPlanBusy) return
+    const asset = (Array.isArray(sbAssetPlan?.assets) ? (sbAssetPlan!.assets as any[]) : []).find((x) => String(x?.id || '') === assetId)
+    const label = String(asset?.name || assetId).trim() || assetId
+    setSbError('')
+    setSbModelSheetBusyId(assetId)
+    appendSbLog(`三视图栏序人工指定：${label}（${Object.values(assignments).join('/')}）`)
+    try {
+      const res = await assignModelSheetViews(doc.id, assetId, assignments)
+      if (res.plan) setSbAssetPlan(res.plan)
+      appendSbLog(`三视图栏序已写入：${label}`)
+      setToast(`栏序已指定：${label}`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`三视图栏序指定失败：${label} - ${msg}`)
+    } finally {
+      setSbModelSheetBusyId('')
+    }
+  }
+
+  async function runStoryboardModelSheetLock(assetId: string, view: 'front' | 'side' | 'back') {
+    if (doc.mode !== 'project' || !doc.project) return
+    if (sbModelSheetBusyId || sbAssetPlanBusy) return
+    const asset = (Array.isArray(sbAssetPlan?.assets) ? (sbAssetPlan!.assets as any[]) : []).find((x) => String(x?.id || '') === assetId)
+    const label = String(asset?.name || assetId).trim() || assetId
+    const viewLabel = view === 'front' ? '正面' : view === 'side' ? '侧面' : '背面'
+    setSbError('')
+    setSbModelSheetBusyId(assetId)
+    try {
+      const res = await lockModelSheetView(doc.id, assetId, view)
+      if (res.plan) setSbAssetPlan(res.plan)
+      appendSbLog(`三视图锁定：${label}·${viewLabel}${res.allLocked ? '（三视角全锁，姿势变体将按视角语义吃三视图）' : ''}`)
+      setToast(res.allLocked ? `${label} 三视角全锁` : `已锁定：${label}·${viewLabel}`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSbError(msg)
+      appendSbLog(`三视图锁定失败：${label}·${viewLabel} - ${msg}`)
+    } finally {
+      setSbModelSheetBusyId('')
+    }
+  }
+
   // ============ 2026-09-16 道具状态变体（道具/地点等非角色资产专属）：AI 提取状态需求 → 单状态生成全链（服务端写 stateVariants） ============
   const [sbPropStateBusyId, setSbPropStateBusyId] = useState('')
   const [sbPropStateGenKey, setSbPropStateGenKey] = useState('')
@@ -5644,6 +6120,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     const label = String(asset?.name || assetId).trim() || assetId
+    if (!(await confirmRerun({ action: '提取剧情状态需求', hasExisting: Boolean(asset?.stateRequirements?.length || asset?.stateCheckedAt) }))) return
     setSbError('')
     setSbPropStateBusyId(assetId)
     appendSbLog(`剧情状态需求提取开始：${label}（AI 读取全故事场景，候选制）`)
@@ -5759,6 +6236,9 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     const labelOf = (a: any) => String(a?.name || a?.id || '').trim() || String(a?.id || '')
+    const hasExisting = assets.some((asset: any) => asset?.poseRequirements?.length || asset?.stateRequirements?.length)
+    if (!(await confirmRerun({ action: '跨场景姿态与状态分析', hasExisting }))) return
+    resetSbQueueControl()
     setSbError('')
     setSbSceneAnalysisBusy(true)
     setSbSceneAnalysisStartedAt(Date.now())
@@ -5796,6 +6276,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         const msg = e instanceof Error ? e.message : String(e)
         appendSbLog(`阶段 1/2 姿势提取失败（耗时 ${((Date.now() - poseStartedAt) / 1000).toFixed(1)}s）：${msg}`)
       }
+      if (await waitForSbQueueGate()) {
       setSbSceneAnalysisStage('prop')
       appendSbLog('阶段 2/2：AI 提取事物跨场景视觉状态（单次模型调用）…')
       const propStartedAt = Date.now()
@@ -5829,10 +6310,15 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         const msg = e instanceof Error ? e.message : String(e)
         appendSbLog(`阶段 2/2 事物状态提取失败（耗时 ${((Date.now() - propStartedAt) / 1000).toFixed(1)}s）：${msg}`)
       }
+      }
     } finally {
       setSbSceneAnalysisBusy(false)
       setSbSceneAnalysisStage('')
       setSbSceneAnalysisStartedAt(0)
+    }
+    if (sbQueueRef.current.cancelRequested) {
+      appendSbLog(`跨场景分析已停止：已挂载角色 ${poseMounted} 个、事物 ${propMounted} 个，结果保留`)
+      return
     }
     const summary = `跨场景分析完成：角色 ${poseMounted} 个 / ${poseReqTotal} 条姿态，事物 ${propMounted} 个 / ${stateTotal} 条状态 / ${usageTotal} 条场景使用方式${missed.length ? `；未命中 ${missed.length}：${missed.join('、')}` : ''}`
     appendSbLog(summary)
@@ -5856,6 +6342,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbError('该状态缺少标识，请重新提取状态需求')
       return
     }
+    const hasExisting = (asset?.stateVariants || []).some((item: any) => String(item?.stateKey || item?.key || '') === stateKey)
+    if (!(await confirmRerun({ action: '生成道具状态变体', hasExisting }))) return
     setSbError('')
     setSbPropStateGenKey(`${assetId}:${stateKey}`)
     appendSbLog(`状态变体生成开始：${assetLabel}·${stateLabel}（立绘→评审→抠图→登记，进度见任务条）`)
@@ -5958,7 +6446,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       ipadapter: draft.ipadapterOn
         ? { enabled: true, weight: Number(draft.ipadapterWeight) || 0.8, startAt: Number(draft.ipadapterStartAt) || 0.2, endAt: Number(draft.ipadapterEndAt) || 0.9 }
         : undefined,
-      reqId: String(req?.reqId || '').trim() || undefined
+      reqId: String(req?.reqId || '').trim() || undefined,
+      sceneId: req.sceneId,
+      // R 波项 2：视角语义随需求下发（如「背面 奔跑」），服务端已锁三视图时吃对应视角图作身份锚
+      poseViewText: [String(req?.view || '').trim(), String(req?.pose || '').trim()].filter(Boolean).join(' ') || undefined
     }
   }
 
@@ -5974,8 +6465,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     }))
   }
 
-  // 单个手动生成：按某一条需求出 1 张姿势候选
-  async function runStoryboardPoseRequirementGenerate(assetId: string, reqId: string) {
+  // 单个手动生成：按某一条需求串行出 1 或 4 张姿势候选
+  async function runStoryboardPoseRequirementGenerate(assetId: string, reqId: string, count: 1 | 4 = 1) {
     if (doc.mode !== 'project' || !doc.project) return
     if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy || sbPoseReqBusyId) return
     const asset = findPosePlanAsset(assetId)
@@ -5988,23 +6479,37 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       setSbError('该需求提示词为空，请先填写')
       return
     }
-    setSbError('')
-    setSbPoseGeneratingId(assetId)
-    setSbPoseDrawProgress({ done: 0, total: 1 })
-    appendSbLog(`姿势需求单张生成：${String(asset?.name || assetId)} / ${String(req.sceneName || req.sceneId)}`)
-    try {
-      const opts = await poseRequirementGenOpts(asset, req)
-      await runStoryboardPoseGenerateOne(assetId, opts)
-      await patchPoseRequirementPromptEn(assetId, reqId, opts.posePromptEn || '')
-      setToast('已生成 1 张姿势候选')
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setSbError(msg)
-      appendSbLog(`姿势需求生成失败：${msg}`)
-    } finally {
-      setSbPoseGeneratingId('')
-      setSbPoseDrawProgress(null)
-    }
+    const total = count === 4 ? 4 : 1
+    // 2026-11-03 用户裁决：已有姿势候选/变体时先二次确认（防误点重抽覆盖）
+    const hasExistingPose = (Array.isArray(asset?.poseCandidates) && asset.poseCandidates.length > 0) || (Array.isArray(asset?.poseVariants) && asset.poseVariants.length > 0)
+    const confirmed = await confirmRerun({ action: '生成姿势候选', hasExisting: hasExistingPose, run: async () => {
+      resetSbQueueControl()
+      setSbError('')
+      setSbPoseGeneratingId(assetId)
+      setSbPoseDrawProgress({ done: 0, total })
+      appendSbLog(total === 1
+        ? `姿势需求单张生成：${String(asset?.name || assetId)} / ${String(req.sceneName || req.sceneId)}`
+        : `姿势需求串行生成：${String(asset?.name || assetId)} / ${String(req.sceneName || req.sceneId)} / ${total} 张`)
+      try {
+        const opts = await poseRequirementGenOpts(asset, req)
+        for (let i = 0; i < total; i++) {
+          if (!(await waitForSbQueueGate())) throw new Error('已停止；已生成候选保留')
+          setSbPoseDrawProgress({ done: i, total })
+          await runStoryboardPoseGenerateOne(assetId, opts)
+          setSbPoseDrawProgress({ done: i + 1, total })
+        }
+        await patchPoseRequirementPromptEn(assetId, reqId, opts.posePromptEn || '')
+        setToast(total === 1 ? '已生成 1 张姿势候选' : `已生成 ${total} 张姿势候选`)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        setSbError(msg)
+        appendSbLog(`姿势需求生成失败：${msg}`)
+      } finally {
+        setSbPoseGeneratingId('')
+        setSbPoseDrawProgress(null)
+      }
+    } })
+    void confirmed
   }
 
   // 批量手动生成：一键按需求清单逐条串行出图（已有同需求候选的自动跳过；中断保留已出候选）
@@ -6025,49 +6530,39 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       return
     }
     setSbError('')
-    setSbPoseGeneratingId(assetId)
-    setSbPoseDrawProgress({ done: 0, total: todo.length })
-    appendSbLog(`姿势需求批量生成：${label} / ${todo.length} 条（串行）`)
-    try {
-      for (let i = 0; i < todo.length; i++) {
-        setSbPoseDrawProgress({ done: i, total: todo.length })
-        const req = todo[i]
-        try {
-          const cur = findPosePlanAsset(assetId)
-          const opts = await poseRequirementGenOpts(cur, req)
-          await runStoryboardPoseGenerateOne(assetId, opts)
-          await patchPoseRequirementPromptEn(assetId, String(req.reqId || ''), opts.posePromptEn || '')
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e)
-          setSbError(msg)
-          appendSbLog(`姿势需求批量生成中断：${String(req.sceneName || req.sceneId)} - ${msg}`)
-          return
+    // 2026-11-03 用户裁决：已有姿势候选时先二次确认（防误点批量重抽）
+    const hasExistingPoseBatch = (Array.isArray(asset?.poseCandidates) && asset.poseCandidates.length > 0) || (Array.isArray(asset?.poseVariants) && asset.poseVariants.length > 0)
+    const confirmedBatch = await confirmRerun({ action: '按需求批量生成姿势候选', hasExisting: hasExistingPoseBatch, run: async () => {
+      resetSbQueueControl()
+      setSbPoseGeneratingId(assetId)
+      setSbPoseDrawProgress({ done: 0, total: todo.length })
+      appendSbLog(`姿势需求批量生成：${label} / ${todo.length} 条（串行）`)
+      try {
+        for (let i = 0; i < todo.length; i++) {
+          if (!(await waitForSbQueueGate())) break
+          setSbPoseDrawProgress({ done: i, total: todo.length })
+          const req = todo[i]
+          try {
+            const cur = findPosePlanAsset(assetId)
+            const opts = await poseRequirementGenOpts(cur, req)
+            await runStoryboardPoseGenerateOne(assetId, opts)
+            await patchPoseRequirementPromptEn(assetId, String(req.reqId || ''), opts.posePromptEn || '')
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e)
+            setSbError(msg)
+            appendSbLog(`姿势需求批量生成中断：${String(req.sceneName || req.sceneId)} - ${msg}`)
+            return
+          }
+          setSbPoseDrawProgress({ done: i + 1, total: todo.length })
         }
-        setSbPoseDrawProgress({ done: i + 1, total: todo.length })
+        appendSbLog(`姿势需求批量生成完成：${label} / ${todo.length} 条`)
+        setToast(`已按需求生成 ${todo.length} 张姿势候选`)
+      } finally {
+        setSbPoseGeneratingId('')
+        setSbPoseDrawProgress(null)
       }
-      appendSbLog(`姿势需求批量生成完成：${label} / ${todo.length} 条`)
-      setToast(`已按需求生成 ${todo.length} 张姿势候选`)
-    } finally {
-      setSbPoseGeneratingId('')
-      setSbPoseDrawProgress(null)
-    }
-  }
-
-  async function runStoryboardPoseRequirementChange(assetId: string, reqId: string, patch: { promptZh?: string; promptEn?: string }) {
-    await patchStoryboardPoseAsset(assetId, (a) => ({
-      ...a,
-      poseRequirements: (Array.isArray(a.poseRequirements) ? a.poseRequirements : []).map((r: any) =>
-        String(r?.reqId || '') === reqId ? { ...r, ...(patch.promptZh != null ? { promptZh: String(patch.promptZh) } : {}), ...(patch.promptEn != null ? { promptEn: String(patch.promptEn) } : {}) } : r
-      )
-    }))
-  }
-
-  async function runStoryboardPoseRequirementDelete(assetId: string, reqId: string) {
-    await patchStoryboardPoseAsset(assetId, (a) => ({
-      ...a,
-      poseRequirements: (Array.isArray(a.poseRequirements) ? a.poseRequirements : []).filter((r: any) => String(r?.reqId || '') !== reqId)
-    }))
-    setToast('已删除该条姿势需求')
+    } })
+    void confirmedBatch
   }
 
   async function runStoryboardPoseDraw(assetId: string, opts: PoseGenOpts, total: number) {
@@ -6150,6 +6645,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
   async function runStoryboardPoseRedraw(assetId: string, assetPath: string, opts: PoseGenOpts) {
     if (doc.mode !== 'project' || !doc.project) return
     if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return
+    if (!(await confirmRerun({ action: '重抽姿势候选', hasExisting: Boolean(assetPath) }))) return
     setSbError('')
     setSbPoseGeneratingId(assetId)
     setSbPoseDrawProgress({ done: 0, total: 1 })
@@ -6180,22 +6676,78 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     setToast('已删除候选')
   }
 
-  // 命名锁定：RMBG 抠图 → 创建 project asset → 写 plan 资产 poseVariants（候选移出未锁定池）
-  async function runStoryboardPoseLock(assetId: string, assetPath: string, name: string, prompts: { posePrompt: string; posePromptZh?: string; posePromptEn?: string }) {
-    if (doc.mode !== 'project' || !doc.project || !doc.story) return
-    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return
+  // 命名锁定：带场景时经 layered-produce 登记并应用摆位；缺省保留原 RMBG/本地写回路径
+  async function runStoryboardPoseLock(
+    assetId: string,
+    assetPath: string,
+    name: string,
+    prompts: { posePrompt: string; posePromptZh?: string; posePromptEn?: string },
+    sceneId?: string
+  ): Promise<{ ok: boolean; projectAssetId?: string; applied?: boolean; message?: string }> {
+    if (doc.mode !== 'project' || !doc.project || !doc.story) return { ok: false, message: '项目未打开' }
+    if (sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return { ok: false, message: '请等待当前姿势操作完成' }
     const asset = findPosePlanAsset(assetId)
     if (!asset) {
-      setSbError('未找到对应的角色资产')
-      return
+      const message = '未找到对应的角色资产'
+      setSbError(message)
+      return { ok: false, message }
     }
     const label = String(asset?.name || assetId).trim() || assetId
     const cand = (Array.isArray(asset.poseCandidates) ? asset.poseCandidates : []).find((x: any) => String(x?.assetPath || '') === assetPath) || null
     const lockName = String(name || '').trim() || `姿势 ${(Array.isArray(asset.poseVariants) ? asset.poseVariants.length : 0) + 1}`
+    const targetSceneId = String(sceneId || '').trim()
     setSbError('')
     setSbPoseLockingKey(`${assetId}:${assetPath}`)
     appendSbLog(`姿势变体锁定开始：${label} / ${lockName}（RMBG 抠图）`)
     try {
+      if (targetSceneId) {
+        const characterId = String(poseCharacterForAsset(asset)?.id || '').trim()
+        if (!characterId) return { ok: false, applied: false, message: '该资产未关联项目角色，无法锁定姿势' }
+        const res = await produceStorySceneLayeredAi(doc.id, targetSceneId, {
+          poses: [{
+            lockName,
+            planAssetId: assetId,
+            characterId,
+            spriteAssetPath: assetPath,
+            posePrompt: String(prompts.posePrompt || cand?.posePrompt || '').trim(),
+            promptZh: String(prompts.posePromptZh || cand?.promptZh || '').trim(),
+            sceneIds: [targetSceneId]
+          }]
+        })
+        const poseResults = Array.isArray(res?.poses) ? res.poses : []
+        for (const item of poseResults) {
+          const itemError = String(item?.error || '').trim()
+          if (itemError) return { ok: false, applied: false, message: `姿势锁定失败：${itemError}` }
+          if (!String(item?.projectAssetId || '').trim()) return { ok: false, applied: false, message: '姿势锁定失败：服务端未返回 projectAssetId' }
+        }
+        const responseError = (Array.isArray(res?.errors) ? res.errors : []).map((item: any) => String(item?.message || item?.error || '').trim()).find(Boolean)
+        if (responseError) return { ok: false, applied: false, message: `姿势锁定失败：${responseError}` }
+        const locked = poseResults.find((item: any) => String(item?.planAssetId || '') === assetId && String(item?.lockName || '') === lockName) || poseResults[0]
+        const projectAssetId = String(locked?.projectAssetId || '').trim()
+        if (!projectAssetId) return { ok: false, applied: false, message: '姿势锁定失败：服务端未返回 projectAssetId' }
+        let placementRes: any
+        try {
+          placementRes = await applyStoryCompositionPlacements(doc.id, { sceneIds: [targetSceneId] })
+        } catch (e) {
+          const detail = e instanceof Error ? e.message : String(e)
+          const message = `姿势已锁定，但场景 ${targetSceneId} 摆位失败：${detail}`
+          setSbError(message)
+          await reloadProjectAndStoryboard()
+          return { ok: false, projectAssetId, applied: false, message }
+        }
+        const failedScene = (Array.isArray(placementRes?.scenes) ? placementRes.scenes : []).find((item: any) => item?.ok === false)
+        if (failedScene) {
+          const detail = String(failedScene?.message || failedScene?.reason || '未知错误').trim()
+          const message = `姿势已锁定，但场景 ${targetSceneId} 摆位失败：${detail}`
+          setSbError(message)
+          await reloadProjectAndStoryboard()
+          return { ok: false, projectAssetId, applied: false, message }
+        }
+        await reloadProjectAndStoryboard()
+        appendSbLog(`姿势变体已锁定并应用：${label} / ${lockName} / ${targetSceneId}`)
+        setToast(`已锁定并应用姿势变体：${lockName}`)
+        return { ok: true, projectAssetId, applied: true }
+      }
       const cut = await cutoutCharacterSpriteAi(doc.id, assetPath)
       const cutoutPath = String(cut.assetPath || '').trim()
       if (!cutoutPath) throw new Error('抠图失败：服务端未返回 assetPath')
@@ -6232,10 +6784,12 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       }))
       appendSbLog(`姿势变体已锁定：${label} / ${lockName}`)
       setToast(`已锁定姿势变体：${lockName}`)
+      return { ok: true, projectAssetId }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setSbError(msg)
-      appendSbLog(`姿势变体锁定失败：${label} - ${msg}`)
+      const message = e instanceof Error ? e.message : String(e)
+      setSbError(message)
+      appendSbLog(`姿势变体锁定失败：${label} - ${message}`)
+      return { ok: false, applied: false, message }
     } finally {
       setSbPoseLockingKey('')
     }
@@ -6255,10 +6809,11 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       .filter((s: any) => (Array.isArray(s?.assetIds) ? s.assetIds : []).map((x: any) => String(x || '').trim()).includes(planAssetId))
       .map((s: any) => String(s?.sceneId || '').trim())
       .filter(Boolean)
-    // 兜底：plan.scenes 缺失时用资产级 sceneIds（计划构建时已汇总 sceneRefs/摆位/文本三路来源）
-    const effectiveIds = hitIds.length
-      ? hitIds
-      : (Array.isArray(asset?.sceneIds) ? asset.sceneIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
+    // 计划场景表与资产级 sceneIds 取并集，避免部分命中时漏掉结局等后续场景
+    const effectiveIds = [...new Set([
+      ...hitIds,
+      ...(Array.isArray(asset?.sceneIds) ? asset.sceneIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
+    ])]
     const out: { sceneId: string; label: string }[] = []
     const seen = new Set<string>()
     // 按 story 节点顺序编号（#N 与编辑器左栏场景序号一致）
@@ -6271,65 +6826,6 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
       out.push({ sceneId: nid, label: `#${idx + 1} ${title}` })
     })
     return out
-  }
-
-  // 选中场景的节点正文（标题+文本摘要），作为「按剧情生成提示词」的剧情上下文
-  function buildPoseSceneTextById(sceneId: string): string {
-    if (!doc.story) return ''
-    const sid = String(sceneId || '').trim()
-    const n0 = (doc.story.nodes || []).find((n) => n.id === sid) || null
-    const nn = n0 ? ensureNode(n0 as any) : null
-    if (!nn) return ''
-    const title = String((nn as any).body?.title || '').trim()
-    const sum = buildNodeTextSummary(String((nn as any).body?.text || '').trim())
-    return [title, sum].filter(Boolean).join('，').slice(0, 600)
-  }
-
-  // 2026-09-01 需求 1：按剧情生成姿势提示词（服务端中文稿→翻译英文稿）。
-  // sceneId 选中场景的节点正文作为 sceneText；没有关联场景时回退现状逻辑（全部关联场景摘要拼接）。
-  async function runStoryboardPoseAiPrompt(assetId: string, opts: { userHint: string; sceneId: string; reviewFeedback?: string }): Promise<{ promptZh: string; promptEn: string } | null> {
-    if (doc.mode !== 'project' || !doc.project) return null
-    if (sbPosePromptBusyId || sbPoseGeneratingId || sbPoseReviewingId || sbPoseLockingKey || sbAssetPlanBusy) return null
-    const asset = findPosePlanAsset(assetId)
-    if (!asset) {
-      setSbError('未找到对应的角色资产')
-      return null
-    }
-    const ch = poseCharacterForAsset(asset)
-    const characterName = String(ch?.name || asset?.name || assetId).trim()
-    // 指纹回退链（与生成同款）：角色 ai.fingerprintPrompt → 计划资产 anchorPrompt → 角色名
-    const fp = String((ch?.ai as any)?.fingerprintPrompt || '').trim() || String(asset?.anchorPrompt || '').trim() || characterName
-    const sceneText = buildPoseSceneTextById(opts?.sceneId) || buildPosePrefillForAsset(assetId)
-    // 2026-09-10 实测修复（来源语义）：「按剧情生成」只把"用户亲手输入"的中文稿当额外要求传给模型；
-    // AI/配方/需求回填的残留稿（promptZhSource!=='user'）不带——旧稿整段传入会被本地模型保留重生
-    // （乌鸦场景产出"背身指向"无关姿势实证）。「按评语优化」路径保留当前稿作 hint（优化现有稿语义）。
-    const isReviewOptimize = Boolean(String(opts?.reviewFeedback || '').trim())
-    const draftSource = String((asset as any)?.poseDraft?.promptZhSource || '').trim()
-    const effectiveHint = isReviewOptimize || draftSource === 'user' ? String(opts?.userHint || '').trim() : ''
-    setSbError('')
-    setSbPosePromptBusyId(assetId)
-    appendSbLog(`按剧情生成姿势提示词开始：${characterName}（剧情上下文 ${sceneText.length} 字）`)
-    try {
-      const res = await generateCharacterPosePromptAi(doc.id, {
-        characterName,
-        fingerprintPrompt: fp,
-        sceneText,
-        userHint: effectiveHint,
-        // 2026-09-02 评分反馈闭环：「按评语优化提示词」带评审理由
-        reviewFeedback: String(opts?.reviewFeedback || '').trim() || undefined
-      })
-      if (!res.promptZh && !res.promptEn) throw new Error('服务端未返回提示词')
-      appendSbLog(`按剧情生成姿势提示词完成：${characterName}（中 ${res.promptZh.length} 字 / 英 ${res.promptEn.length} 字符）`)
-      setToast('已生成姿势提示词（中英文栏可继续编辑）')
-      return res
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setSbError(msg)
-      appendSbLog(`按剧情生成姿势提示词失败：${characterName} - ${msg}`)
-      return null
-    } finally {
-      setSbPosePromptBusyId('')
-    }
   }
 
   // 删除已锁定变体：只删 plan 记录与 project asset 关联（文件留磁盘）；正被摆放引用时阻断（返回 message 由向导 div 弹窗展示）
@@ -6366,56 +6862,6 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
     appendSbLog(`姿势变体已删除：${String(asset?.name || assetId)} / ${String(variant.name || variantId)}`)
     setToast(`已删除姿势变体：${String(variant.name || '姿势')}`)
     return { ok: true }
-  }
-
-  // 2026-09-02 自定义姿势配方：存 project.state.aiBackground.customPoseRecipes（走既有 setDocProject 防抖保存；同名覆盖幂等）
-  function saveCustomPoseRecipe(recipe: { name: string; promptZh: string; promptEn: string }) {
-    if (doc.mode !== 'project' || !doc.project) return
-    const name = String(recipe?.name || '').trim()
-    if (!name) {
-      setSbError('配方名称不能为空')
-      return
-    }
-    setDocProject((p) => {
-      const stateIn = (p as any).state && typeof (p as any).state === 'object' ? (p as any).state : {}
-      const aiBgIn = stateIn.aiBackground && typeof stateIn.aiBackground === 'object' ? stateIn.aiBackground : {}
-      const list = Array.isArray((aiBgIn as any).customPoseRecipes) ? (aiBgIn as any).customPoseRecipes : []
-      const next = [
-        ...list.filter((r: any) => String(r?.name || '').trim() !== name),
-        { name, promptZh: String(recipe.promptZh || ''), promptEn: String(recipe.promptEn || ''), createdAt: new Date().toISOString() }
-      ]
-      return { ...p, state: { ...stateIn, aiBackground: { ...aiBgIn, customPoseRecipes: next } } }
-    })
-    setToast(`已存为配方：${name}`)
-  }
-
-  // 按场景预填：拼接该资产关联场景（场景 assetIds 含该计划资产 id）的文本摘要作为姿势需求初稿
-  function buildPosePrefillForAsset(assetId: string): string {
-    if (!doc.story) return ''
-    const asset = findPosePlanAsset(assetId)
-    if (!asset) return ''
-    // 2026-09-10 修复：与 poseSceneOptionsFor 同一错配——assetIds 是计划资产 id 空间，不是 projectCharacterId
-    const planAssetId = String(asset?.id || '').trim()
-    const plan = normalizeStoryboardAssetPlan(sbPosePlanRef.current) || readStoryboardAssetPlanFromProject(doc.project)
-    const scenes = Array.isArray((plan as any)?.scenes) ? (plan as any).scenes : []
-    const hitSceneIds = scenes
-      .filter((s: any) => (Array.isArray(s?.assetIds) ? s.assetIds : []).map((x: any) => String(x || '').trim()).includes(planAssetId))
-      .map((s: any) => String(s?.sceneId || '').trim())
-      .filter(Boolean)
-    const effectiveIds = hitSceneIds.length
-      ? hitSceneIds
-      : (Array.isArray(asset?.sceneIds) ? asset.sceneIds.map((x: any) => String(x || '').trim()).filter(Boolean) : [])
-    const parts: string[] = []
-    for (const sid of effectiveIds.slice(0, 3)) {
-      const n0 = (doc.story.nodes || []).find((n) => n.id === sid) || null
-      const nn = n0 ? ensureNode(n0 as any) : null
-      if (!nn) continue
-      const title = String((nn as any).body?.title || '').trim()
-      const sum = buildNodeTextSummary(String((nn as any).body?.text || '').trim())
-      const t = [title, sum].filter(Boolean).join('，')
-      if (t) parts.push(t)
-    }
-    return parts.join('；').slice(0, 400)
   }
 
   // 摆放属性「图片（修改）」下拉选项：该角色对应 plan 资产的已锁定姿势变体
@@ -6495,6 +6941,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         showProjectManager={showProjectManager}
         busy={busy}
         dirty={dirty}
+        extraDirty={sbPromptDraftsDirty}
         doc={doc}
         projects={projects}
         problems={problems}
@@ -6519,7 +6966,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         setSelection={setSelection}
         setSbOpen={setSbOpen}
         setSbRenderOpen={setSbRenderOpen}
-        setSbPoseFocusAssetId={setSbPoseFocusAssetId}
+        setSbPoseFocus={setSbPoseFocus}
         setToast={setToast}
       />
 
@@ -6582,6 +7029,8 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
               togglePlacementFlip={togglePlacementFlip}
               bumpPlacementZ={bumpPlacementZ}
               deleteToolbarPlacement={deleteToolbarPlacement}
+              onExportComposite={exportCompositeImage}
+              compositeBusy={compositeExportBusy}
             />
           ) : null}
           {doc.project && doc.story && effectivePreviewNode ? (
@@ -6644,7 +7093,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
         />
       ) : null}
 
-      {/* GS-53 场景图审核面板：逐场景评审卡片（缩略图/分数/判定/问题/建议）+ 打回重出/确认通过 */}
+      {/* TS-53 场景图审核面板：逐场景评审卡片（缩略图/分数/判定/问题/建议）+ 打回重出/确认通过 */}
       {srOpen ? (
         <SceneReviewPanel
           srBusy={srBusy}
@@ -6698,6 +7147,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	        error={aiError}
           onAutoRecognize={async () => {
             if (doc.mode !== 'project' || !doc.story) return
+            if (!(await confirmRerun({ action: '自动识别场景提示词', hasExisting: Boolean(String(aiReq.prompt || aiReq.negativePrompt || '').trim()) }))) return
             if (selection.type !== 'node') {
               setAiError('请先在左侧选择一个节点')
               return
@@ -6836,6 +7286,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 		        onAnalyze={async () => {
 		          if (doc.mode !== 'project') return
 		          const userInput = String(aiReq.userInput || '').trim()
+                if (!(await confirmRerun({ action: 'AI 解析背景提示词', hasExisting: Boolean(String(aiReq.prompt || aiReq.negativePrompt || '').trim()) }))) return
 		          if (!userInput) {
 		            setAiError('请先输入「描述文本」')
 		            return
@@ -6914,6 +7365,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
 	          }
 	        }}
 		        onSubmit={async () => {
+                if (!(await confirmRerun({ action: '生成场景背景图', hasExisting: Boolean(aiLast || String((aiReq as any).backgroundUri || '').trim()) }))) return
 		          if (doc.mode !== 'project' || !doc.project || !doc.story) return
 		          if (selection.type !== 'node') {
 		            setAiError('请先在左侧选择一个节点')
@@ -7142,13 +7594,26 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           error={sbError}
           onClose={async () => {
             if (sbBusyGenerate || sbBusyApply || sbBusyEntity || sbAssetPlanBusy) return
+            // 2026-10-26 缺陷 C：有脏提示词草稿关闭向导要 confirm（关闭后回蓝图/离开即丢）
+            if (sbPromptDraftsDirtyRef.current) {
+              if (!window.confirm('提示词草稿未保存，关闭向导将丢失（点向导内「保存」落盘后再关可保留）。确定关闭？')) return
+              clearPromptDraftsDirty()
+            }
             const ok = await saveIfDirty()
             if (!ok) return
             closeStoryboardAssetGallery()
             setSbOpen(false)
             setSbError('')
-            setSbPoseFocusAssetId('')
+            setSbPoseFocus(null)
             try { if (localStorage.getItem(sbWsOpenStorageKey) === doc.id) localStorage.removeItem(sbWsOpenStorageKey) } catch {}
+            // 蓝图层进入的关闭路径：回蓝图（2026-10-25 P3 修复——此前关闭后留在合成，用户实测迷路）
+            try {
+              if (sbWsReturnStageRef.current === 'blueprint') {
+                sbWsReturnStageRef.current = ''
+                localStorage.removeItem(sbWsReturnStageKey)
+                props.onBack?.()
+              }
+            } catch {}
           }}
           onReloadProject={() => void reloadProjectAndStoryboard()}
           onSave={async () => saveCurrent()}
@@ -7159,11 +7624,14 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           onGenerateAllMissingAssetRefs={() => void runStoryboardGenerateAllMissingAssetReferences()}
           onAnalyzeAssetRef={(assetId) => void runStoryboardAnalyzeAssetReference(assetId)}
           onOptimizeAssetRef={(assetId) => void runStoryboardEnhanceAssetPrompt(assetId)}
-          onEnhanceAllPrompts={() => void runStoryboardEnhanceAllAssetPrompts()}
+          onEnhanceAllPrompts={(ids) => void runStoryboardEnhanceAllAssetPrompts(ids)}
           translateAllProgress={sbTranslateAllProgress}
           onTranslateAllPrompts={() => void runStoryboardTranslateAllPrompts()}
           onDraftGlobalPromptZh={() => void runStoryboardDraftGlobalPromptZh()}
           enhanceAllProgress={sbEnhanceAllProgress}
+          enhanceAllSummary={sbEnhanceAllSummary}
+          onRetryFailedEnhance={() => void runStoryboardEnhanceRetryFailed()}
+          promptDraftsDirty={sbPromptDraftsDirty}
           globalDraftBusy={sbGlobalDraftBusy}
           promptGate={sbPromptGate}
           onPromptGateChange={updateStoryboardLockPromptGate}
@@ -7192,38 +7660,36 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           poseDrawProgress={sbPoseDrawProgress}
           poseReviewingId={sbPoseReviewingId}
           poseLockingKey={sbPoseLockingKey}
-          posePromptBusyId={sbPosePromptBusyId}
-          poseFocusAssetId={sbPoseFocusAssetId}
+          poseFocus={sbPoseFocus}
           poseSceneOptionsFor={(assetId) => poseSceneOptionsFor(assetId)}
           poseGalleryAssetId={sbPoseGalleryAssetId}
           onPoseGalleryOpen={(assetId) => setSbPoseGalleryAssetId(assetId)}
           onPoseGalleryClose={() => setSbPoseGalleryAssetId('')}
-          onPosePrefill={(assetId) => buildPosePrefillForAsset(assetId)}
+          onGotoBlueprint={() => {
+            // K 波（2026-10-27 姿态需求定义前移蓝图）：姿势区「去蓝图编辑需求」——关向导回蓝图层
+            if (sbPromptDraftsDirtyRef.current) {
+              if (!window.confirm('提示词草稿未保存，离开将丢失（点「保存」落盘后再走可保留）。确定离开？')) return
+              clearPromptDraftsDirty()
+            }
+            setSbOpen(false)
+            try { if (localStorage.getItem(sbWsOpenStorageKey) === doc.id) localStorage.removeItem(sbWsOpenStorageKey) } catch {}
+            props.onBack?.()
+          }}
           onPoseDraftSave={(assetId, draft) => void runStoryboardPoseDraftSave(assetId, draft)}
-          onPoseAiPrompt={(assetId, opts) => runStoryboardPoseAiPrompt(assetId, opts)}
-          onPoseDraftTranslate={(assetId) => runStoryboardPoseDraftTranslate(assetId)}
-          customPoseRecipes={(() => {
-            const st = (doc.project as any)?.state
-            const list = st && st.aiBackground && Array.isArray(st.aiBackground.customPoseRecipes) ? st.aiBackground.customPoseRecipes : []
-            return list
-          })()}
-          onPoseSaveRecipe={(recipe) => saveCustomPoseRecipe(recipe)}
-          onPoseGenerate={(assetId, opts) => void runStoryboardPoseDraw(assetId, opts, 1)}
-          onPoseGenerateFour={(assetId, opts) => void runStoryboardPoseDraw(assetId, opts, 4)}
           poseReqBusyId={sbPoseReqBusyId}
-          onPoseRequirementsExtract={(assetId) => void runStoryboardPoseRequirementsExtract(assetId)}
-          onExpressionRequirementsExtract={(assetId) => void runStoryboardExpressionRequirements(assetId)}
-          onPoseRequirementGenerate={(assetId, reqId) => void runStoryboardPoseRequirementGenerate(assetId, reqId)}
+          onPoseRequirementGenerate={(assetId, reqId, count) => runStoryboardPoseRequirementGenerate(assetId, reqId, count)}
           onPoseRequirementsBatchGenerate={(assetId) => void runStoryboardPoseRequirementsBatchGenerate(assetId)}
-          onPoseRequirementChange={(assetId, reqId, patch) => void runStoryboardPoseRequirementChange(assetId, reqId, patch)}
-          onPoseRequirementDelete={(assetId, reqId) => void runStoryboardPoseRequirementDelete(assetId, reqId)}
           onPoseReviewAll={(assetId) => void runStoryboardPoseReviewAll(assetId)}
           onPoseRedraw={(assetId, assetPath, opts) => void runStoryboardPoseRedraw(assetId, assetPath, opts)}
           onPoseDeleteCandidate={(assetId, assetPath) => void runStoryboardPoseDeleteCandidate(assetId, assetPath)}
-          onPoseLock={(assetId, assetPath, name, prompts) => void runStoryboardPoseLock(assetId, assetPath, name, prompts)}
+          onPoseLock={(assetId, assetPath, name, prompts, sceneId) => runStoryboardPoseLock(assetId, assetPath, name, prompts, sceneId)}
           onPoseDeleteVariant={(assetId, variantId) => runStoryboardPoseDeleteVariant(assetId, variantId)}
           propStateBusyId={sbPropStateBusyId}
           propStateGenKey={sbPropStateGenKey}
+          modelSheetBusyId={sbModelSheetBusyId}
+          onModelSheetGenerate={(assetId, views, mode) => void runStoryboardModelSheetGenerate(assetId, views, mode)}
+          onModelSheetLock={(assetId, view) => void runStoryboardModelSheetLock(assetId, view)}
+          onModelSheetAssign={(assetId, assignments) => void runStoryboardModelSheetAssign(assetId, assignments)}
           onPropStatesExtract={(assetId) => void runStoryboardPropStatesExtract(assetId)}
           onPropStateGenerate={(assetId, state) => void runStoryboardPropStateVariantGenerate(assetId, state)}
           sceneAnalysisBusy={sbSceneAnalysisBusy}
@@ -7231,15 +7697,42 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
           sceneAnalysisElapsedMs={sbSceneAnalysisElapsedMs}
           onRunSceneElementAnalysis={() => void runStoryboardSceneElementAnalysis()}
           onConfirmAssetPlan={confirmStoryboardAssetPlan}
-          onOpenRender={async () => {
-            if (!sbAssetConfirmReady) return
-            const ok = await saveIfDirty()
-            if (!ok) return
-            closeStoryboardAssetGallery()
-            setSbOpen(false)
-            setSbRenderOpen(true)
-            try { if (localStorage.getItem(sbWsOpenStorageKey) === doc.id) localStorage.removeItem(sbWsOpenStorageKey) } catch {}
-          }}
+          // 2026-11-01 正式场景出图整合：「场景背景」视图槽位（SceneBackgroundBoard 共享组件，与分镜弹窗同一实现）
+          sceneBoard={(
+            <SceneBackgroundBoard
+              active={sbOpen}
+              projectId={doc.mode === 'project' ? doc.id : ''}
+              items={sbItems}
+              planAssets={Array.isArray(sbAssetPlan?.assets) ? sbAssetPlan.assets : []}
+              envReady={Boolean(sbOpenChecks?.ok)}
+              busy={sbBusyGenerate || sbBusyApply}
+              generatingNodeId={sbGeneratingNodeId}
+              generatingNodeElapsedMs={sbGeneratingNodeElapsedMs}
+              promptReviewingNodeId={sbPromptReviewingNodeId}
+              onChangeItem={updateStoryboardSceneItemPrompt}
+              onReviewItemPrompt={(nodeId) => void runStoryboardReviewScenePrompt(nodeId)}
+              onApplyItemPromptReview={applyStoryboardScenePromptReview}
+              onGeneratePrompt={(nodeId) => void runStoryboardGenerateAllPrompts('all', nodeId)}
+              onTranslatePrompt={(nodeId, kind) => void translateStoryboardScenePromptField(nodeId, kind)}
+              onGenerateAllPrompts={() => void runStoryboardGenerateAllPrompts('all')}
+              onAlignPrompt={(nodeId) => void alignStoryboardScenePrompts(nodeId)}
+              onAlignAllPrompts={() => void alignStoryboardScenePrompts()}
+              promptGenBusy={sbBusyGenerate}
+              alignBusy={sbBusyGenerate && sbQueuePhase === 'align'}
+              aligningNodeId={sbQueuePhase === 'align' ? sbGeneratingNodeId : ''}
+              translatingScope={sbTranslatingScope}
+              onReloadProject={() => { if (doc.mode === 'project') void openProject(doc.id) }}
+              onArrangeScene={(nodeId) => {
+                const id = String(nodeId || '').trim()
+                if (!id || !nodeById.has(id)) return
+                setSelection({ type: 'node', id })
+                setPreviewNodeId(id)
+                setRightFold((prev) => ({ ...prev, placements: true }))
+              }}
+              onOpenAssetLock={(a) => void openAssetLockInWizard({ planAssetId: a.id, name: a.name })}
+              onEditSceneAssets={(nodeId) => gotoBlueprintSceneAssets(nodeId)}
+            />
+          )}
         />
 
         <AiStoryboardBatchModal
@@ -7451,25 +7944,10 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
               })
             }
           }}
-          onChangeItem={(nodeId, patch) =>
-            setSbItems((prev) => {
-              const shouldResetReview = patch.promptZh != null || patch.prompt != null || patch.negativePromptZh != null || patch.negativePrompt != null
-              const nextPatch = shouldResetReview ? { ...patch, promptReview: null } : patch
-              const next = prev.map((x) => (x.nodeId === nodeId ? { ...x, ...nextPatch } : x))
-              const changed = next.find((x) => x.nodeId === nodeId) || null
-              if (changed) {
-                upsertStoryboardScenePrompt(nodeId, changed.nodeName, {
-                  userInput: nextPatch.userInput != null ? String(nextPatch.userInput || '') : undefined,
-                  promptZh: nextPatch.promptZh != null ? String(nextPatch.promptZh || '') : undefined,
-                  prompt: nextPatch.prompt != null ? String(nextPatch.prompt || '') : undefined,
-                  negativePromptZh: nextPatch.negativePromptZh != null ? String(nextPatch.negativePromptZh || '') : undefined,
-                  negativePrompt: nextPatch.negativePrompt != null ? String(nextPatch.negativePrompt || '') : undefined,
-                  promptReview: shouldResetReview ? null : undefined
-                })
-              }
-              return next
-            })
-          }
+          onChangeItem={updateStoryboardSceneItemPrompt}
+          onGenerateScenePrompt={(nodeId) => void runStoryboardGenerateAllPrompts('all', nodeId)}
+          onTranslateScenePrompt={(nodeId, kind) => void translateStoryboardScenePromptField(nodeId, kind)}
+          promptGenBusy={sbBusyGenerate}
           globalPromptReview={sbGlobalPromptReview}
           globalPromptReviewBusy={sbGlobalPromptReviewBusy}
           promptReviewingNodeId={sbPromptReviewingNodeId}
@@ -7524,6 +8002,7 @@ export default function ComposeStudio(props: { projectId?: string | null; onBack
             setRightFold((prev) => ({ ...prev, placements: true }))
           }}
           onOpenAssetLock={(a) => void openAssetLockInWizard({ planAssetId: a.id, name: a.name })}
+          onEditSceneAssets={(nodeId) => gotoBlueprintSceneAssets(nodeId)}
           onGenerateAll={() => void runStoryboardGenerateAllPrompts('all')}
           onRetryPending={() => void runStoryboardGenerateAllPrompts('pending')}
           onApplyAll={() => void runStoryboardValidateAndApply('all')}

@@ -1,12 +1,13 @@
 {
   "version": "1.0",
-  "generatedAt": "2026-08-21T13:53:55.617Z",
+  "generatedAt": "2026-11-05T14:30:42.575Z",
   "generatedFrom": "registry.v1.json",
   "provider": {
     "id": "talkscene",
     "name": "TalkScene 互动故事生产能力层",
     "baseUrl": "http://127.0.0.1:1999",
-    "healthEndpoint": "/api/health"
+    "healthEndpoint": "/api/health",
+    "dispatchEndpoint": "/api/events/dispatch"
   },
   "capabilities": [
     {
@@ -40,7 +41,7 @@
       "artifacts": [],
       "timeoutMs": 10000,
       "event": {
-        "code": "GS-01",
+        "code": "TS-01",
         "eventId": "project.list",
         "kind": "query"
       }
@@ -101,7 +102,7 @@
       ],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-02",
+        "code": "TS-02",
         "eventId": "project.create",
         "kind": "command"
       }
@@ -145,7 +146,7 @@
       "artifacts": [],
       "timeoutMs": 10000,
       "event": {
-        "code": "GS-03",
+        "code": "TS-03",
         "eventId": "project.inspect",
         "kind": "query"
       }
@@ -233,7 +234,7 @@
       ],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-04",
+        "code": "TS-04",
         "eventId": "project.configure",
         "kind": "command"
       }
@@ -279,7 +280,7 @@
       ],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-05",
+        "code": "TS-05",
         "eventId": "project.update",
         "kind": "command"
       }
@@ -319,7 +320,7 @@
       "artifacts": [],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-06",
+        "code": "TS-06",
         "eventId": "project.delete",
         "kind": "command"
       }
@@ -377,7 +378,7 @@
       "artifacts": [],
       "timeoutMs": 30000,
       "event": {
-        "code": "GS-07",
+        "code": "TS-07",
         "eventId": "project.validate",
         "kind": "command"
       }
@@ -434,7 +435,7 @@
       ],
       "timeoutMs": 60000,
       "event": {
-        "code": "GS-08",
+        "code": "TS-08",
         "eventId": "project.export",
         "kind": "command"
       }
@@ -478,7 +479,7 @@
       "artifacts": [],
       "timeoutMs": 10000,
       "event": {
-        "code": "GS-09",
+        "code": "TS-09",
         "eventId": "project.exports.list",
         "kind": "query"
       }
@@ -559,7 +560,7 @@
       ],
       "timeoutMs": 180000,
       "event": {
-        "code": "GS-10",
+        "code": "TS-10",
         "eventId": "story.scripts.generate",
         "kind": "command"
       }
@@ -603,7 +604,7 @@
       "artifacts": [],
       "timeoutMs": 10000,
       "event": {
-        "code": "GS-11",
+        "code": "TS-11",
         "eventId": "story.scripts.read",
         "kind": "query"
       }
@@ -650,7 +651,7 @@
       ],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-12",
+        "code": "TS-12",
         "eventId": "story.scripts.write",
         "kind": "command"
       }
@@ -698,9 +699,9 @@
       "artifacts": [
         "storage/projects/{projectId}/project.json"
       ],
-      "timeoutMs": 600000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-13",
+        "code": "TS-13",
         "eventId": "story.bible.generate",
         "kind": "command"
       }
@@ -748,7 +749,7 @@
       ],
       "timeoutMs": 30000,
       "event": {
-        "code": "GS-14",
+        "code": "TS-14",
         "eventId": "story.blueprint.compile",
         "kind": "command"
       }
@@ -791,7 +792,7 @@
       "artifacts": [],
       "timeoutMs": 300000,
       "event": {
-        "code": "GS-15",
+        "code": "TS-15",
         "eventId": "story.blueprint.review",
         "kind": "command"
       }
@@ -834,7 +835,7 @@
       ],
       "timeoutMs": 300000,
       "event": {
-        "code": "GS-16",
+        "code": "TS-16",
         "eventId": "story.scripts.repair",
         "kind": "command"
       }
@@ -877,7 +878,7 @@
       ],
       "timeoutMs": 30000,
       "event": {
-        "code": "GS-17",
+        "code": "TS-17",
         "eventId": "story.compose.compile",
         "kind": "command"
       }
@@ -929,9 +930,9 @@
       "artifacts": [
         "storage/projects/{projectId}/story-assets/plan.json"
       ],
-      "timeoutMs": 60000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-18",
+        "code": "TS-18",
         "eventId": "asset.plan.create",
         "kind": "command"
       }
@@ -971,9 +972,9 @@
       "artifacts": [
         "storage/projects/{projectId}/assets/ai"
       ],
-      "timeoutMs": 600000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-19",
+        "code": "TS-19",
         "eventId": "asset.reference.generate",
         "kind": "command"
       }
@@ -1013,9 +1014,9 @@
       "artifacts": [
         "storage/projects/{projectId}/story-assets"
       ],
-      "timeoutMs": 60000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-20",
+        "code": "TS-20",
         "eventId": "asset.reference.lock",
         "kind": "command"
       }
@@ -1066,9 +1067,9 @@
       "artifacts": [
         "storage/projects/{projectId}/assets/ai/story_lock_tests"
       ],
-      "timeoutMs": 600000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-21",
+        "code": "TS-21",
         "eventId": "asset.lock.test",
         "kind": "command"
       }
@@ -1121,7 +1122,7 @@
       ],
       "timeoutMs": 600000,
       "event": {
-        "code": "GS-22",
+        "code": "TS-22",
         "eventId": "asset.scene.render",
         "kind": "command"
       }
@@ -1178,7 +1179,7 @@
       ],
       "timeoutMs": 300000,
       "event": {
-        "code": "GS-23",
+        "code": "TS-23",
         "eventId": "asset.background.generate",
         "kind": "command"
       }
@@ -1214,7 +1215,7 @@
       "artifacts": [],
       "timeoutMs": 10000,
       "event": {
-        "code": "GS-24",
+        "code": "TS-24",
         "eventId": "studio.settings.read",
         "kind": "query"
       }
@@ -1255,7 +1256,7 @@
       ],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-25",
+        "code": "TS-25",
         "eventId": "studio.settings.write",
         "kind": "command"
       }
@@ -1291,7 +1292,7 @@
       "artifacts": [],
       "timeoutMs": 10000,
       "event": {
-        "code": "GS-26",
+        "code": "TS-26",
         "eventId": "studio.ai.status",
         "kind": "query"
       }
@@ -1354,7 +1355,7 @@
       "artifacts": [],
       "timeoutMs": 60000,
       "event": {
-        "code": "GS-27",
+        "code": "TS-27",
         "eventId": "studio.image.preflight",
         "kind": "command"
       }
@@ -1398,7 +1399,7 @@
       "artifacts": [],
       "timeoutMs": 10000,
       "event": {
-        "code": "GS-28",
+        "code": "TS-28",
         "eventId": "studio.runtime.status",
         "kind": "query"
       }
@@ -1438,7 +1439,7 @@
       "artifacts": [],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-29",
+        "code": "TS-29",
         "eventId": "studio.selfcheck",
         "kind": "query"
       }
@@ -1483,9 +1484,9 @@
       "artifacts": [
         "storage/projects/{projectId}/assets/ai/story_assets"
       ],
-      "timeoutMs": 600000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-30",
+        "code": "TS-30",
         "eventId": "asset.lineart.generate",
         "kind": "command"
       }
@@ -1536,7 +1537,7 @@
       "artifacts": [],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-31",
+        "code": "TS-31",
         "eventId": "asset.review.list",
         "kind": "query"
       }
@@ -1583,7 +1584,7 @@
       ],
       "timeoutMs": 120000,
       "event": {
-        "code": "GS-32",
+        "code": "TS-32",
         "eventId": "asset.review.approve",
         "kind": "command"
       }
@@ -1633,7 +1634,7 @@
       ],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-33",
+        "code": "TS-33",
         "eventId": "asset.review.reject",
         "kind": "command"
       }
@@ -1642,7 +1643,7 @@
       "id": "asset.scene.renderAll",
       "type": "write",
       "label": "批量渲染缺失场景图",
-      "description": "异步串行渲染全部缺失场景图，立即返回 taskId，进度经 GS-35 查询。",
+      "description": "异步串行渲染全部缺失场景图，立即返回 taskId，进度经 TS-35 查询。",
       "requiresReview": true,
       "reviewPolicy": "manual_before_write",
       "resourceKind": "gpu",
@@ -1664,6 +1665,19 @@
           },
           "height": {
             "type": "integer"
+          },
+          "backgroundOnly": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "background"
+            ]
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000
           }
         },
         "additionalProperties": true
@@ -1688,9 +1702,9 @@
       "artifacts": [
         "storage/projects/{projectId}/assets/ai/story_scenes"
       ],
-      "timeoutMs": 120000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-34",
+        "code": "TS-34",
         "eventId": "asset.scene.renderAll",
         "kind": "command"
       }
@@ -1733,7 +1747,7 @@
       "artifacts": [],
       "timeoutMs": 15000,
       "event": {
-        "code": "GS-35",
+        "code": "TS-35",
         "eventId": "asset.task.list",
         "kind": "query"
       }
@@ -1769,7 +1783,7 @@
       "artifacts": [],
       "timeoutMs": 20000,
       "event": {
-        "code": "GS-36",
+        "code": "TS-36",
         "eventId": "studio.comfyui.capability",
         "kind": "query"
       }
@@ -1823,7 +1837,7 @@
       ],
       "timeoutMs": 120000,
       "event": {
-        "code": "GS-37",
+        "code": "TS-37",
         "eventId": "asset.review.approveAll",
         "kind": "command"
       }
@@ -1879,7 +1893,7 @@
       ],
       "timeoutMs": 30000,
       "event": {
-        "code": "GS-38",
+        "code": "TS-38",
         "eventId": "story.completeness.check",
         "kind": "command"
       }
@@ -1989,7 +2003,7 @@
       ],
       "timeoutMs": 120000,
       "event": {
-        "code": "GS-39",
+        "code": "TS-39",
         "eventId": "story.project.create_ai",
         "kind": "command"
       }
@@ -2050,9 +2064,9 @@
       "artifacts": [
         "storage/projects/{projectId}/assets"
       ],
-      "timeoutMs": 300000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-40",
+        "code": "TS-40",
         "eventId": "asset.scene.renderBatch",
         "kind": "command"
       }
@@ -2077,6 +2091,9 @@
           },
           "sceneIds": {
             "type": "array"
+          },
+          "applyComposition": {
+            "type": "boolean"
           }
         },
         "additionalProperties": true
@@ -2098,9 +2115,9 @@
       "artifacts": [
         "storage/projects/{projectId}/story.json"
       ],
-      "timeoutMs": 30000,
+      "timeoutMs": 1800000,
       "event": {
-        "code": "GS-41",
+        "code": "TS-41",
         "eventId": "asset.scene.placements",
         "kind": "command"
       }
@@ -2143,9 +2160,1134 @@
       "artifacts": [],
       "timeoutMs": 30000,
       "event": {
-        "code": "GS-42",
+        "code": "TS-42",
         "eventId": "story.analyze.scripts",
         "kind": "query"
+      }
+    },
+    {
+      "id": "studio.lifecycle.start",
+      "type": "write",
+      "label": "启动 TalkScene 项目服务",
+      "description": "本地拉起 TalkScene Server(1999) 与 Editor(8868)：bash ./start_project.sh --detached，随后等待 server/editor 健康检查通过。目标服务可能尚未启动，故由 Control 经 transport.local 本地执行，不走 HTTP。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health": {
+            "type": "array"
+          }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 240000,
+      "event": {
+        "code": "TS-43",
+        "eventId": "studio.lifecycle.start",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "asset.scene.layeredProduce",
+      "type": "write",
+      "label": "场景分层出图（背景+姿势+摆位）",
+      "description": "单场景分层出图编排：背景-only 重画 + 姿势变体生成/复用 + 道具精灵 + 分层摆位写入，串行执行，进度经 /api/projects/:id/ai/tasks 暴露。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "sceneId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "specPath": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/assets/ai",
+        "storage/projects/{projectId}/story.json",
+        "storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "timeoutMs": 1800000,
+      "event": {
+        "code": "TS-44",
+        "eventId": "asset.scene.layeredProduce",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "asset.compress",
+      "type": "write",
+      "label": "压缩项目素材（存量批压）",
+      "description": "扫描 assets/ai 全部大图按用途分层压缩：立绘无损 WebP、背景 JPEG q90、候选 WebP q92；同步改写引用。幂等可复跑。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/assets/ai",
+        "storage/projects/{projectId}/project.json",
+        "storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "timeoutMs": 1800000,
+      "event": {
+        "code": "TS-45",
+        "eventId": "asset.compress",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "studio.lifecycle.status",
+      "type": "read",
+      "label": "查询 TalkScene 项目服务运行状态",
+      "description": "查询 server(1999) 健康状态，作为生命周期 status 标准事件。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": null,
+      "artifacts": [],
+      "timeoutMs": 60000,
+      "event": {
+        "code": "TS-54",
+        "eventId": "studio.lifecycle.status",
+        "kind": "query"
+      }
+    },
+    {
+      "id": "studio.lifecycle.stop",
+      "type": "write",
+      "label": "停止 TalkScene 项目服务",
+      "description": "本地停止 TalkScene Server(1999) 与 Editor(8868)：bash ./stop_project.sh。transport.local 本地执行，不走 HTTP。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": null,
+      "artifacts": [],
+      "timeoutMs": 60000,
+      "event": {
+        "code": "TS-55",
+        "eventId": "studio.lifecycle.stop",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "studio.lifecycle.restart",
+      "type": "write",
+      "label": "重启 TalkScene 项目服务",
+      "description": "本地重启 TalkScene Server(1999) 与 Editor(8868)：先 stop 再 start --detached，随后等待健康检查通过。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": null,
+      "artifacts": [],
+      "timeoutMs": 300000,
+      "event": {
+        "code": "TS-46",
+        "eventId": "studio.lifecycle.restart",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "asset.propState.generate",
+      "type": "write",
+      "label": "道具状态变体生成",
+      "description": "为计划内道具资产生成单个剧情状态变体：strategy=ai 走 sprite→评审→抠图；strategy=fill_composite 走主参考确定性水位/内容物合成（零漂移）；登记 stateVariants + lock_confirm 留痕，进度经 TS-35 查询。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "assetId",
+          "stateKey",
+          "label"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "assetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "stateKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "promptZh": {
+            "type": "string"
+          },
+          "negativePrompt": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "ai",
+              "fill_composite"
+            ],
+            "description": "ai=扩散模型生成；fill_composite=主参考确定性填充合成（水位/内容物叠加）"
+          },
+          "fill": {
+            "type": "object",
+            "description": "fill_composite：{level:0-1, insetL/insetR/insetB/neckRatio}"
+          },
+          "overlays": {
+            "type": "array",
+            "description": "fill_composite：内容物叠加 [{planAssetId|imagePath, count, brightness, alpha, blueShift, spots}]"
+          }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": null,
+      "artifacts": [],
+      "timeoutMs": 1800000,
+      "event": {
+        "code": "TS-47",
+        "eventId": "asset.propState.generate",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "asset.inherit",
+      "type": "write",
+      "label": "继承基底项目已锁定资产",
+      "description": "按《xxxx2》命名约定（或显式 sourceId）把基底项目已锁定的参考图/提示词/姿势变体/线稿/全局提示词继承到本项目，跳过抽卡/锁定/线稿环节。缺资产计划时返回 missing_plan。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "inherited": {
+            "type": "array"
+          },
+          "unmatched": {
+            "type": "array"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/story-assets/plan.json",
+        "storage/projects/{projectId}/project.json",
+        "storage/projects/{projectId}/assets/ai/"
+      ],
+      "timeoutMs": 300000,
+      "event": {
+        "code": "TS-48",
+        "eventId": "asset.inherit",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "story.composition.extract",
+      "type": "write",
+      "label": "提取场景构图需求单",
+      "description": "导演层构图：按场景提取元素的状态/位置/大小/层级/关系，persist=true 时落盘 plan.scenes[].composition，供摆位按需求单执行。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "persist": {
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 5000,
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": "object"
+          },
+          "persisted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "timeoutMs": 600000,
+      "event": {
+        "code": "TS-49",
+        "eventId": "story.composition.extract",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "story.bible.qc",
+      "type": "write",
+      "label": "圣经质检（sceneRefs 校验与自动修正）",
+      "description": "确定性规则检查 + 逐场景 LLM 对照复核 bible.sceneRefs 与剧情一致性；persist=true 时回写修正并作废旧资产计划。返回逐场景差异报告。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "llm",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "persist": {
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 10000,
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "changedCount": {
+            "type": "integer"
+          },
+          "report": {
+            "type": "array"
+          },
+          "persisted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/project.json"
+      ],
+      "timeoutMs": 600000,
+      "event": {
+        "code": "TS-50",
+        "eventId": "story.bible.qc",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "asset.poseVariants.autoGenerate",
+      "type": "write",
+      "label": "姿势变体自动编排",
+      "description": "提取剧情姿势需求（LLM）→ 匹配公共姿势库骨架 → 骨架驱动生成变体 → 登记绑场景。站立类不出变体，未匹配骨架记 unmatched。返回 taskId，进度见 asset.task.list。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 60000,
+            "maximum": 600000
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "type": "string"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/story-assets/plan.json",
+        "storage/projects/{projectId}/assets/ai/"
+      ],
+      "timeoutMs": 1800000,
+      "event": {
+        "code": "TS-51",
+        "eventId": "asset.poseVariants.autoGenerate",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "story.walkthrough.run",
+      "type": "write",
+      "label": "走查验证（headless 全结局路径）",
+      "description": "对最新导出构建自动跑全结局路径走查：逐屏截图+<project>/walkthrough/report_*.json 验收报告。前置需 TS-08 导出。有问题不静默：ok=false + issues 明示。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxPaths": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "ok"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "paths": {
+            "type": "integer"
+          },
+          "issues": {
+            "type": "integer"
+          },
+          "reportFile": {
+            "type": "string"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/walkthrough/"
+      ],
+      "timeoutMs": 600000,
+      "event": {
+        "code": "TS-52",
+        "eventId": "story.walkthrough.run",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "story.scene.review",
+      "type": "write",
+      "label": "场景图审核（守护台审图中心）",
+      "description": "逐场景把整图（走查截图优先/背景图回退）提交守护台审图中心评审：score/issues/suggestions/verdict 落 <project>/reviews/scene_reviews.jsonl，供编辑器「场景图审核」面板展示与打回重出。control 不可达显式失败，不写假结论。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "reviewIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "object"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/reviews/"
+      ],
+      "timeoutMs": 900000,
+      "event": {
+        "code": "TS-53",
+        "eventId": "story.scene.review",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "story.scene.analyzeElements",
+      "type": "write",
+      "label": "场景元素分析",
+      "description": "逐场景从剧情文本提取所需制作元素（背景 location/角色 character/道具 prop），确定性拟合既有资产后幂等合入 plan.json（mergeAssetsById）并打 analyzedAt 戳；无计划时按故事节点建骨架计划。本地模型串行纪律：批量分析须逐幕串行调用，禁止并发。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "sceneId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "sceneElements": {
+            "type": "integer"
+          },
+          "added": {
+            "type": "integer"
+          },
+          "updated": {
+            "type": "integer"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "timeoutMs": 120000,
+      "event": {
+        "code": "TS-56",
+        "eventId": "story.scene.analyzeElements",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "studio.tools.status",
+      "type": "read",
+      "label": "本地服务状态",
+      "description": "列出本地服务（OMLX 文本模型/ComfyUI 出图/守护台等）的在线状态与启动入口可用性。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "tools": {
+            "type": "array"
+          }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 15000,
+      "event": {
+        "code": "TS-57",
+        "eventId": "studio.tools.status",
+        "kind": "query"
+      }
+    },
+    {
+      "id": "studio.tools.launch",
+      "type": "write",
+      "label": "启动本地服务",
+      "description": "拉起指定本地服务（tool=omlx/comfyui/control 等本地工具）；经可见方式启动，禁止黑盒静默拉起。",
+      "requiresReview": true,
+      "reviewPolicy": "manual_before_write",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "tool"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 120000,
+      "event": {
+        "code": "TS-58",
+        "eventId": "studio.tools.launch",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "studio.tasks.list",
+      "type": "read",
+      "label": "全局任务台账",
+      "description": "列出全局 AI 任务台账（跨项目；项目级台账见 asset.task.list）。进度/成败明面可查。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "tasks": {
+            "type": "array"
+          }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 15000,
+      "event": {
+        "code": "TS-59",
+        "eventId": "studio.tasks.list",
+        "kind": "query"
+      }
+    },
+    {
+      "id": "studio.tasks.remove",
+      "type": "write",
+      "label": "删除任务条目",
+      "description": "从全局任务台账删除指定任务条目（taskId）。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/_shared/ai_tasks"
+      ],
+      "timeoutMs": 15000,
+      "event": {
+        "code": "TS-60",
+        "eventId": "studio.tasks.remove",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "studio.tasks.clearFinished",
+      "type": "write",
+      "label": "清理已完结任务",
+      "description": "清理全局任务台账中已完结（done/failed）条目，保留进行中任务。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "removed": {
+            "type": "integer"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/_shared/ai_tasks"
+      ],
+      "timeoutMs": 15000,
+      "event": {
+        "code": "TS-61",
+        "eventId": "studio.tasks.clearFinished",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "studio.controlLink.read",
+      "type": "read",
+      "label": "调用通道查询",
+      "description": "读取守护台关联（调用通道）状态：守护台可达性/资源租约开关/生效配置摘要。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 15000,
+      "event": {
+        "code": "TS-62",
+        "eventId": "studio.controlLink.read",
+        "kind": "query"
+      }
+    },
+    {
+      "id": "studio.tts.voices",
+      "type": "read",
+      "label": "音色列表",
+      "description": "列出语音合成可用音色（edge-tts/say 等引擎的分组音色库）。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_allowed",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "voices": {
+            "type": "array"
+          }
+        }
+      },
+      "artifacts": [],
+      "timeoutMs": 15000,
+      "event": {
+        "code": "TS-63",
+        "eventId": "studio.tts.voices",
+        "kind": "query"
+      }
+    },
+    {
+      "id": "studio.tts.preview",
+      "type": "write",
+      "label": "语音试听预览",
+      "description": "按音色与文本合成试听音频（预览产物写 storage/_shared/tts_previews/，保留最近 10 份）。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "llm",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "voiceId",
+          "text"
+        ],
+        "properties": {
+          "voiceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "previewUrl": {
+            "type": "string"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/_shared/tts_previews/"
+      ],
+      "timeoutMs": 60000,
+      "event": {
+        "code": "TS-64",
+        "eventId": "studio.tts.preview",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "story.composition.draftWrite",
+      "type": "write",
+      "label": "构图需求单草稿写回",
+      "description": "占位预演（D1 内嵌视图）拖动编排落盘：把该幕占位块的归一化 x/y/scale/zIndex 写回 plan.scenes[].composition（source=previz 草稿，区别于 AI 提取 source=ai）；仅接收坐标值，语义字段沿用既有项或按资产类目补齐；幂等。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "none",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "sceneId",
+          "items"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "required": [
+                "subjectId",
+                "x",
+                "y"
+              ],
+              "properties": {
+                "subjectId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "scale": {
+                  "type": "number"
+                },
+                "zIndex": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "timeoutMs": 15000,
+      "event": {
+        "code": "TS-65",
+        "eventId": "story.composition.draftWrite",
+        "kind": "command"
+      }
+    },
+    {
+      "id": "story.scene.voiceGenerate",
+      "type": "write",
+      "label": "场景配音生成",
+      "description": "按音色与语速为该幕文本真实合成配音（edge/say/openai/local 通道），音频落 assets/ai/voice/<sceneId>.<ext>，写回 plan.sceneVoices[sceneId]（幂等覆盖）；文本缺省=该幕故事文本。语音未启用时 409 阻断并给设置引导。",
+      "requiresReview": false,
+      "reviewPolicy": "auto_with_versioning",
+      "resourceKind": "gpu",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "projectId",
+          "sceneId"
+        ],
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sceneId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voiceId": {
+            "type": "string"
+          },
+          "speed": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 2
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "audioAssetUri": {
+            "type": "string"
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "artifacts": [
+        "storage/projects/{projectId}/assets/ai/voice/",
+        "storage/projects/{projectId}/story-assets/plan.json"
+      ],
+      "timeoutMs": 120000,
+      "event": {
+        "code": "TS-66",
+        "eventId": "story.scene.voiceGenerate",
+        "kind": "command"
       }
     }
   ]

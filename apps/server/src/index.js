@@ -42,7 +42,7 @@ import { reviewSceneBackgroundWithAi, reviewSceneBackgroundWithLocalVl } from '.
 import { createAiTask, getAiTask, listAiTasks, loadAiTasksFromDisk, updateAiTask } from './ai/taskProgress.js'
 import { checkSceneSuccess, createSceneBatch, findInterruptedSceneBatches, loadSceneBatch, resumeSceneBatch, runSceneBatch } from './ai/sceneBatchQueue.js'
 import { COMPLETENESS_TASK_KIND, createNodeVisualReviewer, createPuppeteerBrowserLauncher, loadLatestCompletenessReport, resolveChromeExecutablePath, resolveReviewConfig, runStoryCompletenessCheck } from './ai/storyCompleteness.js'
-import { withResourceLease } from './ai/resourceLease.js'
+import { withResourceLease, hasControlClientKey } from './ai/resourceLease.js'
 import { checkComfyuiCapability } from './ai/comfyuiCapability.js'
 import { attachImageReviewResult, createImageReview, decideImageReview, findPendingReview, getImageReview, listImageReviews } from './review/imageReviewStore.js'
 import { getStoryImageCoverage } from './ai/storyCoverage.js'
@@ -68,6 +68,7 @@ import { registerStudioRoutes } from './routes/studio.routes.js'
 import { registerReviewRoutes } from './routes/review.routes.js'
 import { registerStoryAssetsRoutes } from './routes/storyAssets.routes.js'
 import { registerProjectOpsRoutes } from './routes/projectOps.routes.js'
+import { registerProjectEventsRoutes } from './routes/projectEvents.routes.js'
 import { registerStoryRoutes } from './routes/story.routes.js'
 import { registerStoryScenesRoutes } from './routes/storyScenes.routes.js'
 import { registerExportRoutes } from './routes/export.routes.js'
@@ -87,7 +88,7 @@ import { readStoryAssetPlanIfExists, saveStoryAssetPlan, storyAssetPlanWriteChai
 // [拆分收尾 2026-10-20] 故事资产画廊/提示词增强评分迁出至 ai/storyAssetGalleryPrompt.js
 import { buildStoryAssetGalleryEntries, buildStoryAssetPromptEnhancement, cleanupEmptyStoryAssetDirs, deleteStoryAssetManagedFile, inferStoryAssetGalleryKind, labelForStoryAssetGalleryKind, pruneMissingStoryAssetGalleryEntries, scoreStoryAssetPromptCandidate, storyAssetCreatedAtFallback, translateStoryAssetPromptPair } from './ai/storyAssetGalleryPrompt.js'
 // [拆分收尾 2026-10-20] 项目文档默认值/阶段派生迁出至 studio/projectDoc.js
-import { clampInt, defaultBlueprint, defaultMeta, defaultScripts, defaultStory, deriveProjectStage, deriveProjectStageFromDisk, normalizeAiStoryFormula, normalizeProjectAndDetectChanges, touchProjectUpdatedAt, writeAiDraftProject } from './studio/projectDoc.js'
+import { clampInt, collectProjectStageInput, defaultBlueprint, defaultMeta, defaultScripts, defaultStory, deriveProjectStage, deriveProjectStageFromDisk, normalizeAiStoryFormula, normalizeProjectAndDetectChanges, touchProjectUpdatedAt, writeAiDraftProject } from './studio/projectDoc.js'
 // [拆分收尾 2026-10-20] 脚本草稿拟合迁出至 ai/scriptDraftFit.js
 import { buildScriptsFromDraftCards, collectBlockingScriptIssues, fitScriptCardsToFormula, generateClosedScriptDraft, summarizeScriptIssues } from './ai/scriptDraftFit.js'
 // [拆分收尾 2026-10-20] 导出构建/打包迁出至 studio/exportDist.js
@@ -117,8 +118,10 @@ try {
   const hasOpenAIKey = Boolean(String(process.env.OPENAI_API_KEY || '').trim())
   const hasLocalOxmlKey = Boolean(String(process.env.LOCALOXML_API_KEY || process.env.STUDIO_AI_API_KEY || process.env.OPENAI_API_KEY || '').trim())
   const model = String(process.env.LOCALOXML_MODEL || process.env.STUDIO_AI_MODEL || process.env.OPENAI_MODEL || '')
+  // 守护台上报/租约身份凭证：未配置时上报旁路静默停用（租约走本机兜底），启动即明示，避免监控盲区
+  const controlKeyState = hasControlClientKey() ? 'set' : 'missing'
   console.log(
-    `[talkscene] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} localoxmlKey=${hasLocalOxmlKey ? 'set' : 'missing'} openaiKey=${hasOpenAIKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''} aiInit=manual_only`
+    `[talkscene] env loaded=${envInfo.loaded.length ? envInfo.loaded.join(',') : '(none)'} aiProvider=${provider} localoxmlKey=${hasLocalOxmlKey ? 'set' : 'missing'} openaiKey=${hasOpenAIKey ? 'set' : 'missing'}${model ? ` model=${model}` : ''} aiInit=manual_only controlKey=${controlKeyState}${controlKeyState === 'missing' ? '（守护台任务上报/身份租约已停用，请在 .env 配置 STUDIO_CONTROL_CLIENT_KEY）' : ''}`
   )
 } catch (_) {}
 
@@ -221,7 +224,7 @@ async function editorDistFingerprint() {
 // [拆分] POST /api/projects/:id/ai/background/prompt 已迁至 apps/server/src/routes/projectOps.routes.js
 // [拆分] POST /api/projects/:id/ai/story/bible 已迁至 routes/story.routes.js（扫尾波）
 // ---------------------------------------------------------------------------
-// 2026-10-10 圣经质检步（GS-50）：sceneRefs 与剧情一致性校验+自动修正。
+// 2026-10-10 圣经质检步（TS-50）：sceneRefs 与剧情一致性校验+自动修正。
 // 背景：LLM 生成的 bible 顶层 sceneRefs 错绑是最高频生产事故（白雪公主 7/11 场景错绑、
 // 小明2 结局错绑、龟兔漏绑），此前全靠人工读剧情修正。本端点：确定性规则检查 +
 // 逐场景 LLM 对照复核（1 场 1 调用）+ persist=true 时回写 bible.sceneRefs（写盘带 _rev）。
@@ -382,6 +385,7 @@ function buildRouteCtx() {
     defaultStory,
     deleteStoryAssetManagedFile,
     demoLibDir,
+    collectProjectStageInput,
     deriveProjectStage,
     deriveProjectStageFromDisk,
     deriveStoryAssetReferenceStatus,
@@ -506,6 +510,7 @@ registerStudioRoutes(app, buildRouteCtx())
 registerReviewRoutes(app, buildRouteCtx())
 registerStoryAssetsRoutes(app, buildRouteCtx())
 registerProjectOpsRoutes(app, buildRouteCtx())
+registerProjectEventsRoutes(app, buildRouteCtx())
 registerStoryRoutes(app, buildRouteCtx())
 registerStoryScenesRoutes(app, buildRouteCtx())
 registerExportRoutes(app, buildRouteCtx())

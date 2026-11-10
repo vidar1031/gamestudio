@@ -15,6 +15,9 @@ export type StageToolbarProps = {
   togglePlacementFlip: (axis: 'flipX' | 'flipY') => void
   bumpPlacementZ: (delta: number) => void
   deleteToolbarPlacement: () => void
+  // 2026-11-10：导出当前幕合成整图（底图+立绘分层 → 该幕图库新版本）
+  onExportComposite?: () => void
+  compositeBusy?: boolean
 }
 
 export function StageToolbar(props: StageToolbarProps) {
@@ -31,7 +34,9 @@ export function StageToolbar(props: StageToolbarProps) {
     toolbarPlacement,
     togglePlacementFlip,
     bumpPlacementZ,
-    deleteToolbarPlacement
+    deleteToolbarPlacement,
+    onExportComposite,
+    compositeBusy
   } = props
 
   return (
@@ -52,6 +57,17 @@ export function StageToolbar(props: StageToolbarProps) {
               <button type="button" className={`stage-tool-btn ${panToolActive ? 'active' : ''}`} onClick={() => setPanToolActive((v) => !v)} title="平移工具：开启后拖动画布平移视图">平移</button>
               <span className="stage-toolbar-sep" />
               <button type="button" className="stage-tool-btn" disabled={!undoCount} onClick={undoPlacementChange} title="撤销上一次摆放操作（Ctrl/Cmd+Z）">撤销</button>
+              {onExportComposite ? (
+                <button
+                  type="button"
+                  className="stage-tool-btn"
+                  disabled={compositeBusy}
+                  onClick={onExportComposite}
+                  title="把当前幕的 底图+立绘分层 合成结果导出为一张整图，存进该幕图库（随后到背景中心该幕「图片管理」绑定）"
+                >
+                  {compositeBusy ? '导出中…' : '导出合成图'}
+                </button>
+              ) : null}
               {/* 2026-10-20 外壳升级：选择簇仅在选中摆放且编辑模式时出现（淡入）；handler 与 disabled 语义不变 */}
               {toolbarPlacement && editMode ? (
                 <span className="stage-toolbar-selection">

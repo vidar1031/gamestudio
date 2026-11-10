@@ -1,5 +1,5 @@
 /**
- * GS-53 场景图审核（守护台审图中心接入，V1.2）。
+ * TS-53 场景图审核（守护台审图中心接入，V1.2）。
  *
  * 故事复核验收阶段：逐场景把「整图 + 场景描述 + 身份锚点 + 全局规则」提交到
  * 守护台审图中心（control image-reviews），拿回 score/issues/suggestions/verdict，

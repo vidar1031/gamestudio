@@ -4,6 +4,8 @@
 import {
   diagnoseStudio,
   getControlLink,
+  getStudioTools,
+  launchStudioTool,
   getSdwebuiModels,
   getStorageInfo,
   getStudioImageModels,
@@ -13,10 +15,10 @@ import {
   previewTts,
   saveStudioSettings
 } from '../api'
-import type { StudioControlLink, StudioEffectiveConfig, StudioSettings, StudioStorageInfo, TtsPreviewResult, TtsVoiceGroup, TtsVoiceItem } from '../api'
+import type { StudioControlLink, StudioToolInfo, StudioEffectiveConfig, StudioSettings, StudioStorageInfo, TtsPreviewResult, TtsVoiceGroup, TtsVoiceItem } from '../api'
 
-export { diagnoseStudio, getControlLink, getSdwebuiModels, getStorageInfo, getStudioImageModels, getStudioSettings, getTtsVoices, preflightStudioImage, previewTts, saveStudioSettings }
-export type { StudioControlLink, StudioEffectiveConfig, StudioSettings, StudioStorageInfo, TtsPreviewResult, TtsVoiceGroup, TtsVoiceItem }
+export { diagnoseStudio, getControlLink, getStudioTools, launchStudioTool, getSdwebuiModels, getStorageInfo, getStudioImageModels, getStudioSettings, getTtsVoices, preflightStudioImage, previewTts, saveStudioSettings }
+export type { StudioControlLink, StudioToolInfo, StudioEffectiveConfig, StudioSettings, StudioStorageInfo, TtsPreviewResult, TtsVoiceGroup, TtsVoiceItem }
 
 export type SecretField = 'openaiApiKey' | 'localoxmlApiKey' | 'doubaoArkApiKey'
 export type SecretDraft = Record<SecretField, string>

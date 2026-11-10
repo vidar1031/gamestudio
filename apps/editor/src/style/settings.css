@@ -106,12 +106,16 @@
 
 .settings-zone-head {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   cursor: pointer;
   user-select: none;
   padding: 4px 0;
+}
+/* 三段式：图标+标题居左，折叠按钮居右 */
+.settings-zone-head .settings-fold-btn {
+  margin-left: auto;
 }
 
 .settings-zone-head:hover .settings-zone-title {
@@ -438,3 +442,30 @@
 .settings-zone-head { border-bottom: 1px solid rgba(148, 163, 184, 0.14); padding-bottom: 8px; }
 .settings-card.is-open .settings-card-head { border-bottom: 1px solid rgba(148, 163, 184, 0.10); padding-bottom: 10px; }
 .settings-card-body .settings-row + .settings-row { border-top: 1px solid rgba(148, 163, 184, 0.08); padding-top: 12px; }
+
+/* 调用通道二选一分段开关（2026-10-21 用户裁决：直连/代理（守护台）） */
+.settings-seg {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.35);
+}
+.settings-seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--ts-dim, #9daab8);
+  border-radius: 999px;
+  padding: 5px 16px;
+  font-size: 12.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.settings-seg-btn:hover { color: #e5e7eb; }
+.settings-seg-btn.is-on {
+  background: rgba(94, 204, 255, 0.18);
+  color: #5eccff;
+  border: 1px solid rgba(94, 204, 255, 0.45);
+  margin: -1px;
+}

@@ -128,6 +128,30 @@
         "攀上",
         "向上爬"
       ]
+    },
+    "standing_side": {
+      "file": "standing_side.png",
+      "view": "side",
+      "en": "standing still, side view, full profile",
+      "cn": [
+        "侧站",
+        "侧立",
+        "侧身站"
+      ],
+      "skipVariant": true,
+      "note": "U波：三视图侧面 ControlNet 骨架（不进姿势变体链）"
+    },
+    "standing_back": {
+      "file": "standing_back.png",
+      "view": "back",
+      "en": "standing still, back view, facing away",
+      "cn": [
+        "背站",
+        "背立",
+        "背身站"
+      ],
+      "skipVariant": true,
+      "note": "U波：三视图背面 ControlNet 骨架（不进姿势变体链）"
     }
   }
 }

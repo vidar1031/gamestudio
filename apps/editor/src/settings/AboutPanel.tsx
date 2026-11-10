@@ -26,7 +26,8 @@ export default function AboutPanel(props: {
   }, [])
 
   const version = props.storageInfo?.version || ''
-  const docsysUrl = props.storageInfo?.docsysUrl || 'http://127.0.0.1:8891/'
+  // 文档站优先走业务后端托管的 /docs/（常在线）；8891 预览服务仅为兜底
+  const docsysUrl = resolveUrl('/docs/')
 
   return (
     <SectionCard title="关于" icon={<IconAbout />} summary={version ? `v${version}` : ''} status="ok" statusText="" enabled={null} defaultOpen={props.defaultOpen}>

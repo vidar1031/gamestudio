@@ -101,6 +101,7 @@ export function storyAssetCheckpointCandidates(asset) {
   if (lockProfile === 'ambient_prop') pushEnv('STUDIO_ASSET_MODEL_PROP_AMBIENT')
   if (lockProfile === 'organic_prop') pushEnv('STUDIO_ASSET_MODEL_PROP_ORGANIC')
   if (category === 'prop') pushEnv('STUDIO_ASSET_MODEL_PROP_GENERIC')
+  if (category === 'scenery') pushEnv('STUDIO_ASSET_MODEL_SCENERY')
 
   const byPriority = []
   const push = (...items) => byPriority.push(...items.filter(Boolean))
@@ -127,6 +128,11 @@ export function storyAssetCheckpointCandidates(asset) {
     return byPriority
   }
   if (category === 'prop') {
+    push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
+    return byPriority
+  }
+  // 2026-11-06 背景元素（scenery）与道具同档：绘本风元素 ivision 优先，sd_xl_base 回退
+  if (category === 'scenery') {
     push('ivisionIllustration_ivision10.safetensors', 'ivisionIllustration', 'sd_xl_base_1.0.safetensors', 'sd_xl_base_1.0')
     return byPriority
   }

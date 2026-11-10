@@ -19,7 +19,7 @@ import { resolveCarrierPlacementPlan } from '../ai/craftLibrary.js'
 //   defaultPlacementX / defaultPlacementScale / propPlacementProfile / propPlacementTransform
 //   BUCKET_PROP_PATTERN / propAssetSignalText
 // input：{ sceneId, node, dir, projectId, traceId, planScenes, planAssets, characterAssets, propAssets,
-//          compositionByScene, applyComposition, characters, projectAssets }
+//          compositionByScene, applyComposition, characters, projectAssets, sceneryAssets }
 //   characters / projectAssets 为跨场景共享可变数组，本函数按原语义原地改（push / 按位替换）。
 // 返回：{ nextPlacements, skippedCharacters, skippedProps, placeable, placeableProps,
 //         charactersChanged, projectAssetsChanged, newCharacters, newProjectAssets,
@@ -43,6 +43,10 @@ export async function computeScenePlacements(deps, input) {
     compositionByScene, applyComposition,
     characters, projectAssets
   } = input
+  // 2026-11-06 背景元素（scenery）：与道具同走分层摆位链（锁定门禁/参考解析/构图覆盖/propAssetId 链接），
+  // 仅默认位姿不同——贴地面、zIndex 垫角色之下（见下方 scenery 默认分支）
+  const sceneryAssets = Array.isArray(input.sceneryAssets) ? input.sceneryAssets : []
+  const placeablePropSources = [...(Array.isArray(propAssets) ? propAssets : []), ...sceneryAssets]
 
   const decisions = []
   let charactersChanged = false
@@ -69,10 +73,14 @@ export async function computeScenePlacements(deps, input) {
         y: Math.max(0, Math.min(1, Number(item.y) || 0.9)),
         scale: Math.max(0.1, Math.min(2.5, Number(item.scale) || 1)),
         rotationDeg: 0,
-        ...(item.flipH === true ? { flipX: true } : {})
+        // E 波（2026-10-26）：草稿新口径 flipX 与 LLM 旧口径 flipH 同认（composition-draft 写口收 flipX/flipY）
+        ...(item.flipH === true || item.flipX === true ? { flipX: true } : {}),
+        ...(item.flipY === true ? { flipY: true } : {})
       },
       zIndex: Math.max(1, Math.min(99, Math.round(Number(item.zIndex) || 3))),
-      stateKey: String(item.stateKey || '').trim()
+      stateKey: String(item.stateKey || '').trim(),
+      // 2026-11-01：占位预览图显式选择（蓝图预演写入），摆位按项目资产 id 优先选图（消费端校验归属后生效）
+      imageAssetId: String(item.imageAssetId || '').trim()
     }
   }
 
@@ -122,7 +130,7 @@ export async function computeScenePlacements(deps, input) {
   // prop 分层合成（2026-09-27 F6）：已锁定（referenceStatus=ready 且有主参考）prop 生成确定性默认摆位；
   // 未锁定或引用不可解析（文件缺失/无法登记项目资产）仍跳过并如实进 skippedProps。
   const stateCoveredPropIds = new Set()
-  for (const prop of propAssets.filter((a) => assetSceneIds(a).includes(sceneId))) {
+  for (const prop of placeablePropSources.filter((a) => assetSceneIds(a).includes(sceneId))) {
     const reqs = Array.isArray(prop?.stateRequirements) ? prop.stateRequirements : []
     const hitReq = reqs.find((r) => Array.isArray(r?.sceneIds) && r.sceneIds.map((x) => String(x || '').trim()).includes(sceneId)) || null
     const relatedIds = Array.isArray(hitReq?.relatedAssetIds) ? hitReq.relatedAssetIds.map((x) => String(x || '').trim()).filter(Boolean) : []
@@ -134,7 +142,7 @@ export async function computeScenePlacements(deps, input) {
     if (hasStateVariant) relatedIds.forEach((rid) => stateCoveredPropIds.add(rid))
   }
   const placeableProps = []
-  for (const prop of propAssets.filter((a) => assetSceneIds(a).includes(sceneId))) {
+  for (const prop of placeablePropSources.filter((a) => assetSceneIds(a).includes(sceneId))) {
     const assetId = String(prop.id || '').trim()
     const assetName = String(prop.name || assetId).trim()
     // V1.3 载体覆盖分支在 isRedundantProp 之前：被承载道具不再独立摆位
@@ -169,7 +177,15 @@ export async function computeScenePlacements(deps, input) {
       projectAssetsChanged = true
     }
     if (resolved.patchedPrimaryId) propAssetIdPatches.set(assetId, resolved.patchedPrimaryId)
-    placeableProps.push({ assetId, name: assetName, imageAssetId: resolved.imageAssetId, associatedIds: associatedPropProjectAssetIds(prop), asset: prop })
+    // 2026-11-01 蓝图预演显式选图优先：composition-draft imageAssetId 命中本道具变体池/主参考时覆盖自动解析结果
+    const propComp = compTransformFor(sceneId, assetId)
+    const propCompWanted = propComp && propComp.imageAssetId ? String(propComp.imageAssetId) : ''
+    const propCompOk = Boolean(propCompWanted) && (
+      propCompWanted === String(prop.primaryReferenceAssetId || '').trim() ||
+      [...(Array.isArray(prop.stateVariants) ? prop.stateVariants : []), ...(Array.isArray(prop.poseVariants) ? prop.poseVariants : [])]
+        .some((v) => String(v?.projectAssetId || '').trim() === propCompWanted)
+    )
+    placeableProps.push({ assetId, name: assetName, imageAssetId: propCompOk ? propCompWanted : resolved.imageAssetId, associatedIds: associatedPropProjectAssetIds(prop), asset: prop })
   }
 
   const present = characterAssets.filter((a) => assetSceneIds(a).includes(sceneId))
@@ -228,12 +244,22 @@ export async function computeScenePlacements(deps, input) {
     }
     // V1.3 载体变体优先：构图项带 carrier skillIds 且已注册同 skillId 变体时，摆位用载体变体
     const carrierHit = carrierVariantByAssetId.get(assetId) || null
-    const imageAssetId = carrierHit
-      ? String(carrierHit.projectAssetId || '').trim()
-      : (compStateHit
-        ? String(compStateHit.projectAssetId || '').trim()
-        : (poseHit ? String(poseHit.projectAssetId || '').trim()
-          : (expressionHit ? String(expressionHit.projectAssetId || '').trim() : baseImageAssetId)))
+    // 2026-11-01 蓝图预演显式选图优先：composition-draft imageAssetId 命中本资产变体池（或主参考）时直接采用
+    // （用户在占位预演里为元素点选的图，优先级高于剧情命中/表情差分等自动推导）
+    const compImageHit = (() => {
+      const wanted = comp && comp.imageAssetId ? String(comp.imageAssetId) : ''
+      if (!wanted) return null
+      const baseOk = baseImageAssetId && wanted === baseImageAssetId
+      const variantOk = variantPool.some((v) => String(v?.projectAssetId || '').trim() === wanted)
+      return baseOk || variantOk ? wanted : null
+    })()
+    const imageAssetId = compImageHit
+      || (carrierHit
+        ? String(carrierHit.projectAssetId || '').trim()
+        : (compStateHit
+          ? String(compStateHit.projectAssetId || '').trim()
+          : (poseHit ? String(poseHit.projectAssetId || '').trim()
+            : (expressionHit ? String(expressionHit.projectAssetId || '').trim() : baseImageAssetId))))
     if (!imageAssetId) {
       skippedCharacters.push({ sceneId, assetId, name: assetName, reason: 'reference_not_locked' })
       continue
@@ -365,6 +391,10 @@ export async function computeScenePlacements(deps, input) {
           continue
         }
         let profile = propPlacementProfile(entry.asset, { isEndingScene })
+        // 2026-11-06 背景元素（scenery）：不走飞虫/鱼桶道具画像，默认贴地面铺开、zIndex=1 垫角色之下
+        // （背景 0 < 背景元素 1 < 角色/道具；构图需求单指定 zIndex 时以需求单为准）
+        const isSceneryEntry = String(entry.asset && entry.asset.category || '').trim() === 'scenery'
+        if (isSceneryEntry) profile = 'scenery_ground'
         let bucketTransform = null
         if (profile === 'fish_near_bucket') {
           const hit = placedPropSignals.find((x) => BUCKET_PROP_PATTERN.test(x.signal))
@@ -373,7 +403,11 @@ export async function computeScenePlacements(deps, input) {
         }
         // 2026-10-04 构图规格优先：需求单指定了道具位置/大小/前后关系时按需求单摆放
         const comp = compTransformFor(sceneId, entry.assetId)
-        const transform = comp ? comp.transform : propPlacementTransform({ profile, index: propIndex, characterXs, bucketTransform })
+        const transform = comp
+          ? comp.transform
+          : profile === 'scenery_ground'
+            ? { x: Math.max(0.15, Math.min(0.85, Number((0.25 + propIndex * 0.25).toFixed(3)))), y: 0.92, scale: 0.35, rotationDeg: 0 }
+            : propPlacementTransform({ profile, index: propIndex, characterXs, bucketTransform })
         const zBase = nextPlacements.reduce((acc, p) => Math.max(acc, Number(p && p.zIndex) || 0), 0)
         nextPlacements.push({
           id: `pl_${sceneId}_${entry.assetId}`,
@@ -381,7 +415,7 @@ export async function computeScenePlacements(deps, input) {
           propAssetId: entry.assetId,
           imageAssetId: entry.imageAssetId,
           transform,
-          zIndex: comp ? comp.zIndex : zBase + 1,
+          zIndex: comp ? comp.zIndex : (profile === 'scenery_ground' ? 1 : zBase + 1),
           visible: true
         })
         placedPropSignals.push({ signal: propAssetSignalText(entry.asset), transform })

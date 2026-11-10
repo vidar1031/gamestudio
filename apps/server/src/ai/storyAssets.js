@@ -320,6 +320,8 @@ export function inferAssetLockProfile(asset) {
   if (category === 'character') return 'character_core'
   if (category === 'location') return 'location_anchor'
   if (category === 'prop') return inferPropLockProfile(asset)
+  // 2026-11-06 背景元素（地形块/材料堆/环境装饰）：独立出图透明立绘，非满幅场景
+  if (category === 'scenery') return 'scenery_element'
   return 'generic_asset'
 }
 
@@ -333,6 +335,7 @@ export function lockWorkflowForAsset(asset) {
   if (profile === 'soft_prop') return 'prop_soft'
   if (profile === 'ambient_prop') return 'prop_ambient'
   if (profile === 'organic_prop') return 'prop_specimen'
+  if (profile === 'scenery_element') return 'scenery_element'
   return 'prop_product'
 }
 
@@ -361,6 +364,9 @@ export function getStoryAssetRenderProfile(asset, stylePreset) {
   }
   if (profile === 'organic_prop') {
     return sizeOf('organic_prop', 768, 768, 'story_asset_prop_specimen')
+  }
+  if (profile === 'scenery_element') {
+    return sizeOf('scenery_element', 768, 768, 'story_asset_scenery_element')
   }
   if (profile === 'wearable_prop') {
     if (isHatLikeProp(asset)) {
@@ -504,7 +510,7 @@ function chinesePromptSeedForEntity(entity) {
 // 实测 characters.frog「青蛙」与 props.frog_char_01「The Frog」(aliases 含 frog) 并存）：
 // 按规范化名称/别名交集判同一事物，合并进类别优先级高的条目（character > location > prop），
 // sceneIds/aliases/提示词/主参考/生成态并入保留条目；被合并 id 经返回 idMap 改写到场景引用。
-const CATEGORY_MERGE_PRIORITY = { character: 0, location: 1, prop: 2 }
+const CATEGORY_MERGE_PRIORITY = { character: 0, location: 1, prop: 2, scenery: 2 }
 
 function normalizeEntityToken(text) {
   return asStr(text).trim().toLowerCase().replace(/\s+/g, ' ').replace(/^(?:the|a|an)\s+/i, '')
@@ -590,6 +596,9 @@ function referenceHintForCategory(category) {
   if (category === 'location') {
     return 'environment concept art, no characters, stable layout, clear architecture language, reusable location reference'
   }
+  if (category === 'scenery') {
+    return 'single environment element reference, isolated terrain patch or material pile only, exactly one element, pure white background, full silhouette visible, no complete scene, no horizon, no characters'
+  }
   return 'clean reference image'
 }
 
@@ -617,6 +626,9 @@ function referenceHintForAsset(asset) {
   }
   if (profile === 'organic_prop') {
     return 'single natural specimen reference, isolated subject, centered composition, full silhouette visible, clean background, no habitat scene, no extra objects'
+  }
+  if (profile === 'scenery_element') {
+    return 'single environment element reference, isolated terrain patch or material pile only, exactly one element, pure white background, full silhouette visible, no complete scene, no horizon, no characters'
   }
   return referenceHintForCategory(asStr(asset && asset.category).trim())
 }
@@ -718,7 +730,13 @@ export function buildStoryAssetPlan({ project, story, storyBible, prevManifest }
       negativePrompt,
       performanceLevel,
       // 2026-10-13 字段对齐：向导可见可编字段与生产同源填齐（英文稿=出图锚点；中文稿=中文名/别名种子）
-      referencePromptEn: anchorPrompt,
+      // 2026-10-26 缺陷 A 修复：anchorPrompt 可能是中文锚点（圣经 characters 块旧指令未限语言）——
+      // 只在像英文（无 CJK 且含英文词）时填入 referencePromptEn，否则留空等翻译链补齐（编辑器同款判定）
+      referencePromptEn: (() => {
+        const v = String(anchorPrompt || '').trim()
+        if (!v || /[\u3400-\u9fff]/.test(v) || !/[A-Za-z]{3,}/.test(v)) return ''
+        return v
+      })(),
       referencePromptZh: chinesePromptSeedForEntity(entity),
       aliases: uniqStrings(entity.aliases, 20),
       forbiddenSubstitutes: [],
@@ -931,7 +949,7 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
   }
   if (category === 'character' || category === 'location') {
     baseParts.push(`style lock: ${asStr(style).trim() || asStr(stylePreset && stylePreset.styleLock).trim() || 'picture_book'}`)
-  } else if (category === 'prop') {
+  } else if (category === 'prop' || category === 'scenery') {
     baseParts.push(
       // 2026-08-29 统一画风：卡通童话绘本（用户指令：杜绝写实/卡通混杂）
       // 2026-09-28 该风格句沉淀进 settings 风格预设（propStylePrompt/propStyleSuffix），预设缺省时用内置兜底
@@ -943,7 +961,7 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
   }
   const cleanedAnchorPrompt = category === 'character'
     ? cleanupReferenceAnchorText(safeAsset.anchorPrompt)
-    : category === 'prop'
+    : category === 'prop' || category === 'scenery'
       ? cleanupPropReferenceAnchorText(safeAsset.anchorPrompt)
       : asStr(safeAsset.anchorPrompt).trim()
   // 2026-08-28 修复（P0）：保护道具原先"hint 压过 anchor 且只取其一"，主体直接丢失——
@@ -967,6 +985,8 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
       'centered composition',
       'pure white seamless studio background',
       'neutral relaxed pose',
+      // W 波（2026-10-28 用户裁决修多尾多腿）：解剖约束正向句（大灰狼双尾实证）
+      'exactly one tail, two arms, two legs, correct anatomy, no extra limbs',
       'non-human animal character if described as animal',
       'visible animal ears',
       'fur-covered face if animal',
@@ -1106,6 +1126,26 @@ export function buildStoryAssetReferencePrompt({ plan, asset, style, globalPromp
       'no person',
       'no extra objects'
     )
+  } else if (lockProfile === 'scenery_element') {
+    baseParts.push(
+      // 背景元素：地形块/材料堆/环境装饰——单件孤立元素，不是完整场景插画
+      'single environment element reference',
+      'exactly one element only',
+      'isolated terrain patch or material pile',
+      'single view only',
+      'pure white background',
+      'full silhouette visible',
+      'clear material texture and structure',
+      'not a complete scene',
+      'no landscape composition',
+      'no horizon',
+      'no sky',
+      'no distant background',
+      'no character',
+      'no person',
+      'no animals',
+      'no duplicate elements'
+    )
   } else if (category === 'prop') {
     baseParts.push(
       'single prop product reference',
@@ -1134,9 +1174,23 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
   const safePlan = asObj(plan)
   const safeAsset = asObj(asset)
   const lockProfile = asStr(safeAsset.lockProfile).trim() || inferAssetLockProfile(safeAsset)
+  // 2026-11-06 背景元素材料词豁免：plan.forbiddenSubstitutes 的房屋类词条（straw hut/mud house/brick house…）
+  // 按词元压制画面，会把本资产要画的材料本身一并禁掉（稻草堆画不出 straw——三只小猪选址建房实测根因）。
+  // 按本资产自身 name/aliases/anchorPrompt 的英文词元整词匹配剔除冲突条目——只豁免本资产自己的出图，
+  // 场景背景负向防线与其他资产不受影响。
+  const exemptSceneryMaterialConflict = (entries) => {
+    if (asStr(safeAsset.category).trim() !== 'scenery') return entries
+    const ownText = [safeAsset.name, safeAsset.anchorPrompt, ...asList(safeAsset.aliases)].map((x) => asStr(x)).join(' ')
+    const ownTokens = new Set(ownText.toLowerCase().match(/[a-z]{3,}/g) || [])
+    if (!ownTokens.size) return entries
+    return asList(entries).filter((entry) => {
+      const words = asStr(entry).toLowerCase().match(/[a-z]{3,}/g) || []
+      return !words.some((w) => ownTokens.has(w))
+    })
+  }
   const base = [
     ...uniqStrings(splitCsvLike(asStr(assetNegativePrompt).trim()), 80),
-    ...uniqStrings(safePlan.forbiddenSubstitutes, 40),
+    ...exemptSceneryMaterialConflict(uniqStrings(safePlan.forbiddenSubstitutes, 40)),
     ...uniqStrings(safeAsset.forbiddenSubstitutes, 20)
   ]
   const category = asStr(safeAsset.category).trim()
@@ -1151,6 +1205,8 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
       'front and back views', 'three views', 'complex background', 'busy environment', 'text', 'watermark',
       'child', 'kid', 'baby', 'toddler', 'young child', 'little boy', 'little girl',
       'catgirl', 'kemonomimi', 'anime human ears', 'decorative background',
+      // W 波（2026-10-28 用户裁决修多尾多腿）：解剖负向（双尾/多肢/融合畸形压制）
+      'extra tail', 'multiple tails', 'extra limbs', 'extra legs', 'extra arms', 'mutation', 'deformed anatomy', 'fused limbs', 'two heads',
       'ground shadow', 'floor shadow', 'scenery', 'background', 'trees', 'grass', 'plants', 'water', 'shore', 'bridge',
       'side view', 'three quarter view', 'back view'
     )
@@ -1209,6 +1265,12 @@ export function buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNega
       'habitat scene', 'person holding', 'multiple specimens', 'crowd', 'background plants', 'environment',
       'text', 'watermark', 'cropped anatomy'
     )
+  } else if (lockProfile === 'scenery_element') {
+    base.push(
+      'complete scene', 'landscape composition', 'horizon', 'sky', 'distant background',
+      'person', 'character', 'animals', 'crowd', 'multiple elements', 'collage',
+      'multiple views', 'design sheet', 'multi-view layout', 'concept sheet', 'text', 'watermark'
+    )
   } else if (category === 'prop') {
     base.push(
       'person', 'character', 'environment', 'multiple objects', 'collage', 'text', 'watermark',
@@ -1252,19 +1314,34 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode, stylePreset }) 
   if (!scene) return null
   const backgroundOnly = asStr(mode).trim() === 'background'
   const assetsById = new Map(asList(safePlan.assets).map((item) => [asStr(item && item.id).trim(), asObj(item)]))
-  // 场景→资产关联双源：优先 scene.promptAssets；为空时从资产侧 sceneIds 反推
-  // （2026-08-30 缺陷修复：计划生成器只写了资产侧 sceneIds，scene.promptAssets 全空，
-  //  导致场景渲染 prompt 只剩 worldAnchor，出图同质跑题）
-  const sceneAssetRefs = asList(scene.promptAssets)
-  const derivedFromAssets = sceneAssetRefs.length
-    ? []
-    : asList(safePlan.assets).filter((asset) => asList(asset && asset.sceneIds).some((sid) => asStr(sid) === asStr(sceneId).trim()))
-  const allPromptAssets = [...sceneAssetRefs, ...derivedFromAssets]
-    .map((item) => {
-      const live = assetsById.get(asStr(item && item.id).trim())
-      return live || asObj(item)
-    })
-    .filter(Boolean)
+  // 场景→资产关联三源并集（2026-11-10 根修）：scene.promptAssets（快照）∪ scene.assetIds（分配登记）
+  // ∪ 资产侧 sceneIds（摆位/分析登记）——此前"promptAssets 非空即只吃它"，
+  // 场景元素分析后登记到 assetIds/资产 sceneIds 的背景元素/道具永远进不了渲染规格
+  // （选址建房稻草堆/泥巴地/岩石区缺席背景图的根因）。
+  // 并集按 id 去重、live 资产解析（锚点永远取最新，不吃 promptAssets 快照陈旧值）；
+  // 2026-08-30 修复语义保留：promptAssets 全空时反推兜底仍然成立（并集天然覆盖）。
+  const liveOf = (raw) => {
+    const live = assetsById.get(asStr(raw && raw.id).trim())
+    return live || asObj(raw)
+  }
+  const unionById = new Map()
+  for (const raw of asList(scene.promptAssets)) {
+    const live = liveOf(raw)
+    const lid = asStr(live && live.id).trim()
+    if (lid && !unionById.has(lid)) unionById.set(lid, live)
+  }
+  for (const rawId of asList(scene.assetIds)) {
+    const lid = asStr(rawId).trim()
+    if (!lid || unionById.has(lid)) continue
+    const live = assetsById.get(lid)
+    if (live) unionById.set(lid, live)
+  }
+  for (const asset of asList(safePlan.assets)) {
+    const lid = asStr(asset && asset.id).trim()
+    if (!lid || unionById.has(lid)) continue
+    if (asList(asset && asset.sceneIds).some((sid) => asStr(sid) === asStr(sceneId).trim())) unionById.set(lid, asset)
+  }
+  const allPromptAssets = [...unionById.values()]
   // 背景-only（2026-08-30 修正）：只剔除「角色」——角色由立绘 placements 合成（placements 仅 character，
   // prop 不合成属已知限制），道具（房屋/锅/烟囱/壁炉等）必须画进背景图，其锚点进 promptLocks、
   // 已锁定参考图进 referenceAssets 指导画面。此前连道具一起剔除，导致场景图丢房屋等关键内容。
@@ -1272,9 +1349,12 @@ export function buildStorySceneRenderSpec({ plan, sceneId, mode, stylePreset }) 
   // 背景只画环境——道具从 promptLocks 与叙事剥离对象中一并剔除，禁止锚点把道具烘进背景
   // （乌鸦喝水实测：玻璃瓶锚点经 promptLocks+worldAnchor 烘进全部 11 张背景，分层失效的根因）。
   const isCharacterAsset = (asset) => asStr(asset && asset.category).trim() === 'character'
+  // 2026-11-06 背景元素（scenery）同角色处理：由透明立绘分层摆入，名称提及从背景 prompt 剥离——
+  // 否则元素名留在背景文本里，与负向房屋类词条对冲（稻草堆/泥巴地既画不进背景又污染语义，三只小猪实测根因）。
+  const isSceneryAsset = (asset) => asStr(asset && asset.category).trim() === 'scenery'
   const layeredComposition = asObj(scene).layeredComposition === true
   const excludedSubjects = backgroundOnly
-    ? (layeredComposition ? allPromptAssets : allPromptAssets.filter(isCharacterAsset))
+    ? (layeredComposition ? allPromptAssets : allPromptAssets.filter((asset) => isCharacterAsset(asset) || isSceneryAsset(asset)))
     : []
   const promptAssets = backgroundOnly
     ? (layeredComposition ? [] : allPromptAssets.filter((asset) => !isCharacterAsset(asset)))

@@ -153,6 +153,8 @@ function storyboardPromptReviewSchema() {
 }
 
 function validateStoryboardPromptReview(obj) {
+  // 2026-11-03 根修：optimizedGlobal*/optimizedScene*Zh 为可选字段——全局锚点为空时模型不产出这些键，
+  // 原全量必填导致 valid 评审被误判 invalid（评分正常但一直挂"AI 回退"横幅）。核心契约只保留评分与建议。
   return Boolean(
     obj &&
     typeof obj === 'object' &&
@@ -162,10 +164,6 @@ function validateStoryboardPromptReview(obj) {
     Array.isArray(obj.strengths) &&
     Array.isArray(obj.risks) &&
     Array.isArray(obj.suggestions) &&
-    asStr(obj.optimizedGlobalPromptZh).trim() &&
-    asStr(obj.optimizedGlobalNegativePromptZh).trim() &&
-    asStr(obj.optimizedScenePromptZh).trim() &&
-    asStr(obj.optimizedSceneNegativePromptZh).trim() &&
     asStr(obj.optimizedPrompt).trim() &&
     asStr(obj.optimizedNegativePrompt).trim()
   )
@@ -346,7 +344,20 @@ async function reviewViaOpenAICompatible({ input, provider, model, apiUrl, proxy
   }
   const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl, proxyUrl, timeoutMs: 60_000, model })
   const parsed = JSON.parse(extractResponseOutputText(json) || '{}')
-  if (!validateStoryboardPromptReview(parsed)) throw new Error('invalid_storyboard_prompt_review_output')
+  // 2026-11-03 根修：全局锚点为空时模型常只给 score/summary 而省略全部 optimized 字段——
+  // 用输入稿回填 optimizedPrompt/optimizedNegativePrompt（契约归一化），杜绝误报 invalid 挂横幅。
+  if (parsed && typeof parsed === 'object') {
+    if (!asStr(parsed.optimizedPrompt).trim()) {
+      parsed.optimizedPrompt = asStr(input && input.scenePrompt).trim() || asStr(input && input.globalPrompt).trim()
+    }
+    if (!asStr(parsed.optimizedNegativePrompt).trim()) {
+      parsed.optimizedNegativePrompt = asStr(input && input.sceneNegativePrompt).trim() || asStr(input && input.globalNegativePrompt).trim()
+    }
+  }
+  // 输出仍不完整（模型空输出/只给 score 等）→ 不抛错，返回 null 让路由静默回退本地预检（不再挂"AI 回退"横幅）
+  if (!validateStoryboardPromptReview(parsed)) {
+    return { review: null, meta: { ...(meta || {}), note: 'model_output_incomplete' } }
+  }
   return { review: parsed, meta }
 }
 

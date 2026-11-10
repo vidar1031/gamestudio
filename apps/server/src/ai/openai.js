@@ -2,8 +2,9 @@ import dns from 'node:dns/promises'
 import { spawn } from 'node:child_process'
 import { getProxyInfo, getProxyUrl } from '../net/proxy.js'
 import { getStudioSecret } from '../studio/secrets.js'
-import { withResourceLease, isLocalOmlxUrl } from './resourceLease.js'
+import { withResourceLease, isLocalOmlxUrl, isPrefillMemoryGuardError, resetLocalModelPrefillPool } from './resourceLease.js'
 import { appendStudioModelDialog, extractDialogResponseText } from './modelDialogs.js'
+import { linkAiTaskAbort, throwIfAiTaskCancelled } from './taskCancellation.js'
 
 const OFFICIAL_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
@@ -114,6 +115,11 @@ export function extractResponseOutputText(respJson) {
         if (!c || typeof c !== 'object') continue
         const msg = c.message || c.delta || {}
         if (typeof msg.content === 'string') texts.push(msg.content)
+        else if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (typeof part?.text === 'string') texts.push(part.text)
+          }
+        }
         // OMLX gpt-oss-20b may return reasoning_content instead of content
         else if (typeof msg.reasoning_content === 'string') texts.push(msg.reasoning_content)
       }
@@ -198,20 +204,20 @@ export async function openaiResponsesJsonForTools({ body, provider, timeoutMs: c
   if (cfg.provider === 'localoxml') {
     const directChatBody = buildChatCompletionsBodyFromResponsesBody(merged)
     if (directChatBody) {
-      const chatJson = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: directChatBody, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+      const chatJson = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: directChatBody, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl, model: merged.model })
       return {
         json: chatJson,
         meta: { provider: cfg.provider, api: 'chat.completions', model: merged.model, durationMs: Math.max(0, Date.now() - startedAt), localoxmlDirect: true }
       }
     }
   }
-  const json = await openaiRequestJson({ method: 'POST', path: '/responses', body: merged, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+  const json = await openaiRequestJson({ method: 'POST', path: '/responses', body: merged, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl, model: merged.model })
 
   // Fallback to chat/completions if responses returns empty content (e.g. localoxml/OMLX with complex schemas)
   if (!extractResponseOutputText(json)) {
     const chatBody = buildChatCompletionsBodyFromResponsesBody(merged)
     if (chatBody) {
-      const chatJson = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: chatBody, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl })
+      const chatJson = await openaiRequestJson({ method: 'POST', path: '/chat/completions', body: chatBody, timeoutMs, provider: cfg.provider, apiUrl, proxyUrl, model: merged.model })
       return {
         json: chatJson,
         meta: { provider: cfg.provider, api: 'chat.completions', model: merged.model, durationMs: Math.max(0, Date.now() - startedAt) }
@@ -296,14 +302,27 @@ function buildChatCompletionsBodyFromResponsesBody(responsesBody) {
   return chatBody
 }
 
-// 本地 OMLX 调用统一经 control 资源调度器租约准入（llm 共享读卡），远程 provider 直连
+// 本地 OMLX 调用统一经 control 模型感知租约准入，远程 provider 直连
 // GET 探测（diagnose /v1/models 等只读调用）不占租约，避免交换窗口期诊断被挂起
 async function openaiRequestJson(params) {
   const cfg = getOpenAIConfig(params?.provider, { apiUrl: params?.apiUrl, model: params?.model })
   const isLocal = cfg.provider === 'localoxml' || isLocalOmlxUrl(cfg.baseUrl)
   const isReadOnlyProbe = String(params?.method || 'POST').toUpperCase() === 'GET'
   if (!isLocal || isReadOnlyProbe) return openaiRequestJsonInner(params)
-  return withResourceLease('llm', `gs:omlx:${cfg.model || params?.model || '-'}`, () => openaiRequestJsonInner(params))
+  // 2026-10-27 实证修正：holder 模型名必须取本次调用实际模型——params.model（调用方传入的 effective model）优先，
+  // body.model 次之（各调用方把 effective model 放进请求体），cfg.model 兜底链在 env 未设时落 'gpt-4o-mini' 与实际不符
+  // （台账曾显示 ts:llm:gpt-4o-mini 而实际跑 Qwen3.6-27B；租约按 gpt-4o-mini 申请会被守护台 model_not_admitted 拒绝）。
+  // caller 是日志标签不是模型名，不作模型位。
+  const leaseModel = String(params?.model || params?.body?.model || cfg.model || '-').trim() || '-'
+  return withResourceLease('llm', `ts:llm:${leaseModel}`, async () => {
+    try {
+      return await openaiRequestJsonInner(params)
+    } catch (error) {
+      if (!isPrefillMemoryGuardError(error)) throw error
+      await resetLocalModelPrefillPool()
+      return openaiRequestJsonInner(params)
+    }
+  }, { model: leaseModel, projectId: params?.projectId })
 }
 
 async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, provider, apiUrl, model, proxyUrl: proxyUrlOverride, caller }) {
@@ -323,11 +342,14 @@ async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, 
   const writeDialog = (ok, json, error) => {
     if (!recordDialog || dialogWritten) return
     dialogWritten = true
+    const responseText = ok ? extractDialogResponseText(json) : ''
+    const rawResponse = ok && !String(responseText || '').trim() ? JSON.stringify(json).slice(0, 2000) : ''
     appendStudioModelDialog({
       caller: caller || apiPath,
       model: json?.model || cfg.model,
       body,
-      response: ok ? extractDialogResponseText(json) : '',
+      response: responseText,
+      rawResponse,
       usage: json?.usage || null,
       durationMs: Date.now() - dialogStartedAt,
       ok,
@@ -338,7 +360,8 @@ async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, 
   const proxyUrlRaw = String(proxyUrlOverride || getProxyUrl() || '').trim()
   const proxyUrl = shouldBypassProxyForTarget(url) ? '' : proxyUrlRaw
   const noTimeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) <= 0
-  const controller = noTimeout ? null : new AbortController()
+  const controller = new AbortController()
+  linkAiTaskAbort(controller)
   const t = noTimeout ? null : setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 0) || 20000))
   try {
     // If a proxy is configured, use curl to ensure proxy support even when Node fetch doesn't.
@@ -353,7 +376,8 @@ async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, 
         },
         body,
         timeoutMs,
-        proxyUrl
+        proxyUrl,
+        signal: controller.signal
       })
       writeDialog(true, json, null)
       return json
@@ -391,7 +415,7 @@ async function openaiRequestJsonInner({ method, path: apiPath, body, timeoutMs, 
   }
 }
 
-function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
+function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl, signal }) {
   const marker = '__CURL_STATUS__'
   const noTimeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) <= 0
   const args = [
@@ -415,6 +439,9 @@ function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
     const chunks = []
     const errChunks = []
 
+    const onAbort = () => { try { p.kill('SIGKILL') } catch (_) {} }
+    if (signal?.aborted) onAbort()
+    else signal?.addEventListener('abort', onAbort, { once: true })
     const killTimer = noTimeout ? null : setTimeout(() => {
       try { p.kill('SIGKILL') } catch (_) {}
     }, Math.max(1000, Number(timeoutMs || 0) || 20000) + 1000)
@@ -427,6 +454,11 @@ function curlRequestJson({ url, method, headers, body, timeoutMs, proxyUrl }) {
     })
     p.on('close', (code) => {
       if (killTimer) clearTimeout(killTimer)
+      signal?.removeEventListener('abort', onAbort)
+      if (signal?.aborted) {
+        reject(signal.reason)
+        return
+      }
       const out = Buffer.concat(chunks).toString('utf-8')
       const errText = Buffer.concat(errChunks).toString('utf-8')
       const idx = out.lastIndexOf(`${marker}:`)

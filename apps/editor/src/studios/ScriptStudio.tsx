@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { markStartupReady } from '../startupReady'
 import { dlgConfirm } from '../dialog'
+import { confirmRerun } from '../components/shared/confirmRerun'
 import {
   compileBlueprintDetailed,
   getProject,
@@ -249,7 +250,7 @@ export default function ScriptStudio(props: Props) {
         <div className="left">
           <div className="title">第一层 · 分镜</div>
           <button className="btn secondary" onClick={props.onBack} disabled={busy}>
-            返回工作台
+            返回首页
           </button>
         </div>
         <div className="right">
@@ -511,12 +512,18 @@ export default function ScriptStudio(props: Props) {
               </div>
             ) : null}
 
+            {/* 2026-10-21 弹窗两态化：校验全绿时只给结论与主按钮；AI 解释/修复只在有结构问题（或已有 AI 产出）时出现 */}
+            {(compileResult.validation?.ok === false ||
+              Boolean(compileResult.validation?.warnings?.length) ||
+              Boolean(compileResult.report?.warnings?.length) ||
+              aiReviewText || aiFixNote || aiReviewErr || aiFixErr) ? (<>
             <div className="hr" />
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
               <div className="hint" style={{ fontWeight: 700 }}>AI 解释与建议</div>
                 <button
                   className="btn secondary"
                   onClick={async () => {
+                    if (!(await confirmRerun({ action: 'AI 解释蓝图问题', hasExisting: Boolean(aiReviewText) }))) return
                     setAiReviewBusy(true)
                     setAiReviewErr('')
                     setAiReviewText('')
@@ -633,6 +640,7 @@ export default function ScriptStudio(props: Props) {
             ) : (
               <div className="hint" style={{ marginBottom: 10 }}>点击“AI 解释原因”获取更直观的解释与修改建议。</div>
             )}
+            </>) : null}
 
             <div className="ai-modal-actions">
               <button

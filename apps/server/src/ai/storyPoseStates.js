@@ -142,68 +142,92 @@ export function buildPoseStateExtractionInput({ project, story, storyBible }) {
   }
 }
 
-export async function extractStoryPoseStates({ provider, model, apiUrl, proxyUrl, timeoutMs, input }) {
+export async function extractStoryPoseStates({ provider, model, apiUrl, proxyUrl, timeoutMs, input, onProgress }) {
   const p = String(provider || '').trim().toLowerCase()
   const t = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : 90_000
   const instructions = buildInstructions()
-  const user = JSON.stringify({
-    storyTitle: input.storyTitle,
-    characters: input.characters,
-    scenes: input.scenes.map((s) => ({ sceneId: s.sceneId, sceneName: s.sceneName, summary: s.summary, characterIds: s.characterIds }))
-  }, null, 2)
   const resolveCharacterId = buildEntityIdResolver(input.characters)
-  const normArgs = { scenes: input.scenes, resolveCharacterId }
 
-  if (p === 'openai' || p === 'localoxml') {
-    let lastErr = null
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const body = {
-        instructions: attempt === 0 ? instructions : `${instructions}\n再次强调：只输出一个可直接 JSON.parse 的 JSON 对象，不要输出任何其他内容。`,
-        input: user,
-        ...(model ? { model: String(model).trim() } : {}),
-        // 2026-10-13 丑小鸭实测：2048 装不下全故事姿势需求 JSON（9 资产×场景），截断即
-        // Expected ',' or ']' after array element（position 5292）；与构图同型根因，提到 4096。
-        max_output_tokens: 4096,
-        text: { format: { type: 'json_schema', name: 'story_pose_states', strict: true, schema: poseStatesSchema() } }
+  // L 波（2026-10-27 用户实测根修：全场景单次大调用 180s 超时 500 empty_ai_output）：
+  // 逐幕分批串行（storyComposition COMPOSITION_BATCH_SIZE=1 同款）——prompt 随场景数膨胀撞 OMLX 护栏；
+  // 逐幕串行后合并（批间独立），任一幕失败如实报哪幕。单批允许空（该幕无出场角色属正常），合并后整体校验。
+  const POSE_BATCH_SIZE = 1
+  const sceneBatches = []
+  for (let i = 0; i < input.scenes.length; i += POSE_BATCH_SIZE) sceneBatches.push(input.scenes.slice(i, i + POSE_BATCH_SIZE))
+
+  const runBatch = async (batchScenes, batchIndex) => {
+    const user = JSON.stringify({
+      storyTitle: input.storyTitle,
+      characters: input.characters,
+      scenes: batchScenes.map((s) => ({ sceneId: s.sceneId, sceneName: s.sceneName, summary: s.summary, characterIds: s.characterIds }))
+    }, null, 2)
+    const normArgs = { scenes: batchScenes, resolveCharacterId }
+    if (p === 'openai' || p === 'localoxml') {
+      let lastErr = null
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const body = {
+          instructions: attempt === 0 ? instructions : `${instructions}\n再次强调：只输出一个可直接 JSON.parse 的 JSON 对象，不要输出任何其他内容。`,
+          input: user,
+          ...(model ? { model: String(model).trim() } : {}),
+          // 2026-10-13 丑小鸭实测：2048 装不下全故事姿势需求 JSON（9 资产×场景），截断即
+          // Expected ',' or ']' after array element（position 5292）；与构图同型根因，提到 4096。
+          max_output_tokens: 4096,
+          text: { format: { type: 'json_schema', name: 'story_pose_states', strict: true, schema: poseStatesSchema() } }
+        }
+        try {
+          const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, timeoutMs: t })
+          const parsed = parseModelJsonLenient(extractResponseOutputText(json))
+          const normalized = normalizePoseStates(parsed, normArgs)
+          return { result: normalized, meta }
+        } catch (e) {
+          lastErr = e
+        }
       }
-      try {
-        const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, timeoutMs: t })
-        const parsed = parseModelJsonLenient(extractResponseOutputText(json))
-        const normalized = normalizePoseStates(parsed, normArgs)
-        if (!validatePoseStates(normalized)) throw new Error('invalid_pose_states')
-        return { result: normalized, meta }
-      } catch (e) {
-        lastErr = e
-      }
+      throw lastErr || new Error('invalid_json_response')
     }
-    throw lastErr || new Error('invalid_json_response')
+    if (p === 'doubao') {
+      const { parsed, meta } = await generateStrictJsonViaDoubaoChat({
+        instructions,
+        input: user,
+        model: model || undefined,
+        timeoutMs: t,
+        maxRetries: 2,
+        validate: (x) => Boolean(x && Array.isArray(x.scenes)),
+        proxyUrl
+      })
+      return { result: normalizePoseStates(parsed, normArgs), meta }
+    }
+    if (p === 'ollama') {
+      const { parsed, meta } = await generateStrictJsonViaOllamaChat({
+        instructions,
+        input: user,
+        model: model || undefined,
+        timeoutMs: t,
+        maxRetries: 2,
+        validate: (x) => Boolean(x && Array.isArray(x.scenes)),
+        proxyUrl
+      })
+      return { result: normalizePoseStates(parsed, normArgs), meta }
+    }
+    throw new Error('unsupported_provider')
   }
 
-  if (p === 'doubao') {
-    const { parsed, meta } = await generateStrictJsonViaDoubaoChat({
-      instructions,
-      input: user,
-      model: model || undefined,
-      timeoutMs: t,
-      maxRetries: 2,
-      validate: (x) => validatePoseStates(normalizePoseStates(x, normArgs)),
-      proxyUrl
-    })
-    return { result: normalizePoseStates(parsed, normArgs), meta }
+  const mergedScenes = []
+  let firstMeta = null
+  for (let bi = 0; bi < sceneBatches.length; bi += 1) {
+    const batchScenes = sceneBatches[bi]
+    const batchLabel = String(batchScenes[0]?.sceneName || batchScenes[0]?.sceneId || `批 ${bi + 1}`)
+    onProgress?.(bi, sceneBatches.length, batchLabel)
+    try {
+      const { result, meta } = await runBatch(batchScenes, bi)
+      if (!firstMeta && meta) firstMeta = meta
+      mergedScenes.push(...(Array.isArray(result?.scenes) ? result.scenes : []))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      throw new Error(`pose_batch_failed:${batchLabel}:${msg}`)
+    }
   }
-
-  if (p === 'ollama') {
-    const { parsed, meta } = await generateStrictJsonViaOllamaChat({
-      instructions,
-      input: user,
-      model: model || undefined,
-      timeoutMs: t,
-      maxRetries: 2,
-      validate: (x) => validatePoseStates(normalizePoseStates(x, normArgs)),
-      proxyUrl
-    })
-    return { result: normalizePoseStates(parsed, normArgs), meta }
-  }
-
-  throw new Error('unsupported_provider')
+  const merged = { scenes: mergedScenes }
+  if (!validatePoseStates(merged)) throw new Error('invalid_pose_states')
+  return { result: merged, meta: firstMeta }
 }

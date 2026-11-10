@@ -240,8 +240,12 @@ function buildLockReviewInstructions({ asset, attempt, maxAttempts }) {
     `- 如果 lockProfile=rigid_prop：重点检查主体结构是否稳定完整，不能变形塌陷，主要部件必须清楚。\n` +
     `- 如果 lockProfile=ambient_prop：重点检查是否为单个氛围元素，而不是整张大场景。\n` +
     `- 如果 lockProfile=organic_prop：重点检查是否为单个自然物/标本，而不是栖息地场景插画。\n` +
+    `- 如果 lockProfile=scenery_element：重点检查是否为单个环境元素（地形块/材料堆/装饰物）孤立呈现，而不是完整场景插画；不得出现人物/动物/地平线/远景构图。\n` +
     `- 如果是地点：重点检查是否构图稳定、环境语言统一，不能混入主体角色特写。\n` +
     `- 明显跑题（目标身份/物种/场景错误）必须判失败。\n` +
+    // W 波（2026-10-28 用户裁决：修多尾多腿）：肢体计数硬门槛——角色必须一尾二臂二腿（或物种正常肢体数），
+    // 多余肢体/多尾/多腿/融合畸形/双头一律判失败（大灰狼主参考双尾实证）
+    `- 肢体计数（W 波新增硬门槛）：角色必须肢体计数正确——一条尾巴、两条手臂、两条腿；多余肢体/双尾/多腿/肢体融合畸形/双头一律判失败，score 不得过 20。\n` +
     `目标锚点：${anchorPrompt || '无'}\n` +
     `参考提示：${hint || '无'}\n` +
     `禁止替代：${forbidden.length ? forbidden.join(' / ') : '无'}\n` +
@@ -384,7 +388,7 @@ async function reviewStoryboardLockImageWithLocalVl({
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 180_000)
   try {
-    const { res, json } = await withResourceLease('vision', `gs:lock_review:${asStr(asset && asset.id) || '-'}`, async () => {
+    const { res, json } = await withResourceLease('vision', `ts:lock_review:${asStr(asset && asset.id) || '-'}`, async () => {
       const r = await fetch(url, {
         method: 'POST',
         signal: controller.signal,

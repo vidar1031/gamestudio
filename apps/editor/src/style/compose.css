@@ -1066,6 +1066,153 @@
   white-space: nowrap;
 }
 
+.background-center {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.location-template-board {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.location-template-intro {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.location-template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.location-template-card {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.74);
+}
+
+.location-template-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.location-template-main:hover .location-template-title {
+  color: #fbbf24;
+}
+
+.location-template-thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.location-template-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.location-template-thumb.missing {
+  color: rgba(203, 213, 225, 0.72);
+  text-align: center;
+  font-size: 12px;
+}
+
+.location-template-title {
+  color: #f59e0b;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.location-template-meta,
+.location-template-scenes,
+.location-template-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.location-template-scenes {
+  align-content: start;
+}
+
+.location-template-scenes .btn {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.location-template-prompt {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.location-template-prompt summary {
+  cursor: pointer;
+}
+
+.location-template-prompt .hint {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+  margin-top: 6px;
+  word-break: break-word;
+}
+
+.location-template-actions {
+  justify-content: flex-end;
+}
+
+.location-template-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.location-template-reference {
+  width: min(100%, 360px);
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.location-template-reference img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .story-lock-thing-meta {
   display: flex;
   align-items: center;
@@ -1122,7 +1269,7 @@
 }
 
 .story-lock-detail-card {
-  width: min(1400px, 100%);
+  width: min(1120px, 96%);
   overflow-y: auto;
   overflow-x: hidden;
   border-radius: 18px;
@@ -1161,6 +1308,23 @@
 .story-lock-detail-body {
   display: grid;
   gap: 18px;
+}
+
+.story-lock-detail-lead {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.5fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.story-lock-detail-lead > .story-lock-detail-sec {
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .story-lock-detail-lead {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .story-lock-detail-sec {
@@ -2252,6 +2416,8 @@
 }
 
 .ai-storyboard-asset-candidate-preview {
+  width: 100%;
+  min-width: 0;
   aspect-ratio: 1 / 1;
   border-radius: 10px;
   overflow: hidden;
@@ -2351,12 +2517,16 @@
 .story-lock-workspace-card {
   width: 100vw;
   height: 100vh;
+  /* 2026-10-27 修复：默认 content-box 下 height:100vh + 上下 padding 40px 使实高超视口，
+     卡片底部 40px（滚动末端内容）不可达——第 4 步长内容"无法下滚到底"实锤根因。 */
+  box-sizing: border-box;
   max-height: none;
-  display: grid;
-  /* 2026-08-30 修复：原为固定 6 行模板 grid-template-rows: auto×5 + minmax(0, max-content)，
-     子元素多于 6 个（如出图总账条）时全局提示词行被压成 0 高、内容溢出重叠（第 4 步样式错乱）。
-     改为行数不限、逐行内容自适应；整卡滚动行为不变。 */
-  grid-auto-rows: max-content;
+  /* 2026-11-10 用户裁决：日志统一停靠向导底部。卡片改 flex 列——内容区自然堆叠，
+     日志区 margin-top:auto 在内容不足时沉底、position:sticky 在滚动时停靠视口底部，
+     六个步骤页签的布局空间因此统一（此前 grid-auto-rows 下日志位置随内容长短漂移）。
+     逐行内容自适应与整卡纵向滚动行为不变。 */
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   /* 2026-08-25 修复：原为 overflow:hidden，内容超高时无法向下滚动查看（日志/全局提示词/资产区被裁）。
      改为整卡纵向滚动，内部 1fr 区改为内容自适应。 */
@@ -2485,6 +2655,16 @@
   display: grid;
   gap: 8px;
   color: #e2e8f0;
+  /* 2026-11-10 用户裁决：日志统一停靠向导底部——margin-top:auto 内容短时沉底，
+     sticky bottom 滚动时停靠视口底部；不透明底+上边框防滚动内容透出；
+     默认展开（logsExpanded 初值 true），收起后只余底部一行（标题+展开按钮） */
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  background: linear-gradient(180deg, rgba(8, 15, 32, 0.98), rgba(2, 6, 23, 0.99));
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  padding-top: 10px;
 }
 
 .story-lock-workspace-log-title {
@@ -2662,12 +2842,14 @@
   display: grid;
   gap: 14px;
   padding: 14px;
+  min-width: 0;
 }
 
 .story-lock-asset-candidate-strip {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
+  min-width: 0;
 }
 
 .story-lock-candidate-card {
@@ -2679,6 +2861,7 @@
   background: rgba(2, 6, 23, 0.74);
   color: #f8fafc;
   min-width: 0;
+  overflow: hidden;
 }
 
 .story-lock-candidate-card.selected {
@@ -2697,13 +2880,21 @@
   gap: 6px;
   color: #e2e8f0;
   font-size: 12px;
+  min-width: 0;
+}
+.story-lock-candidate-meta > div {
+  flex-wrap: wrap;
+}
+.story-lock-candidate-meta .ai-storyboard-status {
+  white-space: nowrap;
 }
 
 .story-lock-asset-detail {
   display: grid;
-  grid-template-columns: minmax(320px, 420px) minmax(520px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+  min-width: 0;
 }
 
 .story-lock-asset-info,
@@ -2712,6 +2903,7 @@
   display: grid;
   gap: 10px;
   align-content: start;
+  min-width: 0;
 }
 
 .story-lock-prompt-stack {
@@ -2971,6 +3163,11 @@
   border-color: rgba(59, 130, 246, 0.55);
 }
 
+/* 帮助浮钮（2026-10-21）：与设置浮钮同族，叠在其上方 */
+.settings-help-fab {
+  bottom: 56px;
+}
+
 /* AI 任务进度横幅：锁定测试/场景渲染/批量渲染的真实阶段展示 */
 .ai-task-progress-list {
   display: flex;
@@ -3194,6 +3391,162 @@
   flex-direction: column;
   gap: 6px;
 }
+
+/* 2026-10-27：提示词卡类别分组（角色/道具/其他；组头含计数，与蓝图要素库同口径） */
+.story-lock-prompt-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.story-lock-prompt-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 4px 2px 0;
+}
+
+.story-lock-prompt-group-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--c-text-inv, #f8fafc);
+}
+
+/* 2026-10-27 出图管理总览：五段状态点（done 绿/partial 黄/todo 灰） */
+.story-lock-five-stages {
+  display: flex;
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.story-lock-stage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.3);
+}
+
+.story-lock-stage-dot.done {
+  background: #34d399;
+}
+
+.story-lock-stage-dot.partial {
+  background: #fbbf24;
+}
+
+.story-lock-stage-dot.todo {
+  background: rgba(148, 163, 184, 0.3);
+}
+
+.story-lock-cardwall-group {
+  margin-bottom: 12px;
+}
+
+/* 2026-10-27 元素出图工作区：提示词摘要（只读）/ 标准系三视图网格 */
+.story-lock-prompt-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.story-lock-prompt-summary .hint {
+  word-break: break-all;
+}
+
+.story-lock-sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.story-lock-sheet-card {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--c-border, rgba(148, 163, 184, 0.14));
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* 2026-10-28 U 波：元素工作区图像限高（用户实测图像占满太占地）+ 三视图左右布局
+   （左栏主图+缩略图横排，右栏操作面板；深色基底+单一强调色 #5eccff 不动） */
+.story-lock-detail-body .story-lock-thing-img {
+  max-height: 260px;
+}
+
+.story-lock-sheet2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.story-lock-sheet2-main {
+  width: 100%;
+  max-height: 320px;
+  min-height: 200px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  background:
+    linear-gradient(45deg, rgba(148, 163, 184, 0.16) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(148, 163, 184, 0.16) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.16) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.16) 75%),
+    rgba(2, 6, 23, 0.6);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+}
+.story-lock-sheet2-main:disabled { cursor: default; }
+.story-lock-sheet2-main img {
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  display: block;
+}
+
+.story-lock-sheet2-thumbs {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.story-lock-sheet2-thumb {
+  width: 72px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 4px;
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+.story-lock-sheet2-thumb.active {
+  border-color: #5eccff;
+  box-shadow: 0 0 0 1px rgba(94, 204, 255, 0.35);
+}
+.story-lock-sheet2-thumb img {
+  width: 100%;
+  max-height: 56px;
+  object-fit: contain;
+  display: block;
+}
+.story-lock-sheet2-thumb-label {
+  font-size: 12px;
+  color: rgba(229, 231, 235, 0.75);
+}
+
+.story-lock-sheet2-ops {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
 .story-lock-plan-row {
   display: flex;
   align-items: center;
@@ -3207,6 +3560,9 @@
   font-weight: 700;
   color: var(--c-text, #e2e8f0);
   min-width: 120px;
+}
+.story-lock-plan-prompt-head .story-lock-plan-name {
+  color: #f59e0b;
 }
 .story-lock-plan-row .hint {
   flex: 1;
@@ -3464,4 +3820,775 @@
 .panel.right .subfold-head {
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
   padding-bottom: 8px;
+}
+
+/* 2026-11-01 场景背景卡紧凑化：board 嵌在向导/弹窗两处，统一用 board 作用域覆盖全局固定高度——提示词可收缩 */
+.scene-bg-board .story-lock-workspace-log-box.ai-storyboard-scene-source {
+  min-height: 0;
+  max-height: none;
+  padding: 8px 12px;
+}
+.scene-bg-board .story-lock-textarea.compact-rows {
+  min-height: 3.2em;
+  max-height: none;
+}
+.scene-bg-board .ai-storyboard-scene-source pre {
+  white-space: pre-wrap;
+}
+.scene-bg-board .ai-storyboard-scene-source pre.ai-storyboard-scene-source-collapsed {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.scene-bg-board .scene-bg-sec-summary {
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 2px 0;
+}
+
+/* 2026-11-02 场景背景卡：整条卡片正文的一张通栏展开/收起条（同「场景原文」行内展开钮样式） */
+.scene-bg-card-body-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px dashed rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.35);
+}
+.scene-bg-card-body-head-label {
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 2026-11-02 场景背景两级管理：列表态（每幕一张小卡，点进详情） */
+.scene-bg-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+.scene-bg-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.5);
+}
+.scene-bg-item-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.scene-bg-item-thumb {
+  width: 72px;
+  height: 96px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: repeating-conic-gradient(rgba(148,163,184,0.14) 0 25%, transparent 0 50%) 0 0 / 12px 12px;
+}
+.scene-bg-item-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.scene-bg-item-info {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.scene-bg-item-title {
+  font-weight: 700;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scene-bg-item-actions {
+  display: grid;
+  gap: 6px;
+  flex: none;
+}
+.scene-bg-item-actions .btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* 2026-11-02 详情卡版式修复：board 同时嵌在向导与弹窗——把弹窗那套尺寸约束按 board 作用域补齐
+   （此前只有 .ai-storyboard-modal-card 前缀生效，向导里大图撑破卡片/内容叠图） */
+.scene-bg-board .ai-storyboard-scene-prompt-card {
+  gap: 8px;
+  padding: 12px 14px;
+}
+.scene-bg-board .ai-storyboard-scene-prompt-card .story-lock-global-head {
+  gap: 8px;
+}
+.scene-bg-board .ai-storyboard-scene-prompt-card .story-lock-prompt-stack {
+  gap: 8px;
+}
+.scene-bg-board .ai-storyboard-scene-prompt-card .story-lock-prompt-section {
+  gap: 6px;
+}
+.scene-bg-board .ai-storyboard-scene-prompt-card .story-lock-textarea {
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+.scene-bg-board .ai-storyboard-scene-thumb {
+  width: 100%;
+  max-height: 300px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  cursor: zoom-in;
+}
+.scene-bg-board .ai-storyboard-scene-thumb-empty {
+  width: 100%;
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(148, 163, 184, 0.25);
+  border-radius: 10px;
+  color: rgba(148, 163, 184, 0.7);
+  font-size: 12px;
+}
+.scene-bg-board .ai-storyboard-scene-side {
+  flex: none;
+  width: 300px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.scene-bg-board .ai-storyboard-scene-card-main {
+  align-items: flex-start;
+}
+@media (max-width: 1100px) {
+  .scene-bg-board .ai-storyboard-scene-card-main {
+    flex-direction: column;
+  }
+  .scene-bg-board .ai-storyboard-scene-side {
+    width: 100%;
+  }
+}
+
+/* 2026-11-02 详情卡定版式：grid 双栏（左图右文），根治 flex 下图文重叠/图撑破 */
+.scene-bg-board .ai-storyboard-scene-card-main {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.scene-bg-board .ai-storyboard-scene-side {
+  width: auto;
+  min-width: 0;
+}
+.scene-bg-board .ai-storyboard-scene-thumb {
+  max-height: 380px;
+}
+@media (max-width: 1100px) {
+  .scene-bg-board .ai-storyboard-scene-card-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 2026-11-02 缩略图定尺：覆盖 base 的固定 168×108（!important 防被早前规则抢） */
+.scene-bg-board .ai-storyboard-scene-thumb {
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0;
+  max-height: 380px;
+  aspect-ratio: auto;
+}
+
+/* grid 项自动最小宽度=图片固有宽度会把定宽列撑破——归零 */
+.scene-bg-board .ai-storyboard-scene-thumb {
+  min-width: 0 !important;
+}
+
+/* side 自身是 grid：不定轨导致 img 的 width:100% 回退固有宽度——定轨+裁剪双保险 */
+.scene-bg-board .ai-storyboard-scene-side {
+  grid-template-columns: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+/* 2026-11-02 详情页重排：提示词在上、出图区在下（候选制同事物卡） */
+.scene-bg-detail-col {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.scene-bg-render-sec {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.18);
+}
+.scene-bg-cand-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.scene-bg-cand {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  width: 132px;
+  padding: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.5);
+}
+.scene-bg-cand.bound {
+  border-color: #5eccff;
+  outline: 1px solid rgba(94, 204, 255, 0.5);
+}
+.scene-bg-cand-img {
+  position: relative;
+  width: 118px;
+  height: 118px;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  overflow: hidden;
+  background: repeating-conic-gradient(rgba(148,163,184,0.14) 0 25%, transparent 0 50%) 0 0 / 12px 12px;
+  cursor: zoom-in;
+}
+.scene-bg-cand-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.scene-bg-cand-badge {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(94, 204, 255, 0.9);
+  color: #06202e;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.scene-bg-cand-size {
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.85);
+}
+.scene-bg-cand-ops {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.scene-bg-cand-empty {
+  padding: 18px;
+  border: 1px dashed rgba(148, 163, 184, 0.25);
+  border-radius: 10px;
+  text-align: center;
+}
+
+/* 详情页单列：提高特异性压过双栏定义（.scene-bg-board .ai-storyboard-scene-card-main 双类） */
+.scene-bg-board .ai-storyboard-scene-card-main.scene-bg-detail-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+:root {
+  --lock-action-primary: #7c3aed;
+  --lock-action-primary-hover: #8b5cf6;
+  --lock-action-primary-active: #6d28d9;
+  --lock-action-primary-text: #ddd6fe;
+}
+
+.btn.lock-action-primary {
+  padding: 8px 12px;
+  border-color: var(--lock-action-primary);
+  background: var(--lock-action-primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+}
+
+.btn.lock-action-primary:hover:not(:disabled) {
+  border-color: var(--lock-action-primary-hover);
+  background: var(--lock-action-primary-hover);
+}
+
+.btn.lock-action-primary:active:not(:disabled) {
+  border-color: var(--lock-action-primary-active);
+  background: var(--lock-action-primary-active);
+}
+
+.btn.lock-action-primary.is-dirty {
+  box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.22);
+}
+
+.story-lock-step {
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.story-lock-step.active {
+  border-color: var(--lock-action-primary-hover);
+  background: rgba(124, 58, 237, 0.2);
+  color: var(--lock-action-primary-text);
+  font-weight: 750;
+}
+
+.story-lock-view-toggle-btn.active,
+.story-lock-grid-filter-group .story-lock-view-toggle-btn.active,
+.story-lock-detail-nav .story-lock-view-toggle-btn.active {
+  border-color: rgba(139, 92, 246, 0.65);
+  background: rgba(124, 58, 237, 0.18);
+  color: var(--lock-action-primary-text);
+  font-weight: 750;
+}
+
+.story-lock-workspace-titlebar .story-lock-view-toggle-btn {
+  font-size: 13px;
+}
+
+.scene-bg-board-toolbar {
+  flex-wrap: wrap;
+}
+
+.scene-prompt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-prompt-generation-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  border-left: 2px solid var(--lock-action-primary-hover);
+  background: rgba(124, 58, 237, 0.07);
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.scene-prompt-doc-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #a78bfa;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.scene-prompt-doc-link:hover {
+  color: var(--lock-action-primary-text);
+}
+
+.btn.scene-prompt-doc-link {
+  padding: 8px;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  background: rgba(124, 58, 237, 0.08);
+  text-decoration: none;
+  font-weight: 650;
+}
+
+.scene-bg-cand-ops .lock-action-primary {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.story-lock-grid-filter-group .story-lock-view-toggle-btn.lock-navigation-primary {
+  min-height: 36px;
+  padding: 8px 16px;
+  border-color: var(--lock-action-primary-hover);
+  background: var(--lock-action-primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.3;
+}
+
+.story-lock-grid-filter-group .story-lock-view-toggle-btn.lock-navigation-primary:hover {
+  border-color: var(--lock-action-primary-hover);
+  background: var(--lock-action-primary-hover);
+  color: #fff;
+}
+
+.story-lock-grid-filter-group .story-lock-view-toggle-btn.lock-navigation-current {
+  min-height: 32px;
+  padding: 8px 12px;
+  border-color: var(--lock-action-primary-hover);
+  background: rgba(124, 58, 237, 0.38);
+  color: #ede9fe;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.story-lock-grid-filter-group .story-lock-view-toggle-btn.lock-navigation-current:hover {
+  background: rgba(139, 92, 246, 0.48);
+  color: #fff;
+}
+
+.story-lock-view-toggle-btn:focus-visible {
+  outline: 2px solid #c4b5fd;
+  outline-offset: 2px;
+}
+
+.scene-bg-board .ai-storyboard-scene-card-main.scene-bg-detail-col {
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.scene-bg-detail-col > .story-lock-prompt-stack,
+.scene-bg-detail-col > .scene-bg-render-sec {
+  min-width: 0;
+}
+
+.scene-bg-detail-col > .scene-bg-render-sec {
+  padding: 0 0 0 16px;
+  border-top: 0;
+  border-left: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.scene-bg-current-preview {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scene-bg-current-preview-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-height: 420px;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.72);
+  cursor: zoom-in;
+}
+
+.scene-bg-current-preview-main img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.scene-bg-current-preview-empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  padding: 16px;
+  border: 1px dashed rgba(148, 163, 184, 0.25);
+  border-radius: 10px;
+  color: rgba(203, 213, 225, 0.72);
+  text-align: center;
+}
+
+.scene-bg-current-caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scene-bg-cand-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+}
+
+.scene-bg-cand {
+  width: auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 8px;
+}
+
+.scene-bg-cand-img {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+}
+
+.scene-bg-cand-img img {
+  object-fit: contain;
+}
+
+.scene-bg-cand-ops {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.scene-bg-cand-ops .btn {
+  white-space: normal;
+}
+
+@media (max-width: 1100px) {
+  .scene-bg-board .ai-storyboard-scene-card-main.scene-bg-detail-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .scene-bg-detail-col > .scene-bg-render-sec {
+    padding: 12px 0 0;
+    border-top: 1px dashed rgba(148, 163, 184, 0.18);
+    border-left: 0;
+  }
+}
+
+.detail-workspace-heading {
+  display: flex;
+  align-items: center;
+  flex: 1 1 360px;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.detail-workspace-title {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 18px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-workspace-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-detail-content,
+.scene-detail-workspace-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.scene-detail-context {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  background: transparent;
+}
+
+.scene-detail-context .ai-storyboard-scene-assets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-storyboard-scene-asset-link {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.08);
+  color: #cbd5e1;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.ai-storyboard-scene-asset-link:hover {
+  border-color: #8b5cf6;
+  background: rgba(124, 58, 237, 0.16);
+  color: #ddd6fe;
+}
+
+.scene-bg-list.story-lock-cardwall {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.scene-bg-item.story-lock-thing-card {
+  display: grid;
+  align-content: start;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 10px;
+}
+
+.scene-bg-item-main.story-lock-thing-main {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scene-bg-item-thumb.story-lock-thing-img {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 3 / 4;
+}
+
+.scene-bg-item-thumb img {
+  object-fit: contain;
+}
+
+.scene-bg-item-info.story-lock-thing-info {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scene-bg-item-title.story-lock-thing-name {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.scene-bg-item-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-bg-item-actions .btn {
+  white-space: normal;
+}
+
+@media (max-width: 720px) {
+  .story-lock-detail-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .detail-workspace-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .detail-workspace-title {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .scene-bg-list.story-lock-cardwall {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+}
+
+.scene-generation-progress {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(139, 92, 246, 0.22);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.scene-generation-progress.bad {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.scene-generation-progress.ok {
+  border-color: rgba(74, 222, 128, 0.24);
+}
+
+.scene-generation-progress-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scene-generation-progress-message {
+  flex: 1 1 160px;
+  min-width: 0;
+  color: #cbd5e1;
+  overflow-wrap: anywhere;
+}
+
+.scene-generation-progress-count,
+.scene-generation-progress-time {
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.scene-generation-progress-batch {
+  color: #ddd6fe;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scene-generation-progress-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+}
+
+.scene-generation-progress-track span {
+  display: block;
+  height: 100%;
+  background: #8b5cf6;
+  transition: width 0.2s ease;
 }

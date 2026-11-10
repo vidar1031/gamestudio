@@ -1,6 +1,8 @@
 // 当前生效·只读摘要条（ui_设置定义.md §4.1）：
-// 行序固定 故事分镜/图像提示词/提示词翻译/审核模型/图像服务/语音/视频，末尾一行界面偏好。
+// 行序固定 故事分镜/图像提示词/提示词翻译/审核模型/图像服务/语音/视频/守护台关联，末尾一行界面偏好。
+import { useEffect, useState } from 'react'
 import type { StudioEffectiveConfig, StudioSettings } from './settingsApi'
+import { getControlLink, type StudioControlLink } from './settingsApi'
 
 type SummaryLine = { label: string; text: string; warn: boolean }
 
@@ -14,6 +16,20 @@ function textLine(label: string, enabled: boolean, cfg: { provider: string; mode
 export default function EffectiveSummary(props: { settings: StudioSettings | null; effective: StudioEffectiveConfig | null }) {
   const e = props.effective
   const s = props.settings
+  const [controlLink, setControlLink] = useState<StudioControlLink | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    getControlLink()
+      .then((link) => {
+        if (alive) setControlLink(link)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
   if (!e) {
     return (
       <div className="settings-summary">
@@ -62,6 +78,18 @@ export default function EffectiveSummary(props: { settings: StudioSettings | nul
     const p = String(e.video?.provider || '').trim()
     if (!p || p === 'none') lines.push({ label: '视频', text: '未配置', warn: true })
     else lines.push({ label: '视频', text: `${p} / ${e.video?.resolution || '1080p'} · ${e.video?.fps || 30}fps`, warn: false })
+  }
+
+  // 调用通道行（2026-10-21 用户裁决口径：直连 / 代理（守护台）二选一，锁态常显）
+  const leaseOn = e.control?.leaseEnabled !== false
+  if (!leaseOn) {
+    lines.push({ label: '调用通道', text: '直连（本地模型）', warn: false })
+  } else if (controlLink && controlLink.reachable) {
+    lines.push({ label: '调用通道', text: '代理（守护台）· 在线', warn: false })
+  } else if (controlLink && !controlLink.reachable) {
+    lines.push({ label: '调用通道', text: '代理（守护台）· 离线（生成将被阻断）', warn: true })
+  } else {
+    lines.push({ label: '调用通道', text: '代理（守护台）· 检测中…', warn: false })
   }
 
   const theme = String(e.appearance?.theme || 'dark')

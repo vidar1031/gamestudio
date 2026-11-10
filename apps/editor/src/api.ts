@@ -744,7 +744,7 @@ export async function generateBackgroundAi(
  */
 export async function analyzeBackgroundPromptAi(
   projectId: string,
-  payload: Pick<AiBackgroundRequest, 'userInput' | 'globalPrompt' | 'globalNegativePrompt' | 'aspectRatio' | 'style' | 'timeoutMs'> & { outputLanguage?: 'en' | 'zh' }
+  payload: Pick<AiBackgroundRequest, 'userInput' | 'globalPrompt' | 'globalNegativePrompt' | 'aspectRatio' | 'style' | 'timeoutMs'> & { outputLanguage?: 'en' | 'zh'; backgroundOnly?: boolean }
 ): Promise<{
   result: {
     globalPrompt: string
@@ -796,13 +796,15 @@ export async function generateStoryBibleAi(
 export type StoryPoseStateItem = { characterId: string; pose: string; view: string; action: string; expression: string }
 export type StoryPoseStateScene = { sceneId: string; sceneName: string; characterStates: StoryPoseStateItem[] }
 
+// K 波（2026-10-27）：payload.persist=true 时服务端提取后直接写回 plan poseRequirements（蓝图定义期一键写回）
 export async function extractStoryPoseStatesAi(
-  projectId: string
-): Promise<{ poseStates: { scenes: StoryPoseStateScene[] }; assetByCharacterId: Record<string, { assetId: string; assetName: string }> }> {
+  projectId: string,
+  payload?: { persist?: boolean; timeoutMs?: number }
+): Promise<{ poseStates: { scenes: StoryPoseStateScene[] }; assetByCharacterId: Record<string, { assetId: string; assetName: string }>; persisted?: boolean }> {
   const resp = await fetch(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/pose-states`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}'
+    body: JSON.stringify(payload || {})
   })
   const json = (await resp.json().catch(() => null)) as any
   if (!resp.ok || !json || json.success !== true) {
@@ -823,6 +825,8 @@ export type StoryAssetPlan = {
   excludedAssetIds?: string[]
   assets: any[]
   scenes: any[]
+  // B 波（2026-10-25，§4.5）：场景级配音记录——sceneId → { voiceId, audioAssetUri, durationMs, text, generatedAt, status }
+  sceneVoices?: Record<string, { voiceId?: string; audioAssetUri?: string; durationMs?: number | null; text?: string; generatedAt?: string; status?: string }>
   summary: {
     assetCount: number
     sceneCount: number
@@ -844,6 +848,43 @@ export type StoryAssetPlanAsset = {
   referenceStatus?: string
   primaryReferenceAssetId?: string
   primaryReferenceAssetUri?: string
+  // 2026-10-27 标准系三视图（出图管理总览新环节）：正/侧/背逐视角单图，逐张锁定
+  // R 波服务端落地：views 候选带评审分数/状态（pending=评审通道挂起待人工复核），lockedAt=人工锁定凭据
+  modelSheet?: {
+    views?: Array<{
+      key: 'front' | 'side' | 'back'
+      assetUri?: string
+      prompt?: string
+      score?: number
+      reason?: string
+      reviewStatus?: 'skipped' | 'reviewed' | 'rejected' | 'pending'
+      reviewId?: string
+      createdAt?: string
+      lockedAt?: string
+      // T 波：重出覆盖已锁视角时的旧锁定凭据留痕（前端「重出待锁」挑战态）
+      prevLockedAt?: string
+    }>
+    lockedAt?: string
+    testRuns?: Array<{
+      runId: string
+      engine: 'charturn' | 'mvadapter'
+      mode: 'per-view'
+      seed?: number
+      status: 'reviewed' | 'rejected' | 'pending' | 'failed'
+      primaryReferenceAssetUri?: string
+      views?: Array<{
+        key: 'front' | 'side' | 'back'
+        assetUri?: string
+        score?: number
+        reason?: string
+        reviewStatus?: 'skipped' | 'reviewed' | 'rejected' | 'pending'
+        bgPurity?: number
+        generation?: Record<string, unknown>
+      }>
+      error?: string
+      createdAt?: string
+    }>
+  }
   referencePromptHint?: string
   referencePromptZh?: string
   referencePromptEn?: string
@@ -926,16 +967,19 @@ export type StoryPropStateProp = {
   mergeInto: { containerPropId: string; note?: string } | null
 }
 
+// M 波（2026-10-27）：persist 参数（服务端提取后直接写回 plan）
 export async function extractStoryPropStatesAi(
-  projectId: string
-): Promise<{ propStates: { props: StoryPropStateProp[] }; assetByPropId: Record<string, { assetId: string; assetName: string }> }> {
+  projectId: string,
+  payload?: { persist?: boolean; timeoutMs?: number }
+): Promise<{ propStates: { props: StoryPropStateProp[] }; assetByPropId: Record<string, { assetId: string; assetName: string }>; persisted?: boolean }> {
   const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/prop-states`, {
     method: 'POST',
-    body: JSON.stringify({})
+    body: JSON.stringify(payload || {})
   })
   return {
     propStates: (json.propStates as any) || { props: [] },
-    assetByPropId: (json.assetByPropId as any) || {}
+    assetByPropId: (json.assetByPropId as any) || {},
+    persisted: Boolean(json.persisted)
   }
 }
 
@@ -956,6 +1000,66 @@ export async function generatePropStateVariantAi(
     score: Number.isFinite(Number(json.score)) ? Number(json.score) : undefined,
     reason: typeof json.reason === 'string' ? json.reason : undefined,
     reviewUnavailable: typeof json.reviewUnavailable === 'string' ? json.reviewUnavailable : undefined
+  }
+}
+
+// R 波（2026-10-27）：标准系三视图生成（逐视角串行单图，IPAdapter 延续已锁主参考；manual 模式返回 202 pendingReview）
+export async function generateModelSheetAi(
+  projectId: string,
+  assetId: string,
+  payload?: {
+    views?: ('front' | 'side' | 'back')[]
+    mode?: 'sheet' | 'per-view'
+    engine?: 'charturn' | 'mvadapter'
+    seed?: number
+    experiment?: boolean
+    runId?: string
+  }
+): Promise<{ taskId: string; views?: any[]; run?: any; plan?: StoryAssetPlan; pendingReview?: any; httpStatus?: number }> {
+  const res = await fetch(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(assetId)}/model-sheet/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(String(json?.message || json?.error || `http_${res.status}`))
+  return {
+    taskId: String(json.taskId || ''),
+    views: Array.isArray(json.views) ? json.views : Array.isArray(json.run?.views) ? json.run.views : undefined,
+    run: json.run,
+    plan: (json.plan as StoryAssetPlan) || undefined,
+    pendingReview: json.pendingReview || undefined,
+    httpStatus: res.status
+  }
+}
+
+// Z 波：sheet 栏序人工指定（评审通道死时兜底）——pendingCells 三栏指定 front/side/back 后写 views
+export async function assignModelSheetViews(
+  projectId: string,
+  assetId: string,
+  assignments: Record<string, 'front' | 'side' | 'back'>
+): Promise<{ success?: boolean; plan?: StoryAssetPlan }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(assetId)}/model-sheet/assign-views`, {
+    method: 'POST',
+    body: JSON.stringify({ assignments })
+  })
+  return { success: Boolean(json?.success), plan: (json.plan as StoryAssetPlan) || undefined }
+}
+
+// R 波：三视图视角人工锁定（写 lockedAt + lock_confirm 留痕；幂等）
+export async function lockModelSheetView(
+  projectId: string,
+  assetId: string,
+  view: 'front' | 'side' | 'back'
+): Promise<{ lockedAt: string; allLocked: boolean; plan?: StoryAssetPlan }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(assetId)}/model-sheet/lock`, {
+    method: 'POST',
+    body: JSON.stringify({ view })
+  })
+  return {
+    lockedAt: String(json.lockedAt || ''),
+    allLocked: Boolean(json.allLocked),
+    plan: (json.plan as StoryAssetPlan) || undefined
   }
 }
 
@@ -1063,6 +1167,9 @@ export async function analyzeStoryAssetReferenceAi(
 export type AiTaskProgress = {
   taskId: string
   projectId: string
+  sceneId?: string
+  // 2026-11-10：可选资产维度（参考图抽卡按事物匹配任务，详情面板状态提示）
+  assetId?: string
   kind: string
   stage: string
   current: number
@@ -1080,10 +1187,103 @@ export async function listProjectAiTasks(projectId: string): Promise<AiTaskProgr
   return Array.isArray(json.tasks) ? (json.tasks as AiTaskProgress[]) : []
 }
 
-// 2026-10-20 全局任务台账（跨项目）：全局任务指示器用——任何长任务都在界面上可见，不经守护台
+// 2026-10-25 全局任务台账（跨项目）：全局任务指示器用——任何长任务都在界面上可见，不经守护台
 export async function listAllAiTasks(includeDone = true): Promise<AiTaskProgress[]> {
   const json = await j(`${base()}/api/ai/tasks${includeDone ? '' : '?includeDone=0'}`)
   return Array.isArray(json.tasks) ? (json.tasks as AiTaskProgress[]) : []
+}
+
+// 2026-11-09 租约调度态（守护台资源调度）：排队/换模/获准随台账轮询透出
+export type AiLeaseStatus = {
+  reqId: string
+  kind: string
+  holder: string
+  model: string
+  projectId: string
+  phase: 'requesting' | 'queued' | 'swapping' | 'waiting' | 'acquired' | string
+  phaseLabel: string
+  queuePosition: number
+  queueLength: number
+  swapInFlight: boolean
+  since: string
+  updatedAt: string
+}
+
+// §13 守护台推送的统一任务状态（七态 + reason；requestId+version 幂等收件箱）
+export type ControlTaskStatus = {
+  requestId: string
+  type: string
+  state: 'received' | 'queued' | 'processing' | 'blocked' | 'succeeded' | 'failed' | 'cancelled' | string
+  reason: string | null
+  message: string | null
+  retryable: boolean | null
+  model: string | null
+  taskId: string | null
+  progress: { step: number; total: number } | null
+  resultRef: string | null
+  stale: boolean
+  version: number
+  updatedAt: string
+}
+
+export async function listAllAiTasksWithLease(includeDone = true): Promise<{ tasks: AiTaskProgress[]; leaseStatuses: AiLeaseStatus[]; controlTaskStatuses: ControlTaskStatus[] }> {
+  const json = await j(`${base()}/api/ai/tasks${includeDone ? '' : '?includeDone=0'}`)
+  return {
+    tasks: Array.isArray(json.tasks) ? (json.tasks as AiTaskProgress[]) : [],
+    leaseStatuses: Array.isArray(json.leaseStatuses) ? (json.leaseStatuses as AiLeaseStatus[]) : [],
+    controlTaskStatuses: Array.isArray(json.controlTaskStatuses) ? (json.controlTaskStatuses as ControlTaskStatus[]) : []
+  }
+}
+
+// 本地服务快捷启动（设置页「本地服务」卡）：状态探测 + 白名单启动（OMLX GUI App / ComfyUI Terminal 可见窗口）
+export type StudioToolInfo = { key: string; label: string; url: string; online: boolean; latencyMs?: number }
+export async function getStudioTools(): Promise<StudioToolInfo[]> {
+  const json = await j(`${base()}/api/studio/tools`)
+  return Array.isArray(json.tools) ? (json.tools as StudioToolInfo[]) : []
+}
+export async function launchStudioTool(tool: string): Promise<{ success?: boolean; alreadyRunning?: boolean; message?: string; error?: string }> {
+  const json = await j(`${base()}/api/studio/tools/${encodeURIComponent(tool)}/launch`, { method: 'POST', body: '{}' })
+  return json as any
+}
+
+// 任务管理（2026-10-25 用户指令）：已结束任务可删除（进行中拒绝）/ 一键清理已结束
+export async function cancelAiTaskById(taskId: string): Promise<boolean> {
+  const json = await j(`${base()}/api/ai/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST', body: '{}' })
+  return Boolean(json?.success)
+}
+export async function deleteAiTaskById(taskId: string): Promise<boolean> {
+  const json = await j(`${base()}/api/ai/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+  return Boolean(json?.success)
+}
+export async function clearFinishedAiTasks(): Promise<number> {
+  const json = await j(`${base()}/api/ai/tasks/clear-finished`, { method: 'POST', body: '{}' })
+  return Number(json?.removed || 0)
+}
+
+// 要素分配（2026-10-25 用户指令：蓝图右栏"分配到场景"激活，写 plan.scenes[].assetIds 同源）
+export async function assignPlanSceneAsset(
+  projectId: string,
+  sceneId: string,
+  assetId: string,
+  action: 'add' | 'remove'
+): Promise<{ success?: boolean; changed?: boolean; sceneAssetCount?: number; message?: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/plan/scenes/${encodeURIComponent(sceneId)}/assign`, {
+    method: 'POST',
+    body: JSON.stringify({ assetId, action })
+  })
+  return json as any
+}
+
+// 手工新增计划资产（2026-10-26 用户实测：要素库 + 号产出真实计划资产；同名同类幂等合并）
+export async function addPlanAsset(
+  projectId: string,
+  payload: { name: string; category: 'character' | 'location' | 'prop'; sceneId?: string }
+): Promise<{ success?: boolean; added?: boolean; asset?: { id: string; name: string; category: string }; message?: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/plan/assets`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return json as any
 }
 
 // 出图总账：服务端只读聚合（资产锁定/场景绑定/总进度），用于全局出图进度展示
@@ -1269,6 +1469,52 @@ export async function approveAllImageReviewsAi(projectId: string, phase: string)
     body: JSON.stringify({ phase })
   })
   return { okCount: Number(json.okCount || 0), total: Number(json.total || 0) }
+}
+
+// 项目 AI 事件订阅（SSE，替代 1.5s 轮询）：服务端在任务台账/图片审核/出图总账变化时推轻量信号，
+// 客户端按类型去抖后回调，由调用方重拉对应只读接口（数据真相源仍是 GET 接口）。
+// 返回清理函数；服务端不支持（从未收到事件即连接失败/被代理吃掉）时返回 null，调用方回退定时轮询。
+export type ProjectAiSignalType = 'tasks' | 'reviews' | 'coverage'
+
+export function subscribeProjectAiEvents(
+  projectId: string,
+  handlers: { tasks?: () => void; reviews?: () => void; coverage?: () => void; onUnavailable?: () => void }
+): (() => void) | null {
+  const pid = String(projectId || '').trim()
+  if (!pid || typeof window === 'undefined' || typeof (window as any).EventSource !== 'function') return null
+  let es: EventSource | null = null
+  try {
+    es = new EventSource(`${base()}/api/projects/${encodeURIComponent(pid)}/ai/events`)
+  } catch (_) {
+    return null
+  }
+  const DEBOUNCE_MS = 250
+  const timers: Record<string, number | undefined> = { tasks: undefined, reviews: undefined, coverage: undefined }
+  const fire = (type: ProjectAiSignalType) => {
+    const fn = type === 'tasks' ? handlers.tasks : type === 'reviews' ? handlers.reviews : handlers.coverage
+    if (!fn) return
+    if (timers[type]) window.clearTimeout(timers[type]!)
+    timers[type] = window.setTimeout(() => { timers[type] = undefined; fn() }, DEBOUNCE_MS)
+  }
+  let gotEvent = false
+  es.onmessage = (ev) => {
+    gotEvent = true
+    try {
+      const data = JSON.parse(ev.data)
+      const type = String(data?.type || '')
+      if (type === 'tasks' || type === 'reviews' || type === 'coverage') fire(type as ProjectAiSignalType)
+    } catch (_) { /* 忽略坏包 */ }
+  }
+  es.onerror = () => {
+    if (gotEvent) return // 建立后断开：交 EventSource 自动重连，重连成功会再推全量 sync 信号
+    // 从未收到事件：端点不存在/网络不可达，关闭订阅并通知调用方回退定时轮询
+    es?.close()
+    handlers.onUnavailable?.()
+  }
+  return () => {
+    for (const t of Object.values(timers)) if (t) window.clearTimeout(t)
+    es?.close()
+  }
 }
 
 export async function optimizeStoryAssetReferenceAi(
@@ -1562,6 +1808,9 @@ export type AiCharacterSpriteRequest = {
   sequentialImageGeneration?: string
   // 2026-09-01 姿势变体高级参数：enabled=true 强制走主参考 IPAdapter 链并覆盖 env 默认档位
   ipadapter?: { enabled?: boolean; weight?: number; startAt?: number; endAt?: number }
+  // R 波项 2（2026-10-27）：计划资产 id + 姿势视角语义文本（如「背面 奔跑」）——资产已锁三视图时按视角吃对应视图作身份锚
+  planAssetId?: string
+  poseViewText?: string
 }
 
 export async function generateCharacterSpriteAi(
@@ -1955,6 +2204,116 @@ export async function getStudioImageModels(payload?: { settings?: StudioSettings
   }
 }
 
+// ===== B2：AI 构图预排（蓝图层前置；复用既有 composition/placements 端点，2026-10-21） =====
+export async function analyzeSceneElements(
+  projectId: string,
+  sceneId: string
+): Promise<{ ok?: boolean; added?: number; updated?: number; sceneElements?: number; sceneId?: string; elements?: Array<{ name?: string; category?: string }> }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/analyze-elements`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  })
+  return json as any
+}
+
+export async function runStoryCompositionAi(
+  projectId: string,
+  payload?: { persist?: boolean; timeoutMs?: number }
+): Promise<{ composition: any; persisted: boolean; meta: any }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/composition`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return { composition: json.composition, persisted: Boolean(json.persisted), meta: json.meta }
+}
+
+export async function applyStoryCompositionPlacements(
+  projectId: string,
+  payload?: { sceneIds?: string[]; applyComposition?: boolean }
+): Promise<any> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/placements`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  })
+  return json
+}
+
+// 2026-11-10：合成导出——画布合成结果（底图+立绘分层）上传为该幕图库新版本（绑定走既有 /bind 链）
+export async function uploadStorySceneCompositeImage(
+  projectId: string,
+  sceneId: string,
+  dataBase64: string
+): Promise<{ success?: boolean; assetPath?: string; message?: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/images/upload`, {
+    method: 'POST',
+    body: JSON.stringify({ dataBase64 })
+  })
+  return json as any
+}
+
+export async function produceStorySceneLayeredAi(
+  projectId: string,
+  sceneId: string,
+  payload: { poses: any[] }
+): Promise<any> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/layered-produce`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return json
+}
+
+// D1（2026-10-25）：占位预演拖动编排 → 该幕构图需求单草稿写回（窄写口，仅坐标；语义字段服务端沿用/补齐）
+export async function saveSceneCompositionDraft(
+  projectId: string,
+  sceneId: string,
+  items: Array<{ subjectId: string; x: number; y: number; scale?: number; zIndex?: number; flipX?: boolean; flipY?: boolean; stateKey?: string }>
+): Promise<{ success?: boolean; items?: number }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/composition-draft`, {
+    method: 'PUT',
+    body: JSON.stringify({ items })
+  })
+  return json as any
+}
+
+// B 波（2026-10-25，§4.5）：场景配音生成（真实合成；音频落项目 assets/ai/voice/，写回 plan.sceneVoices）
+export async function generateSceneVoice(
+  projectId: string,
+  sceneId: string,
+  payload: { voiceId: string; speed: number; text?: string }
+): Promise<{ success?: boolean; audioAssetUri?: string; durationMs?: number | null; voiceId?: string }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/scenes/${encodeURIComponent(sceneId)}/voice`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  return json as any
+}
+
+// K 波（2026-10-27，姿态需求定义前移蓝图）：需求清单写口（即时落盘，计划真相源编辑）
+export async function saveAssetPoseRequirements(
+  projectId: string,
+  assetId: string,
+  requirements: any[]
+): Promise<{ success?: boolean; poseRequirements?: any[] }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/${encodeURIComponent(assetId)}/pose-requirements`, {
+    method: 'PUT',
+    body: JSON.stringify({ requirements })
+  })
+  return json as any
+}
+
+// M 波（2026-10-27）：AI 补齐中文名（用户触发；LLM 产映射，确定性双修 plan+圣经实体名）
+export async function normalizeAssetNamesAi(
+  projectId: string
+): Promise<{ success?: boolean; changed?: Array<{ id: string; from: string; to: string }>; skipped?: string[] }> {
+  const json = await j(`${base()}/api/projects/${encodeURIComponent(projectId)}/ai/story/assets/normalize-names`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  })
+  return json as any
+}
+
+
 export async function testStudioImage(payload: {
   settings?: StudioSettings
   prompt?: string
@@ -1996,7 +2355,7 @@ export async function preflightStudioImage(payload?: {
   return { ok, checks, message: message || undefined }
 }
 
-// ===== GS-53 场景图审核（守护台审图中心接入，2026-10-14） =====
+// ===== TS-53 场景图审核（守护台审图中心接入，2026-10-14） =====
 export type SceneReviewRecord = {
   at?: string
   kind?: string

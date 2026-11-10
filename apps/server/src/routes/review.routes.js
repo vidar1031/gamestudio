@@ -6,9 +6,9 @@ import { spawn } from 'node:child_process'
 import { mkdir, readFile, readdir, rename, stat, writeFile, rm, copyFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import crypto from 'node:crypto'
-import { listAiTasks, updateAiTask } from '../ai/taskProgress.js'
+import { createAiTask, listAiTasks, updateAiTask } from '../ai/taskProgress.js'
 import { sniffImageMetaFromBytes, verifyStoryAssetReferenceFile } from '../ai/storyAssetReferenceGate.js'
-import { reviewCharacterPoseConsistencyWithAi, reviewCharacterPoseConsistencyWithLocalVl } from '../ai/characterPoseReview.js'
+import { reviewCharacterPoseConsistencyWithAi, reviewCharacterPoseConsistencyWithLocalVl, classifyCharacterViewWithAi, classifyCharacterViewWithLocalVl, reviewModelSheetWholeWithAi, reviewModelSheetWholeWithLocalVl } from '../ai/characterPoseReview.js'
 import { reviewStoryPromptLocally, reviewStoryPromptWithAi } from '../ai/promptReview.js'
 import { normalizeStoryboardPromptReviewInput, reviewStoryboardPromptLocally, reviewStoryboardPromptWithAi } from '../ai/storyboardPromptReview.js'
 import { getStoryImageCoverage } from '../ai/storyCoverage.js'
@@ -98,6 +98,7 @@ app.post('/api/projects/:id/ai/storyboard/prompt-review', async (c) => {
   let aiReview = { ...localReview }
   let meta = { provider: 'local', model: null, api: null, durationMs: 0, note: 'local_precheck_only' }
   let aiError = null
+  const task = provider && provider !== 'none' ? createAiTask(id, 'story.storyboard.prompt_review', { total: 1, message: 'AI 评分场景提示词' }) : null
 
   try {
     if (provider && provider !== 'none') {
@@ -108,12 +109,14 @@ app.post('/api/projects/:id/ai/storyboard/prompt-review', async (c) => {
       }
     }
   } catch (e) {
+    if (e?.code === 'AI_TASK_CANCELLED') return c.json({ success: false, error: 'task_cancelled_by_user', message: '评分已停止', taskId: task?.taskId }, 409)
     aiError = {
       message: e instanceof Error ? e.message : String(e),
       status: e && e.status ? Number(e.status) : null,
       code: e && e.code ? String(e.code) : null
     }
   }
+  if (task) updateAiTask(task.taskId, { done: true, stage: aiError ? 'failed' : 'done', current: 1, error: aiError?.message || '', message: aiError ? 'AI 评分失败，保留本地预检' : '提示词评分完成' })
 
   return c.json({
     success: true,
@@ -177,6 +180,7 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
     })
   }
 
+  const reviewTask = createAiTask(id, 'story.blueprint.review', { total: 1, message: 'AI 解释蓝图问题' })
   try {
     const ai = await reviewBlueprintViaOpenAI({
       projectTitle: project && project.title ? String(project.title) : '',
@@ -209,8 +213,11 @@ app.post('/api/projects/:id/ai/review/blueprint', async (c) => {
         meta: reviewMeta
       })
     } catch (_) {}
-    return c.json({ success: true, review: ai.review, meta: reviewMeta, report: compiled.report, validation })
+    updateAiTask(reviewTask.taskId, { done: true, stage: 'done', current: 1, message: '蓝图 AI 解释完成' })
+    return c.json({ success: true, review: ai.review, meta: reviewMeta, report: compiled.report, validation, taskId: reviewTask.taskId })
   } catch (e) {
+    if (e?.code === 'AI_TASK_CANCELLED') return c.json({ success: false, error: 'task_cancelled_by_user', message: '蓝图解释已停止', taskId: reviewTask.taskId }, 409)
+    updateAiTask(reviewTask.taskId, { done: true, stage: 'failed', error: e instanceof Error ? e.message : String(e) })
     try {
       console.error('[talkscene] ai blueprint review failed:', e instanceof Error ? e.message : String(e))
     } catch (_) {}
@@ -398,6 +405,8 @@ app.post('/api/projects/:id/ai/character/pose-review', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const characterId = String(body?.characterId || '').trim()
   const planAssetId = String(body?.planAssetId || '').trim()
+  // T 波（2026-10-28）：视角正确性硬门槛入参（三视图 side/back 评审用；空=不按视角判，兼容既有调用）
+  const expectView = String(body?.expectView || '').trim().toLowerCase()
   const relIn = String(body?.assetPath || '').trim().replace(/^\/+/, '')
   if (!characterId && !planAssetId) return c.json({ success: false, error: 'missing_characterId', message: 'characterId/planAssetId 至少提供一个' }, 400)
   if (!relIn || !relIn.startsWith('assets/')) {
@@ -406,6 +415,92 @@ app.post('/api/projects/:id/ai/character/pose-review', async (c) => {
   const candAbs = path.join(dir, relIn)
   if (!candAbs.startsWith(dir)) return c.json({ success: false, error: 'invalid_path', message: 'assetPath 越界' }, 400)
   if (!(await ctx.existsFile(candAbs))) return c.json({ success: false, error: 'file_not_found', message: '候选图不存在' }, 404)
+
+  // Z 波：classify 模式——单图视角分类（sheet 栏序识别用；不需主参考对比，只发候选图）
+  const classifyMode = body?.classify === true || String(body?.mode || '').trim() === 'classify'
+  if (classifyMode) {
+    const studio0 = await getEffectiveStudioConfig(ctx.ROOT)
+    const reviewCfg0 = (studio0 && studio0.effective && studio0.effective.review && typeof studio0.effective.review === 'object') ? studio0.effective.review : {}
+    const providerOverride0 = String(body?.provider || '').trim().toLowerCase()
+    const providerSetting0 = ['kimi', 'local_vl', 'auto'].includes(providerOverride0)
+      ? providerOverride0
+      : String(process.env.STUDIO_POSE_REVIEW_PROVIDER || reviewCfg0.poseReviewProvider || 'local_vl').trim().toLowerCase()
+    const apiKey0 = String(process.env.MOONSHOT_API_KEY || '').trim()
+    const useKimi0 = providerSetting0 === 'kimi' || (providerSetting0 === 'auto' && Boolean(apiKey0))
+    try {
+      const candBytes = await readFile(candAbs)
+      const candSniff = sniffImageMetaFromBytes(candBytes)
+      if (!candSniff) return c.json({ success: false, error: 'invalid_image', message: '图片格式不可识别' }, 400)
+      const dataUrl = `data:${candSniff.contentType};base64,${candBytes.toString('base64')}`
+      const out = useKimi0
+        ? await classifyCharacterViewWithAi({
+            apiKey: apiKey0,
+            baseUrl: process.env.MOONSHOT_BASE_URL || 'https://api.kimi.com/coding/v1',
+            model: 'kimi-for-coding',
+            candidateImageDataUrl: dataUrl
+          })
+        : await classifyCharacterViewWithLocalVl({
+            baseUrl: String(reviewCfg0.poseReviewBaseUrl || process.env.LOCALOXML_BASE_URL || 'http://127.0.0.1:18888/v1').trim(),
+            apiKey: String(process.env.LOCALOXML_API_KEY || 'omlx123').trim(),
+            model: String(reviewCfg0.poseReviewModel || process.env.STUDIO_POSE_REVIEW_MODEL || 'gemma-4-26b-a4b-it-4bit').trim(),
+            candidateImageDataUrl: dataUrl
+          })
+      return c.json({ success: true, view: out.view, reason: out.reason || '', provider: out.meta?.provider || null })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
+    }
+  }
+
+  // AA 波：sheetWhole 模式——sheet 整图评审（三栏视角齐全+身份+配色+底纯；主参考+sheet 双图）
+  const sheetWholeMode = String(body?.mode || '').trim() === 'sheetWhole'
+  if (sheetWholeMode) {
+    const studio0 = await getEffectiveStudioConfig(ctx.ROOT)
+    const reviewCfg0 = (studio0 && studio0.effective && studio0.effective.review && typeof studio0.effective.review === 'object') ? studio0.effective.review : {}
+    const providerOverride0 = String(body?.provider || '').trim().toLowerCase()
+    const providerSetting0 = ['kimi', 'local_vl', 'auto'].includes(providerOverride0)
+      ? providerOverride0
+      : String(process.env.STUDIO_POSE_REVIEW_PROVIDER || reviewCfg0.poseReviewProvider || 'local_vl').trim().toLowerCase()
+    const apiKey0 = String(process.env.MOONSHOT_API_KEY || '').trim()
+    const useKimi0 = providerSetting0 === 'kimi' || (providerSetting0 === 'auto' && Boolean(apiKey0))
+    try {
+      const candBytes = await readFile(candAbs)
+      const candSniff = sniffImageMetaFromBytes(candBytes)
+      if (!candSniff) return c.json({ success: false, error: 'invalid_image', message: '图片格式不可识别' }, 400)
+      // 主参考 bytes（sheetWhole 必须有身份基准——沿 planAssetId 分支解析）
+      const plan0 = await ctx.readStoryAssetPlanIfExists(id)
+      const pa0 = planAssetId && plan0 && Array.isArray(plan0.assets) ? plan0.assets.find((a) => String(a && a.id || '').trim() === planAssetId) || null : null
+      const refUri0 = String((pa0 && (pa0.primaryReferenceAssetUri || pa0.latestRecommendedReferenceAssetUri)) || '').trim()
+        .replace(/^https?:\/\/[^/]+\/project-assets\/[^/]+\//i, '')
+        .replace(/^\/project-assets\/[^/]+\//, '')
+      let refBytes0 = null
+      if (refUri0.startsWith('assets/')) {
+        const refAbs0 = path.join(dir, refUri0)
+        if (refAbs0.startsWith(dir) && (await ctx.existsFile(refAbs0))) refBytes0 = await readFile(refAbs0)
+      }
+      if (!refBytes0) return c.json({ success: false, error: 'reference_not_found', message: '该资产没有可用的锁定主参考图，无法评审 sheet' }, 400)
+      const refSniff0 = sniffImageMetaFromBytes(refBytes0)
+      const out = useKimi0
+        ? await reviewModelSheetWholeWithAi({
+            apiKey: apiKey0,
+            baseUrl: process.env.MOONSHOT_BASE_URL || 'https://api.kimi.com/coding/v1',
+            model: 'kimi-for-coding',
+            referenceImageDataUrl: `data:${refSniff0.contentType};base64,${refBytes0.toString('base64')}`,
+            sheetImageDataUrl: `data:${candSniff.contentType};base64,${candBytes.toString('base64')}`
+          })
+        : await reviewModelSheetWholeWithLocalVl({
+            baseUrl: String(reviewCfg0.poseReviewBaseUrl || process.env.LOCALOXML_BASE_URL || 'http://127.0.0.1:18888/v1').trim(),
+            apiKey: String(process.env.LOCALOXML_API_KEY || 'omlx123').trim(),
+            model: String(reviewCfg0.poseReviewModel || process.env.STUDIO_POSE_REVIEW_MODEL || 'gemma-4-26b-a4b-it-4bit').trim(),
+            referenceImageDataUrl: `data:${refSniff0.contentType};base64,${refBytes0.toString('base64')}`,
+            sheetImageDataUrl: `data:${candSniff.contentType};base64,${candBytes.toString('base64')}`
+          })
+      return c.json({ success: true, score: out.score, reason: out.reason, views: out.views, provider: out.meta?.provider || null })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      return c.json({ success: false, error: 'ai_failed', message: msg }, 502)
+    }
+  }
 
   // 解析锁定主参考（与 ch.sprite 同款逻辑：characterId → ch.ai.referenceAssetId，回退 imageAssetId → uri 转项目内路径）
   // 2026-09-16 道具泛化：planAssetId → 计划资产 primaryReferenceAssetUri（回退 latestRecommended），供道具状态变体评审复用同一链路。
@@ -460,7 +555,11 @@ app.post('/api/projects/:id/ai/character/pose-review', async (c) => {
   // 背景：Kimi 周配额（7 天窗口）耗尽时评审全灭；gemma-4-26b-a4b-it-4bit 经 OMLX 实测多模态可用（2026-09-08 用户指令：默认本地优先，Kimi 留给用户自行切换）。
   const studio = await getEffectiveStudioConfig(ctx.ROOT)
   const reviewCfg = (studio && studio.effective && studio.effective.review && typeof studio.effective.review === 'object') ? studio.effective.review : {}
-  const providerSetting = String(process.env.STUDIO_POSE_REVIEW_PROVIDER || reviewCfg.poseReviewProvider || 'local_vl').trim().toLowerCase()
+  // X 波（2026-10-28）：body.provider 单次覆盖（本地 VL 撞内存护栏时出图链评审可临时切 kimi；不持久写设置）
+  const providerOverride = String(body?.provider || '').trim().toLowerCase()
+  const providerSetting = ['kimi', 'local_vl', 'auto'].includes(providerOverride)
+    ? providerOverride
+    : String(process.env.STUDIO_POSE_REVIEW_PROVIDER || reviewCfg.poseReviewProvider || 'local_vl').trim().toLowerCase()
   if (providerSetting === 'off') {
     return c.json({ success: false, error: 'review_disabled', message: 'AI 评分已在设置中关闭（评审不阻断命名锁定，可人工目检后直接锁定）' }, 501)
   }
@@ -510,7 +609,8 @@ app.post('/api/projects/:id/ai/character/pose-review', async (c) => {
         model: localModel,
         characterName,
         referenceImageDataUrl: `data:image/png;base64,${refSmallBytes.toString('base64')}`,
-        candidateImageDataUrl: `data:image/png;base64,${candSmallBytes.toString('base64')}`
+        candidateImageDataUrl: `data:image/png;base64,${candSmallBytes.toString('base64')}`,
+        expectView
       })
     } else {
       out = await reviewCharacterPoseConsistencyWithAi({
@@ -519,7 +619,8 @@ app.post('/api/projects/:id/ai/character/pose-review', async (c) => {
         model: 'kimi-for-coding',
         characterName,
         referenceImageDataUrl: `data:${refSniff.contentType};base64,${refBytes.toString('base64')}`,
-        candidateImageDataUrl: `data:${candSniff.contentType};base64,${candBytes.toString('base64')}`
+        candidateImageDataUrl: `data:${candSniff.contentType};base64,${candBytes.toString('base64')}`,
+        expectView
       })
     }
     try {

@@ -18,8 +18,12 @@ import { checkSceneSuccess, createSceneBatch, loadSceneBatch, resumeSceneBatch, 
 import { buildCompositionInput, extractStoryComposition } from '../ai/storyComposition.js'
 import { getStoryImageCoverage } from '../ai/storyCoverage.js'
 import { runStorySceneReview, appendSceneReviewFeedback, readLatestSceneReviewRound } from '../ai/storySceneReview.js'
+import { renderSizeOf } from '../ai/storyRenderSizes.js'
 import { runStoryWalkthrough } from '../ai/storyWalkthrough.js'
 import { getEffectiveStudioConfig } from '../studio/settings.js'
+import { getStudioSecret } from '../studio/secrets.js'
+import { synthesizeTts } from '../ai/tts.js'
+import { onAiTaskCancel, throwIfAiTaskCancelled } from '../ai/taskCancellation.js'
 import { attachImageReviewResult, createImageReview, decideImageReview, findPendingReview } from '../review/imageReviewStore.js'
 import { recordCreationEvent } from '../creationBuffer.js'
 import { storyInputGate } from '../middleware/storyInputGate.js'
@@ -27,10 +31,10 @@ import { storyInputGate } from '../middleware/storyInputGate.js'
 export function registerStoryScenesRoutes(app, ctx) {
 // [拆分] POST /api/projects/:id/export 已迁至 apps/server/src/routes/export.routes.js
 // ---------------------------------------------------------------------------
-// 2026-10-12 ⑤ 走查入链（GS-52）：导出后自动 headless 全结局路径走查 + 截图存档 + 验收报告。
+// 2026-10-12 ⑤ 走查入链（TS-52）：导出后自动 headless 全结局路径走查 + 截图存档 + 验收报告。
 // 脱离监控的最后一道闸：不再人工打开浏览器点——链路自动跑，产出 walkthrough/report_*.json +
 // 每屏截图（<project>/walkthrough/）；有破图/空文本/按钮缺失即 issues 明示，不静默放行。
-// 前置：必须先有导出构建（先跑 GS-08）。
+// 前置：必须先有导出构建（先跑 TS-08）。
 // ---------------------------------------------------------------------------
 app.post('/api/projects/:id/ai/story/walkthrough', async (c) => {
   await ctx.ensureDirs()
@@ -41,7 +45,7 @@ app.post('/api/projects/:id/ai/story/walkthrough', async (c) => {
   // 前置检查：导出构建存在
   const distPath = path.join(dir, 'builds', 'latest', 'dist', 'index.html')
   if (!(await ctx.existsFile(distPath))) {
-    return c.json({ success: false, error: 'missing_export', message: '请先导出项目（GS-08），再走查。' }, 400)
+    return c.json({ success: false, error: 'missing_export', message: '请先导出项目（TS-08），再走查。' }, 400)
   }
   const story = await ctx.readJson(path.join(dir, 'story.json')).catch(() => null)
   if (!story || !Array.isArray(story.nodes) || !story.nodes.length) {
@@ -81,7 +85,7 @@ app.post('/api/projects/:id/ai/story/walkthrough', async (c) => {
   }
 })
 
-// GS-53 场景图审核（2026-10-14，守护台审图中心接入）：逐场景整图（走查截图优先/背景图回退）
+// TS-53 场景图审核（2026-10-14，守护台审图中心接入）：逐场景整图（走查截图优先/背景图回退）
 // 提交 control 审图中心评审，结果落 reviews/scene_reviews.jsonl，编辑器「场景图审核」面板消费。
 // 长任务经 /ai/tasks 暴露进度（kind story.scene.review）；control 不可达/评审失败显式 failed，不写假结论。
 app.post('/api/projects/:id/ai/story/scene-review', async (c) => {
@@ -134,7 +138,7 @@ app.post('/api/projects/:id/ai/story/scene-review', async (c) => {
   return c.json({ success: true, taskId: task.taskId }, 202)
 })
 
-// GS-53 读取最新一轮审核记录（含后续人工处置 feedback_pending/human_confirmed）
+// TS-53 读取最新一轮审核记录（含后续人工处置 feedback_pending/human_confirmed）
 app.get('/api/projects/:id/ai/story/scene-review', async (c) => {
   const id = c.req.param('id')
   const dir = ctx.projectDir(id)
@@ -143,7 +147,7 @@ app.get('/api/projects/:id/ai/story/scene-review', async (c) => {
   return c.json({ success: true, latest, rounds })
 })
 
-// GS-53 人工处置记录：打回重出待处理（feedback_pending，附建议合入说明）/ 确认通过（human_confirmed）
+// TS-53 人工处置记录：打回重出待处理（feedback_pending，附建议合入说明）/ 确认通过（human_confirmed）
 app.post('/api/projects/:id/ai/story/scene-review/feedback', async (c) => {
   const id = c.req.param('id')
   const dir = ctx.projectDir(id)
@@ -231,6 +235,237 @@ app.post('/api/projects/:id/ai/story/composition', async (c) => {
   }
 })
 
+// D1（2026-10-25 用户裁决）：占位预演内嵌中栏 + 占位块可拖动编排——拖动结束把该幕各块归一化 x/y/scale
+// 写回该幕构图需求单草稿（plan.scenes[].composition，source='previz' 区别于 AI 提取的 'ai'）。
+// 窄写口：只接收坐标值（x/y/scale/zIndex），kind/stateKey/blocking/evidence 等语义字段沿用既有项或按资产类目补齐；
+// 幂等（同值重写无副作用），经 saveStoryAssetPlan mergeAssetsById 纪律落盘。LLM 提取端点（上方）不动。
+app.put('/api/projects/:id/ai/story/scenes/:sceneId/composition-draft', async (c) => {
+  await ctx.ensureDirs()
+  const id = c.req.param('id')
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const plan = await ctx.readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+  const scenes = Array.isArray(plan.scenes) ? plan.scenes : []
+  const scene = scenes.find((s) => String(s && s.sceneId || '').trim() === sceneId)
+  if (!scene) return c.json({ success: false, error: 'missing_scene', message: '资产计划中无该场景条目。' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const itemsIn = Array.isArray(body?.items) ? body.items : []
+  const assetById = new Map((Array.isArray(plan.assets) ? plan.assets : []).map((a) => [String(a && a.id || ''), a]))
+  const prevItems = Array.isArray(scene.composition && scene.composition.items) ? scene.composition.items : []
+  const prevBySubject = new Map(prevItems.map((it) => [String(it && it.subjectId || '').trim(), it]))
+  const clamp01 = (v) => Math.max(0, Math.min(1, Number(v)))
+  const clampScale = (v) => Math.max(0.05, Math.min(1, Number(v)))
+
+  const items = []
+  // 2026-11-09 防静默丢失：被过滤的块如实计数并返回（历史疑似通道——资产被移除/换 id 后，
+  // 预演保存把旧块全部静默丢弃，空数组覆盖既有草稿，用户无从察觉）
+  let dropped = 0
+  const droppedSubjectIds = []
+  for (const raw of itemsIn) {
+    const subjectId = String(raw && raw.subjectId || '').trim()
+    // F 波（2026-10-26 用户裁决：一个大元素可分多个小元素组合）：带 parentAssetId+subName 的项=子元素
+    // （演示编排语义，不必是 plan 资产）——豁免资产存在校验；父元素必须存在
+    const parentAssetId = String(raw?.parentAssetId || '').trim().slice(0, 64)
+    const subName = String(raw?.subName || '').trim().slice(0, 32)
+    const isSub = Boolean(parentAssetId && subName)
+    if (!subjectId) { dropped += 1; continue }
+    if (isSub) {
+      if (!assetById.has(parentAssetId)) { dropped += 1; droppedSubjectIds.push(subjectId); continue } // 父元素非计划资产拒收
+    } else if (!assetById.has(subjectId)) { dropped += 1; droppedSubjectIds.push(subjectId); continue } // 非计划资产一律拒收（不编造元素）
+    if (!Number.isFinite(Number(raw?.x)) || !Number.isFinite(Number(raw?.y))) { dropped += 1; droppedSubjectIds.push(subjectId); continue }
+    const prev = prevBySubject.get(subjectId) || {}
+    const asset = assetById.get(subjectId) || assetById.get(parentAssetId)
+    items.push({
+      ...prev,
+      subjectId,
+      kind: String(prev.kind || '').trim() || String(asset?.category || '').trim() || 'prop',
+      x: clamp01(raw.x),
+      y: clamp01(raw.y),
+      scale: Number.isFinite(Number(raw?.scale)) ? clampScale(raw.scale) : (Number.isFinite(Number(prev.scale)) ? prev.scale : 0.5),
+      zIndex: Number.isFinite(Number(raw?.zIndex)) ? Math.round(Number(raw.zIndex)) : (Number.isFinite(Number(prev.zIndex)) ? prev.zIndex : 3),
+      // E 波（2026-10-26）：朝向/姿态进编排草稿——flipX/flipY 布尔钳制（与合成层 transform 同语义；LLM 口径 flipH 由消费端兼容），
+      // stateKey 字符串消毒（变体选择键，placementDecision 按 stateKey 匹配 poseVariants/stateVariants）
+      // 2026-11-01：imageAssetId=占位预览图显式选择（项目资产 id），摆位消费端按它优先选图；空串=清除
+      ...(raw?.flipX !== undefined ? { flipX: raw.flipX === true } : {}),
+      ...(raw?.flipY !== undefined ? { flipY: raw.flipY === true } : {}),
+      ...(raw?.stateKey !== undefined ? { stateKey: String(raw.stateKey || '').trim().slice(0, 64) } : {}),
+      ...(raw?.imageAssetId !== undefined ? { imageAssetId: String(raw.imageAssetId || '').trim().slice(0, 128) } : {}),
+      ...(isSub ? { parentAssetId, subName } : {})
+    })
+    if (items.length >= 24) break // F 波：上限 12→24（子元素组合占额）
+  }
+
+  const nextPlan = {
+    ...plan,
+    generatedAt: ctx.nowIso(),
+    scenes: scenes.map((s) =>
+      String(s && s.sceneId || '').trim() === sceneId
+        ? { ...s, composition: { cameraNote: String(scene.composition?.cameraNote || ''), items, source: 'previz', updatedAt: ctx.nowIso() } }
+        : s
+    )
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+  logStage({ stage: 'story.composition.draft', event: 'ok', traceId: createTraceId(), project: id, item: `${sceneId} items=${items.length}${dropped ? ` dropped=${dropped}` : ''}` })
+  return c.json({ success: true, sceneId, items: items.length, dropped, droppedSubjectIds: droppedSubjectIds.slice(0, 12) })
+})
+
+// B 波（2026-10-25，ui_蓝图工作室定义.md §4.5）：场景级配音——真实合成（edge/say/openai/local 全通道继承 tts.js），
+// 音频落项目 assets/ai/voice/<sceneId>.<ext>，写回 plan.sceneVoices[sceneId]（mergeAssetsById 纪律，幂等覆盖）。
+// enabled.tts 关闭时 409 + 设置引导；时长经 afinfo 实测（测不出则 null，不编造）。
+app.post('/api/projects/:id/ai/story/scenes/:sceneId/voice', async (c) => {
+  await ctx.ensureDirs()
+  const id = c.req.param('id')
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const { effective } = await getEffectiveStudioConfig(ctx.ROOT)
+  if (!effective.enabled.tts) {
+    return c.json({ success: false, error: 'tts_disabled', message: '「语音合成」未启用：请到 设置 → 语音 TTS 启用并选择通道后重试' }, 409)
+  }
+  const provider = String(effective.tts?.provider || '').trim().toLowerCase()
+  if (!provider || provider === 'none') {
+    return c.json({ success: false, error: 'tts_not_configured', message: '请先在 设置 → 语音 TTS 选择合成通道' }, 400)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const voiceId = String(body?.voiceId || '').trim() || String(effective.tts?.voice || '').trim()
+  const speed = body?.speed != null ? Number(body.speed) : Number(effective.tts?.speed) || 1
+
+  // 文本缺省=该幕故事文本（与场景元素分析同源的 story 节点）；再无则 400 引导
+  const bundle = await ctx.readProjectBundle(id)
+  const storyNodes = Array.isArray(bundle?.story?.nodes) ? bundle.story.nodes : []
+  const node = storyNodes.find((n) => String(n?.id || '') === sceneId)
+  const text = String(body?.text || '').trim() || String(node?.body?.text || node?.name || '').trim()
+  if (!text) return c.json({ success: false, error: 'tts_empty_text', message: '本幕没有可合成的文本（请先补文本草稿）' }, 400)
+
+  const task = createAiTask(id, 'story.scene.voice', { total: 1, message: `场景配音：${String(node?.name || sceneId).slice(0, 24)}` })
+  try {
+    const res = await synthesizeTts({
+      provider,
+      voice: voiceId,
+      speed,
+      format: String(effective.tts?.format || 'mp3'),
+      text,
+      apiUrl: effective.tts?.apiUrl,
+      model: effective.tts?.model,
+      secrets: { openaiApiKey: getStudioSecret('openai') },
+      proxyUrl: effective.network?.proxyUrl || undefined
+    })
+    throwIfAiTaskCancelled()
+    const voiceDir = path.join(dir, 'assets', 'ai', 'voice')
+    await mkdir(voiceDir, { recursive: true })
+    // 2026-11-03 用户裁决：生成即压缩——ffmpeg 可用时统一转码为 mp3 单声道 64k（交互故事导出带宽友好）；
+    // 源已是压缩格式且体积很小（<128KB）则保留原件不重复转码。压缩元数据如实记录，不伪造。
+    let finalBytes = res.bytes
+    let finalExt = res.ext
+    let compressed = false
+    let compressNote = ''
+    let originalBytes = res.bytes.length
+    const safeSceneId = sceneId.replace(/[^A-Za-z0-9_.-]+/g, '_')
+    const nonce = Date.now()
+    const rawAbs = path.join(voiceDir, `${safeSceneId}.source-${nonce}.${res.ext}`)
+    let convertedAbs = ''
+    await writeFile(rawAbs, res.bytes)
+    try {
+      const probe = spawn('ffmpeg', ['-version'], { stdio: ['ignore', 'pipe', 'ignore'] })
+      const hasFfmpeg = await new Promise((resolve) => {
+        probe.on('error', () => resolve(false))
+        probe.on('close', (code) => resolve(code === 0))
+      })
+      throwIfAiTaskCancelled()
+      if (hasFfmpeg && originalBytes >= 128 * 1024) {
+        convertedAbs = path.join(voiceDir, `${safeSceneId}.next-${nonce}.mp3`)
+        await new Promise((resolve, reject) => {
+          const p = spawn('ffmpeg', ['-y', '-i', rawAbs, '-vn', '-ac', '1', '-b:a', '64k', convertedAbs], { stdio: ['ignore', 'pipe', 'ignore'] })
+          const removeCancel = onAiTaskCancel(() => { try { p.kill('SIGKILL') } catch (_) {} })
+          let err = ''
+          p.stderr.on('data', (c) => { err += c })
+          p.on('error', (error) => { removeCancel(); reject(error) })
+          p.on('close', (code) => {
+            removeCancel()
+            try { throwIfAiTaskCancelled() } catch (error) { reject(error); return }
+            if (code === 0) resolve()
+            else reject(new Error(`ffmpeg_exit_${code}:${err.slice(0, 200)}`))
+          })
+        })
+        finalBytes = (await readFile(convertedAbs))
+        finalExt = 'mp3'
+        compressed = true
+        compressNote = `已压缩：${originalBytes}B → ${finalBytes.length}B（mp3 单声道 64k）`
+      } else if (hasFfmpeg) {
+        compressNote = originalBytes < 128 * 1024 ? '源文件已较小，保留原件（未重复转码）' : ''
+      } else {
+        compressNote = 'ffmpeg 不可用，保留原始音频（未压缩）'
+      }
+    } catch (e) {
+      if (e?.code === 'AI_TASK_CANCELLED') throw e
+      compressNote = `压缩失败，保留原始音频：${e && e.message ? e.message : String(e)}`
+    } finally {
+      await Promise.all([rm(rawAbs, { force: true }), convertedAbs ? rm(convertedAbs, { force: true }) : Promise.resolve()]).catch(() => {})
+    }
+    throwIfAiTaskCancelled()
+    const fileName = `${sceneId.replace(/[^A-Za-z0-9_.-]+/g, '_')}.${finalExt}`
+    await writeFile(path.join(voiceDir, fileName), finalBytes)
+    const audioAssetUri = `assets/ai/voice/${fileName}`
+
+    // 时长实测（macOS afinfo；测不出=null 诚实）
+    let durationMs = null
+    try {
+      const info = await new Promise((resolve) => {
+        const p = spawn('afinfo', [path.join(voiceDir, fileName)], { stdio: ['ignore', 'pipe', 'ignore'] })
+        const chunks = []
+        p.stdout.on('data', (d) => chunks.push(d))
+        p.on('error', () => resolve(''))
+        p.on('close', () => resolve(Buffer.concat(chunks).toString('utf-8')))
+      })
+      const m = String(info).match(/estimated duration:\s*([\d.]+)/i)
+      if (m) durationMs = Math.round(Number(m[1]) * 1000)
+    } catch {}
+
+    const plan = (await ctx.readStoryAssetPlanIfExists(id)) || {
+      schemaVersion: '1.0',
+      generatedAt: ctx.nowIso(),
+      assets: [],
+      scenes: storyNodes.map((n, i) => ({ sceneId: String(n?.id || ''), sceneIndex: i + 1, sceneName: String(n?.name || n?.id || ''), assetIds: [], promptAssets: [] })),
+      summary: null
+    }
+    const sceneVoices = { ...(plan.sceneVoices && typeof plan.sceneVoices === 'object' ? plan.sceneVoices : {}) }
+    sceneVoices[sceneId] = {
+      voiceId,
+      audioAssetUri,
+      durationMs,
+      text: text.slice(0, 500),
+      generatedAt: ctx.nowIso(),
+      status: 'ready',
+      compressed,
+      originalBytes,
+      finalBytes: finalBytes.length,
+      compressNote
+    }
+    const nextPlan = { ...plan, sceneVoices, generatedAt: ctx.nowIso() }
+    nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+    throwIfAiTaskCancelled()
+    await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+
+    updateAiTask(task.taskId, { done: true, stage: 'done', current: 1, message: `配音完成：${String(node?.name || sceneId).slice(0, 24)}` })
+    logStage({ stage: 'story.scene.voice', event: 'ok', traceId: createTraceId(), project: id, item: `${sceneId} ${audioAssetUri} ${durationMs ?? '-'}ms` })
+    return c.json({ success: true, sceneId, voiceId, audioAssetUri, durationMs })
+  } catch (e) {
+    const code = e?.code === 'AI_TASK_CANCELLED' ? 'task_cancelled_by_user' : e && e.code ? String(e.code) : 'tts_failed'
+    const message = e?.code === 'AI_TASK_CANCELLED' ? '配音已停止，未写回新音频' : e && e.message ? String(e.message) : String(e)
+    console.error(`[story.scene.voice] project=${id} scene=${sceneId} error=${message}`)
+    logStage({ stage: 'story.scene.voice', event: 'error', traceId: createTraceId(), project: id, item: message.slice(0, 300) })
+    updateAiTask(task.taskId, { done: true, stage: 'failed', error: message })
+    const status = code === 'task_cancelled_by_user' ? 409 : code === 'tts_provider_pending' ? 501 : /^tts_(missing|empty|format|not_configured)/.test(code) ? 400 : 502
+    return c.json({ success: false, error: code, message }, status)
+  }
+})
+
 // [拆分] POST /api/projects/:id/ai/story/assets/plan 已迁至 apps/server/src/routes/storyAssets.routes.js
 // [拆分] POST /api/projects/:id/ai/story/assets/plan/persist 已迁至 apps/server/src/routes/storyAssets.routes.js
 // [拆分] POST /api/projects/:id/ai/story/assets/plan/remove-asset 已迁至 apps/server/src/routes/storyAssets.routes.js
@@ -269,7 +504,7 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
   const sharedTask = sharedTaskId ? getAiTask(sharedTaskId) : null
   const sceneTaskId = sharedTask
     ? sharedTask.taskId
-    : createAiTask(id, 'story.scene.render', { total: 1, message: `渲染场景：${String(renderSpec.sceneName || sceneId).trim()}` }).taskId
+    : createAiTask(id, 'story.scene.render', { total: 1, message: `渲染场景：${String(renderSpec.sceneName || sceneId).trim()}`, sceneId: String(renderSpec.sceneId || sceneId).trim() }).taskId
   const ownSceneTask = !sharedTask
   updateAiTask(sceneTaskId, { stage: 'loading_refs', message: `加载参考图（${String(renderSpec.sceneName || sceneId).trim()}）…` })
 
@@ -678,8 +913,9 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/render', storyInputGate('st
       aiReview
     })
   } catch (e) {
-    const msg = e && e.message ? String(e.message) : String(e)
-    const mapped = classifyAiError(e)
+    const cancelled = e?.code === 'AI_TASK_CANCELLED' || getAiTask(sceneTaskId)?.stage === 'cancelled'
+    const msg = cancelled ? '任务已停止，未绑定新的场景图' : e && e.message ? String(e.message) : String(e)
+    const mapped = cancelled ? { code: 'task_cancelled_by_user', httpStatus: 409 } : classifyAiError(e)
     logStage({ stage: 'story.scene.render', event: 'fail', traceId, project: id, provider: imgProvider, item: `${sceneId} / ${msg}` })
     if (ownSceneTask) updateAiTask(sceneTaskId, { stage: 'error', done: true, error: msg, message: msg })
     return c.json({ success: false, error: mapped.code, message: msg, taskId: sceneTaskId }, mapped.httpStatus)
@@ -816,7 +1052,7 @@ app.get('/api/projects/:id/ai/story/scenes/:sceneId/images', async (c) => {
   const files = await readdir(scenesDir).catch(() => [])
   const prefix = `${sceneId.replace(/[^a-z0-9_.-]+/gi, '_')}_`
   const items = files
-    .filter((f) => f.startsWith(prefix) && /\.(png|jpe?g|webp)$/i.test(f))
+    .filter((f) => f.startsWith(prefix) && /\.(png|jpe?g|webp)$/i.test(f) && !/_vl\d+\.(png|jpe?g|webp)$/i.test(f))
     .map((f) => {
       const m = f.slice(prefix.length).match(/^(\d+)\./)
       const ts = m ? Number(m[1]) : 0
@@ -895,6 +1131,35 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/images/delete', async (c) =
   }
   await rm(path.join(dir, assetPath))
   return c.json({ success: true, deleted: assetPath })
+})
+
+// 合成导出上传（2026-11-10 用户裁决：支持"整体一张图"）：合成层画布把 底图+立绘分层结果渲成单图，
+// 经此端点存为该幕图库版本（scene_bg 压缩口径 JPEG q90，与场景背景同层）。绑定仍走既有 /bind 链
+//（scene_bind AI 评审 + 人工确认，门禁语义不变——上传只是产出一个新版本，不自动绑定）。
+app.post('/api/projects/:id/ai/story/scenes/:sceneId/images/upload', async (c) => {
+  const id = c.req.param('id')
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  if (!sceneId) return c.json({ success: false, error: 'missing_scene', message: 'sceneId 不能为空' }, 400)
+  const body = await c.req.json().catch(() => ({}))
+  const raw = String(body?.dataBase64 || '').trim().replace(/^data:image\/[a-z+.-]+;base64,/i, '')
+  if (!raw) return c.json({ success: false, error: 'missing_data', message: '缺少图片数据（dataBase64）' }, 400)
+  const bytes = Buffer.from(raw, 'base64')
+  if (!bytes.length) return c.json({ success: false, error: 'bad_data', message: '图片数据解码失败' }, 400)
+  if (bytes.length > 12 * 1024 * 1024) return c.json({ success: false, error: 'too_large', message: '图片超过 12MB，请降低分辨率再导出' }, 413)
+  const safeScene = sceneId.replace(/[^a-z0-9_.-]+/gi, '_')
+  const relPath = `assets/ai/story_scenes/${safeScene}_${Date.now()}.png`
+  const absPath = path.resolve(dir, relPath)
+  if (!absPath.startsWith(path.resolve(dir) + path.sep)) return c.json({ success: false, error: 'path_invalid', message: '路径越出项目目录' }, 400)
+  await mkdir(path.dirname(absPath), { recursive: true })
+  await writeFile(absPath, bytes)
+  // 出图即压（2026-09-09 强制规则同口径）：合成导出属场景背景层，JPEG q90
+  const opt = await optimizeGeneratedImage(absPath, IMAGE_KIND.SCENE_BG).catch(() => null)
+  const outAbs = String(opt && opt.outPath || absPath)
+  const outRel = outAbs.startsWith(path.resolve(dir) + path.sep) ? outAbs.slice(path.resolve(dir).length + 1).split(path.sep).join('/') : relPath
+  logStage({ stage: 'story.scene.composite_upload', event: 'ok', traceId: createTraceId(), project: id, item: `${sceneId} / ${outRel}` })
+  return c.json({ success: true, sceneId, assetPath: outRel, compressed: outRel !== relPath })
 })
 
 // 提交批量场景队列：sceneIds 缺省 = 计划全部场景（按 sceneIndex 排序），执行顺序 = 提交顺序，串行执行
@@ -1078,6 +1343,8 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
   const planAssets = Array.isArray(plan.assets) ? plan.assets : []
   const characterAssets = planAssets.filter((a) => String(a && a.category || '').trim() === 'character')
   const propAssets = planAssets.filter((a) => String(a && a.category || '').trim() === 'prop')
+  // 2026-11-06 背景元素（scenery）：与道具同走分层摆位链（placementDecision 内按类目给默认贴地位姿）
+  const sceneryAssets = planAssets.filter((a) => String(a && a.category || '').trim() === 'scenery')
   // sceneId→story.json 节点映射：sceneId 即故事节点 id（编译产物约定，与场景渲染回填同源）
   const nodeById = new Map(storyNodes.map((n) => [String(n && n.id || '').trim(), n]))
 
@@ -1141,6 +1408,7 @@ app.post('/api/projects/:id/ai/story/scenes/placements', async (c) => {
         planAssets,
         characterAssets,
         propAssets,
+        sceneryAssets,
         compositionByScene,
         applyComposition,
         characters,
@@ -1410,13 +1678,17 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/layered-produce', async (c)
       } else {
         const spriteJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/sprite`, {
           characterId,
+          // R 波项 2 收口（代跑实测缺口）：分层登记链的身份锚同样吃三视图——planAssetId + 视角语义下发 sprite 端点选择
+          planAssetId: planAssetId || undefined,
+          poseViewText: String(pose.poseViewText || '').trim() || undefined,
           fingerprintPrompt: String(planAsset.anchorPrompt || '').trim(),
           globalPrompt: POSE_GLOBAL_PROMPT,
           posePrompt,
           negativePrompt: [String(pose.negativePrompt || '').trim(), String(planAsset.negativePrompt || '').trim()].filter(Boolean).join(', '),
           style: 'picture_book',
-          width: 720,
-          height: 1280,
+          // X 波尺寸策略表：姿态变体=立绘档 768×1152（原 720×1280 退役）
+          width: renderSizeOf('pose_variant')[0],
+          height: renderSizeOf('pose_variant')[1],
           steps: 20,
           cfgScale: 7,
           ipadapter: { enabled: true }
@@ -1428,7 +1700,9 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/layered-produce', async (c)
       let reason = ''
       let reviewUnavailable = ''
       try {
-        const reviewJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/pose-review`, { characterId, assetPath })
+        // S 波代跑实测根修：plan 资产角色不在 project.characters——传 characterId 走角色档案分支必 reference_not_found；
+        // 有 planAssetId 优先走计划资产分支（读 plan 主参考，与三视图/状态变体评审同款）
+        const reviewJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/pose-review`, { ...(planAssetId ? { planAssetId } : { characterId }), assetPath })
         if (Number.isFinite(Number(reviewJson.score))) score = Number(reviewJson.score)
         reason = String(reviewJson.reason || '').trim()
       } catch (e) {
@@ -1526,8 +1800,9 @@ app.post('/api/projects/:id/ai/story/scenes/:sceneId/layered-produce', async (c)
         posePrompt: prompt,
         negativePrompt: [String(prop.negativePrompt || '').trim(), String(planAsset?.negativePrompt || '').trim()].filter(Boolean).join(', '),
         style: 'picture_book',
-        width: 720,
-        height: 1280,
+        // X 波尺寸策略表：道具单件=768×768（原 720×1280 退役）
+        width: renderSizeOf('prop_single')[0],
+        height: renderSizeOf('prop_single')[1],
         steps: 20,
         cfgScale: 7
       })

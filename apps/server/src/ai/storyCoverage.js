@@ -84,9 +84,9 @@ export async function getStoryImageCoverage(dir) {
     const primaryExists = primaryUri ? await fileExists(path.join(dir, primaryUri)) : false
     const referenceCount = await countReferenceImages(dir, assetId, asStr(asset && asset.category))
     const lock = latestApproved(reviews, 'lock_confirm', (r) => asStr(r.assetId) === assetId)
-    // prompt_only 资产（如场景锚点地点）设计上不需要立绘引用：无引用且无候选时记 not_required，不计入需求总数
-    const referenceNotRequired = asStr(asset && asset.renderStrategy) === 'prompt_only'
-      && !primaryUri && referenceCount === 0
+    // 地点是背景模板，无论是否有可选参考图，都不计入角色/道具的立绘出图待办。
+    const referenceNotRequired = asStr(asset && asset.category) === 'location'
+      || (asStr(asset && asset.renderStrategy) === 'prompt_only' && !primaryUri && referenceCount === 0)
     const status = referenceNotRequired
       ? 'not_required'
       : lock && primaryExists
@@ -140,7 +140,7 @@ export async function getStoryImageCoverage(dir) {
   }
 
   // ---- 总计 ----
-  // not_required（prompt_only 且无需立绘）不计入需求总数
+  // not_required（地点模板、无需立绘的 prompt_only 资产）不计入需求总数
   const requiredAssets = assetItems.filter((item) => item.status !== 'not_required')
   const countBy = (items, status) => items.filter((item) => item.status === status).length
   const assetTotals = {

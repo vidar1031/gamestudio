@@ -9,6 +9,11 @@ import crypto from 'node:crypto'
 import { genId, guessTitleFromPrompt, repairScriptDraft } from '../ai/scripts.js'
 import { analyzeScriptsForBlueprint } from '../ai/analyze.js'
 import { readGlobalRules } from '../ai/globalRules.js'
+import { classifyAiError, createTraceId, logStage } from '../ai/runtime.js'
+import { generateStoryBible } from '../ai/storyBible.js'
+import { qcSceneRefsDeterministic, qcStoryBibleSceneRefsWithAi } from '../ai/storyBibleQc.js'
+import { createAiTask, updateAiTask } from '../ai/taskProgress.js'
+import { matchSceneRef, normalizeSceneRefs } from '../ai/storyAssets.js'
 import { compileBlueprintFromScripts } from '../blueprint/compile.js'
 import { validateBlueprintDoc } from '../blueprint/validate.js'
 import { getEffectiveStudioConfig } from '../studio/settings.js'
@@ -56,24 +61,15 @@ app.get('/api/projects/summary', async (c) => {
     try {
       const p0 = await ctx.readJson(path.join(dir, 'project.json'))
       const { project: p } = ctx.normalizeProjectAndDetectChanges(p0)
-      const scripts = await ctx.readJson(path.join(dir, 'scripts.json')).catch(() => null)
-      const blueprint = await ctx.readJson(path.join(dir, 'blueprint.json')).catch(() => null)
-      const story = await ctx.readJson(path.join(dir, 'story.json')).catch(() => null)
-      const cards = Array.isArray(scripts?.cards) ? scripts.cards.length : 0
-      const blueprintNodes = Array.isArray(blueprint?.nodes) ? blueprint.nodes.length : 0
-      const storyNodes = story?.nodes && typeof story.nodes === 'object' ? Object.keys(story.nodes).length : 0
-      // 图像完整度：story 场景中带 visuals.backgroundAssetId 真实图像引用的比例
+      // Q 波（2026-10-27 阶段倒挂根修）：阶段输入经 collectProjectStageInput 单一收口（含 plan/场景图统计），
+      // story 原始对象复用于下方 imageStats/封面派生，不再各自读盘
+      const stageInput = await ctx.collectProjectStageInput(dir)
+      const { cards, blueprintNodes, storyNodes, distExists } = stageInput
+      const story = stageInput.story
+      // 图像完整度：story 场景幕（结尾不计分母）中带 visuals.backgroundAssetId 真实图像引用的比例
+      // Q 波：与阶段判定同口径（collectProjectStageInput.sceneStats），封面链仍遍历全量节点
       const storySceneNodes = Array.isArray(story?.nodes) ? story.nodes : Object.values(story?.nodes || {})
-      const totalScenes = storySceneNodes.length
-      const withImages = storySceneNodes.filter((n) => {
-        const bgId = n?.visuals?.backgroundAssetId
-        if (typeof bgId === 'string' && bgId.trim()) return true
-        const bg = n?.visuals?.background ?? n?.background
-        if (!bg) return false
-        if (typeof bg === 'string') return bg.trim().length > 0
-        if (typeof bg === 'object') return Boolean(bg.uri || bg.src || bg.url || bg.path)
-        return false
-      }).length
+      const { total: totalScenes, withImages } = stageInput.sceneStats
       const imageStats = {
         totalScenes,
         withImages,
@@ -122,15 +118,14 @@ app.get('/api/projects/summary', async (c) => {
             height: Number(stageCfg.height) > 0 ? Number(stageCfg.height) : null
           }
         : null
-      const distPath = path.join(dir, 'builds', 'latest', 'dist', 'index.html')
-      const distExists = await ctx.existsFile(distPath)
       const stages = {
         scripts: cards > 0,
         blueprint: blueprintNodes > 0,
         compose: storyNodes > 2,
         export: distExists
       }
-      const stage = ctx.deriveProjectStage({ cards, blueprintNodes, storyNodes, distExists })
+      // Q 波：stage 走 collectProjectStageInput 全量输入（plan 就绪+场景图齐），倒挂根修
+      const stage = ctx.deriveProjectStage(stageInput)
       const meta = await ctx.readJson(path.join(dir, 'meta.json')).catch(() => null)
       items.push({
         id: p.id || id,
@@ -1393,6 +1388,9 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
     provider: studio.effective.prompt.provider || 'localoxml',
     model: studio.effective.prompt.model || '-'
   })
+  // 2026-10-27 黑盒治理：圣经分块生成入任务台账（5 分块串行阶段进度，向导/任务指示器可见）
+  //（声明在 try 外：catch 里要收口失败台账）
+  const task = createAiTask(id, 'story.bible.generate', { total: 5, message: '圣经生成：分块串行' })
   try {
     // draftModel：本地小模型起草（8K 内存机实测 27B 单次大结构生成 12 分钟仍空输出），
     // 质量由下游 27B 评审/修复环节兜底（用户确认的"小模型执行、27B 验证"单链设计）
@@ -1403,8 +1401,10 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
       apiUrl: studio.effective.prompt.apiUrl,
       proxyUrl: studio.effective.network.proxyUrl,
       timeoutMs,
-      input
+      input,
+      onProgress: (i, total, label) => updateAiTask(task.taskId, { stage: 'running', current: i + 1, message: `圣经分块 ${i + 1}/${total}：${label}` })
     })
+    updateAiTask(task.taskId, { done: true, stage: 'done', current: 5, message: '圣经生成完成' })
     logStage({
       stage: 'story.bible',
       event: 'ok',
@@ -1469,6 +1469,10 @@ app.post('/api/projects/:id/ai/story/bible', storyInputGate('story.bible.generat
       durationMs: Math.max(0, Date.now() - startedAt),
       err: msg
     })
+    // 2026-10-27：失败台账收口（人话原因进任务条目，不黑盒悬挂）
+    try {
+      updateAiTask(task.taskId, { done: true, stage: 'failed', error: `圣经生成失败：${msg.slice(0, 160)}` })
+    } catch {}
     return c.json(
       {
         success: false,

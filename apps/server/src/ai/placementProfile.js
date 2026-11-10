@@ -152,7 +152,7 @@ export async function resolvePropPlacementImageAsset({ dir, asset, projectAssets
 // V1.3 工艺库载体变体生成（持物关系的根治）：
 // 技能件（carrier 类）的 generation.promptTemplate 填 {characterAnchor}/{propOnTray}/{propAnchor} 等占位，
 // 取角色主参考做身份锁定，经既有姿势变体生成链（骨架不必须：空白骨架+低控制强度，提示词驱动）
-// 生成绿幕图，走 layered-produce 登记（抠图/评审/计划写回同 GS-51），回写 poseKey=skillId。
+// 生成绿幕图，走 layered-produce 登记（抠图/评审/计划写回同 TS-51），回写 poseKey=skillId。
 // 幂等：该资产已有同 skillId 变体且已登记项目资产时直接返回。进度经 /ai/tasks。
 // ---------------------------------------------------------------------------
 // 空白骨架（载体变体纯提示词驱动：低控制强度下骨架不主导姿势，仅为满足通道输入）

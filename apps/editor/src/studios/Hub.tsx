@@ -14,6 +14,7 @@ import {
   getStudioSettings,
   listProjects,
   listProjectSummaries,
+  getControlLink,
   resolveUrl,
   type ProjectV1,
   type ProjectSummary,
@@ -48,6 +49,7 @@ export default function Hub(props: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [effectiveAi, setEffectiveAi] = useState<StudioEffectiveConfig | null>(null)
+  const [controlLink, setControlLink] = useState<{ leaseEnabled: boolean; reachable: boolean } | null>(null)
   const [aiSettingLogs, setAiSettingLogs] = useState<string[]>([])
   const [selectedId, setSelectedId] = useState<string>('')
   const [selectedProgress, setSelectedProgress] = useState<ProjectProgress | null>(null)
@@ -199,10 +201,16 @@ export default function Hub(props: Props) {
     setBusy(true)
     setError('')
     try {
-      const [items, st, sums] = await Promise.all([listProjects(), getStudioSettings().catch(() => null), listProjectSummaries().catch(() => [])])
+      const [items, st, sums, link] = await Promise.all([
+        listProjects(),
+        getStudioSettings().catch(() => null),
+        listProjectSummaries().catch(() => []),
+        getControlLink().catch(() => null)
+      ])
       setProjects(items)
       setSummaries(Array.isArray(sums) ? sums : [])
       if (st && st.effective) setEffectiveAi(st.effective)
+      if (link) setControlLink({ leaseEnabled: link.leaseEnabled !== false, reachable: Boolean(link.reachable) })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -410,7 +418,7 @@ export default function Hub(props: Props) {
       <div className="topbar hub-topbar">
         <div className="left">
           <span className="hub-brand-dot" aria-hidden="true" />
-          <div className="title">TalkScene · 工作台</div>
+          <div className="title">TalkScene · 互动故事</div>
         </div>
         <div className="hub-topbar-center">
           <input
@@ -428,6 +436,14 @@ export default function Hub(props: Props) {
           </button>
           <button className="hub-icon-btn" type="button" title="系统状态" onClick={() => setRailOpen(true)}>
             ≡
+          </button>
+          <button
+            className="hub-icon-btn"
+            type="button"
+            title="帮助：打开使用手册与文档站"
+            onClick={() => window.open(resolveUrl('/docs/'), '_blank', 'noopener,noreferrer')}
+          >
+            帮助
           </button>
           <button className="hub-icon-btn" type="button" title="设置" onClick={() => props.onOpenSettings?.()}>
             设置
@@ -665,6 +681,19 @@ export default function Hub(props: Props) {
                     <div>
                       图像服务 {effectiveAi.enabled?.image ? '✓' : '✗'}
                       <span>{effectiveAi.enabled?.image ? `${effectiveAi.image?.provider || 'none'}` : '未配置'}</span>
+                    </div>
+                    {/* 调用通道行（2026-10-21 用户裁决口径：直连/代理（守护台）二选一，锁态常显） */}
+                    <div>
+                      调用通道 {controlLink ? (controlLink.leaseEnabled ? (controlLink.reachable ? '✓' : '✗') : '—') : '…'}
+                      <span>
+                        {!controlLink
+                          ? '读取中…'
+                          : controlLink.leaseEnabled
+                            ? controlLink.reachable
+                              ? '代理（守护台）· 在线'
+                              : '代理（守护台）· 离线（生成将阻断）'
+                            : '直连（本地模型）'}
+                      </span>
                     </div>
                   </div>
                 ) : (

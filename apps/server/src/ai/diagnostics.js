@@ -1,5 +1,6 @@
 import { diagnoseOpenAI, getOpenAIConfigPublic } from './openai.js'
 import { getProxyInfo } from '../net/proxy.js'
+import { getEffectiveStudioConfig } from '../studio/settings.js'
 
 const state = {
   lastCheckedAt: null,
@@ -11,15 +12,33 @@ function nowIso() {
   try { return new Date().toISOString() } catch (_) { return String(Date.now()) }
 }
 
-export function getAiStatusSnapshot() {
+export async function getAiStatusSnapshot(storageRoot) {
   const provider = String(process.env.STUDIO_AI_PROVIDER || 'local').toLowerCase()
   const openai = getOpenAIConfigPublic('openai')
   const localoxml = getOpenAIConfigPublic('localoxml')
   const proxy = getProxyInfo()
+  let generation = null
+  if (storageRoot) {
+    try {
+      const { settings, effective } = await getEffectiveStudioConfig(storageRoot)
+      if (settings) {
+        generation = {
+          enabled: effective.enabled || null,
+          ...Object.fromEntries(['scripts', 'prompt', 'translation'].map((key) => [key, {
+            provider: effective[key]?.provider || null,
+            model: effective[key]?.model || null
+          }]))
+        }
+      }
+    } catch { /* 配置不可读时明确 settingsLoaded=false，不伪造生效模型 */ }
+  }
   return {
     provider,
     openai,
     localoxml,
+    settingsLoaded: Boolean(generation),
+    generation,
+    effective: generation ? { enabled: generation.enabled } : undefined,
     proxy,
     diagnostics: {
       lastCheckedAt: state.lastCheckedAt,

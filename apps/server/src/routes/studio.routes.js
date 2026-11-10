@@ -8,6 +8,8 @@ import { existsSync } from 'node:fs'
 import crypto from 'node:crypto'
 import { genId, generateScriptDraft, repairScriptDraft } from '../ai/scripts.js'
 import { classifyAiError } from '../ai/runtime.js'
+import { createAiTask, updateAiTask } from '../ai/taskProgress.js'
+import { recordTaskStatus } from '../ai/taskStatusInbox.js'
 import { generateBackgroundImage } from '../ai/background.js'
 import { buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, summarizeStoryAssetPlan } from '../ai/storyAssets.js'
 import { sniffImageMetaFromBytes } from '../ai/storyAssetReferenceGate.js'
@@ -27,6 +29,7 @@ import { controlBaseUrl, isResourceLeaseEnabled, registerControlLinkResolver } f
 import { listTtsVoices, saveTtsPreview, synthesizeTts } from '../ai/tts.js'
 import { snapshotCreationState } from '../creationBuffer.js'
 import { getStudioSecret } from '../studio/secrets.js'
+import { dispatchEventInbound, receiveInboundMessage } from '../events/dispatch.js'
 
 export function registerStudioRoutes(app, ctx) {
 // 2026-10-20 守护台关联：租约开关/地址的设置值解析器在装配处注册（ctx.ROOT 可用点）；未注册时回退 env/默认
@@ -44,6 +47,59 @@ app.get('/api/events/registry', async (c) => {
   } catch (e) {
     return c.json({ success: false, error: 'registry_not_available', message: e && e.message ? e.message : String(e) }, 500)
   }
+})
+
+// 事件层：统一事件接收端点（守护台双向通信入口）。
+// 守护台把事件按信封 POST 到本地址（{ event, payload, confirmed, traceId, caller }），
+// 本端点按注册表映射到既有 REST 路由执行并返回对齐守护台 EventResult 的信封；
+// 入站事件全部落盘 state/events/inbound-events.jsonl 留痕。
+app.post('/api/events/dispatch', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  const { status, envelope } = await dispatchEventInbound(app, { body })
+  return c.json(envelope, status)
+})
+
+// 事件层：自由消息接收（守护台下行通知/通信测试入口）。收到即打 server 日志并落盘
+// state/events/inbound-messages.jsonl，接收侧监控活性可见。
+app.post('/api/events/message', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  return c.json(receiveInboundMessage(body || {}))
+})
+
+// 事件层：task.status 统一任务状态接收（接入协议 §13，2026-11-09）。
+// 守护台把租约等请求的处理状态按七态信封推送到此；收到即打 server 日志并落盘
+// state/events/inbound-task-status.jsonl，供台账/UI 后续消费（当前先保证可见+可ack）。
+app.post('/api/events/task-status', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  // 兼容两种信封：守护台直投 {event,payload:{...}} 与 dispatch 适配器映射后的顶层平铺 {...}
+  const payload = body?.payload && typeof body.payload === 'object' ? body.payload : (body && typeof body === 'object' ? body : {})
+  const record = {
+    ts: new Date().toISOString(),
+    traceId: String(body?.traceId || ''),
+    caller: String(body?.caller || body?.payload?.caller || 'control'),
+    requestId: String(payload.requestId || ''),
+    type: String(payload.type || ''),
+    state: String(payload.state || ''),
+    reason: payload.reason ?? null,
+    message: payload.message ?? null,
+    retryable: payload.retryable ?? null,
+    queuePosition: payload.queuePosition === undefined || payload.queuePosition === null ? null : (Number.isFinite(Number(payload.queuePosition)) ? Number(payload.queuePosition) : null),
+    activeModel: payload.activeModel ?? null,
+    model: payload.model ?? null,
+    taskId: payload.taskId ?? null,
+    // §13.3 信封完整字段：progress{step,total}/resultRef/stale（stale=守护台失联重启后重放的最后已知态）
+    progress: payload.progress && typeof payload.progress === 'object'
+      ? { step: Number(payload.progress.step) || 0, total: Number(payload.progress.total) || 0 }
+      : null,
+    resultRef: payload.resultRef ?? null,
+    stale: payload.stale === true,
+    version: Number(payload.version) || 0,
+    updatedAt: String(payload.updatedAt || '')
+  }
+  console.log(`[task.status] requestId=${record.requestId} state=${record.state} reason=${record.reason ?? '-'} version=${record.version} pos=${record.queuePosition ?? '-'} active=${record.activeModel ?? '-'} model=${record.model ?? '-'} msg=${record.message ?? '-'}`)
+  // §13.5 幂等落库：requestId+version 去重（重复/乱序旧件丢弃但 ack——接收不中断，重放不产生重复台账）
+  const verdict = recordTaskStatus(record, { stateDir: path.resolve(ctx.__dirname, '../../../state/events') })
+  return c.json({ success: true, received: true, accepted: verdict.accepted, reason: verdict.reason || null, requestId: record.requestId, state: record.state, version: record.version })
 })
 
 // 能力发现：暴露 TalkScene 全部生产能力（apps/server/events/capabilities.v1.json）
@@ -139,7 +195,7 @@ app.get('/api/studio/selfcheck', async (c) => {
 
 app.get('/api/ai/status', async (c) => {
   // Non-sensitive snapshot for debugging effective config + last diagnostics.
-  const snap = getAiStatusSnapshot()
+  const snap = await getAiStatusSnapshot(ctx.ROOT)
   return c.json({ success: true, ai: snap })
 })
 
@@ -228,6 +284,127 @@ app.get('/api/studio/storage-info', async (c) => {
   } catch (_) {}
   return c.json({ success: true, root, writable, version, docsysUrl: 'http://127.0.0.1:8891/' })
 })
+
+// 2026-10-25 本地服务快捷启动（设置页「本地服务」卡）：白名单仅 omlx/comfyui，禁止任意命令。
+// 纪律：OMLX 走 GUI App（菜单栏可观测）；ComfyUI 走 Terminal.app 可见窗口（出图可观测纪律，禁止 nohup 黑盒）。
+const STUDIO_TOOL_DEFS = {
+  omlx: {
+    label: 'OMLX 本地模型',
+    baseUrl: 'http://127.0.0.1:18888',
+    probePath: '/v1/models',
+    appCandidates: ['/Volumes/ovokit2t/Applications/oMLX.app', '/Applications/oMLX.app']
+  },
+  comfyui: {
+    label: 'ComfyUI 出图',
+    baseUrl: 'http://127.0.0.1:8188',
+    probePath: '/system_stats',
+    dirCandidates: ['/Volumes/ovokit2t/ComfyUI']
+  }
+}
+
+async function probeStudioTool(def, baseUrl, apiKey) {
+  const startedAt = Date.now()
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 2500)
+    const res = await fetch(`${String(baseUrl || def.baseUrl).replace(/\/+$/, '')}${def.probePath}`, {
+      signal: controller.signal,
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
+    })
+    clearTimeout(timer)
+    return { online: res.ok, latencyMs: Date.now() - startedAt }
+  } catch {
+    return { online: false, latencyMs: Date.now() - startedAt }
+  }
+}
+
+app.get('/api/studio/tools', async (c) => {
+  const studio = await getEffectiveStudioConfig(ctx.ROOT)
+  const apiKey = String(studio.effective?.secrets?.localoxmlApiKey || process.env.LOCALOXML_API_KEY || 'omlx123').trim()
+  const comfyBase = String(studio.effective?.image?.comfyuiBaseUrl || STUDIO_TOOL_DEFS.comfyui.baseUrl)
+  const omlxProbe = await probeStudioTool(STUDIO_TOOL_DEFS.omlx, STUDIO_TOOL_DEFS.omlx.baseUrl, apiKey)
+  const comfyProbe = await probeStudioTool(STUDIO_TOOL_DEFS.comfyui, comfyBase, null)
+  return c.json({
+    success: true,
+    tools: [
+      { key: 'omlx', label: STUDIO_TOOL_DEFS.omlx.label, url: STUDIO_TOOL_DEFS.omlx.baseUrl, ...omlxProbe },
+      { key: 'comfyui', label: STUDIO_TOOL_DEFS.comfyui.label, url: comfyBase, ...comfyProbe }
+    ]
+  })
+})
+
+app.post('/api/studio/tools/:tool/launch', async (c) => {
+  const tool = String(c.req.param('tool') || '').trim().toLowerCase()
+  const def = STUDIO_TOOL_DEFS[tool]
+  if (!def) return c.json({ success: false, error: 'unknown_tool', message: '未知工具（仅支持 omlx / comfyui）' }, 400)
+  const studio = await getEffectiveStudioConfig(ctx.ROOT)
+  const apiKey = String(studio.effective?.secrets?.localoxmlApiKey || process.env.LOCALOXML_API_KEY || 'omlx123').trim()
+  const baseUrl = tool === 'comfyui' ? String(studio.effective?.image?.comfyuiBaseUrl || def.baseUrl) : def.baseUrl
+
+  const before = await probeStudioTool(def, baseUrl, tool === 'omlx' ? apiKey : null)
+  if (before.online) return c.json({ success: true, alreadyRunning: true, message: `${def.label} 已在运行`, latencyMs: before.latencyMs })
+
+  const task = createAiTask('studio', 'studio.tool.launch', { total: 1, message: `启动本地服务：${def.label}` })
+  try {
+    if (tool === 'omlx') {
+      const appPath = def.appCandidates.find((p) => existsSync(p))
+      if (!appPath) throw new Error('未找到 oMLX.app（候选路径均不存在）')
+      const child = spawn('open', [appPath], { detached: true, stdio: 'ignore' })
+      child.unref()
+    } else {
+      const dir = def.dirCandidates.find((p) => existsSync(path.join(p, 'main.py')) && existsSync(path.join(p, 'venv', 'bin', 'python')))
+      if (!dir) throw new Error('未找到 ComfyUI 安装（main.py 与 venv 需齐备）')
+      // Terminal.app 可见窗口启动（出图可观测纪律：禁止黑盒静默启动）。
+      // 2026-11-10 根修（对齐守护台 openComfyUiInTerminal 2026-09-08 修复）：osascript do script 依赖
+      // 「自动化」隐私授权，被拒后 -1743 静默失败（窗口不开、spawn 错误被吞、干等 90s 超时）——
+      // 改用 LaunchServices 打开 .command 文件（无需 Apple Events 授权，窗口照常出现），osascript 仅作兜底。
+      // 启动命令与守护台统一为 sh ./start.sh（带 PYTORCH_ENABLE_MPS_FALLBACK=1，不再裸跑 venv python）。
+      const wrapperPath = path.join(ctx.ROOT, '.run', 'comfyui-start.command')
+      await mkdir(path.dirname(wrapperPath), { recursive: true })
+      await writeFile(wrapperPath, `#!/bin/bash\ncd '${dir.replace(/'/g, `'\\''`)}' && sh ./start.sh\n`, 'utf-8')
+      await new Promise((resolve, reject) => {
+        const p = spawn('chmod', ['755', wrapperPath])
+        p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`chmod_exit_${code}`))))
+        p.on('error', reject)
+      })
+      const opened = await new Promise((resolve) => {
+        const p = spawn('open', ['-a', 'Terminal', wrapperPath])
+        p.on('exit', (code) => resolve(code === 0))
+        p.on('error', () => resolve(false))
+      })
+      if (!opened) {
+        // 兜底：LaunchServices 不可用时仍试原 osascript 路径（授权可用机器上行为不变）
+        const cmd = `cd '${dir.replace(/'/g, `'\\''`)}' && sh ./start.sh`
+        const child = spawn('osascript', ['-e', `tell application "Terminal" to do script "${cmd.replace(/"/g, '\\"')}"`], { detached: true, stdio: 'ignore' })
+        child.unref()
+      }
+    }
+    // 等待服务就绪（模型/出图启动较慢：最多 90 秒）
+    const deadline = Date.now() + 90_000
+    let ready = false
+    let latencyMs = 0
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const probe = await probeStudioTool(def, baseUrl, tool === 'omlx' ? apiKey : null)
+      latencyMs = probe.latencyMs
+      if (probe.online) {
+        ready = true
+        break
+      }
+    }
+    if (ready) {
+      updateAiTask(task.taskId, { done: true, stage: 'done', current: 1, message: `${def.label} 已启动并就绪` })
+      return c.json({ success: true, alreadyRunning: false, message: `${def.label} 已启动，服务就绪`, latencyMs })
+    }
+    updateAiTask(task.taskId, { done: true, stage: 'failed', error: `${def.label} 已发出启动，但 90 秒内服务未就绪` })
+    return c.json({ success: false, error: 'launch_timeout', message: `${def.label} 已发出启动，但服务 90 秒内未就绪；请查看其窗口/日志` }, 504)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    updateAiTask(task.taskId, { done: true, stage: 'failed', error: msg })
+    return c.json({ success: false, error: 'launch_failed', message: `启动失败：${msg}` }, 500)
+  }
+})
+
 
 // 2026-10-20 守护台关联（设置页卡 + 新建页执行路径）：租约开关/地址/可达性探测
 app.get('/api/studio/control-link', async (c) => {

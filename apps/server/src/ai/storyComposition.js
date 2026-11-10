@@ -38,7 +38,7 @@ function compositionSchema() {
                 additionalProperties: false,
                 properties: {
                   subjectId: { type: 'string', minLength: 1, maxLength: 120 },
-                  kind: { type: 'string', enum: ['character', 'prop'] },
+                  kind: { type: 'string', enum: ['character', 'prop', 'scenery'] },
                   stateKey: { type: 'string', maxLength: 48 },
                   x: { type: 'number' },
                   y: { type: 'number' },
@@ -74,7 +74,7 @@ function buildInstructions(craftCatalog = []) {
     : ''
   return (
     '你是儿童绘本互动故事的"场景构图师"（导演）。\n' +
-    '任务：输入给出故事的若干场景（标题+剧情摘要）以及每个场景出场元素清单（角色/道具，含各自可用的状态变体 stateKeys）。' +
+    '任务：输入给出故事的若干场景（标题+剧情摘要）以及每个场景出场元素清单（角色/道具/背景元素，含各自可用的状态变体 stateKeys）。' +
     '为每个场景输出一份构图规格，指导立绘摆位：元素放哪里、多大、多远、谁挡谁、朝哪边、用什么状态。\n' +
     '【画布刻度（硬事实，不可偏离）】舞台竖屏 720x1280；立绘原图高约 1152px，scale=1.0 时该元素几乎顶满画幅高。\n' +
     'scale 刻度表（务必按此取值，不得超出）：远景 0.25-0.4；中景（主角默认、普通叙事镜头）0.4-0.6；近景高潮单人特写 0.7-0.85；' +
@@ -84,6 +84,8 @@ function buildInstructions(craftCatalog = []) {
     '坐标约定（归一化）：x∈[0,1] 横向（0=左缘，1=右缘）；y∈[0,1] 为元素脚底/底部锚点的纵向位置（0=画面顶，1=画面底）。\n' +
     '透视规则：远处元素 y 更小（约 0.55-0.7）且 scale 更小；近处元素 y 更大（0.85-1.0）且 scale 更大；y<0.7 的元素 scale 不得 ≥0.7。\n' +
     'zIndex：前后遮挡，大的在前（背景 0，远处 1-2，主体 3-5，最前景 6+）。\n' +
+    '背景元素（kind=scenery，地形块/材料堆/环境装饰）：垫在角色之下，zIndex 取 1-2；贴地面摆放（y 0.85-1.0）；' +
+    'scale 按其与角色的真实比例（稻草堆/岩石区约 0.3-0.5，泥巴地等地块 0.4-0.6，花丛小草 0.15-0.3）。\n' +
     'flipH：true 表示水平翻转（面朝左）；按剧情视线/走向决定。\n' +
     'stateKey：该元素本场景应呈现的状态，必须从输入清单该元素的 stateKeys 里原样照抄一个；没有合适状态或清单为空时输出空字符串。\n' +
     'blocking：元素间关系描述，必须含方位+间距+视线/朝向（≤30字），如"蝴蝶在小鸡右前方一个身位的草叶上方飞，小鸡视线追着它"——只写"狐狸在架下"不合格。\n' +
@@ -227,7 +229,8 @@ export function buildCompositionInput({ project, story, plan }) {
   const planAssets = asList(plan && plan.assets)
     .filter((a) => {
       const cat = asStr(a && a.category)
-      return cat === 'character' || cat === 'prop'
+      // 2026-11-06 背景元素（scenery）纳入构图输入：与角色/道具同享锚占需求单
+      return cat === 'character' || cat === 'prop' || cat === 'scenery'
     })
   const scenes = nodes.map((node, index) => {
     const sceneId = asStr(node && node.id) || `scene_${index + 1}`
@@ -244,7 +247,7 @@ export function buildCompositionInput({ project, story, plan }) {
       subjects.push({
         subjectId,
         name: asStr(a && a.name) || subjectId,
-        kind: asStr(a && a.category) === 'character' ? 'character' : 'prop',
+        kind: asStr(a && a.category) === 'character' ? 'character' : (asStr(a && a.category) === 'scenery' ? 'scenery' : 'prop'),
         anchorHint: clampText2(a && a.anchorPrompt, 80),
         stateKeys: asList(a && a.stateVariants).map((v) => asStr(v && v.stateKey)).filter(Boolean)
       })
@@ -312,9 +315,11 @@ export async function extractStoryComposition({ provider, model, apiUrl, proxyUr
           ...(model ? { model: String(model).trim() } : {}),
           // 构图输出有界（1 场景 × ≤10 元素 ≈ 0.5-1K tokens），显式压 max_output_tokens 预算——
           // 缺省 8192 会让 OMLX 按上限预留 KV，撞 prefill 内存护栏。
-          // 2026-10-13 实测：2048 在思考型模型上会被 reasoning_content 吃掉导致 JSON 截断
-          // （青蛙王子构图两连失败：Expected ',' or ']' after array element），提到 4096 给思考留余量。
-          max_output_tokens: 4096,
+          // 2026-10-13 曾提 4096（思考型模型 reasoning_content 截断），但结构化输出路径已关思考
+          // （buildChatCompletionsBodyFromResponsesBody enable_thinking:false），且 4096 + 全故事输入
+          // 会把 8K 窗口用满（KV+SDPA ~4.34GB，峰值 22.03GB > 护栏 21.93GB，三只小猪构图实测被拒）。
+          // 2026-11-05 压回 2048：输出预算仍两倍于内容量，KV 预留降到 ~2.5GB 让出护栏余量。
+          max_output_tokens: 2048,
           text: { format: { type: 'json_schema', name: 'story_composition', strict: true, schema: compositionSchema() } }
         }
         try {

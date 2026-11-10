@@ -1,6 +1,9 @@
 // PlanV1 运行时契约校验（零依赖轻量校验器，模块化拆分 W3 首批：只查结构，不评内容）。
 // 挂接点：saveStoryAssetPlan 写盘前；校验失败抛 plan_contract_violation（结构错误），存量读取不受影响。
-const STATE_KEY_RE = /^[a-z0-9_.]+$/ // 兼容命名空间键（carrier.holding_object 等存量点分键）
+// 2026-11-10 对齐 2026-10-27 K 波用户裁决（中文语义名保留原文作键，变体匹配按字符串相等）：
+// 合法键 = ASCII 小写/数字/_/.（兼容 carrier.holding_object 等点分键）或 CJK 表意文字；
+// 空格/连字符/标点仍非法（防结构化键退化）。stateKey 只作数据匹配键，不进文件名。
+const STATE_KEY_RE = /^(?:[a-z0-9_.]|[\u4e00-\u9fff])+$/
 
 function isStr(v) { return typeof v === 'string' }
 function isStrArr(v) { return Array.isArray(v) && v.every((x) => isStr(x)) }
@@ -49,6 +52,23 @@ export function validateStoryAssetPlan(plan) {
         if (sk && !STATE_KEY_RE.test(sk)) issues.push(`${at}/stateRequirements[${j}]:bad_stateKey_format`)
         if (r.sceneIds !== undefined && !isStrArr(r.sceneIds)) issues.push(`${at}/stateRequirements[${j}]:sceneIds_not_string_array`)
         if (r.relatedAssetIds !== undefined && !isStrArr(r.relatedAssetIds)) issues.push(`${at}/stateRequirements[${j}]:relatedAssetIds_not_string_array`)
+      }
+    }
+    // 2026-10-27 R 波：标准系三视图结构校验（key 合法集 front/side/back、不重复）
+    const sheet = a.modelSheet
+    if (sheet !== undefined) {
+      if (!sheet || typeof sheet !== 'object' || Array.isArray(sheet)) issues.push(`${at}/modelSheet:not_object`)
+      else if (sheet.views !== undefined) {
+        if (!Array.isArray(sheet.views)) issues.push(`${at}/modelSheet.views:not_array`)
+        else {
+          const seenViews = new Set()
+          for (const [j, v] of sheet.views.entries()) {
+            const vk = String(v && v.key || '').trim()
+            if (!['front', 'side', 'back'].includes(vk)) issues.push(`${at}/modelSheet.views[${j}]:bad_key`)
+            else if (seenViews.has(vk)) issues.push(`${at}/modelSheet.views[${j}]:duplicate_key:${vk}`)
+            else seenViews.add(vk)
+          }
+        }
       }
     }
   }

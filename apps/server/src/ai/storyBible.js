@@ -789,13 +789,13 @@ function buildBibleChunkInstructions(kind) {
     return `${common}\n本块任务：产出全局锚定。worldAnchor：一句到两句英文纯视觉风格锚点，只写画风/色彩体系/笔触/镜头感；禁止时间、光照变化、天气类描述（morning/sunset/lighting transitions/rain 等）——光照归各场景 location 锚点表达。eventChain：按场景编号列出可见动作与状态变化（英文短句）。forbiddenSubstitutes：全局容易误画的替代物（英文短词）。`
   }
   if (kind === 'characters') {
-    return `${common}\n本块任务：只保留后续连续出图真正需要稳定复用的角色核心身份。anchorPrompt 只写"角色本体 + 稳定基础穿着/物种特征"，不要把临时状态、姿势、情绪、受伤、拿着某物写成核心身份。单一事件里的临时状态（如受伤的狼）不固化进 id/name/anchorPrompt。群体对象只有确实需要稳定复用视觉身份才保留。每个角色输出 id（英文短横线小写）、name、aliases、anchorPrompt、negativePrompt（可为 null）、locked（默认 true）。`
+    return `${common}\n本块任务：画面中实际出现的角色全部保留（含单幕角色——单幕角色也是画面成员，不许裁掉）。id 用英文小写短横线（如 big-wolf）；name 必须用中文（故事里的中文称呼，展示名）；aliases 可含中英文别名。anchorPrompt 必须用英文（一行纯视觉描述：角色本体 + 稳定基础穿着/物种特征），不要把临时状态、姿势、情绪、受伤、拿着某物写成核心身份，也不要写中文名/中文描述。单一事件里的临时状态（如受伤的狼）不固化进 id/name/anchorPrompt。群体对象只有确实需要稳定复用视觉身份才保留。每个角色输出 id、name（中文）、aliases、anchorPrompt（英文）、negativePrompt（英文，可为 null）、locked（默认 true）。`
   }
   if (kind === 'props') {
-    return `${common}\n本块任务：逐道具输出结构级 anchorPrompt（英文一行：部件/材质/形状/尺寸感/连接方式）。只保留会在后续场景反复作为独立视觉对象出现的道具；一次性动作/伤口状态不算长期道具。可穿戴可拆卸物（hat/bag/shoes 等）必须是 props 而不是角色外观的一部分，描述以物件本身为中心。anchorPrompt 只写物件本体——禁止写展示方式与载体（悬挂/穿戴/衣架/模特/底座等，如 hanging on rack / worn by / on mannequin），参考图按纯白底独立物件出图。每个道具输出 id、name、aliases、anchorPrompt、forbiddenSubstitutes（易误替代物）、locked（默认 true）。`
+    return `${common}\n本块任务：逐道具输出结构级 anchorPrompt（英文一行：部件/材质/形状/尺寸感/连接方式）。只保留会在后续场景反复作为独立视觉对象出现的道具；一次性动作/伤口状态不算长期道具。可穿戴可拆卸物（hat/bag/shoes 等）必须是 props 而不是角色外观的一部分，描述以物件本身为中心。anchorPrompt 只写物件本体——禁止写展示方式与载体（悬挂/穿戴/衣架/模特/底座等，如 hanging on rack / worn by / on mannequin），参考图按纯白底独立物件出图。id 用英文小写短横线；name 必须用中文（故事里的中文称呼，展示名）；aliases 可含中英文别名。每个道具输出 id、name（中文）、aliases、anchorPrompt（英文）、forbiddenSubstitutes（易误替代物）、locked（默认 true）。`
   }
   if (kind === 'locations') {
-    return `${common}\n本块任务：只输出可复用地点锚点（时代/地域/建筑风格/光照一句英文 anchorPrompt）。每个地点输出 id、name、aliases、anchorPrompt、locked（默认 true）。`
+    return `${common}\n本块任务：只输出可复用地点锚点（时代/地域/建筑风格/光照一句英文 anchorPrompt）。id 用英文小写短横线；name 必须用中文（故事里的中文称呼，展示名）；aliases 可含中英文别名。每个地点输出 id、name（中文）、aliases、anchorPrompt（英文）、locked（默认 true）。`
   }
   // sceneRefs
   return `${common}\n本块任务：为每个场景绑定画面中实际应出现的实体（用给定 id 引用，不要用名字）。只有画面里应实际出现的对象才能进入；被提到/呼喊/回忆/远处听见不等于要画进场景。选择点场景只能绑定做选择前画面中已存在的对象。每个场景通常只放一个主地点。对每条场景输出 sceneId、characters、props、locations（数组可空）。`
@@ -850,17 +850,23 @@ async function callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutM
   return parsed && typeof parsed === 'object' ? parsed : {}
 }
 
-async function generateStoryBibleChunked({ provider, model, apiUrl, proxyUrl, timeoutMs, input }) {
+async function generateStoryBibleChunked({ provider, model, apiUrl, proxyUrl, timeoutMs, input, onProgress }) {
   const slim = summarizeInputForBibleChunks(input)
   // 2026-10-13 prefill 护栏实测：KV 由 prompt 驱动（~1MB/token），整块 slim 仍有 4-6KB → 丑小鸭圣经四连 400。
   // 每个分块只给该块需要的字段（实体清单+场景名），prompt 压到 ~1-2K tokens 保过闸；global 块摘要再压 120 字。
   const sceneLite = slim.sceneSummaries.map((scene) => ({ sceneId: scene.sceneId, name: scene.name, summary: clampStr(scene.summary, 120) }))
   const sceneNames = sceneLite.map((scene) => scene.name).filter(Boolean)
   const base = { title: slim.title, brief: slim.brief, candidateWorldHints: slim.candidateWorldHints }
+  // 2026-10-27：任务台账阶段进度（5 分块串行打点，向导/任务指示器可见）
+  onProgress?.(0, 5, '全局锚定')
   const globalPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'global', input: { ...base, sceneSummaries: sceneLite } })
+  onProgress?.(1, 5, '角色')
   const characterPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'characters', input: { ...base, candidateCharacters: slim.candidateCharacters, sceneNames } })
+  onProgress?.(2, 5, '道具')
   const propPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'props', input: { ...base, candidateProps: slim.candidateProps, sceneNames } })
+  onProgress?.(3, 5, '地点')
   const locationPart = await callStoryBibleChunk({ provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'locations', input: { ...base, candidateLocations: slim.candidateLocations, sceneNames } })
+  onProgress?.(4, 5, '场景绑定')
   const sceneRefsPart = await callStoryBibleChunk({
     provider, model, apiUrl, proxyUrl, timeoutMs, kind: 'sceneRefs',
     input: {
@@ -897,7 +903,8 @@ export async function generateStoryBible({
   apiUrl,
   proxyUrl,
   timeoutMs,
-  input
+  input,
+  onProgress
 }) {
   const p = String(provider || '').trim().toLowerCase()
   const timeoutRaw = Number(timeoutMs)
@@ -909,7 +916,7 @@ export async function generateStoryBible({
   if (p === 'localoxml') {
     try {
       const chunkStart = Date.now()
-      const chunked = await generateStoryBibleChunked({ provider: p, model, apiUrl, proxyUrl, timeoutMs: t, input })
+      const chunked = await generateStoryBibleChunked({ provider: p, model, apiUrl, proxyUrl, timeoutMs: t, input, onProgress })
       try {
         const repaired = await requestStoryBibleStructuredOutput({
           provider: p,

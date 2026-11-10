@@ -37,6 +37,13 @@
           "file": "04_数据要求说明书.md",
           "template": "gb8567/04_数据要求说明书.md",
           "standard": "GB/T 8567"
+        },
+        {
+          "id": "scene_prompt_requirements",
+          "title": "场景提示词生成与双稿对齐需求",
+          "file": "scene_prompt_requirements.md",
+          "standard": "扩展",
+          "status": "已实施"
         }
       ]
     },
@@ -169,6 +176,20 @@
           "status": "编写中"
         },
         {
+          "id": "ext_pipeline_test",
+          "title": "明线生产回归评估方案（升级后路线）",
+          "file": "ext_明线回归评估方案.md",
+          "standard": "扩展",
+          "status": "评审中"
+        },
+        {
+          "id": "ext_capability",
+          "title": "能力矩阵与阶段归属",
+          "file": "ext_能力矩阵.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
           "id": "ext_tokens",
           "title": "设计令牌与主题扩展规范",
           "file": "ext_设计令牌与主题规范.md",
@@ -219,6 +240,13 @@
           "id": "ui_compose",
           "title": "合成工作室定义（编辑器主界面）",
           "file": "ui_合成工作室定义.md",
+          "standard": "扩展",
+          "status": "编写中"
+        },
+        {
+          "id": "ui_blueprint",
+          "title": "蓝图工作室定义（结构层 · 生产准备中心）",
+          "file": "ui_蓝图工作室定义.md",
           "standard": "扩展",
           "status": "编写中"
         }

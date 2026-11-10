@@ -1,4 +1,4 @@
-import { extractResponseOutputText, openaiResponsesJsonForTools } from './openai.js'
+import { extractResponseOutputText, openaiResponsesJsonForTools, parseModelJsonLenient } from './openai.js'
 import { generateStrictJsonViaOllamaChat } from './ollama.js'
 import { generateStrictJsonViaDoubaoChat } from './doubao.js'
 
@@ -87,6 +87,8 @@ function buildInstructions(input) {
     '- 如果 lockProfile=ambient_prop：必须强调“单个氛围元素”而非完整大场景，例如单朵白云、单团雾气、单个光团，不得带地平线、建筑、树木或角色。\n' +
     '- 如果 lockProfile=organic_prop：必须强调单个自然标本或单个自然物，不要带栖息地大背景。\n' +
     '- 如果 category=location：必须生成“地点锚点图”式提示词，强调环境结构、地形、水体、植被、建筑、光线和统一世界观。\n' +
+    // 2026-11-06 背景元素（scenery）：单件环境元素孤立参考图，不是完整场景
+    '- 如果 category=scenery：必须生成“单件环境元素白底参考图”式提示词——地形块/材料堆/环境装饰孤立呈现，强调材质纹理、轮廓与体量比例；必须明确禁止完整场景、远景构图、地平线、天空、人物、动物、多元素拼贴。\n' +
     // 2026-08-28：H5 互动故事的文本叠加在场景图上，画面下部必须留低细节低对比的安静区，保证文本可读
     '- 对于 location（以及任何会作为场景底图的画面）：必须额外要求“画面下部约三分之一为低细节、低对比的安静区域，便于 H5 文本叠加阅读”，不能只写满高细节内容。\n' +
     '- 不要照抄 currentPromptZh/currentPromptEn；应基于故事信息重写和增强。\n' +
@@ -163,7 +165,9 @@ async function enhanceViaOpenAICompatible({ input, provider, model, apiUrl, prox
     ...(model ? { model: asStr(model).trim() } : {})
   }
   const { json, meta } = await openaiResponsesJsonForTools({ body, provider, apiUrl, proxyUrl, timeoutMs: ['localoxml', 'ollama'].includes(asStr(provider).trim().toLowerCase()) ? 300_000 : 60_000, model })
-  const parsed = JSON.parse(extractResponseOutputText(json) || '{}')
+  const raw = extractResponseOutputText(json)
+  if (!String(raw || '').trim()) throw new Error('empty_story_asset_prompt_enhance_output')
+  const parsed = parseModelJsonLenient(raw)
   if (!validatePromptEnhanceResult(parsed)) throw new Error('invalid_story_asset_prompt_enhance_output')
   return { result: parsed, meta }
 }

@@ -7,7 +7,9 @@ import { mkdir, readFile, readdir, rename, stat, writeFile, rm, copyFile } from 
 import { existsSync } from 'node:fs'
 import crypto from 'node:crypto'
 import { classifyAiError, createTraceId, logStage } from '../ai/runtime.js'
-import { createAiTask, getAiTask, listAiTasks, listAllAiTasks, loadAiTasksFromDisk, loadAllAiTasksFromDisk } from '../ai/taskProgress.js'
+import { createAiTask, updateAiTask, cancelAiTask, deleteAiTask, clearFinishedAiTasks, getAiTask, listAiTasks, listAllAiTasks, loadAiTasksFromDisk, loadAllAiTasksFromDisk } from '../ai/taskProgress.js'
+import { listActiveLeaseStatuses } from '../ai/resourceLease.js'
+import { listTaskStatusInbox } from '../ai/taskStatusInbox.js'
 import { generateBackgroundImage } from '../ai/background.js'
 import { optimizeGeneratedImage, optimizeDirectoryTree, IMAGE_KIND } from '../ai/imageOptimize.js'
 import { sniffImageMetaFromBytes } from '../ai/storyAssetReferenceGate.js'
@@ -619,6 +621,7 @@ app.post('/api/projects/:id/ai/background', storyInputGate('story.background.gen
     item: `w${Math.floor(width || 0)}h${Math.floor(height || 0)} refs:${referenceImages.length}`
   })
 
+  const bgTask = createAiTask(id, 'story.background.generate', { total: 1, message: '生成场景背景图' })
 	try {
 	  const gen = await generateBackgroundImage({
 	    prompt: effectivePrompt,
@@ -679,7 +682,8 @@ app.post('/api/projects/:id/ai/background', storyInputGate('story.background.gen
         const opt = await optimizeGeneratedImage(abs, IMAGE_KIND.SCENE_BG).catch(() => null)
         if (opt && opt.outPath && opt.outPath !== abs) assetPath = String(ctx.assetPathFromAbsolute(id, opt.outPath) || assetPath)
       }
-		    const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : String(process.env.STUDIO_BG_PROVIDER || 'sdwebui')
+		    updateAiTask(bgTask.taskId, { done: true, stage: 'done', current: 1, message: '场景背景图已生成' })
+			    const provider = (gen && gen.meta && gen.meta.provider) ? String(gen.meta.provider) : String(process.env.STUDIO_BG_PROVIDER || 'sdwebui')
 		    const remoteUrl = (gen && gen.meta && typeof gen.meta.url === 'string' && gen.meta.url.trim()) ? String(gen.meta.url).trim() : ''
         logStage({
           stage: 'bg.create',
@@ -717,7 +721,8 @@ app.post('/api/projects/:id/ai/background', storyInputGate('story.background.gen
           durationMs: Math.max(0, Date.now() - startedAt),
           err: msg
         })
-        return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
+        updateAiTask(bgTask.taskId, { done: true, stage: 'failed', error: msg })
+        return c.json({ success: false, error: mapped.code, message: msg, traceId, taskId: bgTask.taskId }, mapped.httpStatus)
 	  }
 })
 
@@ -734,6 +739,8 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
 	const globalNegativePrompt = String(body?.globalNegativePrompt || '').trim()
 	const aspectRatio = String(body?.aspectRatio || '').trim()
 	const style = String(body?.style || '').trim()
+	// 2026-11-02 交互故事分层链：背景图=纯环境空镜（角色/动物不写进背景稿，由立绘链分层绘制）
+	const backgroundOnly = body?.backgroundOnly === true
   const outputLanguage = String(body?.outputLanguage || '').trim().toLowerCase() || 'en'
   const promptTimeoutMs = ctx.clampInt(
     body?.timeoutMs,
@@ -762,6 +769,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
     model: studio.effective.prompt.model || '-',
     item: `chars:${userInput.length}`
   })
+  const promptTask = createAiTask(id, 'story.background.prompt', { total: 1, message: 'AI 解析场景提示词' })
 	try {
 	  const { result, meta } = await generateBackgroundPrompt({
       userInput,
@@ -769,6 +777,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       globalNegativePrompt,
       aspectRatio,
       style,
+      backgroundOnly,
       outputLanguage,
       timeoutMs: promptTimeoutMs,
       targetImageProvider: studio.effective.image.provider,
@@ -787,10 +796,12 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       ok: true,
       durationMs: Math.max(0, Date.now() - startedAt)
     })
-	  return c.json({ success: true, result, meta, traceId })
+    updateAiTask(promptTask.taskId, { done: true, stage: 'done', current: 1, message: '场景提示词已生成' })
+	  return c.json({ success: true, result, meta, traceId, taskId: promptTask.taskId })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
+    updateAiTask(promptTask.taskId, { done: true, stage: 'failed', error: msg })
     logStage({
       stage: 'bg.prompt',
       event: 'fail',
@@ -803,7 +814,7 @@ app.post('/api/projects/:id/ai/background/prompt', async (c) => {
       durationMs: Math.max(0, Date.now() - startedAt),
       err: msg
     })
-    return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
+    return c.json({ success: false, error: mapped.code, message: msg, traceId, taskId: promptTask.taskId }, mapped.httpStatus)
   }
 })
 
@@ -839,6 +850,8 @@ app.post('/api/projects/:id/ai/translate', async (c) => {
   const startedAt = Date.now()
   const traceId = createTraceId()
   const primaryProvider = providers[0]
+  // 2026-10-27 黑盒治理：提示词翻译入任务台账（一条中文稿一条目；批量翻译由编辑器侧串行，逐项在此可见）
+  const translateTask = createAiTask(id, 'story.prompt.translate', { total: 1, message: `提示词翻译：${textIn.slice(0, 18)}…` })
   logStage({ stage: 'prompt.translate', event: 'start', traceId, project: id, provider: primaryProvider.provider || 'localoxml', model: primaryProvider.model || '-' })
   try {
     let translated = null
@@ -867,11 +880,15 @@ app.post('/api/projects/:id/ai/translate', async (c) => {
     if (!translated) throw lastError || new Error('translation_failed')
     const { result, meta } = translated
     logStage({ stage: 'prompt.translate', event: 'ok', traceId, project: id, provider: meta && meta.provider ? meta.provider : primaryProvider.provider || 'localoxml', model: meta && meta.model ? meta.model : primaryProvider.model || '-', ok: true, durationMs: Math.max(0, Date.now() - startedAt) })
+    updateAiTask(translateTask.taskId, { done: true, stage: 'done', current: 1, message: '翻译完成' })
     return c.json({ success: true, result, meta, traceId })
   } catch (e) {
     const msg = e && e.message ? String(e.message) : String(e)
     const mapped = classifyAiError(e)
     logStage({ stage: 'prompt.translate', event: 'fail', traceId, project: id, provider: primaryProvider.provider || 'localoxml', model: primaryProvider.model || '-', status: mapped.httpStatus, ok: false, durationMs: Math.max(0, Date.now() - startedAt), err: msg })
+    try {
+      updateAiTask(translateTask.taskId, { done: true, stage: 'failed', error: `翻译失败：${msg.slice(0, 160)}` })
+    } catch {}
     return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
   }
 
@@ -887,14 +904,39 @@ app.post('/api/projects/:id/ai/translate', async (c) => {
 app.get('/api/ai/tasks', async (c) => {
   await loadAllAiTasksFromDisk()
   const includeDone = String(c.req.query('includeDone') || '1') !== '0'
-  return c.json({ success: true, tasks: listAllAiTasks({ includeDone }) })
+  // 2026-11-09 租约调度态并入台账响应：排队/换模/获准随任务轮询透出（resourceLease 注册表，进程内实时）
+  // §13 task.status：守护台推送的统一任务状态（requestId+version 幂等收件箱）一并下发供 UI 呈现
+  return c.json({ success: true, tasks: listAllAiTasks({ includeDone }), leaseStatuses: listActiveLeaseStatuses(), controlTaskStatuses: listTaskStatusInbox({ limit: 20 }) })
+})
+
+// 任务管理（2026-10-25 用户指令）：已结束任务可删除/可一键清理；进行中的任务拒绝删除（409）。
+async function cancelTaskRoute(c) {
+  const result = cancelAiTask(c.req.param('taskId'), c.req.param('id') || '')
+  if (!result.ok && result.code === 'not_found') return c.json({ success: false, error: 'not_found', message: '任务不存在' }, 404)
+  if (!result.ok) return c.json({ success: false, error: result.code, message: '任务已结束，无需停止', task: result.task }, 409)
+  return c.json({ success: true, task: result.task })
+}
+app.post('/api/ai/tasks/:taskId/cancel', cancelTaskRoute)
+app.post('/api/projects/:id/ai/tasks/:taskId/cancel', cancelTaskRoute)
+
+app.delete('/api/ai/tasks/:taskId', async (c) => {
+  const r = await deleteAiTask(c.req.param('taskId'))
+  if (!r.ok && r.code === 'task_running') return c.json({ success: false, error: 'task_running', message: '任务正在进行中，不能删除' }, 409)
+  if (!r.ok) return c.json({ success: false, error: 'not_found' }, 404)
+  return c.json({ success: true })
+})
+
+app.post('/api/ai/tasks/clear-finished', async (c) => {
+  const removed = await clearFinishedAiTasks()
+  return c.json({ success: true, removed })
 })
 
 app.get('/api/projects/:id/ai/tasks', async (c) => {
   const id = c.req.param('id')
   await loadAiTasksFromDisk(id)
   const includeDone = String(c.req.query('includeDone') || '1') !== '0'
-  return c.json({ success: true, tasks: listAiTasks(id, { includeDone }) })
+  const leaseStatuses = listActiveLeaseStatuses().filter((s) => !s.projectId || s.projectId === id)
+  return c.json({ success: true, tasks: listAiTasks(id, { includeDone }), leaseStatuses, controlTaskStatuses: listTaskStatusInbox({ limit: 20 }) })
 })
 
 // 模型对话明细（只读，2026-10-12）：本地 oMLX 调用按日落盘（state/model-dialogs/），
@@ -1010,7 +1052,7 @@ app.post('/api/projects/:id/ai/story/completeness-check', async (c) => {
       }
     })
     const { report, reportPath } = reviewConfig.provider === 'omlx'
-      ? await withResourceLease('vision', `gs:completeness:${id}`, runCheck)
+      ? await withResourceLease('vision', `ts:completeness:${id}`, runCheck)
       : await runCheck()
     updateAiTask(task.taskId, {
       stage: report.verdict === 'pass' ? 'done' : 'failed',

@@ -8,6 +8,7 @@ import SettingsPage from './pages/SettingsPage'
 import CreateStoryPage from './pages/CreateStoryPage'
 import { DialogHost } from './dialog'
 import TaskIndicator from './tasks/TaskIndicator'
+import { resolveUrl } from './api'
 
 type Stage = 'hub' | 'script' | 'blueprint' | 'compose' | 'settings' | 'create'
 type WorkStage = Exclude<Stage, 'settings' | 'create'>
@@ -139,6 +140,17 @@ export default function App() {
         </button>
       ) : null}
       {/* 设置页为唯一设置入口（独立页面）；旧弹窗 StudioSettingsModal 已于 2026-10-20 退役删除 */}
+      {/* 帮助入口（2026-10-21）：与设置浮钮并列（首页顶栏已自带，工作室页才显示浮钮），直达 docsys 文档站（业务后端 /docs/ 托管，无需另起预览服务） */}
+      {stage !== 'settings' && stage !== 'hub' && stage !== 'create' ? (
+        <button
+          className="settings-fab settings-help-fab"
+          type="button"
+          onClick={() => window.open(resolveUrl('/docs/'), '_blank', 'noopener,noreferrer')}
+          aria-label="打开帮助文档"
+        >
+          帮助
+        </button>
+      ) : null}
       {/* 全局任务指示器：任何长任务界面可见（进度/失败原因），不依赖守护台 */}
       <TaskIndicator
         onOpenProject={(id) => {

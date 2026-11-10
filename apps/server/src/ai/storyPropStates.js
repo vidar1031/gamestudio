@@ -118,7 +118,7 @@ function normalizePropStates(parsed, { propIds, validSceneIds, propSceneIds, res
     const seenKeys = new Set()
     const claimedScenes = new Set()
     for (const rawState of asList(rawProp && rawProp.states)) {
-      const stateKey = clampText(rawState && rawState.stateKey, 48).toLowerCase().replace(/[^a-z0-9_]/g, '_')
+      const stateKey = clampText(rawState && rawState.stateKey, 48).toLowerCase().replace(/[^a-z0-9_\u4e00-\u9fff]/g, '_') // 2026-11-10 对齐 K 波裁决：CJK 键保留
       if (!stateKey || seenKeys.has(stateKey)) continue
       const sceneIds = asList(rawState && rawState.sceneIds)
         .map((s) => asStr(s))
@@ -211,28 +211,8 @@ export function buildPropStateExtractionInput({ project, story, storyBible }) {
   }
 }
 
-export async function extractStoryPropStates({ provider, model, apiUrl, proxyUrl, timeoutMs, input }) {
-  const p = String(provider || '').trim().toLowerCase()
-  const t = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : 90_000
-  const instructions = buildInstructions()
-  const user = JSON.stringify({
-    storyTitle: input.storyTitle,
-    props: input.props.map((x) => ({ id: x.id, name: x.name, kind: x.kind || 'prop', anchorPrompt: x.anchorPrompt })),
-    scenes: input.scenes.map((s) => ({ sceneId: s.sceneId, sceneName: s.sceneName, summary: s.summary, propIds: s.propIds }))
-  }, null, 2)
-
-  const propIds = new Set(input.props.map((x) => x.id))
-  const validSceneIds = new Set(input.allScenes.map((s) => s.sceneId))
-  const propSceneIds = new Map()
-  for (const s of input.scenes) {
-    for (const pid of s.propIds) {
-      if (!propSceneIds.has(pid)) propSceneIds.set(pid, new Set())
-      propSceneIds.get(pid).add(s.sceneId)
-    }
-  }
-  const resolvePropId = buildEntityIdResolver(input.props)
-  const normArgs = { propIds, validSceneIds, propSceneIds, resolvePropId }
-
+// 批内 LLM 调用（三分支），返回 { parsed, meta }；抽出为模块级函数便于 callLlm 注入替换（单测/探针喂假输出不经模型）
+async function callPropStatesLlm({ provider: p, model, apiUrl, proxyUrl, timeoutMs: t, instructions, user }) {
   if (p === 'openai' || p === 'localoxml') {
     let lastErr = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -247,17 +227,13 @@ export async function extractStoryPropStates({ provider, model, apiUrl, proxyUrl
       }
       try {
         const { json, meta } = await openaiResponsesJsonForTools({ body, provider: p, apiUrl, proxyUrl, timeoutMs: t })
-        const parsed = parseModelJsonLenient(extractResponseOutputText(json))
-        const normalized = normalizePropStates(parsed, normArgs)
-        if (!validatePropStates(normalized)) throw new Error('invalid_prop_states')
-        return { result: normalized, meta }
+        return { parsed: parseModelJsonLenient(extractResponseOutputText(json)), meta }
       } catch (e) {
         lastErr = e
       }
     }
     throw lastErr || new Error('invalid_json_response')
   }
-
   if (p === 'doubao') {
     const { parsed, meta } = await generateStrictJsonViaDoubaoChat({
       instructions,
@@ -265,12 +241,11 @@ export async function extractStoryPropStates({ provider, model, apiUrl, proxyUrl
       model: model || undefined,
       timeoutMs: t,
       maxRetries: 2,
-      validate: (x) => validatePropStates(normalizePropStates(x, normArgs)),
+      validate: (x) => Boolean(x && Array.isArray(x.props)),
       proxyUrl
     })
-    return { result: normalizePropStates(parsed, normArgs), meta }
+    return { parsed, meta }
   }
-
   if (p === 'ollama') {
     const { parsed, meta } = await generateStrictJsonViaOllamaChat({
       instructions,
@@ -278,11 +253,98 @@ export async function extractStoryPropStates({ provider, model, apiUrl, proxyUrl
       model: model || undefined,
       timeoutMs: t,
       maxRetries: 2,
-      validate: (x) => validatePropStates(normalizePropStates(x, normArgs)),
+      validate: (x) => Boolean(x && Array.isArray(x.props)),
       proxyUrl
     })
-    return { result: normalizePropStates(parsed, normArgs), meta }
+    return { parsed, meta }
+  }
+  throw new Error('unsupported_provider')
+}
+
+export async function extractStoryPropStates({ provider, model, apiUrl, proxyUrl, timeoutMs, input, onProgress, callLlm }) {
+  const p = String(provider || '').trim().toLowerCase()
+  const t = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : 90_000
+  const instructions = buildInstructions()
+
+  const propIds = new Set(input.props.map((x) => x.id))
+  const validSceneIds = new Set(input.allScenes.map((s) => s.sceneId))
+  const resolvePropId = buildEntityIdResolver(input.props)
+
+  // N 波（2026-10-27 用户实测根修：prop-states 单次大调用 90s 超时×重试=180s 报 500）：
+  // 逐幕分批串行+合并（storyPoseStates.js L 波同款 POSE_BATCH_SIZE=1）；单批允许空（该幕道具无状态变化正常）；
+  // 任一幕失败抛 prop_batch_failed:<幕名>:<原因> 如实报哪幕；onProgress 逐幕打点接任务台账。
+  const PROP_BATCH_SIZE = 1
+  const sceneBatches = []
+  for (let i = 0; i < input.scenes.length; i += PROP_BATCH_SIZE) sceneBatches.push(input.scenes.slice(i, i + PROP_BATCH_SIZE))
+
+  const runBatch = async (batchScenes) => {
+    const batchPropSceneIds = new Map()
+    for (const s of batchScenes) {
+      for (const pid of s.propIds) {
+        if (!batchPropSceneIds.has(pid)) batchPropSceneIds.set(pid, new Set())
+        batchPropSceneIds.get(pid).add(s.sceneId)
+      }
+    }
+    const normArgs = { propIds, validSceneIds, propSceneIds: batchPropSceneIds, resolvePropId }
+    const user = JSON.stringify({
+      storyTitle: input.storyTitle,
+      props: input.props.map((x) => ({ id: x.id, name: x.name, kind: x.kind || 'prop', anchorPrompt: x.anchorPrompt })),
+      scenes: batchScenes.map((s) => ({ sceneId: s.sceneId, sceneName: s.sceneName, summary: s.summary, propIds: s.propIds }))
+    }, null, 2)
+
+    // callLlm 可注入（单测/探针喂假输出不经模型，storyAssetNameNormalize.js 同款）；默认走模块级 callPropStatesLlm
+    const runLlm = typeof callLlm === 'function' ? callLlm : callPropStatesLlm
+    const { parsed, meta } = await runLlm({ provider: p, model, apiUrl, proxyUrl, timeoutMs: t, instructions, user })
+    const normalized = normalizePropStates(parsed, normArgs)
+    return { result: normalized, meta }
   }
 
-  throw new Error('unsupported_provider')
+  const mergedProps = []
+  let firstMeta = null
+  for (let bi = 0; bi < sceneBatches.length; bi += 1) {
+    const batchScenes = sceneBatches[bi]
+    const batchLabel = String(batchScenes[0]?.sceneName || batchScenes[0]?.sceneId || `批 ${bi + 1}`)
+    onProgress?.(bi, sceneBatches.length, batchLabel)
+    try {
+      const { result, meta } = await runBatch(batchScenes)
+      if (!firstMeta && meta) firstMeta = meta
+      mergedProps.push(...(Array.isArray(result?.props) ? result.props : []))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      throw new Error(`prop_batch_failed:${batchLabel}:${msg}`)
+    }
+  }
+  // 合并同 propId 条目（逐幕提取同一道具在不同幕有不同状态——states 并集、hasStateChanges 或运算）
+  const byPropId = new Map()
+  for (const prop of mergedProps) {
+    const pid = String(prop?.propId || '').trim()
+    if (!pid) continue
+    if (!byPropId.has(pid)) {
+      byPropId.set(pid, { ...prop, states: Array.isArray(prop?.states) ? [...prop.states] : [], appearances: Array.isArray(prop?.appearances) ? [...prop.appearances] : [] })
+      continue
+    }
+    const acc = byPropId.get(pid)
+    acc.hasStateChanges = Boolean(acc.hasStateChanges || prop?.hasStateChanges)
+    // mergeInto 可能在后续幕才被识别（如石子沉进瓶内发生在投石幕）：首个非空合并关系生效
+    if (!acc.mergeInto && prop?.mergeInto) acc.mergeInto = prop.mergeInto
+    const seenKeys = new Set(acc.states.map((s) => String(s?.stateKey || '').trim()))
+    for (const st of Array.isArray(prop?.states) ? prop.states : []) {
+      const k = String(st?.stateKey || '').trim()
+      if (k && !seenKeys.has(k)) {
+        seenKeys.add(k)
+        acc.states.push(st)
+      }
+    }
+    const seenSceneUsage = new Set(acc.appearances.map((a) => `${String(a?.sceneId || '')}::${String(a?.usage || '')}`))
+    for (const ap of Array.isArray(prop?.appearances) ? prop.appearances : []) {
+      const k = `${String(ap?.sceneId || '')}::${String(ap?.usage || '')}`
+      if (!seenSceneUsage.has(k)) {
+        seenSceneUsage.add(k)
+        acc.appearances.push(ap)
+      }
+    }
+  }
+  const merged = { props: [...byPropId.values()] }
+  if (!merged.props.length) throw new Error('invalid_prop_states')
+  return { result: merged, meta: firstMeta }
 }

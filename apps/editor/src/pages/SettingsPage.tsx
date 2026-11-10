@@ -1,10 +1,11 @@
 // 设置页（ui_设置定义.md §3/§4）：独立页面，页首固定「保存并应用」+ 当前生效摘要条。
 // 已验证行为（模型记忆、URL 记忆、接口 Key 自动保存、检测链路）移植自 StudioSettingsModal，语义不变。
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { markStartupReady } from '../startupReady'
 import type { StudioEffectiveConfig, StudioSettings, StudioStorageInfo } from '../api'
 import EffectiveSummary from '../settings/EffectiveSummary'
 import SectionCard, { SettingsZone } from '../settings/SectionCard'
-import { IconMatrix, IconPalette, IconStorage, IconKey, IconNetwork, IconLink, IconDiag, IconAbout } from '../settings/icons'
+import { IconMatrix, IconPalette, IconStorage, IconKey, IconNetwork, IconLink, IconServer, IconDiag, IconAbout } from '../settings/icons'
 import ModelSectionCard from '../settings/ModelSectionCard'
 import ReviewCard from '../settings/ReviewCard'
 import ImageServiceCard from '../settings/ImageServiceCard'
@@ -16,6 +17,7 @@ import SecretsPanel from '../settings/SecretsPanel'
 import NetworkPanel from '../settings/NetworkPanel'
 import DiagnosticsPanel from '../settings/DiagnosticsPanel'
 import ControlLinkCard from '../settings/ControlLinkCard'
+import LocalToolsCard from '../settings/LocalToolsCard'
 import AboutPanel from '../settings/AboutPanel'
 import {
   SECRET_LABELS,
@@ -300,6 +302,7 @@ export default function SettingsPage(props: { onBack: () => void }) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+      markStartupReady() // 启动覆盖层就绪信号：设置/新建页也是可恢复 stage，必须发（否则恢复进本页时启动屏挂到 15s 兜底）
     }
   }
 
@@ -632,8 +635,12 @@ export default function SettingsPage(props: { onBack: () => void }) {
           <NetworkPanel host={host} defaultOpen />
         </SettingsZone>
 
-        <SettingsZone title="守护台关联" icon={<IconLink />}>
+        <SettingsZone title="调用通道" icon={<IconLink />}>
           <ControlLinkCard host={host} defaultOpen />
+        </SettingsZone>
+
+        <SettingsZone title="本地服务" icon={<IconServer />}>
+          <LocalToolsCard host={host} defaultOpen />
         </SettingsZone>
 
         <SettingsZone title="诊断" icon={<IconDiag />}>

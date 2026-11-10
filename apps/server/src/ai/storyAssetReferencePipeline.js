@@ -28,7 +28,8 @@ export async function applyCutoutToStoryAssetReference({
 }) {
   const category = String(asset?.category || '').trim()
   const comfyuiBaseUrl = String(studio?.effective?.image?.comfyuiBaseUrl || '').trim()
-  if (!['character', 'prop'].includes(category) || !comfyuiBaseUrl) {
+  // 2026-11-06 背景元素（scenery）同走透明立绘抠图（RMBG Alpha），供运行时分层合成
+  if (!['character', 'prop', 'scenery'].includes(category) || !comfyuiBaseUrl) {
     return {
       plan,
       primaryReferenceAssetId: String(sourceRef?.projectAssetId || '').trim(),

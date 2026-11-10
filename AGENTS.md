@@ -78,8 +78,8 @@ docsys/           # 文档体系站点（GB/T 8567）：framework=零依赖渲�
 - 守护台核准清单（左脑配置 `llmApprovedModels`）是本机唯一合法 LLM 集：
   - `Qwen3.6-27B-4bit`（8K 窗口）：story 产线（TalkScene `storage/_config/studio_settings.json` 的 scripts/prompt/translation + Hermes 左脑路由）继续统一使用。
   - `gpt-oss-20b-MXFP4-Q8`（32K 窗口，2026-09-14 治理决议加入）：下游分析主力（forge-studio / ovo_system 分析链路）。
-- 两模型物理不可共存，同一时刻仅一个在线；切换经 `POST /api/control/resources/model/switch`（操作员或持 `model_switch` scope 的客户端——forge-studio 已签发；审计、静默边界 409 保护）。story 产线开工前若在线模型非 27B，须先切回。
-- **禁止**改回 `Qwen3.6-27B-MLX-4bit`（32K 变体）：KV 预留 ~5.6GB，27B 权重 ~15.7GB，合计超 oMLX prefill 内存护栏（~22.95GB）导致全部 400 拒答；且 control 资源调度器只认配置模型，其他已加载模型会被 `guard_unload_foreign_model` 强杀（生成中请求被断）。
+- 两模型物理不可共存，同一时刻仅一个在线。story 任务必须经租约告知实际模型 `Qwen3.6-27B-4bit`；已核准但未在线时由守护台排队，等待 forge 等当前任务自然结束后切换，**不得把“当前不是 Qwen 在线”当成阻止提交的理由，也不得改用 gpt-oss 冒充**。人工 `POST /api/control/resources/model/switch` 仅在操作员或 `model_switch` scope 下、无租约持有者/等待者的安全边界使用；普通任务不需要先手动切换。共同约定见 local-agent-control `docs/接入协议.md` 第 8、9 节。
+- **禁止**改回 `Qwen3.6-27B-MLX-4bit`（32K 变体）：KV 预留 ~5.6GB，27B 权重 ~15.7GB，合计超 oMLX prefill 内存护栏（~22.95GB）导致全部 400 拒答；未通过租约准入的模型不得热加载，守护台按本次准入模型守卫，运行中不得抢占卸载。
 - 本地模型调用必须给出有限 `max_output_tokens`（增强/翻译类 ≤2048）；OMLX 按 max_tokens 预留 KV，默认 8192 会直接撞护栏。
 - 同一模型的多次调用串行执行，禁止并行 prefill（KV 峰值翻倍）。
 
@@ -162,7 +162,7 @@ node --check apps/server/src/index.js
 - **工作室页面**：
   - `Hub.tsx` + `src/hub/`（项目库画廊与入口；状态映射/相对时间/色卡封面辅助）
   - `ScriptStudio.tsx` — 脚本层编辑
-  - `BlueprintStudio.tsx` — 蓝图层编辑
+  - `BlueprintStudio.tsx` + `src/studios/blueprint/`（蓝图层编辑；B1 起含占位预演/准备度/元素标记辅助；D1 起预演为中栏第三视图（卡片/结构图/预演），占位块可拖动编排写回构图需求单草稿）
   - `ComposeStudio.tsx` — 合成层编辑（2026-10-20 W6 拆分：装配主件 + `src/studios/compose/` 目录族——canvas/ Pixi 舞台层、orchestration/ 编排纯逻辑、panels/ 右栏属性族、modals/ 弹窗族）
 - **关键文件**：`src/api.ts`（与服务端通信）、`src/studios/`（各工作室页面）
 - **设置页**：`src/pages/SettingsPage.tsx`（设置页，2026-10-20 起；配套组件族 `src/settings/`；旧弹窗已于同日退役删除）
@@ -172,7 +172,7 @@ node --check apps/server/src/index.js
 - **框架**：Node.js + Hono（`@hono/node-server`）
 - **入口**：`src/index.js`
 - **模块**：
-  - `src/ai/` — AI 相关：脚本生成、提示词、背景图生成、资产计划、Story Bible、诊断、tts.js（语音合成：edge-tts/say/openai/local，试听预览）、resourceLease.js（租约开关现支持设置页「守护台关联」运行时关闭；env STUDIO_RESOURCE_LEASE_ENABLED 显式设定时优先）等；含剧情姿势提取（storyPoseStates.js）与道具状态提取（storyPropStates.js，道具跨场景视觉状态识别→状态变体生成链 `POST /api/projects/:id/ai/story/assets/:assetId/state-variants/generate`，提取候选 `POST /api/projects/:id/ai/story/prop-states`；事件 GS-47 `asset.propState.generate`）
+  - `src/ai/` — AI 相关：脚本生成、提示词、背景图生成、资产计划、Story Bible、诊断、tts.js（语音合成：edge-tts/say/openai/local，试听预览）、resourceLease.js（租约开关现支持设置页「守护台关联」运行时关闭；env STUDIO_RESOURCE_LEASE_ENABLED 显式设定时优先）等；含剧情姿势提取（storyPoseStates.js）与道具状态提取（storyPropStates.js，道具跨场景视觉状态识别→状态变体生成链 `POST /api/projects/:id/ai/story/assets/:assetId/state-variants/generate`，提取候选 `POST /api/projects/:id/ai/story/prop-states`；事件 TS-47 `asset.propState.generate`）
   - `src/blueprint/` — 蓝图编译与校验
   - `src/studio/` — 项目状态、设置、密钥管理
   - `src/plugins/` — 构建插件（storyPixi.js）
@@ -210,8 +210,9 @@ node --check apps/server/src/index.js
 - 分阶段执行：inspect -> isolate -> explain -> patch -> verify，每阶段 STOP 并总结。
 
 ### UI 约束
-- 深色基底 + 单一强调色（`#5eccff`）。
+- 深色基底 + 默认品牌强调色（`#5eccff`）。锁定工作区的主步骤、保存与关键出图动作按 2026-11-04 用户裁决使用紫色组件令牌（主操作 13px/750）；普通操作、状态色与危险色仍分层使用，不全局替换品牌色。
 - 组件状态仅三种：default / hover / active。
+- 状态色语义（2026-11-06 用户裁决，全局生效，之后所有 UI 交互一律遵循）：绿=已完成/通过，黄=缺失/待办，红=错误/失败，蓝=进行中/待处理；状态徽标（`ai-storyboard-status`）与完成度计数（「已做/总数」格式）一律遵循，批量入口旁必须带计数、按钮标注待处理数。详见 `docs/系统生产级推进方案.md` §11.6。
 - 主界面固定三栏语义：列表 / 主操作区 / 说明。
 - 文案面向用户，不出现 `P0/P1/P2`、`实验`、`临时` 等研发术语。
 - Provider/Model 展示格式统一为 `provider / model`。
@@ -224,6 +225,7 @@ node --check apps/server/src/index.js
 - 左脑配置 -> 预检/自检 -> 启动/恢复的顺序不可绕过。
 - reasoning 与 chat 语义分离：`ping-model` 是普通聊天路径，`reasoning-sessions` 是可观测推理路径。
 - 本地重负载资源互斥（AUTO-R01）：OMLX 模型与 ComfyUI 出图共享机器内存，由 control 资源调度器互斥；`HERMES_RESOURCE_SCHEDULER_ENABLED` 默认开，状态见 `GET /api/control/resources/state` 与守护台「资源互斥」卡片。2026-09-12 扩展为统一互斥：槽位 llm/gpu/vision 三类（vision=视觉评审模型换入）；**所有本地模型/出图调用必须先取租约**——apps/server 经 `POST /api/control/resources/lease`（客户端封装 `apps/server/src/ai/resourceLease.js`，choke point：openai.js 文本、background.js 出图、storyCompleteness.js/characterPoseReview.js 视觉），control 内部非 step 调用经 `withInlineLlmLease`；story_* 委派类 step 不在边界持卡（防双向等待死锁）。
+- **遇阻双向通信**：经 `POST /api/control/events/ingest` 上报 `kind=note`（taskId/title/detail，可选 refTraceId），不要反复重试同一故障。桥接会经 `/api/events/message` 回复 `help_ack:<requestId>`（等待解决中）并交给 Kimi 队列；处理完成后回复 `help_result:<requestId>`。接收确认不等于问题解决，正常模型排队/切换不应误报故障；完整约定见 local-agent-control `docs/接入协议.md` 第 7.1 节。
 - 详见 `docs/系统生产级推进方案.md` 与 `ai/control_architecture.md`。
 
 ### 编辑器契约
@@ -237,7 +239,7 @@ node --check apps/server/src/index.js
 - 写入、删除、导出、脚本和外部服务动作必须受 review gate 约束。
 - **正式工作流强制（2026-09-09 用户指令，硬性法律，不可绕过）**：任何故事生产（创建/脚本/蓝图/圣经/资产计划/锁定事物/线稿/场景出图/摆位/校验/导出）**必须走正式生产工作流链**（control reasoning `story_workflow_execute` 的分步计划），每一步必须有可观测记录（reasoning session 事件流 + `/ai/tasks` 进度 + 审核记录），**任何一步失败必须显式停止**（failed/blocked 等待处置），禁止带病继续执行后续步骤。**禁止用零散 API/事件的即席组合替代正式工作流**——事件分发只用于正式链内的确定性步骤与经批准的修补动作，不得作为生产主路径。生产任务自 2026-10-14 起**默认托管全自动**（新会话默认 managed=on，计划/步骤/门禁/写盘类审核均由 Guardian 自动批准；创建时显式 `managed:false` 可关闭）。失败即停语义保留：操作类失败按策略表自动处置，内容类失败限次重试、超限或死锁仍停摆等处置。
 - 图片生成实行三级审核门禁（`STUDIO_IMAGE_REVIEW_MODE=manual` 时）：出图前审核（`pre_generate`）→ AI 评审后人工确认锁定（`lock_confirm`）→ 场景图人工确认绑定（`scene_bind`）。审核记录存 `<project>/reviews/image_reviews.jsonl`；`approve` 后才执行生成或写回。Control 驱动的调用默认带 `x-image-review-mode: off` 旁路（control 已有自己的步骤级审核）。**2026-09-27 起 `scene_bind` 绑定前一律先经 AI 视觉评审**（纯环境无烤入角色/环境匹配地点锚点/绘本画风，`apps/server/src/ai/sceneBackgroundReview.js`）：`off` 旁路只免人工门禁，AI 评审 fail-closed 照常执行——失败换 seed 重渲 1 次，仍失败显式 blocked，评审通道不可用挂 pending 不盲批。
-- 长任务（锁定测试、场景渲染、批量渲染）必须经 `/api/projects/:id/ai/tasks` 暴露进度，禁止黑盒同步调用。
+- 长任务（锁定测试、场景渲染、批量渲染）必须经 `/api/projects/:id/ai/tasks` 暴露进度，禁止黑盒同步调用。进行中的任务必须可经 `POST /api/ai/tasks/:taskId/cancel` 停止；取消是独立终态（`cancelled`），不是失败，后续进度不得覆盖，已完成内容保留。已有 AI 结果的重复执行入口统一使用 `apps/editor/src/components/shared/confirmRerun.ts` 二次确认；新增入口不得绕过任务台账与停止链。
 - 出图可观测（强制规则，2026-08-29 用户指令）：ComfyUI 只能经 `ensureComfyUiRunning` / `openComfyUiInTerminal`（Terminal.app 可见窗口）启动，禁止 `nohup` 等黑盒静默启动；一切出图动作（参考图抽卡、锁定测试、线稿、场景渲染）必须创建 `/api/projects/:id/ai/tasks` 进度条目并在锁定事物向导 UI 可见，禁止无进度黑盒跑图。
 - 出图即压（强制规则，2026-09-09 用户指令）：生成图写盘时按用途分层压缩（`apps/server/src/ai/imageOptimize.js`）——立绘/cutout/主参考走**无损 WebP**（真相源零质量损失），场景背景走 JPEG q90，候选/绿幕/线稿/测试图走 WebP q92；禁止再落未压缩大 PNG。存量批压走 `POST /api/projects/:id/assets/compress`（幂等，同步改写 project.json 与 plan.json 引用）。导出包另有一层引用收集+压缩（`storyPixi.js`，目标 ≤5MB），两层不冲突。
 - workspace 外路径必须拒绝。

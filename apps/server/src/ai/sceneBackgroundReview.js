@@ -96,7 +96,7 @@ export async function reviewSceneBackgroundWithLocalVl({ baseUrl, apiKey, model,
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 180_000)
   try {
-    const { res, json } = await withResourceLease('vision', `gs:scene_bg_review:${asStr(sceneName) || '-'}`, async () => {
+    const { res, json } = await withResourceLease('vision', `ts:scene_bg_review:${asStr(sceneName) || '-'}`, async () => {
       const r = await fetch(url, {
         method: 'POST',
         signal: controller.signal,

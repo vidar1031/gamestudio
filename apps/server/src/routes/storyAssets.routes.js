@@ -8,20 +8,142 @@ import { existsSync } from 'node:fs'
 import crypto from 'node:crypto'
 import { genId } from '../ai/scripts.js'
 import { classifyAiError, createTraceId, logStage } from '../ai/runtime.js'
-import { createAiTask, updateAiTask } from '../ai/taskProgress.js'
-import { generateBackgroundImage, generateComfyuiLineartFromReference, generateComfyuiCutoutFromReference, mapComfySampler, mapComfyScheduler, normalizeComfyCheckpointName, parseComfyTimeoutMs, runComfyuiPromptWorkflow } from '../ai/background.js'
+import { createAiTask, listAiTasks, updateAiTask } from '../ai/taskProgress.js'
+import { generateBackgroundImage, generateComfyuiLineartFromReference, generateComfyuiCutoutFromReference, generateComfyuiPoseVariantSprite, generateComfyuiMvAdapterModelSheet, mapComfySampler, mapComfyScheduler, normalizeComfyCheckpointName, parseComfyTimeoutMs, runComfyuiPromptWorkflow } from '../ai/background.js'
 import { optimizeGeneratedImage, IMAGE_KIND } from '../ai/imageOptimize.js'
 import { buildStoryAssetPlan, buildStoryAssetReferenceNegativePrompt, buildStoryAssetReferencePrompt, getStoryAssetRenderProfile, repairStoryAssetPlanSceneLinks, resolveStoryStylePreset, summarizeStoryAssetPlan } from '../ai/storyAssets.js'
+import { chooseStoryboardAssetLoras } from '../ai/storyAssetText.js'
+import { applyAssetNameMapping, normalizeAssetNames } from '../ai/storyAssetNameNormalize.js'
 import { buildStoryboardLockTestNegativePrompt, buildStoryboardLockTestPrompt, buildStoryboardLockTestWorkflow, pickStoryboardLockTestAsset, reviewStoryboardLockImageWithAi } from '../ai/storyLock.js'
 import { evaluateStoryAssetReferenceReview, sniffImageMetaFromBytes, verifyStoryAssetReferenceFile } from '../ai/storyAssetReferenceGate.js'
+import { analyzeSceneElements } from '../ai/sceneElementAnalysis.js'
 import { generateStoryboardGlobalPromptWithAi, normalizeStoryboardPromptReviewInput } from '../ai/storyboardPromptReview.js'
 import { enhanceStoryAssetPromptWithAi } from '../ai/storyAssetPromptEnhance.js'
 import { getEffectiveStudioConfig } from '../studio/settings.js'
 import { createImageReview, decideImageReview, findPendingReview } from '../review/imageReviewStore.js'
+import { isAnimalLikeAnchor } from '../ai/storyPoseVariants.js'
+import { MODEL_SHEET_VIEWS, MODEL_SHEET_VIEW_IPADAPTER, MODEL_SHEET_VIEW_IPADAPTER_ANIMAL, MODEL_SHEET_VIEW_LABELS, MODEL_SHEET_VIEW_NEGATIVE_EXTRA, MODEL_SHEET_VIEW_SKELETON, MODEL_SHEET_CHARTURN_LORA, MODEL_SHEET_CHARTURN_LORA_BACK, buildColorAnchorEn, buildModelSheetNegativePrompt, buildModelSheetWholeNegativePrompt, buildModelSheetViewPrompt, isBgPureEnough, upsertModelSheetTestRun, upsertModelSheetView } from '../ai/storyModelSheet.js'
+import { renderSizeOf } from '../ai/storyRenderSizes.js'
 import { recordCreationEvent } from '../creationBuffer.js'
 import { storyInputGate } from '../middleware/storyInputGate.js'
 
 export function registerStoryAssetsRoutes(app, ctx) {
+// 2026-10-21 蓝图 B2+：逐场景 AI 元素分析（场景文本 → LLM 提取背景/角色/道具 → 写回 plan.json 同源，幂等）
+app.post('/api/projects/:id/ai/story/scenes/:sceneId/analyze-elements', async (c) => {
+  await ctx.ensureDirs()
+  const id = c.req.param('id')
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const studio = await getEffectiveStudioConfig(ctx.ROOT)
+  if (!studio.effective.enabled.prompt) {
+    return c.json({ success: false, error: 'disabled', message: '「提示词生成」已在设置中关闭' }, 503)
+  }
+  const provider = String(studio.effective.prompt.provider || '').trim().toLowerCase()
+  if (!provider || provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用「提示词生成」并选择 Provider/Model' }, 400)
+  }
+
+  const startedAt = Date.now()
+  const traceId = createTraceId()
+  logStage({ stage: 'story.scene.analyze_elements', event: 'start', traceId, project: id, item: sceneId })
+  // 明面执行纪律（2026-10-21 用户指令）：分析入全局任务台账，UI 任务指示器可见进度/成败，不走黑盒
+  const task = createAiTask(id, 'story.scene.analyze_elements', { total: 1, message: `场景元素分析：${sceneId}` })
+  try {
+    // story.json 缺失不致命（蓝图阶段常态）：bundle 读取失败按空故事处理，真相源回退到 blueprint.json
+    const bundle = await ctx.readProjectBundle(id).catch(() => null)
+    const dir = ctx.projectDir(id)
+    const storyNodes = Array.isArray(bundle?.story?.nodes) ? bundle.story.nodes : []
+    // 真相源顺序修正（2026-10-25 用户实测 P1）：蓝图阶段 story.json 可能不存在——先 story 后蓝图节点兜底，
+    // 蓝图阶段的真相源是 blueprint.json（节点 id 与编译后 story 同源 bn_sc_*）。
+    let node = storyNodes.find((n) => String(n?.id || '') === sceneId)
+    if (node) {
+    } else {
+      const blueprint = await ctx.readJson(path.join(dir, 'blueprint.json')).catch(() => null)
+      const bpNodes = Array.isArray(blueprint?.nodes) ? blueprint.nodes : []
+      const bpNode = bpNodes.find((n) => String(n?.id || '') === sceneId)
+      if (!bpNode) {
+        const msg = '该场景不在蓝图结构里（请先在脚本层解析生成蓝图）'
+        updateAiTask(task.taskId, { done: true, stage: 'failed', error: msg })
+        return c.json({ success: false, error: 'missing_scene', message: msg }, 400)
+      }
+      node = { id: bpNode.id, name: bpNode.name, body: { text: bpNode.textDraft } }
+    }
+    let plan = await ctx.readStoryAssetPlanIfExists(id)
+    if (!plan) {
+      // 冷启动（2026-10-21 用户实测修复）：蓝图阶段逐场景分析应能从零累积计划——
+      // 无计划时按场景节点建骨架（场景清单+空资产表），分析结果随后幂等合入，不再拒绝。
+      const sceneSource = storyNodes.length
+        ? storyNodes
+        : (await ctx.readJson(path.join(dir, 'blueprint.json')).catch(() => null))?.nodes?.filter?.((n) => n?.kind === 'scene') || []
+      plan = {
+        schemaVersion: '1.0',
+        generatedAt: ctx.nowIso(),
+        assets: [],
+        scenes: sceneSource.map((n, i) => ({
+          sceneId: String(n?.id || ''),
+          sceneIndex: i + 1,
+          sceneName: String(n?.name || n?.id || ''),
+          assetIds: [],
+          promptAssets: []
+        })),
+        summary: null
+      }
+    }
+
+    const sceneText = [node?.body?.text, node?.name].filter(Boolean).join('\n')
+    const result = await analyzeSceneElements({
+      plan,
+      sceneId,
+      sceneName: String(node?.name || ''),
+      sceneText,
+      provider,
+      model: studio.effective.prompt.model || undefined,
+      apiUrl: studio.effective.prompt.apiUrl || undefined,
+      proxyUrl: studio.effective.network.proxyUrl || undefined,
+      timeoutMs: 120_000
+    })
+
+    const nextPlan = { ...result.plan }
+    nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+    await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+    updateAiTask(task.taskId, { done: true, stage: 'done', current: 1, message: `分析完成：${result.elements.length} 个元素（新增 ${result.added} · 更新 ${result.updated}）` })
+    logStage({
+      stage: 'story.scene.analyze_elements',
+      event: 'ok',
+      traceId,
+      project: id,
+      item: `${sceneId} elements=${result.elements.length} added=${result.added} updated=${result.updated}`,
+      ok: true,
+      durationMs: Math.max(0, Date.now() - startedAt)
+    })
+    return c.json({
+      success: true,
+      sceneId,
+      sceneElements: result.elements.length,
+      elements: result.elements,
+      added: result.added,
+      updated: result.updated,
+      meta: result.meta || null
+    })
+  } catch (e) {
+    const rawMsg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    // 2026-10-21 失败文案用户化（禁止裸技术串）：租约阻断与模型不可达给下一步引导
+    let msg = rawMsg
+    if (/resource_scheduler_unreachable/.test(rawMsg)) {
+      msg = '守护台离线且资源租约已启用：请启动守护台，或到 设置 → 守护台关联 关闭后重试'
+    } else if (/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT/i.test(rawMsg)) {
+      msg = '文本模型服务不可达：请确认本地模型服务（OMLX :18888）已启动并加载模型，或到设置检查「提示词生成」的接口地址'
+    }
+    console.error(`[story.scene.analyze_elements] project=${id} scene=${sceneId} error=${rawMsg}`)
+    logStage({ stage: 'story.scene.analyze_elements', event: 'error', traceId, project: id, item: rawMsg.slice(0, 300) })
+    updateAiTask(task.taskId, { done: true, stage: 'failed', error: msg })
+    return c.json({ success: false, error: mapped.code, message: msg }, mapped.httpStatus)
+  }
+})
+
 app.post('/api/projects/:id/ai/storyboard/global-prompt-generate', async (c) => {
   await ctx.ensureDirs()
   const id = c.req.param('id')
@@ -46,6 +168,8 @@ app.post('/api/projects/:id/ai/storyboard/global-prompt-generate', async (c) => 
 
   const startedAt = Date.now()
   const traceId = createTraceId()
+  // 2026-10-27 黑盒治理：全局稿生成入任务台账
+  const globalTask = createAiTask(id, 'story.global_prompt.generate', { total: 1, message: '全局提示词生成（结合 Story Bible）' })
   logStage({ stage: 'storyboard.global_prompt_generate', event: 'start', traceId, project: id, provider, model: studio.effective.prompt.model || '-' })
   try {
     const generated = await generateStoryboardGlobalPromptWithAi({
@@ -57,11 +181,15 @@ app.post('/api/projects/:id/ai/storyboard/global-prompt-generate', async (c) => 
     })
     if (!generated?.result) throw new Error('unsupported_prompt_provider')
     logStage({ stage: 'storyboard.global_prompt_generate', event: 'ok', traceId, project: id, provider, model: generated.meta?.model || studio.effective.prompt.model || '-', ok: true, durationMs: Math.max(0, Date.now() - startedAt) })
+    updateAiTask(globalTask.taskId, { done: true, stage: 'done', current: 1, message: '全局提示词已生成' })
     return c.json({ success: true, result: generated.result, meta: generated.meta || null, traceId })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     const mapped = classifyAiError(e)
     logStage({ stage: 'storyboard.global_prompt_generate', event: 'fail', traceId, project: id, provider, model: studio.effective.prompt.model || '-', status: mapped.httpStatus, ok: false, durationMs: Math.max(0, Date.now() - startedAt), err: msg })
+    try {
+      updateAiTask(globalTask.taskId, { done: true, stage: 'failed', error: `全局提示词生成失败：${msg.slice(0, 160)}` })
+    } catch {}
     return c.json({ success: false, error: mapped.code, message: msg, traceId }, mapped.httpStatus)
   }
 })
@@ -84,6 +212,89 @@ app.post('/api/projects/:id/ai/storyboard/global-prompt-generate', async (c) => 
 // [拆分] PUT /api/projects/:id/blueprint 已迁至 apps/server/src/routes/story.routes.js
 // [拆分] POST /api/projects/:id/compile/blueprint 已迁至 apps/server/src/routes/story.routes.js
 // [拆分] POST /api/projects/:id/compile/compose 已迁至 apps/server/src/routes/story.routes.js
+
+// M 波（2026-10-27）：AI 补齐中文名——LLM 产 {id→中文名} 映射（候选），确定性双修写回：
+// plan 资产名 + 圣经实体名（characters/props/locations）同改；id/aliases/sceneIds/构图引用不动。
+// 挂 aiTask；非中文输出跳过并如实汇总；失败人话化。
+app.post('/api/projects/:id/ai/story/assets/normalize-names', async (c) => {
+  await ctx.ensureDirs()
+  const id = c.req.param('id')
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+
+  const studio = await getEffectiveStudioConfig(ctx.ROOT)
+  if (!studio.effective.enabled.prompt) {
+    return c.json({ success: false, error: 'disabled', message: '「提示词生成」已在设置中关闭' }, 503)
+  }
+  const provider = String(studio.effective.prompt.provider || '').trim().toLowerCase()
+  if (!provider || provider === 'none') {
+    return c.json({ success: false, error: 'user_provider_not_configured', message: '请先在设置中启用「提示词生成」并选择 Provider/Model' }, 400)
+  }
+  const plan = await ctx.readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '请先生成资产计划。' }, 400)
+
+  const task = createAiTask(id, 'story.assets.normalize_names', { total: 1, message: '元素名补齐：AI 整理中文名' })
+  const traceId = createTraceId()
+  try {
+    const bundle = await ctx.readProjectBundle(id)
+    const storyBible = ctx.readStoryBibleFromProjectDoc(bundle.project)
+    const sceneSummaries = (Array.isArray(bundle?.story?.nodes) ? bundle.story.nodes : [])
+      .filter((n) => ['scene', 'ending'].includes(String(n?.kind || '')))
+      .map((n) => ({ sceneId: String(n?.id || ''), name: String(n?.name || ''), summary: String(n?.body?.text || '').slice(0, 200) }))
+    const { mapping, skipped, meta } = await normalizeAssetNames({
+      assets: plan.assets,
+      storyTitle: String(bundle?.project?.title || ''),
+      sceneSummaries,
+      provider,
+      model: studio.effective.prompt.model || undefined,
+      apiUrl: studio.effective.prompt.apiUrl || undefined,
+      proxyUrl: studio.effective.network.proxyUrl || undefined,
+      timeoutMs: 120_000
+    })
+    const { nextPlan, nextBible, changed } = applyAssetNameMapping({ plan, bible: storyBible, mapping })
+    if (changed.length) {
+      const finalPlan = { ...nextPlan, generatedAt: ctx.nowIso() }
+      finalPlan.summary = summarizeStoryAssetPlan(finalPlan)
+      await ctx.saveStoryAssetPlan(id, finalPlan, { mergeAssetsById: true })
+      // 圣经实体名双修：写回 project.json 的 storyBible（characters/props/locations[].name）
+      if (storyBible && typeof storyBible === 'object') {
+        const projectPath = path.join(dir, 'project.json')
+        const projectDoc = await ctx.readJson(projectPath).catch(() => null)
+        if (projectDoc && typeof projectDoc === 'object') {
+          if (!projectDoc.state || typeof projectDoc.state !== 'object') projectDoc.state = {}
+          if (!projectDoc.state.aiBackground || typeof projectDoc.state.aiBackground !== 'object') projectDoc.state.aiBackground = {}
+          projectDoc.state.aiBackground.storyBible = nextBible
+          projectDoc.state.aiBackground.storyBibleJson = JSON.stringify(nextBible)
+          await ctx.writeJson(projectPath, projectDoc)
+        }
+      }
+    }
+    const changedText = changed.map((x) => `${x.from}→${x.to}`).join('、')
+    updateAiTask(task.taskId, {
+      done: true,
+      stage: 'done',
+      current: 1,
+      message: changed.length ? `元素名补齐：已改 ${changed.length} 个（${changedText.slice(0, 120)}）` : '元素名补齐：全部已是中文，无需改动'
+    })
+    logStage({ stage: 'story.assets.normalize_names', event: 'ok', traceId, project: id, item: `changed:${changed.length} skipped:${skipped.length}` })
+    return c.json({ success: true, changed, skipped, meta: meta || null })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    const human = (() => {
+      if (/empty_ai_output/.test(msg)) return 'AI 未产出内容（本地模型繁忙或内存不足），可重试'
+      if (/timeout|timed out|超时/i.test(msg)) return '生成超时，可重试'
+      if (/invalid|parse/i.test(msg)) return 'AI 输出格式异常，可重试'
+      if (/fetch failed|ECONNREFUSED|ETIMEDOUT/i.test(msg)) return '文本模型服务不可达：请确认本地模型服务（OMLX :18888）已启动'
+      return msg.slice(0, 160)
+    })()
+    try {
+      updateAiTask(task.taskId, { done: true, stage: 'failed', error: human })
+    } catch {}
+    logStage({ stage: 'story.assets.normalize_names', event: 'error', traceId, project: id, item: msg.slice(0, 300) })
+    return c.json({ success: false, error: mapped.code, message: human }, mapped.httpStatus)
+  }
+})
 
 app.post('/api/projects/:id/ai/story/assets/plan', storyInputGate('story.assets.plan', (c, body) => ({ projectId: c.req.param('id'), ...body })), async (c) => {
   await ctx.ensureDirs()
@@ -181,6 +392,114 @@ app.post('/api/projects/:id/ai/story/assets/plan/remove-asset', async (c) => {
 // 场景↦资产关联确定性修复：按计划资产的名称/别名（+调用方证据别名 aliasOverrides）在场景文本中
 // 子串匹配，重建 scene.promptAssets 与 asset.sceneIds/sceneCount。用于修复计划生成器漏写关联的缺陷
 //（关联缺失会导致场景渲染 prompt 只剩 worldAnchor，出图同质跑题）。
+// 手工新增计划资产（2026-10-26 用户实测修复：要素库 + 号应产出真实计划资产，不是写进废弃占位库）。
+// 幂等（同名同类合并）；可选 sceneId 直接分配到幕；写盘走 saveStoryAssetPlan 纪律。
+app.post('/api/projects/:id/ai/story/plan/assets', async (c) => {
+  const id = c.req.param('id')
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const body = await c.req.json().catch(() => ({}))
+  const name = String(body?.name || '').trim()
+  const category = String(body?.category || '').trim()
+  const sceneId = String(body?.sceneId || '').trim()
+  if (!name) return c.json({ success: false, error: 'bad_request', message: '需要元素名称' }, 400)
+  if (!['character', 'location', 'prop'].includes(category)) {
+    return c.json({ success: false, error: 'bad_request', message: '类目须为 character/location/prop' }, 400)
+  }
+  let plan = await ctx.readStoryAssetPlanIfExists(id)
+  if (!plan) {
+    plan = { schemaVersion: '1.0', generatedAt: ctx.nowIso(), assets: [], scenes: [], summary: null }
+  }
+  const assets = Array.isArray(plan.assets) ? plan.assets : []
+  const dup = assets.find((a) => String(a?.name || '').trim() === name && String(a?.category || '').trim() === category)
+  let asset = dup || null
+  let added = false
+  if (!asset) {
+    asset = { id: genId('el'), name, category, referenceStatus: 'none', aliases: [], sceneIds: [], createdAt: ctx.nowIso() }
+    assets.push(asset)
+    added = true
+  }
+  const scenes = Array.isArray(plan.scenes) ? plan.scenes : []
+  if (sceneId) {
+    const scene = scenes.find((s) => String(s?.sceneId || '') === sceneId)
+    if (scene) {
+      const ids = new Set(Array.isArray(scene.assetIds) ? scene.assetIds.map((x) => String(x)) : [])
+      ids.add(asset.id)
+      scene.assetIds = Array.from(ids)
+      scene.assignedAt = new Date().toISOString()
+    }
+  }
+  const nextPlan = { ...plan, assets, scenes }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+  return c.json({ success: true, asset: { id: asset.id, name: asset.name, category: asset.category }, added, assigned: Boolean(sceneId) })
+})
+
+// 要素分配写口（2026-10-25 用户指令）：蓝图层右栏「要素分配」激活——把计划元素分配到场景（或移除），
+// 写 plan.scenes[].assetIds（同源），预演/构图/合成摆位全从这里长。幂等；保存走既有 mergeAssetsById 纪律。
+// 2026-11-10 根修（用户裁决：背景元素分配必须端到端生效）：三处同步——
+//   ① scene.assetIds（蓝图/预演要素清单）；② scene.promptAssets（场景出图 prompt 纳入——
+//   render spec 只读 promptAssets，空时才回退资产侧反推）；③ asset.sceneIds（摆位链消费口径，
+//   placementDecision 按资产侧 sceneIds 判定进场）。此前只写 ①，分配后出图/摆位都不含新元素。
+app.post('/api/projects/:id/ai/story/plan/scenes/:sceneId/assign', async (c) => {
+  const id = c.req.param('id')
+  const sceneId = String(c.req.param('sceneId') || '').trim()
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const plan = await ctx.readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_plan', message: '还没有资产计划：先在蓝图做一次场景元素分析' }, 400)
+  const body = await c.req.json().catch(() => ({}))
+  const assetId = String(body?.assetId || '').trim()
+  const action = String(body?.action || '').trim().toLowerCase()
+  if (!assetId || (action !== 'add' && action !== 'remove')) {
+    return c.json({ success: false, error: 'bad_request', message: '需要 assetId 与 action（add/remove）' }, 400)
+  }
+  const assets = Array.isArray(plan.assets) ? plan.assets : []
+  const asset = assets.find((a) => String(a?.id || '') === assetId)
+  if (!asset) {
+    return c.json({ success: false, error: 'asset_not_in_plan', message: '该元素不在资产计划里' }, 400)
+  }
+  const scenes = Array.isArray(plan.scenes) ? plan.scenes : []
+  const scene = scenes.find((s) => String(s?.sceneId || '') === sceneId)
+  if (!scene) return c.json({ success: false, error: 'scene_not_in_plan', message: '该幕不在资产计划里' }, 400)
+  const ids = new Set(Array.isArray(scene.assetIds) ? scene.assetIds.map((x) => String(x)) : [])
+  const before = ids.size
+  if (action === 'add') ids.add(assetId)
+  else ids.delete(assetId)
+  scene.assetIds = Array.from(ids)
+  // ② scene.promptAssets（对象镜像，场景出图 prompt 消费）：add 时按 live 资产补同构条目，remove 时按 id 剔除
+  const promptAssets = Array.isArray(scene.promptAssets) ? [...scene.promptAssets] : []
+  const paIdx = promptAssets.findIndex((x) => String(x && x.id || '') === assetId)
+  if (action === 'add' && paIdx < 0) {
+    promptAssets.push({
+      id: String(asset.id || ''),
+      name: String(asset.name || asset.id || ''),
+      category: String(asset.category || ''),
+      ...(asset.lockProfile ? { lockProfile: String(asset.lockProfile) } : {}),
+      ...(asset.lockWorkflow ? { lockWorkflow: String(asset.lockWorkflow) } : {}),
+      ...(asset.renderStrategy ? { renderStrategy: String(asset.renderStrategy) } : {}),
+      referenceStatus: String(asset.referenceStatus || ''),
+      primaryReferenceAssetId: String(asset.primaryReferenceAssetId || ''),
+      primaryReferenceAssetUri: String(asset.primaryReferenceAssetUri || ''),
+      anchorPrompt: String(asset.anchorPrompt || ''),
+      ...(asset.negativePrompt ? { negativePrompt: String(asset.negativePrompt) } : {})
+    })
+  } else if (action === 'remove' && paIdx >= 0) {
+    promptAssets.splice(paIdx, 1)
+  }
+  scene.promptAssets = promptAssets
+  scene.assignedAt = new Date().toISOString()
+  // ③ asset.sceneIds（摆位链消费口径）
+  const aIds = new Set(Array.isArray(asset.sceneIds) ? asset.sceneIds.map((x) => String(x || '').trim()).filter(Boolean) : [])
+  if (action === 'add') aIds.add(sceneId)
+  else aIds.delete(sceneId)
+  asset.sceneIds = Array.from(aIds)
+  const nextPlan = { ...plan, assets, scenes }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+  return c.json({ success: true, sceneId, assetId, action, sceneAssetCount: scene.assetIds.length, changed: before !== scene.assetIds.length })
+})
+
 app.post('/api/projects/:id/ai/story/assets/plan/repair-links', async (c) => {
   const id = c.req.param('id')
   const dir = ctx.projectDir(id)
@@ -322,11 +641,21 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
   const prompt = String(body?.prompt || '').trim() || buildStoryAssetReferencePrompt({ plan, asset, style, globalPrompt, assetPrompt, stylePreset })
   const negativePrompt = String(body?.negativePrompt || '').trim() || buildStoryAssetReferenceNegativePrompt({ plan, asset, globalNegativePrompt, assetNegativePrompt })
 
+  let refTask = null
   try {
     logStage({ stage: 'asset.reference.batch', event: 'start', traceId, project: id, item: assetId, ok: true, detail: 'generate_candidates_only' })
+    // 2026-11-10 同资产并发护栏（用户裁决：发起后不得重复触发造成任务叠加）——
+    // 客户端按钮防重只覆盖同会话；刷新/另一会话再点时由服务端兜底拒 409。
+    const runningRefTask = listAiTasks(id, { includeDone: false }).find((t) => t.kind === 'story.asset.reference_batch' && String(t.assetId || '') === assetId)
+    if (runningRefTask) {
+      return c.json({ success: false, error: 'reference_batch_running', message: `「${String(asset.name || assetId).trim()}」已有进行中的抽卡任务，请等待完成或先在任务条停止它`, taskId: runningRefTask.taskId }, 409)
+    }
     // 2026-08-29 出图可观测（AGENTS.md 强制规则）：参考图抽卡批次必须在 UI 暴露真实进度，禁止黑盒
-    const refTask = createAiTask(id, 'story.asset.reference_batch', {
+    // 2026-11-10 根修：refTask 提升到 try 外——此前 const 在 try 块内，catch 里 typeof 恒 'undefined'，
+    // 失败时任务永远不被标记 failed，残留"进行中"直到重启被标 interrupted（稻草堆 4 连击悬空事故）。
+    refTask = createAiTask(id, 'story.asset.reference_batch', {
       total: batchSize,
+      assetId,
       message: `参考图抽卡：${String(asset.name || assetId).trim()}`
     })
     let currentPlan = await ctx.persistStoryAssetReferenceBatch({
@@ -346,7 +675,8 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
     const maxAttempts = Math.max(batchSize, Math.min(12, batchSize + 4))
     for (let i = 0; i < maxAttempts && rawCandidates.length < batchSize; i += 1) {
       const seed = (baseSeed + i * 9973) % 4_294_967_295
-      updateAiTask(refTask.taskId, { stage: 'generating', current: i + 1, message: `第 ${i + 1}/${batchSize} 张生成中…（${String(asset.name || assetId).trim()}）` })
+      // S 波代跑实测根修：补偿重抽时 current 超 total（"第 6/4 张"倒挂）——进度语义改为 尝试序号/尝试上限 + 候选实时计数
+      updateAiTask(refTask.taskId, { stage: 'generating', current: rawCandidates.length, total: batchSize, message: `第 ${i + 1}/${maxAttempts} 次尝试（候选 ${rawCandidates.length}/${batchSize}）：${String(asset.name || assetId).trim()}` })
       const result = await ctx.generateAndPersistStoryAssetReference({
         id,
         dir,
@@ -371,7 +701,7 @@ app.post('/api/projects/:id/ai/story/assets/reference', async (c) => {
       })
       currentPlan = result.plan
       currentBundle = await ctx.readProjectBundle(id)
-      updateAiTask(refTask.taskId, { stage: 'reviewing', current: i + 1, message: `第 ${i + 1}/${batchSize} 张 AI 评审中…` })
+      updateAiTask(refTask.taskId, { stage: 'reviewing', current: rawCandidates.length, total: batchSize, message: `第 ${i + 1}/${maxAttempts} 次尝试评审中（候选 ${rawCandidates.length}/${batchSize}）` })
       const reviewed = await ctx.reviewAndPersistStoryAssetReference({
         id,
         dir,
@@ -753,6 +1083,8 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
   const proxyUrl = studio?.effective?.network?.proxyUrl || undefined
   const traceId = createTraceId()
   const startedAt = Date.now()
+  // 2026-10-27 黑盒治理：提示词增强入任务台账（单项一条；批量由编辑器侧串行汇总，逐项进度在此可见）
+  const enhanceTask = createAiTask(id, 'story.asset.prompt_enhance', { total: 1, message: `提示词增强：${String(asset?.name || assetId).slice(0, 24)}` })
 
   let result = {
     ...fallback,
@@ -964,6 +1296,12 @@ app.post('/api/projects/:id/ai/story/assets/:assetId/prompt-enhance', async (c) 
     actor: 'prompt_flow',
     data: { assetId, provider: String(meta.provider || ''), score: finalReview && finalReview.score != null ? Number(finalReview.score) : null }
   })
+  // 2026-10-27：台账收口（aiError 非空=AI 失败保留原稿——记 failed 带人话原因；否则 done）
+  if (aiError) {
+    updateAiTask(enhanceTask.taskId, { done: true, stage: 'failed', error: `AI 增强失败（已保留原稿）：${String(aiError.message || aiError).slice(0, 160)}` })
+  } else {
+    updateAiTask(enhanceTask.taskId, { done: true, stage: 'done', current: 1, message: `提示词增强完成：${String(asset?.name || assetId).slice(0, 24)}` })
+  }
   return c.json({ success: true, asset, result, meta, aiError, traceId, promptReview: finalReview, promptReviewAttempts: promptReviews, promptReviewThreshold: minAcceptScore })
 })
 
@@ -1547,5 +1885,812 @@ app.post('/api/projects/:id/ai/story/lock/test', async (c) => {
     updateAiTask(lockTask.taskId, { stage: 'error', done: true, error: msg, message: msg })
     return c.json({ success: false, error: mapped.code, message: msg, taskId: lockTask.taskId }, mapped.httpStatus)
   }
+})
+
+// ---------------------------------------------------------------------------
+// 标准系三视图：支持整 sheet、CharTurn 逐视角和 MV-Adapter 独立视角试验。
+// 正面始终使用已锁主参考；试验只写 modelSheet.testRuns，不改变正式候选与锁定凭据。
+app.post('/api/projects/:id/ai/story/assets/:assetId/model-sheet/generate', async (c) => {
+  await ctx.ensureDirs()
+  const id = c.req.param('id')
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const assetId = String(c.req.param('assetId') || '').trim()
+  if (!assetId) return c.json({ success: false, error: 'missing_asset_id', message: 'assetId 不能为空' }, 400)
+
+  const plan = await ctx.readStoryAssetPlanIfExists(id)
+  if (!plan) return c.json({ success: false, error: 'missing_asset_plan', message: '请先生成必要事物资产计划。' }, 400)
+  const asset = (Array.isArray(plan.assets) ? plan.assets : []).find((a) => String(a && a.id || '').trim() === assetId) || null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+  const assetName = String(asset.name || assetId).trim()
+
+  // 三视图：角色+道具都出（T 波用户裁决：所有元素都出三视图——房子类道具有角度展示需求）；
+  // 地点仍不出（背景封装语义不动）
+  const category = String(asset.category || '').trim()
+  if (category === 'location') {
+    return c.json({ success: false, error: 'model_sheet_location_excluded', message: `「${assetName}」是地点：地点随场景背景出图（背景封装），不出三视图。` }, 400)
+  }
+  // 前置：主参考已锁（三视图以已锁主参考为身份锚）
+  const primaryUri = String(asset.primaryReferenceAssetUri || '').trim()
+  if (!primaryUri && !String(asset.primaryReferenceAssetId || '').trim()) {
+    return c.json({ success: false, error: 'primary_reference_not_locked', message: `请先锁定「${assetName}」的主参考（参考图抽卡→选定锁定），再生成标准系三视图。` }, 409)
+  }
+
+  const body = await c.req.json().catch(() => ({}))
+  const viewsIn = Array.isArray(body?.views) ? body.views.map((x) => String(x || '').trim()) : []
+  const views = (viewsIn.length ? viewsIn : MODEL_SHEET_VIEWS).filter((v) => MODEL_SHEET_VIEWS.includes(v))
+  if (!views.length) return c.json({ success: false, error: 'invalid_views', message: `views 仅支持 ${MODEL_SHEET_VIEWS.join('/')}（逐视角单图）` }, 400)
+
+  const studio = await getEffectiveStudioConfig(ctx.ROOT)
+  if (!studio.effective.enabled.image) {
+    return c.json({ success: false, error: 'disabled', message: '“出图（背景图生成）”已在设置中关闭' }, 503)
+  }
+  const stylePreset = resolveStoryStylePreset(studio)
+  const globalStyleEn = String(stylePreset?.stylePromptEn || '').trim()
+  const engine = String(body?.engine || 'charturn').trim().toLowerCase()
+  if (!['charturn', 'mvadapter'].includes(engine)) {
+    return c.json({ success: false, error: 'invalid_model_sheet_engine', message: 'engine 仅支持 charturn/mvadapter' }, 400)
+  }
+  const experiment = body?.experiment === true
+  const runId = String(body?.runId || (experiment ? `sheet_${Date.now()}_${crypto.randomBytes(4).toString('hex')}` : '')).trim()
+  const seed = body?.seed === undefined || body?.seed === null || body?.seed === '' ? null : Number(body.seed)
+  if (seed !== null && (!Number.isInteger(seed) || seed < 0 || seed > 4_294_967_295)) {
+    return c.json({ success: false, error: 'invalid_model_sheet_seed', message: 'seed 必须是 0 到 4294967295 的整数' }, 400)
+  }
+  const modelSheetBaseLoras = chooseStoryboardAssetLoras({ asset, requestedLoras: studio.effective.image.loras, stylePreset })
+  const withCharturnLora = (charturn) => [
+    ...modelSheetBaseLoras.filter((entry) => !String(entry).toLowerCase().startsWith('il-xl-charturn-merged.safetensors:')),
+    charturn
+  ]
+  const sheetTask = createAiTask(id, 'story.asset.model_sheet', {
+    total: views.length,
+    message: `标准系三视图：${assetName}（${views.map((v) => MODEL_SHEET_VIEW_LABELS[v]).join('/')}，${engine}）`
+  })
+
+  // 出图前审核（manual 模式）：挂起并返回 202，批准后自动执行
+  const reviewMode = ctx.resolveImageReviewMode(c, body)
+  if (reviewMode === 'manual' && !(await ctx.hasApprovedPreGenerate(dir, c))) {
+    const targetKey = `model_sheet:${assetId}:${engine}:${runId || views.join(',')}`
+    let review = await findPendingReview(dir, { phase: 'pre_generate', targetKey })
+    if (!review) {
+      review = await createImageReview(dir, {
+        phase: 'pre_generate',
+        targetKey,
+        assetId,
+        prompt: views.map((v) => `[${v}] ${buildModelSheetViewPrompt({ asset, viewKey: v, styleEn: globalStyleEn })}`).join('\n'),
+        negativePrompt: String(body?.mode || '').trim() === 'per-view'
+          ? buildModelSheetNegativePrompt(asset.negativePrompt)
+          : buildModelSheetWholeNegativePrompt(asset.negativePrompt),
+        params: { kind: 'asset.model_sheet', targetName: assetName, views, engine, ...(runId ? { runId } : {}) },
+        execute: { endpoint: `/api/projects/${encodeURIComponent(id)}/ai/story/assets/${encodeURIComponent(assetId)}/model-sheet/generate`, payload: body && typeof body === 'object' ? body : {} }
+      })
+    }
+    updateAiTask(sheetTask.taskId, { stage: 'waiting_review', done: true, message: `出图前审核待批准：${assetName} 三视图` })
+    return c.json({ success: true, pendingReview: review, taskId: sheetTask.taskId }, 202)
+  }
+
+  const internalHeaders = { 'Content-Type': 'application/json', 'x-image-review-mode': 'off' }
+  const postInternal = async (urlPath, payload) => {
+    const resp = await app.request(urlPath, { method: 'POST', headers: internalHeaders, body: JSON.stringify(payload || {}) })
+    const json = await resp.json().catch(() => ({}))
+    if (!resp.ok || !json || json.success !== true) {
+      const err = new Error(String((json && (json.message || json.error)) || `http_${resp.status}`))
+      err.code = String((json && json.error) || `http_${resp.status}`)
+      throw err
+    }
+    return json
+  }
+  // Y 波：白底抽检（三视图参考图必须纯白底）——边缘 16px 带近白（RGB≥240）像素占比；
+  // 透明底产物先合成纯白底再测（透明区读成黑会误报 0%——RMBG 抠图产物语义上已是统一透明底，合成后恒近白）
+  const checkBgPurity = async (absPath) => {
+    try {
+      const pyCode = [
+        "import sys",
+        "from PIL import Image",
+        "im=Image.open(sys.argv[1])",
+        // 透明底先合成纯白再测（RMBG 抠图产物语义上已是统一透明底，合成后恒近白）
+        "im=(lambda x: (lambda bg: (bg.alpha_composite(x), bg)[1])(Image.new('RGBA', x.size, (255,255,255,255))) if x.mode=='RGBA' else x)(im).convert('RGB')",
+        "w,h=im.size",
+        "b=16",
+        "d=list(im.getdata())",
+        "edge=[d[y*w+x] for y in range(h) for x in range(w) if x<b or x>=w-b or y<b or y>=h-b]",
+        "white=sum(1 for p in edge if p[0]>=240 and p[1]>=240 and p[2]>=240)",
+        "print(round(white/len(edge),3) if edge else 0)"
+      ].join(';')
+      const out = await new Promise((resolve, reject) => {
+        let stdout = ''
+        const py = spawn('python3', ['-c', pyCode, absPath])
+        py.stdout.on('data', (d) => { stdout += String(d || '') })
+        py.on('exit', (code) => (code === 0 ? resolve(stdout) : reject(new Error('purity_exit_' + code))))
+        py.on('error', reject)
+      })
+      const ratio = Number(String(out).trim())
+      return Number.isFinite(ratio) ? ratio : null
+    } catch (_) { return null }
+  }
+
+  const traceId = createTraceId()
+  logStage({ stage: 'asset.model_sheet', event: 'start', traceId, project: id, item: assetId, ok: true, detail: views.join(',') })
+  const animalBoost = isAnimalLikeAnchor(`${String(asset.referencePromptEn || asset.anchorPrompt || '')} ${assetName}`)
+  const results = []
+  if (experiment && String(body?.mode || '').trim() !== 'per-view') {
+    updateAiTask(sheetTask.taskId, { stage: 'error', done: true, error: 'experiment_requires_per_view' })
+    return c.json({ success: false, error: 'experiment_requires_per_view', message: '三视图 A/B 试验必须使用 per-view 独立视角输出' }, 400)
+  }
+  const saveExperimentRun = async (status, errorMessage = '') => {
+    const run = {
+      runId,
+      engine,
+      mode: 'per-view',
+      ...(seed !== null ? { seed } : {}),
+      status: status || (results.some((item) => item.reviewStatus === 'pending') ? 'pending' : results.some((item) => item.reviewStatus === 'rejected') ? 'rejected' : 'reviewed'),
+      primaryReferenceAssetUri: primaryUri,
+      views: results,
+      ...(errorMessage ? { error: errorMessage } : {}),
+      createdAt: ctx.nowIso()
+    }
+    const curPlan = await ctx.readStoryAssetPlanIfExists(id)
+    if (!curPlan) throw new Error('missing_asset_plan')
+    const nextPlan = {
+      ...curPlan,
+      generatedAt: ctx.nowIso(),
+      assets: (Array.isArray(curPlan.assets) ? curPlan.assets : []).map((a) =>
+        String(a && a.id || '').trim() === assetId ? { ...a, modelSheet: upsertModelSheetTestRun(a, run) } : a
+      )
+    }
+    await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+    return { run, plan: await ctx.readStoryAssetPlanIfExists(id) }
+  }
+  let mvAdapterBatch = null
+  if (engine === 'mvadapter') {
+    if (!experiment) {
+      updateAiTask(sheetTask.taskId, { stage: 'error', done: true, error: 'mvadapter_experiment_only' })
+      return c.json({ success: false, error: 'mvadapter_experiment_only', message: 'MV-Adapter 目前仅开放三视图 A/B 试验，不用于正式锁定候选' }, 400)
+    }
+    try {
+      const identityAbs = path.join(dir, primaryUri)
+      let flatAbs = identityAbs
+      if (/\.(png|webp)$/i.test(identityAbs)) {
+        const tryFlat = identityAbs.replace(/\.(png|webp)$/i, '') + '_flatwhite.png'
+        const s0 = await stat(identityAbs)
+        const s1 = await stat(tryFlat).catch(() => null)
+        if (!(s1 && s1.mtimeMs >= s0.mtimeMs)) {
+          await new Promise((resolve, reject) => {
+            const py = spawn('python3', ['-c',
+              "import sys; from PIL import Image; im=Image.open(sys.argv[1]).convert('RGBA'); bg=Image.new('RGBA', im.size, (255,255,255,255)); bg.alpha_composite(im); bg.convert('RGB').save(sys.argv[2])",
+              identityAbs, tryFlat])
+            py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('flatten_exit_' + code))))
+            py.on('error', reject)
+          })
+        }
+        flatAbs = tryFlat
+      }
+      const identity = String(asset.referencePromptEn || asset.anchorPromptEn || asset.anchorPrompt || '').trim()
+      const mvPrompt = [
+        'orthographic character turnaround, front side and back views of one single character, identical character in every view',
+        'neutral standing pose, full body visible head to toe, pure white background, flat lighting, no perspective',
+        identity,
+        buildColorAnchorEn(asset),
+        globalStyleEn || 'cartoon fairy tale picture book style, flat 2D illustration, clean outlines, cel shading'
+      ].filter(Boolean).join(', ')
+      updateAiTask(sheetTask.taskId, { stage: 'generating', current: 0, total: 1, message: `MV-Adapter 联合三视图生成中：${assetName}` })
+      mvAdapterBatch = await generateComfyuiMvAdapterModelSheet({
+        identityReferenceBytes: await readFile(flatAbs),
+        identityReferenceFilename: `${String(asset.id || 'asset').trim() || 'asset'}_ref.png`,
+        comfyuiBaseUrl: String(process.env.STUDIO_MVADAPTER_COMFYUI_BASE_URL || '').trim() || 'http://127.0.0.1:8189',
+        model: String(studio.effective.image.model || '').trim() || undefined,
+        prompt: mvPrompt,
+        negativePrompt: buildModelSheetWholeNegativePrompt(asset.negativePrompt),
+        loras: modelSheetBaseLoras,
+        ...(seed !== null ? { seed } : {}),
+        timeoutMs: 900_000,
+        prefix: `talkscene_mvadapter/${String(assetId).replace(/[^a-z0-9_-]/gi, '_')}`
+      })
+    } catch (e) {
+      const msg = e && e.message ? String(e.message) : String(e)
+      const mapped = classifyAiError(e)
+      const failed = await saveExperimentRun('failed', msg).catch(() => null)
+      updateAiTask(sheetTask.taskId, { stage: 'error', done: true, error: msg, message: `MV-Adapter 生成失败：${assetName} - ${msg}` })
+      return c.json({ success: false, error: mapped.code, message: msg, taskId: sheetTask.taskId, ...(failed ? { experiment: true, run: failed.run } : {}) }, mapped.httpStatus)
+    }
+  }
+
+  // 整 sheet 一次采样且不切栏，使用允许多视图的独立负向词；评审打回不包装为成功。
+  const useSheetMode = String(body?.mode || '').trim() !== 'per-view'
+  if (useSheetMode) {
+    try {
+      const identityAbs = path.join(dir, primaryUri)
+      let flatAbs = identityAbs
+      if (/\.(png|webp)$/i.test(identityAbs)) {
+        const tryFlat = identityAbs.replace(/\.(png|webp)$/i, '') + '_flatwhite.png'
+        try {
+          const s0 = await stat(identityAbs)
+          const s1 = await stat(tryFlat).catch(() => null)
+          if (!(s1 && s1.mtimeMs >= s0.mtimeMs)) {
+            await new Promise((resolve, reject) => {
+              const py = spawn('python3', ['-c',
+                "import sys; from PIL import Image; im=Image.open(sys.argv[1]).convert('RGBA'); bg=Image.new('RGBA', im.size, (255,255,255,255)); bg.alpha_composite(im); bg.convert('RGB').save(sys.argv[2])",
+                identityAbs, tryFlat])
+              py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('flatten_exit_' + code))))
+              py.on('error', reject)
+            })
+          }
+          flatAbs = tryFlat
+        } catch (_) { flatAbs = identityAbs }
+      }
+      const identityBytes = await readFile(flatAbs)
+      const identity = String(asset.referencePromptEn || asset.anchorPromptEn || asset.anchorPrompt || '').trim()
+      const colorAnchor = buildColorAnchorEn(asset)
+      const isPropSheet = category === 'prop'
+      const sheetPrompt = [
+        'charturn',
+        `character turnaround sheet, T-pose neutral standing pose, front side and back view of the same ${isPropSheet ? 'object' : 'character'}`,
+        'three panels side by side, evenly spaced, pure white background, full body visible head to toe in each panel',
+        identity,
+        colorAnchor,
+        globalStyleEn || 'cartoon fairy tale picture book style, flat 2D illustration, clean outlines, cel shading'
+      ].filter(Boolean).join(', ')
+      const sheetNegative = buildModelSheetWholeNegativePrompt([String(asset.negativePrompt || '').trim(), 'platform, stand, base, pedestal, stage, podium, wooden stake'].filter(Boolean).join(', '))
+      updateAiTask(sheetTask.taskId, { stage: 'generating', current: 0, total: 1, message: `标准系 sheet 生成中：${assetName}（charturn 主导整图三栏）` })
+      const gen = await generateBackgroundImage({
+        prompt: sheetPrompt,
+        negativePrompt: sheetNegative,
+        width: renderSizeOf('model_sheet', stylePreset)[0],
+        height: renderSizeOf('model_sheet', stylePreset)[1],
+        steps: 28,
+        cfgScale: 6,
+        ...(seed !== null ? { seed } : {}),
+        provider: String(studio.effective.image.provider || '').trim() || undefined,
+        sdwebuiBaseUrl: studio.effective.image.sdwebuiBaseUrl,
+        comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+        apiUrl: studio.effective.image.apiUrl,
+        model: String(studio.effective.image.model || '').trim() || undefined,
+        loras: withCharturnLora('il-xl-charturn-merged.safetensors:0.8'),
+        continuity: { ipadapterEnabled: true },
+        ipadapterModel: 'ip-adapter-plus_sdxl_vit-h',
+        referenceImages: [{ bytes: identityBytes, filename: `${String(asset.id || 'asset').trim() || 'asset'}_ref.png`, weight: 0.3, startAt: 0.1, endAt: 0.6 }],
+        proxyUrl: studio.effective.network.proxyUrl
+      })
+      const slug = String(assetId).replace(/[^a-z0-9_-]/gi, '_')
+      const sheetRel = `assets/ai/story_assets/${isPropSheet ? 'prop' : 'character'}/${slug}/sheet_whole_${Date.now()}.${gen.ext || 'png'}`
+      const sheetAbs = path.join(dir, sheetRel)
+      await mkdir(path.dirname(sheetAbs), { recursive: true })
+      await writeFile(sheetAbs, gen.bytes)
+      // 出图即压：整图无损 WebP
+      const opt = await optimizeGeneratedImage(sheetAbs, IMAGE_KIND.SPRITE_LOSSLESS).catch(() => null)
+      const sheetFinal = opt && opt.outPath ? String(ctx.assetPathFromAbsolute(id, opt.outPath) || sheetRel) : sheetRel
+      // 整图白度抽检（背景纯度维度客观佐证）
+      const sheetPurity = await checkBgPurity(path.join(dir, String(sheetFinal).replace(/^\/+/, '')))
+      // 整图评审（sheetWhole：视角齐全+身份+配色+底纯）；fail-closed：通道死挂 pending 不盲批
+      let score
+      let reason = ''
+      let reviewStatus = 'pending'
+      let reviewViews = null
+      try {
+        updateAiTask(sheetTask.taskId, { stage: 'reviewing', current: 0, message: `标准系 sheet 整图评审：${assetName}` })
+        const reviewJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/pose-review`, { planAssetId: assetId, assetPath: sheetFinal, mode: 'sheetWhole', ...(String(body?.provider || '').trim() ? { provider: String(body.provider).trim() } : {}) })
+        if (Number.isFinite(Number(reviewJson.score))) {
+          score = Number(reviewJson.score)
+          reviewViews = reviewJson.views && typeof reviewJson.views === 'object' ? reviewJson.views : null
+          reviewStatus = score < 50 ? 'rejected' : 'reviewed'
+        }
+        reason = String(reviewJson.reason || '').trim()
+      } catch (e) {
+        reason = `review_unavailable:${String((e && e.code) || (e && e.message) || e).slice(0, 120)}`
+      }
+      if (reviewStatus === 'reviewed' && !['front', 'side', 'back'].every((key) => reviewViews?.[key] === true)) {
+        reviewStatus = 'rejected'
+        reason = `${reason ? reason + '；' : ''}评审未确认正/侧/背三视角齐全`
+      }
+      if (sheetPurity !== null && !isBgPureEnough(sheetPurity)) {
+        reason = `${reason ? reason + '；' : ''}背景纯度 ${(sheetPurity * 100).toFixed(0)}%（低于 85% 阈值）`
+        if (reviewStatus === 'reviewed') reviewStatus = 'rejected'
+      }
+      const curPlan = await ctx.readStoryAssetPlanIfExists(id)
+      if (!curPlan) throw new Error('missing_asset_plan')
+      const nextPlan = {
+        ...curPlan,
+        generatedAt: ctx.nowIso(),
+        assets: (Array.isArray(curPlan.assets) ? curPlan.assets : []).map((a) => {
+          if (String(a && a.id || '').trim() !== assetId) return a
+          const oldSheet = String(a.modelSheet?.sheetAssetUri || '').trim()
+          const modelSheet = { ...(a.modelSheet && typeof a.modelSheet === 'object' ? a.modelSheet : {}) }
+          if (String(modelSheet.sheetLockedAt || '').trim()) {
+            modelSheet.prevSheetLockedAt = String(modelSheet.sheetLockedAt)
+            delete modelSheet.sheetLockedAt
+          }
+          return {
+            ...a,
+            modelSheet: {
+              ...modelSheet,
+              sheetAssetUri: sheetFinal,
+              sheetPrompt,
+              sheetNegative,
+              sheetGeneration: gen.meta || null,
+              sheetAt: ctx.nowIso(),
+              ...(oldSheet && oldSheet !== sheetFinal ? { prevSheetAssetUri: oldSheet } : {}),
+              ...(score !== undefined ? { sheetReviewScore: score } : {}),
+              sheetReviewStatus: reviewStatus,
+              ...(reason ? { sheetReviewReason: reason } : {}),
+              ...(reviewViews ? { sheetReviewViews: reviewViews } : {}),
+              ...(sheetPurity !== null ? { sheetBgPurity: sheetPurity } : {}),
+              pendingCells: []
+            }
+          }
+        })
+      }
+      nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+      await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+      results.push({ sheetAssetUri: sheetFinal, ...(score !== undefined ? { score } : {}), reviewStatus, reason, ...(reviewViews ? { reviewViews } : {}), ...(sheetPurity !== null ? { bgPurity: sheetPurity } : {}), generation: gen.meta || null })
+      if (reviewStatus === 'rejected') {
+        updateAiTask(sheetTask.taskId, {
+          stage: 'error',
+          done: true,
+          current: 1,
+          error: 'sheet_review_rejected',
+          message: `标准系 sheet 评审打回：${assetName}${score !== undefined ? `（${score} 分）` : ''}`,
+          result: { assetId, mode: 'sheet', sheet: results[0] }
+        })
+        return c.json({ success: false, error: 'sheet_review_rejected', taskId: sheetTask.taskId, mode: 'sheet', assetId, sheet: results[0], plan: await ctx.readStoryAssetPlanIfExists(id) }, 422)
+      }
+      updateAiTask(sheetTask.taskId, {
+        stage: reviewStatus === 'pending' ? 'waiting_review' : 'done',
+        done: true,
+        current: 1,
+        message: `标准系 sheet ${reviewStatus === 'pending' ? '待人工复核' : '完成'}：${assetName}${score !== undefined ? `（评审 ${score} 分）` : ''}`,
+        result: { assetId, mode: 'sheet', sheet: results[0] }
+      })
+      return c.json({ success: true, taskId: sheetTask.taskId, mode: 'sheet', assetId, sheet: results[0], plan: await ctx.readStoryAssetPlanIfExists(id) })
+    } catch (sheetErr) {
+      const sheetMsg = sheetErr instanceof Error ? sheetErr.message : String(sheetErr)
+      logStage({ stage: 'asset.model_sheet', event: 'sheet_fallback', traceId, project: id, item: assetId, ok: false, err: sheetMsg })
+      updateAiTask(sheetTask.taskId, { stage: 'fallback', message: `sheet 模式失败（${sheetMsg.slice(0, 80)}），回退逐视角生成` })
+      results.length = 0
+    }
+  }
+
+  try {
+    for (let i = 0; i < views.length; i += 1) {
+      const viewKey = views[i]
+      const viewLabel = MODEL_SHEET_VIEW_LABELS[viewKey] || viewKey
+      // Y 波（2026-10-28 用户裁决）：front 口径钉死——front 永远=主参考登记，不允许生成（采样必漂）
+      if (viewKey === 'front') {
+        updateAiTask(sheetTask.taskId, { stage: 'generating', current: i, message: `三视图 ${i + 1}/${views.length}：${assetName}·正面 同步主参考登记` })
+        const entry = {
+          key: 'front',
+          assetUri: primaryUri,
+          reviewStatus: 'skipped',
+          reason: 'front_equals_primary',
+          prompt: '',
+          createdAt: ctx.nowIso(),
+          ...(experiment ? {} : { lockedAt: ctx.nowIso() })
+        }
+        if (!experiment) {
+          const curPlan = await ctx.readStoryAssetPlanIfExists(id)
+          if (!curPlan) throw new Error('missing_asset_plan')
+          const nextPlan = {
+            ...curPlan,
+            generatedAt: ctx.nowIso(),
+            assets: (Array.isArray(curPlan.assets) ? curPlan.assets : []).map((a) =>
+              String(a && a.id || '').trim() === assetId ? { ...a, modelSheet: upsertModelSheetView(a, entry) } : a
+            )
+          }
+          nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+          await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+        }
+        results.push({ key: 'front', view: 'front', assetUri: primaryUri, reviewStatus: 'skipped', synced: true })
+        updateAiTask(sheetTask.taskId, { current: i + 1, message: `三视图 ${i + 1}/${views.length}：${assetName}·正面 已同步主参考` })
+        logStage({ stage: 'asset.model_sheet', event: 'view_ok', traceId, project: id, item: `${assetId}:front`, ok: true, detail: 'front_equals_primary' })
+        continue
+      }
+      updateAiTask(sheetTask.taskId, { stage: 'generating', current: i, message: `三视图 ${i + 1}/${views.length}：${assetName}·${viewLabel} 生成中…` })
+      const viewPrompt = buildModelSheetViewPrompt({ asset, viewKey, styleEn: globalStyleEn, charturn: engine === 'charturn' })
+      // T 波：side/back 视角负向排除（压正面）叠加多视图禁令
+      const viewNegative = buildModelSheetNegativePrompt([String(asset.negativePrompt || '').trim(), MODEL_SHEET_VIEW_NEGATIVE_EXTRA[viewKey] || ''].filter(Boolean).join(', '))
+      const ipaBase = MODEL_SHEET_VIEW_IPADAPTER[viewKey] || MODEL_SHEET_VIEW_IPADAPTER.front
+      const animalIpa = MODEL_SHEET_VIEW_IPADAPTER_ANIMAL[viewKey] || ipaBase
+      const effectiveIpa = animalBoost ? animalIpa : ipaBase
+      const ipa = viewKey === 'front'
+        ? { enabled: true, weight: animalBoost ? 0.95 : ipaBase.weight, startAt: ipaBase.startAt, endAt: ipaBase.endAt }
+        : { enabled: true, weight: effectiveIpa.weight, startAt: effectiveIpa.startAt, endAt: effectiveIpa.endAt }
+      let viewAssetPath = ''
+      let sourceBgPurity = null
+      let generationMeta = null
+      // U 波项 3：side/back 有站姿骨架（standing_side/back，openpose 语义程序化生成）——
+      // 走 ControlNet 骨架硬约束链（generateComfyuiPoseVariantSprite 骨架+IPAdapter 双约束）：
+      // 视角归骨架（强约束），IPAdapter 降权只管身份（0.45 档），配色锚词补强制约。
+      // 产物为白底直出图（三视图是参考图非立绘，不抠图，出图即压无损 WebP）。
+      const skeletonFile = category === 'character' ? (MODEL_SHEET_VIEW_SKELETON[viewKey] || '') : ''
+      if (engine === 'mvadapter') {
+        const generated = mvAdapterBatch?.views?.find((item) => item.key === viewKey)
+        if (!generated) throw new Error(`mvadapter_missing_view:${viewKey}`)
+        const slug = String(assetId).replace(/[^a-z0-9_-]/gi, '_')
+        const trialPath = `/model_sheet_trials/${runId.replace(/[^a-z0-9_-]/gi, '_')}`
+        const relOut = `assets/ai/story_assets/${category === 'prop' ? 'prop' : 'character'}/${slug}${trialPath}/mv_${viewKey}_${Date.now()}.${generated.ext || 'png'}`
+        const outAbs = path.join(dir, relOut)
+        await mkdir(path.dirname(outAbs), { recursive: true })
+        await writeFile(outAbs, generated.bytes)
+        const opt = await optimizeGeneratedImage(outAbs, IMAGE_KIND.SPRITE_LOSSLESS).catch(() => null)
+        viewAssetPath = opt && opt.outPath && opt.outPath !== outAbs ? String(ctx.assetPathFromAbsolute(id, opt.outPath) || relOut) : relOut
+        sourceBgPurity = await checkBgPurity(path.join(dir, String(viewAssetPath).replace(/^\/+/, '')))
+        generationMeta = { ...mvAdapterBatch.meta, azimuth: generated.azimuth, view: generated.meta }
+        updateAiTask(sheetTask.taskId, { stage: 'generating', current: i, message: `三视图 ${i + 1}/${views.length}：${assetName}·${viewLabel} 抠图统一透明底…` })
+        const cutoutJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/cutout`, { assetPath: viewAssetPath })
+        const cutPath = String(cutoutJson.assetPath || '').trim()
+        if (cutPath) viewAssetPath = cutPath
+      } else if (skeletonFile) {
+        const identityAbs = path.join(dir, primaryUri)
+        // IPAdapter 吃透明底失效（sprite 端点 2026-09-01 根因）：主参考先合成白底（同款 PIL 缓存）
+        let flatAbs = identityAbs
+        if (/\.(png|webp)$/i.test(identityAbs)) {
+          const tryFlat = identityAbs.replace(/\.(png|webp)$/i, '') + '_flatwhite.png'
+          try {
+            const s0 = await stat(identityAbs)
+            const s1 = await stat(tryFlat).catch(() => null)
+            if (!(s1 && s1.mtimeMs >= s0.mtimeMs)) {
+              await new Promise((resolve, reject) => {
+                const py = spawn('python3', ['-c',
+                  "import sys; from PIL import Image; im=Image.open(sys.argv[1]).convert('RGBA'); bg=Image.new('RGBA', im.size, (255,255,255,255)); bg.alpha_composite(im); bg.convert('RGB').save(sys.argv[2])",
+                  identityAbs, tryFlat])
+                py.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('flatten_exit_' + code))))
+                py.on('error', reject)
+              })
+            }
+            flatAbs = tryFlat
+          } catch (_) { flatAbs = identityAbs }
+        }
+        const identityBytes = await readFile(flatAbs)
+        const skeletonBytes = await readFile(path.join(ctx.ROOT, '_shared', 'pose_library', skeletonFile))
+        updateAiTask(sheetTask.taskId, { stage: 'generating', current: i, message: `三视图 ${i + 1}/${views.length}：${assetName}·${viewLabel} 骨架约束生成中…` })
+        const gen = await generateComfyuiPoseVariantSprite({
+          identityReferenceBytes: identityBytes,
+          identityReferenceFilename: `${String(asset.id || 'asset').trim() || 'asset'}_ref.png`,
+          poseSkeletonBytes: skeletonBytes,
+          comfyuiBaseUrl: studio.effective.image.comfyuiBaseUrl,
+          model: String(studio.effective.image.model || '').trim() || undefined,
+          ipadapterModel: 'ip-adapter-plus_sdxl_vit-h',
+          prompt: viewPrompt,
+          negativePrompt: viewNegative,
+          width: renderSizeOf('primary_reference', stylePreset)[0],
+          height: renderSizeOf('primary_reference', stylePreset)[1],
+          steps: 24,
+          cfgScale: 6,
+          ...(seed !== null ? { seed } : {}),
+          ipadapterWeight: ipa.weight,
+          ipadapterStartAt: ipa.startAt,
+          ipadapterEndAt: ipa.endAt,
+          controlStrength: 0.9,
+          controlEndPercent: 0.9,
+          timeoutMs: 300_000,
+          prefix: `talkscene_sheet/${String(assetId).replace(/[^a-z0-9_-]/gi, '_')}_${viewKey}`,
+          loras: withCharturnLora(viewKey === 'back' ? MODEL_SHEET_CHARTURN_LORA_BACK : MODEL_SHEET_CHARTURN_LORA)
+        })
+        generationMeta = gen.meta || null
+        const slug = String(assetId).replace(/[^a-z0-9_-]/gi, '_')
+        const trialPath = experiment ? `/model_sheet_trials/${runId.replace(/[^a-z0-9_-]/gi, '_')}` : ''
+        const relOut = `assets/ai/story_assets/${category === 'prop' ? 'prop' : 'character'}/${slug}${trialPath}/sheet_${viewKey}_${Date.now()}.${gen.ext || 'png'}`
+        const outAbs = path.join(dir, relOut)
+        await mkdir(path.dirname(outAbs), { recursive: true })
+        await writeFile(outAbs, gen.bytes)
+        const opt = await optimizeGeneratedImage(outAbs, IMAGE_KIND.SPRITE_LOSSLESS).catch(() => null)
+        viewAssetPath = opt && opt.outPath && opt.outPath !== outAbs ? String(ctx.assetPathFromAbsolute(id, opt.outPath) || relOut) : relOut
+        sourceBgPurity = await checkBgPurity(path.join(dir, String(viewAssetPath).replace(/^\/+/, '')))
+        // Y 波收口：骨架链白底直出再过 RMBG 抠图=透明底立绘——与 front 主参考/sprite 链产物观感统一为透明底。
+        // （白底压白后处理对白毛角色不可行：泛洪/阈值两版实证吃主体——RMBG 语义分割不看颜色，透明底是更稳的统一口径）
+        updateAiTask(sheetTask.taskId, { stage: 'generating', current: i, message: `三视图 ${i + 1}/${views.length}：${assetName}·${viewLabel} 抠图统一透明底…` })
+        const cutoutJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/cutout`, { assetPath: viewAssetPath })
+        const cutPath = String(cutoutJson.assetPath || '').trim()
+        if (cutPath) viewAssetPath = cutPath
+      } else {
+      const spriteJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/sprite`, {
+        kind: category === 'prop' ? 'prop' : 'character',
+        planAssetId: assetId,
+        ipadapter: ipa,
+        fingerprintPrompt: String(asset.anchorPrompt || '').trim(),
+        globalPrompt: globalStyleEn || 'cartoon fairy tale picture book style, flat 2D illustration, bold clean outlines, cel shading, warm soft color palette',
+        posePrompt: viewPrompt,
+        negativePrompt: viewNegative,
+        style: 'picture_book',
+        loras: viewKey !== 'front' ? withCharturnLora(MODEL_SHEET_CHARTURN_LORA) : modelSheetBaseLoras,
+        width: renderSizeOf('primary_reference', stylePreset)[0],
+        height: renderSizeOf('primary_reference', stylePreset)[1],
+        steps: 24,
+        cfgScale: 6,
+        ...(seed !== null ? { seed } : {})
+      })
+      generationMeta = spriteJson.generation || spriteJson.meta || null
+      const spritePath = String(spriteJson.assetPath || '').trim()
+      if (!spritePath) throw new Error('sprite_no_output')
+      sourceBgPurity = await checkBgPurity(path.join(dir, String(spritePath).replace(/^\/+/, '')))
+      updateAiTask(sheetTask.taskId, { stage: 'generating', current: i, message: `三视图 ${i + 1}/${views.length}：${assetName}·${viewLabel} 抠图中…` })
+      const cutoutJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/cutout`, { assetPath: spritePath })
+      viewAssetPath = String(cutoutJson.assetPath || '').trim()
+      if (!viewAssetPath) throw new Error('cutout_no_output')
+      }
+
+      // 一致性视觉评审：side/back 与主参考过同款通道（fail-closed：通道不可用挂 pending 不盲批，绝不自动锁）；
+      // front 与主参考同视角，记 front_view_skipped 不评。
+      // Y 波：白底抽检先行（参考图必须纯白底）——边缘带近白占比 <0.85 记 bgPurity，作评审打回客观依据
+      const bgPurity = sourceBgPurity
+      let score
+      let reason = ''
+      let reviewStatus = 'skipped'
+      if (viewKey === 'front') {
+        reason = 'front_view_skipped'
+      } else {
+        try {
+          updateAiTask(sheetTask.taskId, { stage: 'reviewing', current: i, message: `三视图 ${i + 1}/${views.length}：${assetName}·${viewLabel} 一致性评审中…` })
+          // T 波：expectView 视角硬门槛（视角不符评审指令直接 ≤20 分）
+          const reviewJson = await postInternal(`/api/projects/${encodeURIComponent(id)}/ai/character/pose-review`, { planAssetId: assetId, assetPath: viewAssetPath, expectView: viewKey, ...(String(body?.provider || '').trim() ? { provider: String(body.provider).trim() } : {}) })
+          if (Number.isFinite(Number(reviewJson.score))) {
+            score = Number(reviewJson.score)
+            reviewStatus = score < 50 ? 'rejected' : 'reviewed'
+          } else {
+            reviewStatus = 'pending'
+          }
+          reason = String(reviewJson.reason || '').trim()
+        } catch (e) {
+          reviewStatus = 'pending'
+          reason = `review_unavailable:${String((e && e.code) || (e && e.message) || e).slice(0, 120)}`
+        }
+      }
+      // 背景纯度客观佐证：低于阈值附注入 reason（评审打回依据），并随 entry 留痕
+      if (bgPurity !== null && !isBgPureEnough(bgPurity)) {
+        reason = `${reason ? reason + '；' : ''}背景纯度 ${(bgPurity * 100).toFixed(0)}%（低于 85% 阈值，渐变/投影/场景背景）`
+        if (reviewStatus === 'reviewed') reviewStatus = 'rejected'
+      }
+
+      const entry = {
+        key: viewKey,
+        assetUri: viewAssetPath,
+        prompt: viewPrompt,
+        negativePrompt: viewNegative,
+        ...(score !== undefined ? { score } : {}),
+        ...(reason ? { reason } : {}),
+        ...(bgPurity !== null ? { bgPurity } : {}),
+        ...(generationMeta ? { generation: generationMeta } : {}),
+        reviewStatus,
+        createdAt: ctx.nowIso()
+      }
+      if (!experiment) {
+        const curPlan = await ctx.readStoryAssetPlanIfExists(id)
+        if (!curPlan) throw new Error('missing_asset_plan')
+        const nextPlan = {
+          ...curPlan,
+          generatedAt: ctx.nowIso(),
+          assets: (Array.isArray(curPlan.assets) ? curPlan.assets : []).map((a) =>
+            String(a && a.id || '').trim() === assetId ? { ...a, modelSheet: upsertModelSheetView(a, entry) } : a
+          )
+        }
+        nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+        await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+      }
+      results.push({ ...entry, view: viewKey })
+      updateAiTask(sheetTask.taskId, { current: i + 1, message: `三视图 ${i + 1}/${views.length}：${assetName}·${viewLabel} 完成${score !== undefined ? `（${score} 分）` : reviewStatus === 'pending' ? '（评审挂起，待人工复核）' : ''}` })
+      logStage({ stage: 'asset.model_sheet', event: 'view_ok', traceId, project: id, item: `${assetId}:${viewKey}`, ok: true, detail: reviewStatus })
+    }
+    if (experiment) {
+      const { run, plan: savedPlan } = await saveExperimentRun()
+      updateAiTask(sheetTask.taskId, {
+        stage: 'done',
+        done: true,
+        current: views.length,
+        message: `三视图试验候选已落盘：${assetName}（${engine}，${run.status}）`,
+        result: { assetId, runId, run }
+      })
+      return c.json({ success: true, taskId: sheetTask.taskId, experiment: true, run, plan: savedPlan })
+    }
+    updateAiTask(sheetTask.taskId, {
+      stage: 'done',
+      done: true,
+      current: views.length,
+      message: `标准系三视图完成：${assetName}（${views.length} 视角候选已落盘，逐张人工锁定后生效）`,
+      result: { assetId, views: results }
+    })
+    return c.json({ success: true, taskId: sheetTask.taskId, assetId, views: results, plan: await ctx.readStoryAssetPlanIfExists(id) })
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e)
+    const mapped = classifyAiError(e)
+    const failedExperiment = experiment ? await saveExperimentRun('failed', msg).catch(() => null) : null
+    updateAiTask(sheetTask.taskId, { stage: 'error', done: true, error: msg, message: `三视图失败：${assetName}（已完成 ${results.length}/${views.length}）${msg}；可在工作区重试剩余视角` })
+    logStage({ stage: 'asset.model_sheet', event: 'fail', traceId, project: id, item: assetId, status: mapped.httpStatus, ok: false, err: msg })
+    return c.json({ success: false, error: mapped.code, message: msg, views: results, ...(failedExperiment ? { experiment: true, run: failedExperiment.run } : {}) }, mapped.httpStatus)
+  }
+})
+
+// 三视图视角锁定（人审后）：写 lockedAt + lock_confirm 审核留痕；三视角全锁时写 modelSheet.lockedAt。
+// fail-closed 语义：side/back 无 AI 评审分数（评审通道挂 pending）时不阻断人工锁定（人工看图即人审），但留痕注明。
+app.post('/api/projects/:id/ai/story/assets/:assetId/model-sheet/lock', async (c) => {
+  await ctx.ensureDirs()
+  const id = c.req.param('id')
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const assetId = String(c.req.param('assetId') || '').trim()
+  const body = await c.req.json().catch(() => ({}))
+  const viewKey = String(body?.view || '').trim()
+  // AA 波：view='sheet' 锁整 sheet（sheetLockedAt）；view=front/side/back 锁逐视角（原语义）
+  if (viewKey !== 'sheet' && !MODEL_SHEET_VIEWS.includes(viewKey)) return c.json({ success: false, error: 'invalid_view', message: `view 仅支持 ${MODEL_SHEET_VIEWS.join('/')}/sheet` }, 400)
+
+  const plan = await ctx.readStoryAssetPlanIfExists(id)
+  const asset = (plan && Array.isArray(plan.assets) ? plan.assets : []).find((a) => String(a && a.id || '').trim() === assetId) || null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+  const assetName = String(asset.name || assetId).trim()
+
+  // AA 波：sheet 整图锁定分支
+  if (viewKey === 'sheet') {
+    const sheetUri = String(asset.modelSheet?.sheetAssetUri || '').trim()
+    if (!sheetUri) {
+      return c.json({ success: false, error: 'sheet_candidate_missing', message: `「${assetName}」还没有 sheet 候选图，请先生成。` }, 404)
+    }
+    if (String(asset.modelSheet?.sheetReviewStatus || '').trim() === 'rejected') {
+      return c.json({ success: false, error: 'sheet_review_rejected', message: `「${assetName}」的 sheet 已被评审打回，请重新生成后再锁定。` }, 409)
+    }
+    if (String(asset.modelSheet?.sheetLockedAt || '').trim()) {
+      return c.json({ success: true, assetId, view: 'sheet', alreadyLocked: true, lockedAt: String(asset.modelSheet.sheetLockedAt) })
+    }
+    const lockedAt = ctx.nowIso()
+    const nextPlan = {
+      ...plan,
+      generatedAt: lockedAt,
+      assets: plan.assets.map((a) =>
+        String(a && a.id || '').trim() === assetId
+          ? { ...a, modelSheet: { ...(a.modelSheet && typeof a.modelSheet === 'object' ? a.modelSheet : {}), sheetLockedAt: lockedAt } }
+          : a
+      )
+    }
+    nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+    await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+    try {
+      const targetKey = `lock_confirm:${assetId}:modelSheet:sheet:${sheetUri}`
+      const decidedBy = ctx.resolveImageReviewMode(c, body) === 'off' ? 'control' : 'user'
+      const pendingLock = await findPendingReview(dir, { phase: 'lock_confirm', targetKey })
+      if (pendingLock) {
+        await decideImageReview(dir, pendingLock.reviewId, { approved: true, decidedBy })
+      } else {
+        const record = await createImageReview(dir, {
+          phase: 'lock_confirm',
+          targetKey,
+          assetId,
+          resultImagePath: sheetUri,
+          prompt: String(asset.modelSheet?.sheetPrompt || ''),
+          aiReview: Number.isFinite(Number(asset.modelSheet?.sheetReviewScore)) ? { score: Number(asset.modelSheet.sheetReviewScore), reason: String(asset.modelSheet?.sheetReviewReason || '') } : null,
+          params: { kind: 'asset.model_sheet.lock', view: 'sheet' }
+        })
+        await decideImageReview(dir, record.reviewId, { approved: true, decidedBy })
+      }
+    } catch (_) { /* 留痕失败不阻断锁定结果 */ }
+    recordCreationEvent(dir, {
+      type: 'model_sheet_locked',
+      summary: `标准系 sheet 锁定：${assetName}`,
+      actor: 'model_sheet_flow',
+      data: { assetId }
+    })
+    logStage({ stage: 'asset.model_sheet', event: 'lock_ok', traceId: createTraceId(), project: id, item: `${assetId}:sheet`, ok: true, detail: 'sheet_locked' })
+    return c.json({ success: true, assetId, view: 'sheet', lockedAt, plan: await ctx.readStoryAssetPlanIfExists(id) })
+  }
+
+  const views = Array.isArray(asset.modelSheet?.views) ? asset.modelSheet.views : []
+  const target = views.find((v) => String(v && v.key || '').trim() === viewKey && String(v && v.assetUri || '').trim()) || null
+  if (!target) {
+    return c.json({ success: false, error: 'view_candidate_missing', message: `「${assetName}」的${MODEL_SHEET_VIEW_LABELS[viewKey]}视图还没有候选图，请先生成。` }, 404)
+  }
+  if (String(target.reviewStatus || '').trim() === 'rejected') {
+    return c.json({ success: false, error: 'model_sheet_view_rejected', message: `「${assetName}」的${MODEL_SHEET_VIEW_LABELS[viewKey]}视图已被评审打回，请重新生成后再锁定。` }, 409)
+  }
+  if (String(target.lockedAt || '').trim()) {
+    return c.json({ success: true, assetId, view: viewKey, alreadyLocked: true, lockedAt: String(target.lockedAt) })
+  }
+
+  const lockedAt = ctx.nowIso()
+  const nextViews = views.map((v) => (String(v && v.key || '').trim() === viewKey ? { ...v, lockedAt } : v))
+  const allLocked = MODEL_SHEET_VIEWS.every((k) => nextViews.some((v) => String(v && v.key || '').trim() === k && String(v && v.lockedAt || '').trim()))
+  const nextPlan = {
+    ...plan,
+    generatedAt: lockedAt,
+    assets: plan.assets.map((a) =>
+      String(a && a.id || '').trim() === assetId
+        ? { ...a, modelSheet: { ...(a.modelSheet && typeof a.modelSheet === 'object' ? a.modelSheet : {}), views: nextViews, ...(allLocked ? { lockedAt } : {}) } }
+        : a
+    )
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+
+  // lock_confirm 审核留痕（人工锁定即批准；side/back 未经 AI 评审的注明 review_gap）
+  try {
+    const targetKey = `lock_confirm:${assetId}:modelSheet:${viewKey}:${String(target.assetUri)}`
+    const decidedBy = ctx.resolveImageReviewMode(c, body) === 'off' ? 'control' : 'user'
+    const pendingLock = await findPendingReview(dir, { phase: 'lock_confirm', targetKey })
+    if (pendingLock) {
+      await decideImageReview(dir, pendingLock.reviewId, { approved: true, decidedBy })
+    } else {
+      const record = await createImageReview(dir, {
+        phase: 'lock_confirm',
+        targetKey,
+        assetId,
+        resultImagePath: String(target.assetUri),
+        prompt: String(target.prompt || ''),
+        aiReview: Number.isFinite(Number(target.score)) ? { score: Number(target.score), reason: String(target.reason || '') } : null,
+        params: { kind: 'asset.model_sheet.lock', view: viewKey, ...(viewKey !== 'front' && !Number.isFinite(Number(target.score)) ? { review_gap: 'ai_review_unavailable_manual_lock' } : {}) }
+      })
+      await decideImageReview(dir, record.reviewId, { approved: true, decidedBy })
+    }
+  } catch (_) { /* 留痕失败不阻断锁定结果 */ }
+  recordCreationEvent(dir, {
+    type: 'model_sheet_view_locked',
+    summary: `三视图锁定：${assetName}·${MODEL_SHEET_VIEW_LABELS[viewKey]}${allLocked ? '（三视角全锁）' : ''}`,
+    actor: 'model_sheet_flow',
+    data: { assetId, view: viewKey, allLocked }
+  })
+  logStage({ stage: 'asset.model_sheet', event: 'lock_ok', traceId: createTraceId(), project: id, item: `${assetId}:${viewKey}`, ok: true, detail: allLocked ? 'all_locked' : '' })
+  return c.json({ success: true, assetId, view: viewKey, lockedAt, allLocked, plan: await ctx.readStoryAssetPlanIfExists(id) })
+})
+
+// Z 波：sheet 栏序人工指定（评审通道死时兜底，明面执行不猜）——pendingCells 三栏由用户指定 front/side/back 后写 views。
+// 人工指定即人工评审（reviewStatus=manual_assigned）；三视角齐且全锁时 modelSheet.lockedAt 更新。
+app.post('/api/projects/:id/ai/story/assets/:assetId/model-sheet/assign-views', async (c) => {
+  await ctx.ensureDirs()
+  const id = c.req.param('id')
+  const dir = ctx.projectDir(id)
+  if (!(await ctx.existsDir(dir))) return c.json({ success: false, error: 'not_found' }, 404)
+  const assetId = String(c.req.param('assetId') || '').trim()
+  const body = await c.req.json().catch(() => ({}))
+  const assignments = body && typeof body.assignments === 'object' && body.assignments ? body.assignments : null
+  if (!assignments) return c.json({ success: false, error: 'missing_assignments', message: '缺少 assignments（{"0":"front","1":"side","2":"back"}）' }, 400)
+
+  const plan = await ctx.readStoryAssetPlanIfExists(id)
+  const asset = (plan && Array.isArray(plan.assets) ? plan.assets : []).find((a) => String(a && a.id || '').trim() === assetId) || null
+  if (!asset) return c.json({ success: false, error: 'asset_not_found', message: `未找到故事资产：${assetId}` }, 404)
+  const pending = Array.isArray(asset.modelSheet?.pendingCells) ? asset.modelSheet.pendingCells : []
+  if (!pending.length) return c.json({ success: false, error: 'no_pending_cells', message: '没有待指定的 sheet 栏（sheet 未生成或已指定过）' }, 400)
+
+  // 校验：三栏都必须指定且 front/side/back 各一
+  const viewOf = {}
+  for (const cell of pending) {
+    const v = String(assignments[String(cell.index)] || '').trim()
+    if (!MODEL_SHEET_VIEWS.includes(v)) {
+      return c.json({ success: false, error: 'invalid_assignment', message: `栏 ${Number(cell.index) + 1} 未指定视角（front/side/back 各选一）` }, 400)
+    }
+    viewOf[v] = cell
+  }
+  if (Object.keys(viewOf).length !== 3) {
+    return c.json({ success: false, error: 'duplicate_view', message: '三个栏的视角必须各不相同（front/side/back 各一）' }, 400)
+  }
+
+  const now = ctx.nowIso()
+  const curViews = (Array.isArray(asset.modelSheet?.views) ? asset.modelSheet.views : []).filter((v) => !pending.some((cell) => String(cell.assetUri || '') === String(v && v.assetUri || '')))
+  for (const viewKey of MODEL_SHEET_VIEWS) {
+    const cell = viewOf[viewKey]
+    curViews.push({
+      key: viewKey,
+      assetUri: String(cell.assetUri || '').trim(),
+      prompt: String(asset.modelSheet?.sheetPrompt || ''),
+      negativePrompt: String(asset.modelSheet?.sheetNegative || ''),
+      reviewStatus: 'manual_assigned',
+      reason: '栏序人工指定（评审通道死时兜底）',
+      sheetMode: true,
+      createdAt: now
+    })
+  }
+  const nextPlan = {
+    ...plan,
+    generatedAt: now,
+    assets: plan.assets.map((a) =>
+      String(a && a.id || '').trim() === assetId
+        ? {
+            ...a,
+            modelSheet: {
+              ...(a.modelSheet && typeof a.modelSheet === 'object' ? a.modelSheet : {}),
+              views: curViews,
+              pendingCells: []
+            }
+          }
+        : a
+    )
+  }
+  nextPlan.summary = summarizeStoryAssetPlan(nextPlan)
+  await ctx.saveStoryAssetPlan(id, nextPlan, { mergeAssetsById: true })
+  logStage({ stage: 'asset.model_sheet', event: 'views_assigned', traceId: createTraceId(), project: id, item: assetId, ok: true, detail: Object.keys(viewOf).join(',') })
+  return c.json({ success: true, assetId, plan: await ctx.readStoryAssetPlanIfExists(id) })
 })
 }

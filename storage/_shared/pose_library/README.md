@@ -76,4 +76,4 @@ POST /api/projects/:id/ai/story/scenes/:sceneId/layered-produce
 | `holding_front.png` | 抱物（正面） | OpenPose | 偏弱（无头部关键点），实验档 |
 
 姿势源图规范：人物必须**满幅全身**（占画面 80%+，白底）——半身/远景小人都检测不到。
-自动编排（GS-51）从本目录 manifest.json 读骨架映射，中文别名命中即选用。
+自动编排（TS-51）从本目录 manifest.json 读骨架映射，中文别名命中即选用。

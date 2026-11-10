@@ -2,11 +2,19 @@ import { generateScriptsViaOpenAI, repairScriptsViaOpenAI } from './openai.js'
 import { generateScriptsViaDoubao, repairScriptsViaDoubao } from './doubao.js'
 import { generateScriptsViaOllama, repairScriptsViaOllama } from './ollama.js'
 
+// Q 波（2026-10-27 标题清洗，用户实证脏标题入库：「帮我创建一个《三只小猪?」原样成了项目名）：
+// 剥创作意图前缀（帮我创建一个/写一个/讲一个…）、书名号《》、疑问/感叹尾与「的故事」类后缀。
+// 量词（一个/则/篇）必选，避免误伤以动词起笔的真标题（如「做事的小熊」）。
 export function guessTitleFromPrompt(prompt) {
   const s = String(prompt || '').trim()
   if (!s) return '未命名故事'
-  const firstLine = s.split(/\r?\n/)[0] || s
-  return firstLine.replace(/^[#\s]+/, '').slice(0, 20) || '未命名故事'
+  let t = (s.split(/\r?\n/)[0] || s).replace(/^[#\s]+/, '')
+  t = t.replace(/^(请|帮我|帮忙|给我|我想|我要)?(创建|创作|制作|生成|编写|写|做|讲)(一个|一则|一篇|个|则|篇)/u, '')
+  t = t.replace(/[《》]/g, '')
+  t = t.replace(/[？?！!。.\s]+$/u, '')
+  t = t.replace(/(的互动故事|的故事|互动故事|故事|绘本)$/u, '')
+  t = t.trim().slice(0, 20)
+  return t || '未命名故事'
 }
 
 export function genId(prefix) {
